@@ -963,6 +963,8 @@ public final class OresEvalRootNode extends RootNode {
             private final Ast.MethodDecl method;
             private final OresObject receiver;
             private final List<Ast.Stmt> blockBody;
+            /** Detached deferred select arms produce a typed result. */
+            private final boolean valueSelectBlock;
             private final List<?> arguments;
             private Env initialBlockEnv;
 
@@ -976,6 +978,7 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = null;
+                this.valueSelectBlock = false;
                 this.arguments = List.copyOf(arguments);
             }
 
@@ -987,15 +990,21 @@ public final class OresEvalRootNode extends RootNode {
                 this.method = Objects.requireNonNull(method, "method");
                 this.receiver = receiver;
                 this.blockBody = null;
+                this.valueSelectBlock = false;
                 this.arguments = List.copyOf(arguments);
             }
 
             private SourceTask(List<Ast.Stmt> blockBody) {
+                this(blockBody, false);
+            }
+
+            private SourceTask(List<Ast.Stmt> blockBody, boolean valueSelectBlock) {
                 this.function = null;
                 this.method = null;
                 this.receiver = null;
                 this.blockBody = List.copyOf(
                         Objects.requireNonNull(blockBody, "blockBody"));
+                this.valueSelectBlock = valueSelectBlock;
                 this.arguments = List.of();
             }
 
@@ -1188,6 +1197,23 @@ public final class OresEvalRootNode extends RootNode {
                     SourceTask task,
                     SourceFlow flow) {
                 if (blockBody != null) {
+                    if (valueSelectBlock) {
+                        switch (flow.kind()) {
+                            case SELECT_VALUE_RETURN -> {
+                                if (flow.value() == null) {
+                                    throw new IllegalStateException(
+                                            "deferred value-select arm returned no value");
+                                }
+                                done(flow.value());
+                            }
+                            case THROW -> throw sourceFailure(flow.failure());
+                            case NORMAL, RETURN, BREAK, CONTINUE ->
+                                    throw new IllegalStateException(
+                                            "deferred value-select arm must return its own value, got "
+                                                    + flow.kind());
+                        }
+                        return;
+                    }
                     switch (flow.kind()) {
                         case NORMAL -> done(null);
                         case RETURN -> {
@@ -1271,6 +1297,20 @@ public final class OresEvalRootNode extends RootNode {
             OresFuture<Object> future = context.actors().startActorTask(task);
             context.actors().ownCurrentActorFuture(future);
             return future;
+        }
+
+        /** Guest source arm runs on its owner actor's single-flight scheduler. */
+        private OresFuture<Object> startSourceValueSelectTask(
+                List<Ast.Stmt> body, Env env) {
+            if (!ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "deferred value-select arm requires its owner actor lane");
+            }
+            SourceTask task = new SourceTask(body, true);
+            task.initialBlockEnv = env.snapshot();
+            OresFuture<Object> result = context.actors().startActorTask(task);
+            context.actors().ownCurrentActorFuture(result);
+            return result;
         }
 
         private OresFuture<Object> startSourceMethodTask(
@@ -2514,6 +2554,91 @@ public final class OresEvalRootNode extends RootNode {
          * arm resumes in that task; its lexical result return completes only
          * the expression's continuation.
          */
+        /**
+         * Runtime selection chooses one winner; the winner's arm is executed
+         * by a separate heap-owned actor task, never on the producer thread.
+         * A result Future settles only after that arm and its defer/finally
+         * cleanup finish. Its cancellation hook revokes the selection or the
+         * active arm task even when cancellation races with actor scheduling.
+         */
+        private OresFuture<Object> startNonblockingValueSelect(
+                Ast.StaticSelectExpr expression, Env env) {
+            if (!ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "nb select result requires an executing actor turn");
+            }
+            if (env.hasLiveMutexGuards()) {
+                throw new IllegalStateException(
+                        "cannot arm nb select while holding a MutexGuard");
+            }
+
+            Ast.SelectStmt select = expression.select();
+            ChannelRuntime.SelectSet cases = buildStaticSelectSet(select, env);
+            OresFuture<ChannelRuntime.SelectResult> winner =
+                    cases.selectAsync(runtimeSelectPolicy(select.policy()));
+            ActorRuntime.ContinuationTarget target =
+                    context.actors().captureCurrentContinuationTarget();
+            Env captured = env.snapshot();
+            java.util.concurrent.atomic.AtomicReference<OresFuture<Object>> activeTask =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            OresFuture<Object> result = OresFuture.fromCallback(completion ->
+                    context.actors().enqueueOnCompletion(winner, target, (selected, failure) -> {
+                        if (completion.isDone()) return;
+                        if (failure != null) {
+                            if (winner.isCancelled()) completion.cancel();
+                            else completion.reject(OresFuture.unwrap(failure));
+                            return;
+                        }
+                        try {
+                            if (selected.index() < 0
+                                    || selected.index() >= select.arms().size()) {
+                                throw new IllegalStateException(
+                                        "deferred value-select winner index is invalid");
+                            }
+                            Ast.SelectArm arm = select.arms().get(selected.index());
+                            Env armEnv = new Env(captured);
+                            if (arm.operation() == Ast.ChannelOperation.READ
+                                    && arm.bindingName() != null) {
+                                armEnv.define(
+                                        arm.bindingName(),
+                                        selected.value(),
+                                        arm.bindingKind());
+                            }
+
+                            OresFuture<Object> body =
+                                    startSourceValueSelectTask(arm.body(), armEnv);
+                            activeTask.set(body);
+                            if (completion.isDone()) {
+                                activeTask.compareAndSet(body, null);
+                                body.cancel(false);
+                                return;
+                            }
+
+                            context.actors().enqueueOnCompletion(body, target, (value, armFailure) -> {
+                                activeTask.compareAndSet(body, null);
+                                if (completion.isDone()) return;
+                                if (armFailure == null) {
+                                    completion.resolve(value);
+                                } else if (body.isCancelled()) {
+                                    completion.cancel();
+                                } else {
+                                    completion.reject(OresFuture.unwrap(armFailure));
+                                }
+                            });
+                        } catch (RuntimeException | Error armFailure) {
+                            if (!completion.isDone()) completion.reject(armFailure);
+                        }
+                    }), () -> {
+                        // Runtime revocation only: no guest callbacks on the
+                        // cancellation caller's physical thread.
+                        winner.cancel(false);
+                        OresFuture<Object> arm = activeTask.getAndSet(null);
+                        if (arm != null) arm.cancel(false);
+                    });
+            return context.actors().ownCurrentActorFuture(result);
+        }
+
         private void runValueSelectSuspendable(
                 SourceTask task,
                 Ast.StaticSelectExpr expression,
@@ -2526,6 +2651,15 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             Ast.SelectStmt select = expression.select();
+            if (select.mode() == Ast.WaitMode.NONBLOCKING) {
+                try {
+                    continuation.accept(
+                            task, startNonblockingValueSelect(expression, env), null);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                }
+                return;
+            }
             final OresFuture<ChannelRuntime.SelectResult> future;
             try {
                 future = buildStaticSelectSet(select, env)
@@ -6421,6 +6555,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.StaticSelectExpr selected) {
                 Ast.SelectStmt select = selected.select();
+                if (select.mode() == Ast.WaitMode.NONBLOCKING) {
+                    return startNonblockingValueSelect(selected, env);
+                }
                 if (env.hasLiveMutexGuards()) {
                     throw new IllegalStateException(
                             "cannot arm value-select while holding a live MutexGuard");
