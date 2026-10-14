@@ -88,6 +88,8 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
+    /** Innermost static value-select result context, null outside its arms. */
+    private List<Type> currentSelectReturnTypes;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -1579,6 +1581,20 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (ret.target() == Ast.ReturnTarget.SELECT_VALUE) {
+                if (currentSelectReturnTypes == null || ret.value() == null) {
+                    throw new IllegalArgumentException(
+                            "value-select return must have a value and target an active select arm");
+                }
+                Type returned = typeOf(ret.value(), env, generics, self);
+                if (returned == Primitive.VOID || returned == Unknown.INSTANCE
+                        || returned instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            "value-select return must be a statically typed, owned, non-void value");
+                }
+                currentSelectReturnTypes.add(returned);
+                return;
+            }
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
                         ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
@@ -1730,9 +1746,13 @@ public final class TypeChecker {
                         requireMutableReferentCompatible(
                                 element, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
+                        Type bindingType = arm.declaredBindingType() == null
+                                ? element : resolve(arm.declaredBindingType(), generics, self);
+                        requireAssignable(element, bindingType,
+                                "typed select read binding '" + arm.bindingName() + "'");
                         armEnv.define(
                                 arm.bindingName(),
-                                element,
+                                bindingType,
                                 arm.bindingKind());
                     }
                 }
@@ -3426,6 +3446,47 @@ public final class TypeChecker {
                 case NONBLOCKING -> new Named("Future", List.of(element));
                 case IMMEDIATE -> new Named("Option", List.of(element));
             };
+        }
+        if (expr instanceof Ast.StaticSelectExpr resultSelect) {
+            Ast.SelectStmt selected = resultSelect.select();
+            // Select-result returns are lexically distinct from callable
+            // returns; nested value selects get an independent result collector.
+            List<Type> prior = currentSelectReturnTypes;
+            List<Type> returns = new ArrayList<>();
+            currentSelectReturnTypes = returns;
+            try {
+                checkStatement(selected, env, generics, Primitive.VOID, self);
+            } finally {
+                currentSelectReturnTypes = prior;
+            }
+            for (Ast.SelectArm arm : selected.arms()) {
+                if (!definitelySelectArmReturns(arm.body())) {
+                    throw new IllegalArgumentException(
+                            "every reachable value-select arm path must explicitly 'return value'");
+                }
+            }
+            if (returns.isEmpty()) {
+                throw new IllegalArgumentException("value select has no typed arm return");
+            }
+            Type joined = widenCollectionElement(returns.getFirst());
+            for (int i = 1; i < returns.size(); i++) {
+                joined = commonType(joined, widenCollectionElement(returns.get(i)));
+                if (joined == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException(
+                            "value-select arms return incompatible types");
+                }
+            }
+            if (joined == Primitive.VOID || joined == Unknown.INSTANCE
+                    || joined instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "value select must produce an owned, statically typed non-void value");
+            }
+            for (Type returned : returns) {
+                requireReadonlyCapabilityPreserved(returned, joined,
+                        "value-select return");
+                requireAssignable(returned, joined, "value-select return");
+            }
+            return joined;
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
@@ -7815,6 +7876,38 @@ public final class TypeChecker {
         if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.ObjectExpr object) return object.fields().stream().allMatch(field -> constant(field.value()));
+        return false;
+    }
+
+    /** Normal-completion proof for lexical select-result returns.
+     * Function returns, nested value expressions, and loop jumps cannot
+     * accidentally satisfy the enclosing select's result contract.
+     */
+    private boolean definitelySelectArmReturns(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt ret
+                    && ret.target() == Ast.ReturnTarget.SELECT_VALUE) return true;
+            if (stmt instanceof Ast.BlockStmt block
+                    && definitelySelectArmReturns(block.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional
+                    && !conditional.branches().isEmpty()
+                    && !conditional.elseBody().isEmpty()
+                    && conditional.branches().stream().allMatch(
+                            arm -> definitelySelectArmReturns(arm.body()))
+                    && definitelySelectArmReturns(conditional.elseBody())) return true;
+            if (stmt instanceof Ast.MatchStmt matched
+                    && !matched.arms().isEmpty()
+                    && matched.arms().stream().allMatch(
+                            arm -> definitelySelectArmReturns(arm.body()))) return true;
+            if (stmt instanceof Ast.SwitchStmt switched
+                    && !switched.defaultBody().isEmpty()
+                    && switched.cases().stream().allMatch(
+                            arm -> definitelySelectArmReturns(arm.body()))
+                    && definitelySelectArmReturns(switched.defaultBody())) return true;
+            if (stmt instanceof Ast.TryStmt attempted
+                    && definitelySelectArmReturns(attempted.body())
+                    && definitelySelectArmReturns(attempted.catchBody())) return true;
+        }
         return false;
     }
 
