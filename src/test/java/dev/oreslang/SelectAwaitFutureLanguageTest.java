@@ -89,9 +89,10 @@ final class SelectAwaitFutureLanguageTest {
                     SelectCase.future(ready)
                   ]);
                   val Option<SelectResult> choice = select first from cases;
-                  stdio.stdout.write(choice.unwrap().index);
+                  val SelectResult selected = choice.unwrap();
+                  stdio.stdout.write(selected.index);
                   stdio.stdout.write(":");
-                  stdio.stdout.write(choice.unwrap().value);
+                  stdio.stdout.write(selected.value);
                   return;
                 }
                 """;
