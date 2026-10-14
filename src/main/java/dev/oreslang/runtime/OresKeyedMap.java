@@ -178,11 +178,19 @@ public final class OresKeyedMap<K, V> {
     public synchronized void putAll(Map<? extends K, ? extends V> values) {
         Objects.requireNonNull(values, "map entries");
         List<Map.Entry<K, V>> prepared = new ArrayList<>(values.size());
+        // A caller may supply IdentityHashMap or a custom Map whose equality
+        // differs from the guest Map's nominal String/Symbol equality. Reject
+        // duplicate *logical* keys before any writes rather than letting
+        // iteration order silently determine the winning value.
+        Set<K> incomingKeys = new HashSet<>();
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
             K key = Objects.requireNonNull(entry, "map entry").getKey();
             V value = entry.getValue();
             checkKey(key);
             checkValue(value);
+            if (!incomingKeys.add(key)) {
+                throw new IllegalArgumentException("duplicate logical key in Map batch");
+            }
             prepared.add(Map.entry(key, value));
         }
         Set<K> additions = new HashSet<>();
