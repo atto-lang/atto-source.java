@@ -85,7 +85,7 @@ final class NativeGuestErrorRootTest {
                     try {
                         throw new MyError(7);
                     } catch (e) {
-                        if e is Error then
+                        if e is type Error then
                             return 17;
                         fi
                         return 4;
