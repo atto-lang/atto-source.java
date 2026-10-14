@@ -213,6 +213,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Map")) {
+                throw new IllegalArgumentException(
+                        "module 'Map' conflicts with the reserved built-in Map type");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
@@ -1616,6 +1620,10 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (isTypedMapType(actual)) {
+                throw new IllegalArgumentException(
+                        "typed Map return requires an exclusive move/borrow lifetime; not implemented");
+            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -2182,6 +2190,17 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Until Map loans/moves can be expressed in function signatures,
+            // an argument transfer could create a second live owner. No
+            // function, host intrinsic or callback can receive a typed Map.
+            for (Ast.Expr argument : call.arguments()) {
+                Ast.Expr value = argument instanceof Ast.SpreadExpr spread
+                        ? spread.expression() : argument;
+                if (isTypedMapType(typeOf(value, env, generics, self))) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot escape through a call argument without move/borrow semantics");
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
