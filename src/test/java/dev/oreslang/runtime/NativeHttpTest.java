@@ -16,7 +16,8 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
-    @Test void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
+    @org.junit.jupiter.api.RepeatedTest(5)
+    void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
                 define %s Worker as
