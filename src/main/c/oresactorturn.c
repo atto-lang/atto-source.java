@@ -2,6 +2,7 @@
 #include "oresactorturn.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -13,7 +14,7 @@
 struct ores_turn_lease {
     struct ores_turn_lease *next;
     struct ores_actor_cap *actor;
-    pthread_t carrier;
+    uint_fast64_t carrier_token;
     bool released;
 };
 struct ores_actor_cap {
@@ -35,6 +36,30 @@ struct ores_turn_vm {
     struct ores_cleanup_cap *tickets;
     struct ores_turn_lease *leases;
 };
+
+/* pthread_t identifiers can be recycled after a carrier thread exits.
+ * A lease instead records a process-unique, lifetime-monotonic token assigned
+ * once to each live native thread. Never wrap; exhaustion fails closed.
+ * TLS lifetime prevents a replacement thread from inheriting the old token.
+ */
+static atomic_uint_fast64_t next_carrier_token = ATOMIC_VAR_INIT(1);
+static _Thread_local uint_fast64_t thread_carrier_token = 0;
+
+static uint_fast64_t current_carrier_token(void) {
+    if (thread_carrier_token != 0) return thread_carrier_token;
+    uint_fast64_t next = atomic_load_explicit(&next_carrier_token,
+                                              memory_order_relaxed);
+    while (next != UINT_FAST64_MAX) {
+        if (atomic_compare_exchange_weak_explicit(&next_carrier_token,
+                                                  &next, next + 1,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+            thread_carrier_token = next;
+            return next;
+        }
+    }
+    return 0;
+}
 
 static bool known_actor(const ores_turn_vm *vm, const ores_actor_cap *actor) {
     for (const ores_actor_cap *p = vm->actors; p; p = p->next) {
@@ -70,10 +95,12 @@ static ores_turn_status allocate_lease(ores_turn_vm *vm,
                                        ores_turn_lease **out) {
     if (actor->active) return ORES_TURN_BUSY;
     if (vm->used_objects == vm->max_objects) return ORES_TURN_EXHAUSTED;
+    const uint_fast64_t carrier_token = current_carrier_token();
+    if (!carrier_token) return ORES_TURN_EXHAUSTED;
     ores_turn_lease *lease = calloc(1, sizeof(*lease));
     if (!lease) return ORES_TURN_EXHAUSTED;
     lease->actor = actor;
-    lease->carrier = pthread_self();
+    lease->carrier_token = carrier_token;
     lease->next = vm->leases;
     vm->leases = lease;
     vm->used_objects++;
@@ -284,7 +311,7 @@ ores_turn_status ores_turn_release(ores_turn_vm *vm, ores_turn_lease *lease) {
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_lease(vm, lease)) {
         if (lease->released || lease->actor->active != lease) status = ORES_TURN_DENIED;
-        else if (!pthread_equal(lease->carrier, pthread_self()))
+        else if (current_carrier_token() != lease->carrier_token)
             status = ORES_TURN_WRONG_CARRIER;
         else {
             lease->released = true;
