@@ -193,6 +193,41 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void winningResultIsPublishedOnlyAfterLosingWaitersAreDetached() throws Exception {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer), ChannelRuntime.read(channel))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        var observedAtPublication = new java.util.concurrent.atomic.AtomicInteger(-1);
+        selected.whenCompleteRuntime((winner, failure) ->
+                observedAtPublication.set(producer.pendingRuntimeWaiterCount()));
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(channel.tryWrite(77));
+        assertEquals(77, selected.get(5, TimeUnit.SECONDS).value());
+        assertEquals(0, observedAtPublication.get(),
+                "select completion must not precede loser listener detachment");
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isDone(), "loser producer must remain owned by its source");
+    }
+
+    @Test
+    void cancelledSelectionPublishesOnlyAfterProducerWaiterDetachment() {
+        var producer = new OresFuture<Integer>();
+        var selected = ChannelRuntime.SelectSet.of(ChannelRuntime.await(producer))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        var observedAtCancellation = new java.util.concurrent.atomic.AtomicInteger(-1);
+        selected.whenCompleteRuntime((winner, failure) ->
+                observedAtCancellation.set(producer.pendingRuntimeWaiterCount()));
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(selected.cancel(false));
+        assertEquals(0, observedAtCancellation.get(),
+                "cancellation callback must observe retired producer listeners");
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isDone());
+    }
+
+    @Test
     void alreadySettledSharedFutureAliasesAlwaysChooseEarliestPriorityArm() {
         var producer = OresFuture.completed(71);
         var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
