@@ -39,6 +39,8 @@ public final class OwnershipChecker {
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
+    private final Set<String> ambiguousEnums = new HashSet<>();
     private final Set<String> modules = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -92,6 +94,8 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.EnumDecl declarationEnum)
+                    index(enums, ambiguousEnums, module.name(), declarationEnum.name(), declarationEnum);
             }
         }
     }
@@ -1350,6 +1354,26 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr nominalName
+                    && scope.lookup(nominalName.name()) == null) {
+                Ast.EnumDecl declarationEnum = enumDeclaration(nominalName.name());
+                if (declarationEnum != null) {
+                    Ast.EnumVariant variant = enumVariant(declarationEnum, member.member());
+                    int expected = variant.payload() == null ? 0 : 1;
+                    if (call.arguments().size() != expected) throw error(
+                            "enum variant " + declarationEnum.name() + "." + variant.name()
+                                    + " expects " + expected + " payload argument(s)");
+                    if (variant.payload() != null) {
+                        ValueInfo value = checkExpr(call.arguments().getFirst(), scope, true);
+                        if (value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW
+                                || value.type.isBorrow() || containsMutexGuardType(value.type)) {
+                            throw error("enum payload cannot capture a live borrow or MutexGuard");
+                        }
+                    }
+                    Ast.TypeRef type = Ast.TypeRef.simple(declarationEnum.name());
+                    return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
+                }
+            }
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
 
@@ -2534,8 +2558,31 @@ public final class OwnershipChecker {
         }
     }
 
+    private Ast.EnumDecl enumDeclaration(String name) {
+        if (ambiguousEnums.contains(name)) throw error(
+                "ambiguous enum '" + name + "'; use a qualified name");
+        return enums.get(name);
+    }
+
+    private Ast.EnumVariant enumVariant(Ast.EnumDecl declarationEnum, String member) {
+        for (Ast.EnumVariant variant : declarationEnum.variants()) {
+            if (variant.name().equals(member)) return variant;
+        }
+        throw error("unknown enum variant " + declarationEnum.name() + "." + member);
+    }
+
     private List<Ast.TypeRef> constructorPatternTypes(String constructor, Ast.TypeRef subjectType) {
         if (subjectType == null) return List.of();
+        int separator = constructor.lastIndexOf('.');
+        if (separator > 0) {
+            String enumName = constructor.substring(0, separator);
+            Ast.EnumDecl declarationEnum = enumDeclaration(enumName);
+            if (declarationEnum != null && (subjectType.name().equals(declarationEnum.name())
+                    || subjectType.name().endsWith("." + declarationEnum.name()))) {
+                Ast.EnumVariant variant = enumVariant(declarationEnum, constructor.substring(separator + 1));
+                return variant.payload() == null ? List.of() : List.of(variant.payload());
+            }
+        }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
             return List.of(subjectType.arguments().getFirst());
         }
