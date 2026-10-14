@@ -75,6 +75,33 @@ final class NonBlockingSelectValueExpressionTest {
     }
 
     @Test
+    void actorStopRevokesPendingValueSelectWithoutHangingFinalization() throws Exception {
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val Channel<int> incoming = Channel.new<int>(1);
+                    val Future<int> pending = nb select over
+                      when readch incoming: int x -> {
+                        self.send("unexpected");
+                        return x;
+                      }
+                    end;
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  await worker.get_done();
+                  stdio.stdout.write("stopped");
+                  return;
+                }
+                """;
+        assertEquals("stopped", run(source));
+    }
+
+    @Test
     void rejectsNonActorValueSelectAndUnsafeNestedCallableReturn() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
