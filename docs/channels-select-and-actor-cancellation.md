@@ -179,13 +179,22 @@ read can rendezvous with a pending select-write.
 
 ## Static select
 
-**Result-mode vocabulary:** `do select { ... }` and
-`do nb select { ... }` explicitly request no-result, side-effecting dispatch.
-The selected arm runs as a statement, not as a value-producing expression.
-The older `select { ... }` and `nb select { ... }` remain accepted as
-statement forms for source compatibility. A future value-returning static
-select expression will require separate typed expression/arm support rather
-than silently changing the existing statement contract.
+**Current implemented statement vocabulary:** `do select { ... }`,
+`do select over ... end`, and `do select among ... end` perform
+blocking, procedural dispatch. A `return` in a selected blocking do-select
+arm returns from the **containing callable**, including after suspension,
+rather than returning from the arm. Return values must satisfy that callable's
+declared type; arm fallthrough continues after the select.
+
+The older `select { ... }` and `nb select { ... }` are still accepted
+as **legacy statement forms** for compatibility. The existing
+`do nb select { ... }` is also a legacy detached, no-result spelling;
+its arm-local returns are currently discarded with a warning because it
+cannot return from an already-ended callable. Do **not** infer that
+value-producing `select over/among` or `nb select over/among` is compiled:
+those expressions require the distinct typed-result AST and Future lowering
+in the pending proposal. The Java parser rejects such end-delimited
+expression forms rather than silently compiling them as void statements.
 
 `cb select` and `nb cb select` are **not** aliases: the parser rejects
 both with a hint to use `do select` or `do nb select`. The existing
@@ -220,7 +229,11 @@ for indentation: arms sit one level inside `select`, and their statements sit
 one level inside the arm. The same rules apply to `nb select`, `do nb select`, and `try select`.
 Legacy unbraced arms are rejected by the parser; `oresfmt` migrates them.
 
-A select may include one `default: { ... }` arm.
+A select may include one `default: { ... }` or `default -> { ... }` arm,
+which must appear last. Procedural end-delimited select arms may use
+`when readch ch: val item -> { ... }` and other supported legacy
+binding spellings. Typed `readch ch: int item` and value-arm returns
+are not yet supported by the Java static-select AST.
 
 A static select arm is a non-throwing control-flow boundary. An ordinary
 `throw` may be handled by a local `try/catch`, or absorbed by a called
