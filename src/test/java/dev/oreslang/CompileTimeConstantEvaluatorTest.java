@@ -136,6 +136,30 @@ final class CompileTimeConstantEvaluatorTest {
     }
 
     @Test
+    void bitwiseConstantsAgreeWithRuntimeShiftRules() {
+        Ast.Expr four = new Ast.LiteralExpr(4L);
+        Ast.Expr one = new Ast.LiteralExpr(1L);
+        assertEquals(5L, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr("|", four, one)));
+        assertEquals(0L, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr("&", four, one)));
+        assertEquals(5L, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr("^", four, one)));
+        assertEquals(16L, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr("<<", four, new Ast.LiteralExpr(2L))));
+        assertEquals(2L, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr(">>", four, one)));
+        assertEquals(Long.MAX_VALUE, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr(">>>", new Ast.LiteralExpr(-1L), one)));
+        for (long invalid : new long[]{-1L, 64L, Long.MAX_VALUE}) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> CompileTimeConstantEvaluator.evaluate(
+                            new Ast.BinaryExpr("<<", one, new Ast.LiteralExpr(invalid))));
+            assertTrue(error.getMessage().contains("shift distance"), error.getMessage());
+        }
+    }
+
+    @Test
     void overflowingBoundaryOperationsAlwaysFailClosed() {
         for (Ast.Expr expression : java.util.List.of(
                 new Ast.BinaryExpr("+", new Ast.LiteralExpr(Long.MAX_VALUE), new Ast.LiteralExpr(1L)),
