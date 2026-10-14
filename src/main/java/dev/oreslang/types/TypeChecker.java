@@ -120,7 +120,19 @@ public final class TypeChecker {
     public static Ast.Program checkTypesWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
             Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases) {
-        if (linkedClasses == null || linkedAliases == null) {
+        return checkTypesWithImportedClasses(program, linkedClasses, linkedAliases, Map.of());
+    }
+
+    /**
+     * Add only linker-verified exported aliases. Import declarations alone
+     * are not evidence of structural layout or public type provenance.
+     * Targets must be normalized by the trusted source-unit linker first.
+     */
+    public static Ast.Program checkTypesWithImportedClasses(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, Map<String, Ast.TypeAliasDecl>> linkedAliases,
+            Map<String, Ast.TypeAliasDecl> linkedPublicTypeAliases) {
+        if (linkedClasses == null || linkedAliases == null || linkedPublicTypeAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
         program = AnnotationExpander.expand(program);
@@ -163,6 +175,25 @@ public final class TypeChecker {
         }
         if (!linkedClasses.keySet().containsAll(linkedAliases.keySet())) {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
+        }
+        for (Map.Entry<String, Ast.TypeAliasDecl> entry : linkedPublicTypeAliases.entrySet()) {
+            String name = entry.getKey();
+            Ast.TypeAliasDecl alias = entry.getValue();
+            if (name == null || name.isBlank() || alias == null
+                    || alias.visibility() != Ast.Visibility.PUBLIC || !name.equals(alias.name())) {
+                throw new IllegalArgumentException("invalid linked public type alias: " + name);
+            }
+            boolean uniquelyImported = program.imports().stream().filter(use ->
+                    use.kind() == Ast.ImportKind.TYPE || use.kind() == Ast.ImportKind.TYPES)
+                    .flatMap(use -> ImportRules.exposedBindings(use).stream())
+                    .filter(name::equals).count() == 1;
+            if (!uniquelyImported || checker.typeAliases.containsKey(name)
+                    || checker.ambiguousTypeAliases.contains(name)
+                    || checker.classes.containsKey(name) || checker.interfaces.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        "linked public type alias was not uniquely imported: " + name);
+            }
+            checker.typeAliases.put(name, alias);
         }
         checker.validate(program);
         return program;
