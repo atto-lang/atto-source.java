@@ -43,6 +43,11 @@ class OresSymbolTest {
             assertThrows(IllegalArgumentException.class, () -> OresSymbol.process(name), name);
         }
         assertEquals(256, OresSymbol.process("é".repeat(128)).name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        IllegalArgumentException huge = assertThrows(IllegalArgumentException.class,
+                () -> OresSymbol.process("a".repeat(10_000)));
+        assertTrue(huge.getMessage().contains("normalization budget"));
+        // Legitimate canonical equivalents must still normalize identically.
+        assertEquals(OresSymbol.process("café"), OresSymbol.process("cafe\u0301"));
     }
 
     @Test void onlyPublicCoreSymbolsPassDefaultUntrustedPolicy() {
