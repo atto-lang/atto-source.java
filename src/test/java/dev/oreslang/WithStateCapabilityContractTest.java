@@ -21,6 +21,46 @@ final class WithStateCapabilityContractTest {
     private static final String WRITE =
         "self.handle_state(critical |s| -> { s.v = s.v + 1; return s.v; })";
 
+    private static String actorWithReferenceState(String expression) {
+        return """
+                define actor Counter as
+                  state { n: int = 0; cache: Map<string, int>; label: string; }
+                  probe(): int with state.read {
+                    return self.handle_state(|s| -> {
+                      %s
+                    });
+                  }
+                end
+                """.formatted(expression);
+    }
+
+    @Test void referenceValuedStateProjectionCannotEscapeLoan() {
+        for (String body : new String[] {
+                "return s.cache;",
+                "val alias = s.cache; return s.n;",
+                "val (alias) = (s.cache); return s.n;",
+                "out = s.cache; return s.n;",
+                "sink(s.cache); return s.n;"
+        }) {
+            var parsed = Parser.parse(actorWithReferenceState(body));
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), body);
+            assertTrue(failure.getMessage().contains("reference projection"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test void detachedPrimitiveAndImmutableTextReadsStayLegal() {
+        assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse(actorWithReferenceState("return s.n;"))));
+        assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse(actorWithReferenceState(
+                        "val copied = s.n; return copied;"))));
+        assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse(actorWithReferenceState(
+                        "val immutableText = s.label; return s.n;"))));
+    }
+
     @Test void readDefaultWithExplicitEffect() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(actor("with state.read", READ))));
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(
