@@ -99,6 +99,33 @@ final class StructuralPrivacyBoundaryTest {
     }
 
     @Test
+    void inheritedPrivateFieldsNeverCountTowardRuntimeStructuralShape() throws Exception {
+        String program = """
+                define class Base as
+                  private val int hidden = 31;
+                  pub val int visible = 6;
+                end
+
+                define class Derived extends Base as end
+
+                fnc classify(Base value): int {
+                  match value over
+                    on structural { hidden: int } view -> { return 99; }
+                    on structural { visible: int } view -> { return view.visible; }
+                    on _ -> { return 0; }
+                  end
+                }
+
+                pub fnc main(): void {
+                  stdio.println(classify(new Derived()));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals("6\n", execute(program).replace("\r\n", "\n"));
+    }
+
+    @Test
     void privateClassFieldCannotEstablishPublicRecordReturnType() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
