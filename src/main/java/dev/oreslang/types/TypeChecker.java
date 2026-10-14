@@ -3341,6 +3341,11 @@ public final class TypeChecker {
                 ResolvedField resolvedField = fields.get(i);
                 Ast.FieldDecl field = resolvedField.field();
                 if (i < created.arguments().size()) {
+                    if (field.finalDeclaration() && field.initializer() != null) {
+                        throw new IllegalArgumentException(
+                                "constructor for " + klass.name() + " cannot replace initialized final field '"
+                                        + field.name() + "'");
+                    }
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
                     Type expected = substituteGenerics(
                             fieldPattern,
@@ -5967,6 +5972,12 @@ public final class TypeChecker {
             }
             for (int i = 0; i < arguments.size(); i++) {
                 ResolvedField resolvedField = fields.get(i);
+                if (resolvedField.field().finalDeclaration()
+                        && resolvedField.field().initializer() != null) {
+                    throw new IllegalArgumentException(
+                            "constructor for " + klass.name() + " cannot replace initialized final field '"
+                                    + resolvedField.field().name() + "'");
+                }
                 Type fieldPattern = resolve(
                         resolvedField.field().type(),
                         Set.copyOf(resolvedField.owner().genericParameters()),
