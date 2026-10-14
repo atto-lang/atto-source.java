@@ -239,4 +239,35 @@ final class BorrowFormalBoundaryRegressionTest {
                 }
                 """)));
     }
+
+    @Test
+    void unknownCallableMustNotAcceptEphemeralBorrow() {
+        reject(BOX + """
+                fnc bad(): void {
+                  val Box box = new Box();
+                  unknown_host_callable(rt borrow box);
+                  return;
+                }
+                """, "borrowed references cannot cross an unknown call boundary");
+    }
+
+    @Test
+    void unknownCallableMustNotAcceptNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  unknown_host_callable(wrapped);
+                  return;
+                }
+                """, "borrowed references cannot cross an unknown call boundary");
+    }
+
+    @Test
+    void ownedSumUnwrapCannotExposeNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<Option<borrow Box>> wrapped): void {
+                  val extracted = wrapped.unwrap();
+                  return;
+                }
+                """, "cannot extract a borrow from an owned Option/Result");
+    }
 }
