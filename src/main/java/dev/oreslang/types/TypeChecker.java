@@ -7844,9 +7844,7 @@ public final class TypeChecker {
     private boolean isRuntimeMapValueSource(Ast.TypeRef ref) {
         if (ref.inferArguments() || !ref.arguments().isEmpty() || ref.isUnion()
                 || ref.isBorrow()) return false;
-        return Set.of("int", "i8", "i16", "i32", "i64", "u8",
-                "u16", "u32", "u64", "uint", "bigint",
-                "bool", "Bool", "String", "string", "Symbol")
+        return Set.of("int", "bool", "Bool", "String", "string", "Symbol")
                 .contains(ref.name());
     }
 
