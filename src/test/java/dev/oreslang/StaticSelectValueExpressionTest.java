@@ -212,7 +212,7 @@ final class StaticSelectValueExpressionTest {
     }
 
     @Test
-    void unconditionalFinallyReturnSatisfiesValueArmOnBothTryAndCatchPaths() throws Exception {
+    void unconditionalFinallyReturnIsRejectedBecauseFinallyIsCleanupOnly() {
         String code = """
                 pub fnc main(): void {
                   const int answer = select over
@@ -230,11 +230,12 @@ final class StaticSelectValueExpressionTest {
                   return;
                 }
                 """;
-        assertEquals("try:7", run(code));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(code),
+                "finally must not synthesize an arm result or replace pending control flow");
     }
 
     @Test
-    void conditionalFinallyReturnDoesNotEstablishValueArmExhaustiveness() {
+    void conditionalFinallyReturnIsRejectedAsCleanupControlFlow() {
         String code = """
                 fnc bad(bool choose): int {
                   const int answer = select over
@@ -253,8 +254,7 @@ final class StaticSelectValueExpressionTest {
                   return answer;
                 }
                 """;
-        assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse(code)));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(code));
     }
 
     @Test
