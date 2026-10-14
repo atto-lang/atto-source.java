@@ -8790,6 +8790,16 @@ public final class OresEvalRootNode extends RootNode {
                         + (restIndex >= 0 ? " before rest" : ""));
             }
 
+            // Validate the entire requested projection before making even
+            // one arm-local binding visible. A discarded slot and a captured
+            // rest element must be initialized too; neither can launder the
+            // internal uninitialized sentinel through a channel read.
+            for (int i = 0; i < items.size(); i++) {
+                if (items.get(i) == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            label + " contains an uninitialized element at position " + i);
+                }
+            }
             for (int i = 0; i < fixedArity; i++) {
                 Ast.DestructureBinding binding = bindings.get(i);
                 if (!binding.isDiscard()) destination.define(binding.name(), items.get(i), binding.kind());
@@ -8811,7 +8821,13 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "object rest destructuring requires statically named string fields");
                     }
-                    if (!selectedMembers.contains(key)) remainder.put(key, entry.getValue());
+                    if (!selectedMembers.contains(key)) {
+                        if (entry.getValue() == UNINITIALIZED_FIELD) {
+                            throw new IllegalArgumentException(
+                                    "object rest destructure captures uninitialized field '" + key + "'");
+                        }
+                        remainder.put(key, entry.getValue());
+                    }
                 }
                 return Map.copyOf(remainder);
             }
