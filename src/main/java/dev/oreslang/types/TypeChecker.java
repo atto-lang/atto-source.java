@@ -5227,7 +5227,9 @@ public final class TypeChecker {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
-            return !java.util.Objects.equals(a.value(), b.value());
+            // Do not certify 1 and 1.0 as disjoint: runtime equality
+            // intentionally permits equal values across numeric types.
+            return !literalPatternRuntimeEquals(a.value(), b.value());
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
