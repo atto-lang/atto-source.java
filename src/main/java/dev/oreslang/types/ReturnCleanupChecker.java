@@ -174,7 +174,13 @@ public final class ReturnCleanupChecker {
                     Scope armScope = new Scope(scope);
                     bindPattern(arm.pattern(), armScope);
                     expression(arm.guard(), armScope, inDefer, state);
-                    statements(arm.body(), armScope, inFinally, inDefer, trackReturns, state);
+                    // A detached nb-select arm's return is arm-local:
+                    // it cannot become the already-continued caller's
+                    // pending return, including inside defer analysis.
+                    boolean returnsToCaller = trackReturns
+                            && select.mode() != Ast.WaitMode.NONBLOCKING;
+                    statements(arm.body(), armScope, inFinally, inDefer,
+                            returnsToCaller, state);
                 }
             } else if (stmt instanceof Ast.SwitchStmt switched) {
                 expression(switched.subject(), scope, inDefer, state);
