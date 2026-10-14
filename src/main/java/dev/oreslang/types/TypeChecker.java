@@ -7843,19 +7843,25 @@ public final class TypeChecker {
     }
 
     private boolean constant(Ast.Expr expr) {
-        // Preserve the existing closed aggregate switch cases, but validate
-        // scalar leaves using the same audited, budgeted constant evaluator as
-        // final-const fields. Merely having constant-shaped operands does NOT
-        // make an arbitrary operator (e.g. reference borrow, division by zero,
-        // or identity comparison) a legal compile-time constant.
+        return constant(expr, 0, new int[]{0});
+    }
+
+    private boolean constant(Ast.Expr expr, int depth, int[] budget) {
+        // Preserve existing closed aggregate switch cases, but enforce an
+        // aggregate traversal budget as well as the scalar evaluator's budget.
+        // Arbitrary operators with constant-looking operands are not proofs.
+        if (depth > 64 || ++budget[0] > 1024) return false;
         if (expr instanceof Ast.ListExpr list) {
-            return list.elements().stream().allMatch(this::constant);
+            return list.elements().stream()
+                    .allMatch(item -> constant(item, depth + 1, budget));
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return tuple.elements().stream().allMatch(this::constant);
+            return tuple.elements().stream()
+                    .allMatch(item -> constant(item, depth + 1, budget));
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            return object.fields().stream().allMatch(field -> constant(field.value()));
+            return object.fields().stream()
+                    .allMatch(field -> constant(field.value(), depth + 1, budget));
         }
         try {
             CompileTimeConstantEvaluator.evaluate(expr);
