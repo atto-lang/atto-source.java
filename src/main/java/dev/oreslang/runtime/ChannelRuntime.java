@@ -355,7 +355,9 @@ public final class ChannelRuntime {
                         "select requires at least one case");
             }
             if (cases.size() > MAX_SELECT_CASES) {
-                throw new SelectAdmissionException(
+                // Invalid descriptor arity is a caller argument error, not
+                // runtime pending-waiter admission exhaustion.
+                throw new IllegalArgumentException(
                         "select case count exceeds maximum " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
