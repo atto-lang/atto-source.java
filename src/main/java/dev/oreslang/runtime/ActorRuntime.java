@@ -6049,18 +6049,36 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
+                requireGraphNodeCapacity(0L, list.size());
                 List<Object> frozen = new ArrayList<>(list.size());
-                for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
+                for (Object item : list) {
+                    if (frozen.size() >= MAX_MESSAGE_GRAPH_NODES) {
+                        throw new IllegalArgumentException("actor frozen copy exceeds node budget");
+                    }
+                    frozen.add(freeze(item, visiting, depth + 1));
+                }
                 return List.copyOf(frozen);
             }
             if (value instanceof Set<?> set) {
+                requireGraphNodeCapacity(0L, set.size());
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1));
+                int inspected = 0;
+                for (Object item : set) {
+                    if (++inspected > MAX_MESSAGE_GRAPH_NODES) {
+                        throw new IllegalArgumentException("actor frozen copy exceeds node budget");
+                    }
+                    frozen.add(freeze(item, visiting, depth + 1));
+                }
                 return Collections.unmodifiableSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
+                requireGraphNodeCapacity(0L, Math.multiplyExact((long) map.size(), 2L));
                 Map<Object, Object> frozen = new LinkedHashMap<>();
+                int inspected = 0;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (++inspected > MAX_MESSAGE_GRAPH_NODES / 2) {
+                        throw new IllegalArgumentException("actor frozen copy exceeds node budget");
+                    }
                     frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
                 }
                 return Collections.unmodifiableMap(frozen);
@@ -6112,18 +6130,36 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
+                requireGraphNodeCapacity(0L, list.size());
                 List<Object> copy = new ArrayList<>(list.size());
-                for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
+                for (Object item : list) {
+                    if (copy.size() >= MAX_MESSAGE_GRAPH_NODES) {
+                        throw new IllegalArgumentException("private actor copy exceeds node budget");
+                    }
+                    copy.add(isolateCopy(item, visiting, depth + 1));
+                }
                 return Collections.unmodifiableList(copy);
             }
             if (value instanceof Set<?> set) {
+                requireGraphNodeCapacity(0L, set.size());
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1));
+                int inspected = 0;
+                for (Object item : set) {
+                    if (++inspected > MAX_MESSAGE_GRAPH_NODES) {
+                        throw new IllegalArgumentException("private actor copy exceeds node budget");
+                    }
+                    copy.add(isolateCopy(item, visiting, depth + 1));
+                }
                 return Collections.unmodifiableSet(copy);
             }
             if (value instanceof Map<?, ?> map) {
+                requireGraphNodeCapacity(0L, Math.multiplyExact((long) map.size(), 2L));
                 Map<Object, Object> copy = new LinkedHashMap<>();
+                int inspected = 0;
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (++inspected > MAX_MESSAGE_GRAPH_NODES / 2) {
+                        throw new IllegalArgumentException("private actor copy exceeds node budget");
+                    }
                     copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
                 }
                 return Collections.unmodifiableMap(copy);
