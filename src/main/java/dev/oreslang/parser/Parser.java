@@ -1684,9 +1684,23 @@ public final class Parser {
             consumeExpressionStatementTerminator(value, "throw statement should end with ';'");
             return new Ast.ThrowStmt(value);
         }
-        if (check(RAISE) || check(PANIC) || check(RECOVER)) {
+        if (match(RAISE) || match(PANIC)) {
+            Token effect = previous();
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(effect, effect.lexeme() + " requires a guest Error value");
+            }
+            Ast.Expr value = parseExpression();
+            consumeExpressionStatementTerminator(
+                    value, effect.lexeme() + " statement should end with ';'");
+            return new Ast.ActorEffectStmt(
+                    effect.type() == RAISE
+                            ? Ast.ActorEffectKind.RAISE
+                            : Ast.ActorEffectKind.PANIC,
+                    value);
+        }
+        if (check(RECOVER)) {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
-                    + "' requires checked exception and supervision lowering; source effect is not yet enabled");
+                    + "' requires checked recovery and supervision lowering; source effect is not yet enabled");
         }
         // The value-producing static select expression is not lowered yet.
         // Preserve historical statement sources until expression migration
