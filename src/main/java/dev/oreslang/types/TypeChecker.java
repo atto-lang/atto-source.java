@@ -7358,6 +7358,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("type alias expansion exceeds "
                         + MAX_ALIAS_RESOLUTION_DEPTH + " levels");
             }
+            // Generic recursion can build a compact DAG whose structural
+            // hash/equality costs are exponential (Grow<T> = Grow<Tuple[T,T]>).
+            // Bound its *logical* size before putting it into a HashSet.
+            validateAliasArgumentsBudget(ref.arguments());
             Set<List<Ast.TypeRef>> active = resolvingAliases.computeIfAbsent(alias,
                     ignored -> new HashSet<>());
             if (!active.add(ref.arguments())) {
@@ -7518,6 +7522,19 @@ public final class TypeChecker {
                 yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
             }
         };
+    }
+
+    private static void validateAliasArgumentsBudget(List<Ast.TypeRef> arguments) {
+        java.util.ArrayDeque<Ast.TypeRef> stack = new java.util.ArrayDeque<>(arguments);
+        int nodes = 0;
+        while (!stack.isEmpty()) {
+            if (++nodes > MAX_ALIAS_EXPANSION_NODES) {
+                throw new IllegalArgumentException("type alias expansion exceeds "
+                        + MAX_ALIAS_EXPANSION_NODES + " nodes");
+            }
+            Ast.TypeRef ref = stack.removeLast();
+            for (Ast.TypeRef child : ref.arguments()) stack.addLast(child);
+        }
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
