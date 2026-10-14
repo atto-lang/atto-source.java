@@ -985,8 +985,15 @@ public final class TypeChecker {
             return nested.fields().stream().anyMatch(field ->
                     !(field.initializer() instanceof Ast.LiteralExpr));
         }
-        if (expr instanceof Ast.MemberExpr member)
-            return fieldInitializerMaySuspend(member.receiver());
+        if (expr instanceof Ast.MemberExpr) {
+            // Evaluating a member is not merely evaluating its receiver.
+            // Module exports, imported namespaces and host objects can
+            // resolve members by executing user or host code; even ordinary
+            // records can fail on a missing member. We do not yet have
+            // transitive member-resolution effects or failed-construction
+            // resource cleanup, so eager initialization must fail closed.
+            return true;
+        }
         if (expr instanceof Ast.IndexExpr) {
             // Even pure operands do not establish a safe indexing operation.
             // Bounds failure (and any future index dispatch) may unwind after
@@ -1013,9 +1020,13 @@ public final class TypeChecker {
         // lambda is stored, not invoked, and the initializer environment has
         // no self or reference-valued constructor arguments to capture.
         // New expression AST variants are unsafe until reviewed explicitly.
-        return !(expr instanceof Ast.LiteralExpr
-                || expr instanceof Ast.NameExpr
-                || expr instanceof Ast.LambdaExpr);
+        if (expr instanceof Ast.NameExpr name) {
+            // Imported values may be lazily evaluated by Evaluator.exportValue,
+            // which can execute an arbitrary declaration initializer. That
+            // code is outside this class's checked constructor effect bound.
+            return importedValues.contains(name.name());
+        }
+        return !(expr instanceof Ast.LiteralExpr || expr instanceof Ast.LambdaExpr);
     }
 
     /**
