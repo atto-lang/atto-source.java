@@ -3,6 +3,10 @@ package dev.oreslang.runtime;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.io.ByteArrayOutputStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -11,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * smoke checks. Guest effect lowering is independently feature gated.
  */
 final class NativeGuestErrorRootTest {
+    @TempDir Path temp;
     @Test void sourceOwnedErrorLibrariesTypecheckWithSealedBuiltinRoot() throws Exception {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(
                 CoreLibrarySources.source("std/errors")));
@@ -49,6 +54,25 @@ final class NativeGuestErrorRootTest {
                         pub fnc main(): void { }
                         """));
         assertTrue(generic.getMessage().contains("Error"));
+    }
+
+    @Test void constructedErrorSubclassRunsAsAnOreslangValue() throws Exception {
+        Path path = temp.resolve("guest-error.ores");
+        Files.writeString(path, """
+                define class ExampleError extends Error as
+                    pub val int code;
+                end
+                define class SpecificError extends ExampleError as
+                end
+                pub routine main(): int {
+                    val Error failure = new SpecificError(1001);
+                    return 17;
+                }
+                """);
+        var result = LinkedProgramRunner.runWithExitStatus(
+                path, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(17, result.exitStatus());
     }
 
     @Test void ordinaryClassesCannotPretendToBeGuestErrors() {
