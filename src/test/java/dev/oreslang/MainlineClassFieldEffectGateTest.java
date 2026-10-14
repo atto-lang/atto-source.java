@@ -39,6 +39,25 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectPotentiallyThrowingEagerIndexing() {
+        // The operands are literal-only, but evaluating the index may still
+        // throw after a previous field has been installed. Construction
+        // cleanup for that path is not yet proven.
+        for (String initializer : java.util.List.of("[1, 2][9]", "1 + [1, 2][9]")) {
+            String source = """
+                    define class Unsafe as
+                      final int first: 42;
+                      final int second: %s;
+                    end
+                    """.formatted(initializer);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)));
+            assertTrue(error.getMessage().contains("without a proven transitive effect bound"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
