@@ -3109,10 +3109,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             LinkedHashMap<String, Object> bindings =
                     new LinkedHashMap<>(left.bindings());
-            bindings.putAll(right.bindings());
-            return new ConditionResult(
-                    true,
-                    Map.copyOf(bindings));
+            for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
+                if (bindings.containsKey(entry.getKey())) {
+                    throw new IllegalStateException(
+                            "condition binds '" + entry.getKey() + "' more than once");
+                }
+                bindings.put(entry.getKey(), entry.getValue());
+            }
+            return new ConditionResult(true, Map.copyOf(bindings));
         }
 
         private void evalSuspendableExpr(
@@ -8002,10 +8006,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (!right.matched()) return ConditionResult.noMatch();
                 LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
                 for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                    Object previous = merged.putIfAbsent(entry.getKey(), entry.getValue());
-                    if (previous != null && previous != entry.getValue()) {
-                        throw new IllegalStateException("condition pattern binds '" + entry.getKey() + "' more than once");
+                    if (merged.containsKey(entry.getKey())) {
+                        throw new IllegalStateException(
+                                "condition binds '" + entry.getKey() + "' more than once");
                     }
+                    merged.put(entry.getKey(), entry.getValue());
                 }
                 return new ConditionResult(true, Map.copyOf(merged));
             }
