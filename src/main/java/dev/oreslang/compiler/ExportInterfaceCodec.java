@@ -18,7 +18,21 @@ public final class ExportInterfaceCodec {
     private static final int STRING_LIMIT = 65536;
     private static final int ENTRY_LIMIT = 100000;
 
-    public enum Kind { MODULE, FUNCTION, CLASS, INTERFACE, TYPE, BINDING }
+    /** Explicit v1 wire numbers: enum declaration order must never alter the ABI. */
+    public enum Kind {
+        MODULE(0), FUNCTION(1), CLASS(2), INTERFACE(3), TYPE(4), BINDING(5);
+
+        private final int wireTag;
+        Kind(int wireTag) { this.wireTag = wireTag; }
+        public int wireTag() { return wireTag; }
+
+        static Kind fromWireTag(int wireTag) {
+            for (Kind kind : values()) if (kind.wireTag == wireTag) return kind;
+            throw new IllegalArgumentException("invalid export kind");
+        }
+    }
+
+    private record Identity(String module, Kind kind, String name) { }
 
     public record Header(String namespace, String compilerVersion, String targetAbi,
                          String featurePolicy) {
@@ -103,7 +117,7 @@ public final class ExportInterfaceCodec {
 
     private static final Comparator<Entry> ORDER = Comparator
             .comparing(Entry::module, ExportInterfaceCodec::compareUtf8)
-            .thenComparing(e -> e.kind().ordinal())
+            .thenComparing(e -> e.kind().wireTag())
             .thenComparing(Entry::name, ExportInterfaceCodec::compareUtf8)
             .thenComparing(Entry::signature, ExportInterfaceCodec::compareUtf8);
 
@@ -123,8 +137,18 @@ public final class ExportInterfaceCodec {
         if (sorted.stream().anyMatch(Objects::isNull))
             throw new IllegalArgumentException("null export");
         sorted.sort(ORDER);
-        if (new HashSet<>(sorted).size() != sorted.size())
-            throw new IllegalArgumentException("duplicate export");
+        Set<Entry> exact = new HashSet<>();
+        Set<Identity> singletonNames = new HashSet<>();
+        for (Entry e : sorted) {
+            if (!exact.add(e)) throw new IllegalArgumentException("duplicate export");
+            // Only functions may share their symbol name (for arity overloads).
+            // A type/class/module/binding with two signatures is ambiguous
+            // even if the complete records differ. Decode must reject it too.
+            if (e.kind() != Kind.FUNCTION
+                    && !singletonNames.add(new Identity(e.module(), e.kind(), e.name()))) {
+                throw new IllegalArgumentException("conflicting exported symbol identity");
+            }
+        }
         try {
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             DataOutputStream out = new DataOutputStream(buffer);
@@ -136,7 +160,7 @@ public final class ExportInterfaceCodec {
             out.writeInt(sorted.size());
             for (Entry e : sorted) {
                 put(out, e.module());
-                out.writeByte(e.kind().ordinal());
+                out.writeByte(e.kind().wireTag());
                 put(out, e.name());
                 put(out, e.signature());
                 if (buffer.size() > LIMIT) throw new IllegalArgumentException("interface too large");
@@ -165,10 +189,8 @@ public final class ExportInterfaceCodec {
             List<Entry> entries = new ArrayList<>(count);
             for (int i = 0; i < count; i++) {
                 String module = get(in);
-                int ordinal = in.readUnsignedByte();
-                if (ordinal >= Kind.values().length)
-                    throw new IllegalArgumentException("invalid export kind");
-                entries.add(new Entry(module, Kind.values()[ordinal], get(in), get(in)));
+                Kind kind = Kind.fromWireTag(in.readUnsignedByte());
+                entries.add(new Entry(module, kind, get(in), get(in)));
             }
             if (in.read() != -1) throw new IllegalArgumentException("trailing interface bytes");
             InterfaceFile result = encode(header, entries);
