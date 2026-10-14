@@ -103,6 +103,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    /** Cleanup-aware tasks request cancellation first and publish it after unwind. */
+    private final boolean deferredCancellation;
+    private final AtomicReference<CancellationException> cancellationRequest =
+            new AtomicReference<>();
     /**
      * A subscriber registering after the cancellation CAS must not run its
      * callback before the internal revoker. Deferring such a subscriber to
@@ -140,12 +144,34 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             Runnable onNotificationDrained) {
+        this(cancelAdmission, cancelHook, onNotificationDrained, false);
+    }
+
+    /** Deferred settlement preserves the source-task cleanup barrier. */
+    OresFuture(Runnable cancelHook, Runnable onNotificationDrained,
+            boolean deferredCancellation) {
+        this(() -> true, cancelHook, onNotificationDrained, deferredCancellation);
+    }
+
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            Runnable onNotificationDrained, boolean deferredCancellation) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
         this.onNotificationDrained = Objects.requireNonNull(
                 onNotificationDrained, "onNotificationDrained");
+        this.deferredCancellation = deferredCancellation;
+    }
+
+    CancellationException deferredCancellationCause() {
+        return cancellationRequest.get();
+    }
+
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException requested = cancellationRequest.get();
+        if (!deferredCancellation || requested == null) return false;
+        return settle(new Cancelled(requested));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -456,10 +482,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
-        // Revoke the owning operation BEFORE any synchronous subscriber can
-        // block terminal notification. isCancelled() becomes visible at the
-        // successful state CAS; guest/producer authority must then be removed
-        // before ordinary host completion callbacks are entered.
+        if (deferredCancellation) {
+            // Arbitration with settle() is one linearization point. A late
+            // cancel must not claim a Future that just published completion.
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING || cancellationRequest.get() != null)
+                    return false;
+                cancellationRequest.set(cancelled);
+            }
+            // The cancellation caller never executes guest cleanup.
+            invokeCancelHook();
+            return true;
+        }
+        // Default channel/select cancellation retains synchronous revocation
+        // before subscriber notification, unchanged by cleanup-aware tasks.
         return settle(new Cancelled(cancelled), this::invokeCancelHook);
     }
 
@@ -591,14 +627,37 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal, Runnable afterStateClaimed) {
-        if (!state.compareAndSet(PENDING, terminal)) return false;
+        Object published = terminal;
+        if (deferredCancellation) {
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING) return false;
+                CancellationException requested = cancellationRequest.get();
+                if (requested != null) {
+                    if (terminal instanceof Success<?>) {
+                        published = new Cancelled(requested);
+                    } else if (terminal instanceof Failure failed
+                            && !dominatesDeferredCancellation(failed.failure())) {
+                        Throwable diagnostic = failed.failure();
+                        if (diagnostic != requested) {
+                            synchronized (requested) {
+                                if (requested.getSuppressed().length < 64) {
+                                    requested.addSuppressed(diagnostic);
+                                }
+                            }
+                        }
+                        published = new Cancelled(requested);
+                    }
+                }
+                if (!state.compareAndSet(PENDING, published)) return false;
+            }
+        } else if (!state.compareAndSet(PENDING, published)) return false;
 
         try {
             // The winning cancellation claim runs its internal revoker before
             // notifying potentially blocking synchronous host subscribers.
             // Publish revocation completion BEFORE draining registrations:
             // later registrations can then notify directly without waiting.
-            if (terminal instanceof Cancelled) {
+            if (published instanceof Cancelled) {
                 try {
                     afterStateClaimed.run();
                 } finally {
@@ -609,7 +668,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             }
             RuntimeWaiterRegistration<T> waiter;
             while ((waiter = waiters.poll()) != null) {
-                notifyWaiter(waiter, terminal);
+                notifyWaiter(waiter, published);
             }
             return true;
         } finally {
@@ -618,6 +677,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // just because isDone() became true during a blocked callback.
             onNotificationDrained.run();
         }
+    }
+
+    /** Fatal JVM and isolated quota failures always dominate STOP cancellation. */
+    static boolean dominatesDeferredCancellation(Throwable failure) {
+        Throwable actual = unwrap(failure);
+        return actual instanceof VirtualMachineError
+                || actual instanceof ThreadDeath
+                || actual instanceof LinkageError
+                || actual instanceof ActorRuntime.UntrustedActorQuotaExceededException;
     }
 
     @SuppressWarnings("unchecked")
