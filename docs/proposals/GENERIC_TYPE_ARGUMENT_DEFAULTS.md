@@ -116,3 +116,35 @@ semantics in oreslang-format, publish cross-backend fixtures, and run JVM,
 GraalVM native-image, LLVM and differential conformance at exact tested SHAs.
 
 No green CI or LLVM parity is claimed by this document.
+
+## Audit findings and gates (2026-10-13)
+
+The Phase 1 audit added one canonical `GenericCallArguments.bind` operation
+shared by TypeChecker and OwnershipChecker. It prevents disagreement about
+positional/named slots, duplicates, unknown names, and inference-only holes.
+Binding tests cover all 120 permutations of five named arguments.
+
+Structural method contracts currently erase source generic parameter names
+into `$callable0`, `$callable1`, etc. They can accept positional partial
+generic arguments, but **named** arguments are rejected until original public
+names are retained with authenticated compiler-owned provenance. Do not guess
+or reconstruct names from incoming values. Built-in `Channel.new<T>` similarly
+requires one positional concrete payload type and rejects `<T=int>` and `<_>`.
+
+The type resolver rejects a compiler-only named argument wrapper in arbitrary
+type position, as otherwise `Box<T=int>` could be mistaken for a concrete
+`$named$T` type. Named type arguments in type position, including nominal
+classes, aliases and inheritance, require declaration-aware implementation
+in Phase 2. Higher-kinded application `T<int>` is unsupported and rejected;
+scalar built-ins such as `int<String>` must not silently discard type args.
+
+The test suite now includes missing/unbound generic errors, explicit binding
+conflicts, duplicate and unknown arguments, mixed positional/named ordering,
+move-only ownership, qualified functions, instance methods, and the two
+intrinsic / type-position security boundaries.
+
+The source organization's exact-head CI workflows continue to report failure
+with **no runner steps executed**. This is not evidence of a compiler failure
+or a pass. Keep the PR draft and require real JDK 25 compilation, JUnit tests,
+GraalVM/native and LLVM parity checks as appropriate before merging or
+advertising the feature as executable across backends.
