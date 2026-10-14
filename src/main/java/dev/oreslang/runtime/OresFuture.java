@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -9,7 +11,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -97,7 +98,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Still remove the registration from the producer queue: claiming
             // callback delivery and reclaiming queue retention are separate
             // obligations. This is idempotent if the producer already polled it.
-            owner.waiters.remove(this);
+            synchronized (owner.waiterAdmissionLock) {
+                owner.waiters.remove(this);
+            }
             return detached;
         }
     }
@@ -115,7 +118,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
-    private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
+    /**
+     * Ordered waiter membership. All structural mutations are guarded by
+     * waiterAdmissionLock, including detach and terminal drain. A set gives
+     * exactly-once membership and O(1) removal, avoiding linear queue scans
+     * when hundreds of select arms lose on the same producer Future.
+     */
+    private final LinkedHashSet<RuntimeWaiterRegistration<T>> waiters = new LinkedHashSet<>();
     /**
      * Serializes the short registration decision with the producer's queue
      * drain. Terminal-state publication itself remains lock-free. No user or
@@ -462,7 +471,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     int pendingRuntimeWaiterCount() {
-        return waiters.size();
+        synchronized (waiterAdmissionLock) {
+            return waiters.size();
+        }
     }
 
     @Override
@@ -641,9 +652,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             while (true) {
                 RuntimeWaiterRegistration<T> waiter;
                 synchronized (waiterAdmissionLock) {
-                    waiter = waiters.poll();
+                    Iterator<RuntimeWaiterRegistration<T>> next = waiters.iterator();
+                    if (!next.hasNext()) break;
+                    waiter = next.next();
+                    next.remove();
                 }
-                if (waiter == null) break;
                 // Never execute a callback under the admission monitor:
                 // callbacks may register more Futures or select other arms.
                 notifyWaiter(waiter, terminal);
