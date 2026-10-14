@@ -1875,12 +1875,16 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || cell.stopped.get() || closed.get()) return false;
+        if (cell == null || closed.get()) return false;
+        final boolean cleanup = cell.stopped.get()
+                && taskTicket != null
+                && cell.authorizedCleanupContinuation(continuation);
+        if (cell.stopped.get() && !cleanup) return false;
         // An old or foreign task must not be able to exhaust a newer
         // incarnation's bounded CONTROL lane, even momentarily. Carrier-time
         // requireAdmissible() remains the authoritative live-lease check.
         if (taskTicket != null && (!taskTicket.issuedFor(actorId, cell.executionDomain)
-                || !taskTicket.mayEnqueue())) {
+                || (!cleanup && !taskTicket.mayEnqueue()))) {
             return false;
         }
         // A cancelled task racing the mailbox-accounting lock must be
@@ -1891,8 +1895,13 @@ public final class ActorRuntime implements AutoCloseable {
                         ? (cell.reserveContinuationSlot()
                                 ? SerialExecutionTicket.ControlReservation.RESERVED
                                 : SerialExecutionTicket.ControlReservation.FULL)
-                        : taskTicket.reserveControlSlotFor(
-                                actorId, cell.executionDomain, cell::reserveContinuationSlot);
+                        : cleanup
+                                ? taskTicket.reserveCleanupControlSlotFor(
+                                        actorId, cell.executionDomain,
+                                        () -> cell.authorizedCleanupContinuation(continuation),
+                                        cell::reserveContinuationSlot)
+                                : taskTicket.reserveControlSlotFor(
+                                        actorId, cell.executionDomain, cell::reserveContinuationSlot);
         if (reservation == SerialExecutionTicket.ControlReservation.REVOKED) return false;
         if (reservation == SerialExecutionTicket.ControlReservation.FULL) {
             cell.fail(new IllegalStateException(
@@ -1903,12 +1912,16 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.stopped.get() || cell.finalized || closed.get()) return false;
+                if (cell.finalized || closed.get()
+                        || (cell.stopped.get()
+                            && !cell.authorizedCleanupContinuation(continuation))) return false;
                 // Cell retirement/replacement might race slot reservation.
                 // Recheck immutable ticket provenance at publication too.
                 if (taskTicket != null
                         && (!taskTicket.issuedFor(actorId, cell.executionDomain)
-                            || !taskTicket.mayEnqueue())) return false;
+                            || (!cleanup && !taskTicket.mayEnqueue())
+                            || (cleanup
+                                && !cell.authorizedCleanupContinuation(continuation)))) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation, taskTicket))) {
                     throw new IllegalStateException(
