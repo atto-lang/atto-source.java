@@ -136,6 +136,55 @@ final class CompileTimeConstantEvaluatorTest {
     }
 
     @Test
+    void numericConstantEqualityAgreesWithGuestValueEquality() {
+        java.util.function.BiFunction<Object, Object, Boolean> eq = (a, b) ->
+                (Boolean) CompileTimeConstantEvaluator.evaluate(
+                        new Ast.BinaryExpr("eq", new Ast.LiteralExpr(a), new Ast.LiteralExpr(b)));
+        java.util.function.BiFunction<Object, Object, Boolean> neq = (a, b) ->
+                (Boolean) CompileTimeConstantEvaluator.evaluate(
+                        new Ast.BinaryExpr("neq", new Ast.LiteralExpr(a), new Ast.LiteralExpr(b)));
+
+        assertTrue(eq.apply(1L, 1.0d));
+        assertTrue(eq.apply(1.0d, 1L));
+        assertTrue(eq.apply(+0.0d, -0.0d));
+        assertTrue(eq.apply(-0.0d, 0L));
+        assertFalse(neq.apply(1L, 1.0d));
+        assertFalse(eq.apply(1L, 1.5d));
+
+        // Two i64 values remain exact even when the same double rounding
+        // would otherwise collapse them above the 2^53 precision boundary.
+        long a = 9_007_199_254_740_992L;
+        long b = 9_007_199_254_740_993L;
+        assertFalse(eq.apply(a, b));
+        assertTrue(neq.apply(a, b));
+        // A mixed i64/f64 comparison intentionally uses the runtime's f64
+        // widening semantics, even when precision is lost.
+        assertTrue(eq.apply(b, (double) a));
+
+        assertTrue(eq.apply(
+                dev.oreslang.runtime.OresSymbol.process("ready"),
+                dev.oreslang.runtime.OresSymbol.process("ready")));
+        assertFalse(eq.apply(
+                dev.oreslang.runtime.OresSymbol.process("ready"),
+                "ready"));
+        assertTrue(neq.apply(
+                dev.oreslang.runtime.OresSymbol.process("ready"),
+                "ready"));
+        assertTrue(eq.apply("ready", "ready"));
+        assertFalse(eq.apply(true, "true"));
+    }
+
+    @Test
+    void finiteFloatEqualityCanInitializeACompileTimeBoolean() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Equality as
+                  final const bool signedZero: -0.0 eq 0.0
+                  final const bool sameFloat: 1.5 eq 1.5
+                end
+                """)));
+    }
+
+    @Test
     void bitwiseConstantsAgreeWithRuntimeShiftRules() {
         Ast.Expr four = new Ast.LiteralExpr(4L);
         Ast.Expr one = new Ast.LiteralExpr(1L);
