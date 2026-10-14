@@ -1501,7 +1501,12 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "guest throw in suspending or async callable awaits task-local exception lowering");
             }
-            Type valueType = deref(typeOf(thrown.value(), env, generics, self));
+            Type originalValueType = typeOf(thrown.value(), env, generics, self);
+            if (originalValueType instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "guest throw requires an owned Error; borrowed values cannot unwind");
+            }
+            Type valueType = deref(originalValueType);
             // Unknown and broad Any must never bypass the checked Error-only
             // requirement. Class hierarchy ancestry is nominal, not structural.
             if (valueType == Unknown.INSTANCE
