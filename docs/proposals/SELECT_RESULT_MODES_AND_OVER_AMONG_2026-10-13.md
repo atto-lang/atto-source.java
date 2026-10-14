@@ -1,6 +1,6 @@
 # Proposal: select result modes and over/among delimiters (13 October 2026)
 
-**Status:** Partially implemented on this Java/GraalVM draft branch: blocking procedural `do select { ... }`, `do select over ... end`, and `do select among ... end` now share callable-return semantics, loop-control barriers, and typed/ownership checks. The Java compiler **does not yet implement value-producing static `select` or `nb select`**, nor typed `readch ch: int x` arm binders. LLVM and the formatter are not yet at parity. This proposal must not be represented as full conformance until all value modes, source parsing, type checking, execution, ownership, cancellation, and cross-backend tests pass.
+**Status:** Blocking value-producing static `select` is implemented and JVM-verified on Java/GraalVM draft PR #887 for braces, `over ... end`, and `among ... end`. Typed `readch ch: int x` binders, explicit arm-local `return`, lexically separate callable returns, resumable source-task execution, ownership checks, and tree-shaker preservation are included. Exact-source GraalVM/JDK 25 CI at commit `e913464efcd0c9b83996bea24f4891c66a93bb3c` passed **2,002/2,002 tests**: https://github.com/zed-pkg-test/java-app/actions/runs/38497303669. **Not implemented:** value-producing `nb select` returning `Future<R>`, arbitrary `Selectable`/Observable and Future await static arms, LLVM and formatter parity. The PR remains draft and unmerged.
 
 ## Decision
 
@@ -54,10 +54,10 @@ Policy is orthogonal to delimiter and mode: select first over ... end, do select
 
 ~~~ores
 const int received = select over
-  when readch incoming: const int n -> {
+  when readch incoming: int n -> {
     return n + 1;
   }
-  when await ready: const int n -> {
+  when await ready: int n -> {
     return n;
   }
   default -> {
@@ -66,10 +66,10 @@ const int received = select over
 end;
 
 const Future[int] later = nb select among
-  when readch incoming: const int n -> {
+  when readch incoming: int n -> {
     return n * 2;
   }
-  when await ready: const int n -> {
+  when await ready: int n -> {
     return n + 3;
   }
 end;
@@ -146,11 +146,14 @@ Negative tests: bare trailing expressions instead of explicit returns; return wi
 
 Formatting tests: among -> over canonicalization, idempotence, comments/strings containing 'over', contextual identifiers named among/over, policy spelling, and fully nested arm braces. Differential parity gates: Java/GraalVM interpreter; Java AOT/hybrid; LLVM compiled guest; cross-backend conformance. No merge based only on parser acceptance or documentation.
 
-## Current implementation gap (as audited on main)
+## Current implementation status and remaining gates
 
-- Java Parser.parseStaticSelectStatement() now consumes a braced or procedural end-delimited body, but still produces SelectStmt rather than a value expression. End-delimited `select` and `nb select` value forms are explicitly rejected until properly lowered; expression parsing still routes `select from cases` through DynamicSelectExpr.
-- Java SelectArm currently stores List<Stmt> for its body. It lacks a typed value-arm result, and current SelectStmt.explicitDo is a marker rather than a complete VALUE/PROCEDURAL semantic split.
-- Current docs/channels-select-and-actor-cancellation.md identifies bare `select { ... }` as a legacy compatibility statement, and `do nb select` as detached void. Both need a deliberate breaking migration before the complete canonical expression contract is enabled. Blocking `do select` callable-return semantics are already implemented on this branch.
-- LLVM and oreslang-format must be audited independently. Syntax acceptance in one frontend is not cross-backend support.
+- **Implemented:** The Java expression parser constructs `StaticSelectExpr` from `select { ... }`, `select over ... end`, and `select among ... end` in expression position; it retains `DynamicSelectExpr` for `select from cases`. A statement-position legacy `select { ... }` is still accepted for compatibility.
+- **Implemented:** `ReturnStmt` carries a lexical `FUNCTION` or `SELECT_VALUE` target. Static read arms accept typed `readch channel: int name` bindings; the checker validates channel element types, normal-completion return paths, common result types, ownership and loan safety. The source-task backend uses a distinct select-return flow. The synchronous interpreter uses a private, non-guest-catchable control signal. Cleanup and tree-shaker paths preserve the target.
+- **Verified:** Exact Git-tree source at commit `e913464efcd0c9b83996bea24f4891c66a93bb3c` passed focused regression tests and **2,002 Java Maven verify tests, 0 failures, 0 errors**, on GraalVM JDK 25. This is JVM evidence, **not** LLVM AOT/native-image proof.
+- **Outstanding:** Value-producing `nb select` with `Future<R>` and cancellation-safe continuation ownership; statically typed `when await future`/general `Selectable` and Observable one-event arms; integration with expression-producing `match`/`switch`; deeper return-path coverage; formatter and LLVM compiled-guest conformance.
+- **Compatibility:** Legacy `do nb select { ... }` remains detached/no-result. Do not silently turn it into a form that may return from a completed callable.
 
-**Suggested staging:** (1) complete the end-delimiter AST/result-mode distinction and add failing value-mode tests (procedural delimiter parsing already landed), (2) typed result arms with explicit return and blocking `select` expression, (3) `nb select` Future<R> continuation and cancellation hardening, (4) formatter, LLVM and formal/conformance parity. Procedural `do select` has focused runtime tests and must also pass the entire Java suite. Keep this PR draft until the full language contract and exact-source cross-backend evidence exist.
+**Next staging:** (1) extend parser/AST semantics and exhaustive tests to `nb select` with owned `Future<R>` continuations, (2) selectable Future/Observable/message adapters and cancellation/STOP race hardening, (3) formatter normalization and LLVM AOT code generation with Java/LLVM differential conformance. Keep PR #887 draft until native and cross-backend gates pass.
+
+**Example note:** `when await ready: int n ->` in this proposal is aspirational, not an implemented static-select arm form. The passing Java subset currently uses channel read/write cases and `default`.
