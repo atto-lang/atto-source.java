@@ -7382,6 +7382,17 @@ public final class TypeChecker {
             }
         }
 
+        // Primitive and scalar built-in types do not accept higher-kinded
+        // application. Previously e.g. int<string> silently resolved to int.
+        if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint", "f32", "f64", "float", "decimal",
+                "complex64", "complex128", "complex", "string", "String",
+                "void").contains(ref.name())
+                && (ref.inferArguments() || !ref.arguments().isEmpty())) {
+            throw new IllegalArgumentException(
+                    "non-generic built-in type '" + ref.name() + "' cannot accept type arguments");
+        }
+
         return switch (ref.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
