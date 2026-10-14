@@ -217,12 +217,22 @@ match_arm       = [ "on" ] ( pattern | "else" ) [ "when" expression ] "->" block
    'on' is required with 'over'. The legacy no-over match remains accepted.
    'as {field, ...}' only projects declared fields of a tagged data payload.
    It never resolves methods or arbitrary class instance identity. *)
-record_projection = "as" "{" IDENT { "," IDENT } [ "," ] "}" ;
+(* Named record projections are schema-keyed; tuple/pair/entry projections
+   are positional and require the declared tuple arity. Binding kinds affect
+   lexical rebinding only, never ownership or mutation of the source field.
+   Explicit inner kinds inherit into subsequent unqualified items. *)
+projection_item = [ binding_kind ] IDENT ;
+record_projection = "as" [ binding_kind ] "{" projection_item
+                    { "," projection_item } [ "," ] "}" ;
+tuple_projection = "as" [ binding_kind ] "(" ( projection_item | "_" )
+                   "," ( projection_item | "_" )
+                   { "," ( projection_item | "_" ) } [ "," ] ")" ;
 pattern         = "_"
                 | literal
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
                 | IDENT record_projection
+                | IDENT tuple_projection
                 | "is" type_ref [ IDENT ] ;
 
 switch_stmt     = "switch" expression [ ";" ]
