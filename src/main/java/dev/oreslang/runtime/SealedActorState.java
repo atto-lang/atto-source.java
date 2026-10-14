@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -19,6 +22,9 @@ public final class SealedActorState {
     private static final int MAX_FIELDS = 256;
     private static final int MAX_STRING_BYTES = 64 * 1024;
     private static final int MAX_TOTAL_STRING_BYTES = 1024 * 1024;
+    private static final int MAX_OWNED_FIELD_BYTES = 64 * 1024;
+    private static final int MAX_TOTAL_OWNED_BYTES = 1024 * 1024;
+    private static final int MAX_PENDING_OWNED = 256;
 
     private final ActorRuntime.ActorId owner;
     private final LinkedHashMap<String, String> schema;
@@ -26,6 +32,10 @@ public final class SealedActorState {
     private Access current;
     private long serial;
     private int retainedStringBytes;
+    private int retainedOwnedBytes;
+    private int pendingOwnedBytes;
+    private final Set<OwnedBytes> pendingOwned =
+            Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean retired;
 
     public SealedActorState(ActorRuntime.ActorId owner,
@@ -39,7 +49,7 @@ public final class SealedActorState {
         this.values = new LinkedHashMap<>();
         for (var item : this.schema.entrySet()) {
             switch (item.getValue()) {
-                case "int", "bool", "string", "String" -> { }
+                case "int", "bool", "string", "String", "owned:bytes" -> { }
                 default -> throw new UnsupportedOperationException(
                         "runtime actor state type is not yet lowered: " + item.getValue());
             }
@@ -54,6 +64,59 @@ public final class SealedActorState {
             retainedStringBytes += size;
             values.put(entry.getKey(), entry.getValue());
         }
+    }
+
+
+    /**
+     * Internal proof-of-transfer capsule, deliberately NOT a source-level
+     * Owned<T> or public heap alias. The issuer owns the backing bytes until
+     * an exclusive loan consumes the capsule into exactly one state field.
+     * No method ever returns the raw backing array.
+     */
+    public final class OwnedBytes {
+        private byte[] bytes;
+        private OwnedBytes(int size) { bytes = new byte[size]; }
+        private SealedActorState issuer() { return SealedActorState.this; }
+        private void check() {
+            requireOwner();
+            if (bytes == null || !pendingOwned.contains(this))
+                throw new IllegalStateException("actor-owned bytes already moved or revoked");
+        }
+        public int length() { check(); return bytes.length; }
+        public int read(int index) {
+            check();
+            return Byte.toUnsignedInt(bytes[Objects.checkIndex(index, bytes.length)]);
+        }
+        public void write(int index, int unsignedByte) {
+            check();
+            if (unsignedByte < 0 || unsignedByte > 255)
+                throw new IllegalArgumentException("owned byte value must be 0..255");
+            bytes[Objects.checkIndex(index, bytes.length)] = (byte) unsignedByte;
+        }
+    }
+
+    private static final class OwnedRegion {
+        private final byte[] bytes;
+        private OwnedRegion(byte[] bytes) { this.bytes = bytes; }
+        private void erase() { Arrays.fill(bytes, (byte) 0); }
+    }
+
+    /**
+     * Trusted Java runtime substrate only. Source-level reference transfers
+     * stay rejected until compiler-verified allocation provenance, moves,
+     * and LLVM codegen share a documented ABI.
+     */
+    public OwnedBytes allocateOwnedBytes(int size) {
+        requireOwner();
+        if (size < 0 || size > MAX_OWNED_FIELD_BYTES)
+            throw new IllegalArgumentException("invalid actor-owned byte region size");
+        if (pendingOwned.size() >= MAX_PENDING_OWNED
+                || size > MAX_TOTAL_OWNED_BYTES - retainedOwnedBytes - pendingOwnedBytes)
+            throw new IllegalArgumentException("actor-owned allocation budget exceeded");
+        OwnedBytes capsule = new OwnedBytes(size);
+        pendingOwned.add(capsule);
+        pendingOwnedBytes += size;
+        return capsule;
     }
 
     private enum Uninitialized { INSTANCE }
@@ -115,7 +178,59 @@ public final class SealedActorState {
             if (value == Uninitialized.INSTANCE) {
                 throw new IllegalStateException("actor state key '" + name + "' is uninitialized");
             }
+            if (value instanceof OwnedRegion)
+                throw new SecurityException("raw actor-owned reference cannot escape state loan");
             return value;
+        }
+
+        /**
+         * Consumes an issuer-bound allocation exactly once under a WRITE loan.
+         * Failed validation leaves the source live and its destination intact.
+         */
+        public void takeOwnedBytes(String name, OwnedBytes source) {
+            check();
+            if (!writable) throw new SecurityException("critical read cannot transfer owned state");
+            if (!"owned:bytes".equals(schema.get(name)))
+                throw new IllegalArgumentException("actor state key is not owned:bytes: " + name);
+            Objects.requireNonNull(source, "owned source");
+            if (source.getClass() != OwnedBytes.class || source.issuer() != SealedActorState.this)
+                throw new SecurityException("foreign actor-owned allocation issuer");
+            source.check();
+            byte[] moved = source.bytes;
+            Object prior = values.get(name);
+            int released = prior instanceof OwnedRegion region ? region.bytes.length : 0;
+            // The allocation was accounted for when created and cannot
+            // exceed the total live+pending budget on this actor incarnation.
+            values.put(name, new OwnedRegion(moved));
+            source.bytes = null;
+            pendingOwned.remove(source);
+            pendingOwnedBytes -= moved.length;
+            retainedOwnedBytes = retainedOwnedBytes - released + moved.length;
+            if (prior instanceof OwnedRegion region) region.erase();
+        }
+
+        private OwnedRegion ownedRegion(String name) {
+            if (!"owned:bytes".equals(schema.get(name)))
+                throw new IllegalArgumentException("actor state key is not owned:bytes: " + name);
+            Object value = values.get(name);
+            if (value == Uninitialized.INSTANCE)
+                throw new IllegalStateException("actor-owned state field is uninitialized: " + name);
+            return (OwnedRegion) value;
+        }
+
+        public int readOwnedByte(String name, int index) {
+            check();
+            byte[] data = ownedRegion(name).bytes;
+            return Byte.toUnsignedInt(data[Objects.checkIndex(index, data.length)]);
+        }
+
+        public void writeOwnedByte(String name, int index, int unsignedByte) {
+            check();
+            if (!writable) throw new SecurityException("critical read cannot write actor state");
+            if (unsignedByte < 0 || unsignedByte > 255)
+                throw new IllegalArgumentException("owned byte value must be 0..255");
+            byte[] data = ownedRegion(name).bytes;
+            data[Objects.checkIndex(index, data.length)] = (byte) unsignedByte;
         }
         public void write(String name, Object value) {
             check();
@@ -191,8 +306,18 @@ public final class SealedActorState {
             throw new IllegalStateException("cannot retire actor state with live critical loan");
         }
         retired = true;
+        for (OwnedBytes capsule : pendingOwned) {
+            if (capsule.bytes != null) Arrays.fill(capsule.bytes, (byte) 0);
+            capsule.bytes = null;
+        }
+        pendingOwned.clear();
+        for (Object value : values.values()) {
+            if (value instanceof OwnedRegion region) region.erase();
+        }
         values.clear();
         retainedStringBytes = 0;
+        retainedOwnedBytes = 0;
+        pendingOwnedBytes = 0;
     }
 
     public Set<String> declaredKeys() { return Set.copyOf(schema.keySet()); }
