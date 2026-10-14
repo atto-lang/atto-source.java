@@ -109,15 +109,17 @@ public final class IncrementalCompiler {
             Ast.Program checked;
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
-            if (linked.classes().isEmpty()) {
+            Map<String, TypeChecker.LinkedEnum> linkedEnums = linkedPublicEnums(
+                    id, parsed.get(id), parsed, normalizedImportResolutions);
+            if (linked.classes().isEmpty() && linkedEnums.isEmpty()) {
                 checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
             } else {
                 try {
                     // Foreign layouts are used for type and ownership proofs;
                     // their declarations are never executed in the importer.
-                    checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
-                    OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
+                    checked = TypeChecker.checkTypesWithImportedSymbols(
+                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases(), linkedEnums);
+                    OwnershipChecker.checkWithImportedSymbols(checked, linked.classes(), linkedEnums);
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
                             "Oreslang source unit '" + id + "': " + invalid.getMessage(), invalid);
@@ -199,6 +201,44 @@ public final class IncrementalCompiler {
             }
         }
         return new LinkedClasses(Map.copyOf(linked), Map.copyOf(aliases));
+    }
+
+    private static Map<String, TypeChecker.LinkedEnum> linkedPublicEnums(
+            String unitId,
+            Ast.Program importer,
+            Map<String, Ast.Program> parsed,
+            Map<String, Map<String, String>> importResolutions) {
+        Map<String, TypeChecker.LinkedEnum> linked = new LinkedHashMap<>();
+        for (Ast.ImportDecl use : importer.imports()) {
+            if (use.kind() != Ast.ImportKind.TYPE || use.wildcard()) continue;
+            String sourceId = ImportGraph.resolveImportUnitId(
+                    unitId, use, parsed.keySet(), importResolutions);
+            if (sourceId == null) continue;
+            Ast.Program source = parsed.get(sourceId);
+            for (String name : use.names()) {
+                Ast.EnumDecl declaration = null;
+                String ownerModule = null;
+                for (Ast.ModuleDecl module : source.modules()) {
+                    for (Ast.Decl decl : module.declarations()) {
+                        if (decl instanceof Ast.EnumDecl e
+                                && e.visibility() == Ast.Visibility.PUBLIC
+                                && e.name().equals(name)) {
+                            if (declaration != null) throw new IllegalArgumentException(
+                                    "ambiguous public imported enum '" + name + "'");
+                            declaration = e;
+                            ownerModule = module.name();
+                        }
+                    }
+                }
+                if (declaration == null) continue;
+                String localName = dev.oreslang.imports.ImportRules.localName(use, name);
+                if (linked.putIfAbsent(localName,
+                        new TypeChecker.LinkedEnum(declaration, sourceId, ownerModule)) != null) {
+                    throw new IllegalArgumentException("duplicate linked enum '" + localName + "'");
+                }
+            }
+        }
+        return Map.copyOf(linked);
     }
 
     public synchronized void clear() {
@@ -299,6 +339,16 @@ public final class IncrementalCompiler {
                 }
             }
             memberEntries.stream().sorted().forEach(abi::append);
+            return;
+        }
+        if (decl instanceof Ast.EnumDecl e) {
+            if (e.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append("pub enum ").append(e.name()).append('\n');
+            for (Ast.EnumVariant v : e.variants()) {
+                abi.append(" variant ").append(v.name()).append(':').append(v.tag())
+                        .append(':').append(v.payload() == null ? "none" : typeRef(v.payload()))
+                        .append('\n');
+            }
             return;
         }
         if (decl instanceof Ast.TypeAliasDecl alias) {
