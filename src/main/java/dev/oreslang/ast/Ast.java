@@ -819,7 +819,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+            TypeTestExpr, PatternTestExpr, OptionBindExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
@@ -836,6 +836,23 @@ public final class Ast {
 
     /** "value matches Pattern" -- full pattern predicate, with bindings scoped by the enclosing condition. */
     public record PatternTestExpr(Expr value, Pattern pattern) implements Expr { }
+
+    /**
+     * Conditional-only Option<T> presence binding. Unlike a cast, a failed
+     * extraction yields false and never initializes the successful-edge local.
+     * Phase 1 intentionally admits only Copy payloads.
+     */
+    public record OptionBindExpr(Expr value, BindingKind kind, String binding) implements Expr {
+        public OptionBindExpr {
+            java.util.Objects.requireNonNull(value, "option expression");
+            if (kind != BindingKind.CONST && kind != BindingKind.LET) {
+                throw new IllegalArgumentException("optional binding requires const or let");
+            }
+            if (binding == null || binding.isBlank() || binding.equals("_")) {
+                throw new IllegalArgumentException("optional binding requires a name");
+            }
+        }
+    }
 
     public enum CastMode { CHECKED, OPTIONAL }
 
