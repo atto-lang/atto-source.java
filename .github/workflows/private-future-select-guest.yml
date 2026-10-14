@@ -1,0 +1,77 @@
+name: Private typed Future-select language integration
+on:
+  push:
+    branches:
+      - integration/future-select-guest-on-runtime-20261014
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  language-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run only inside the private Oreslang source repository
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          echo "Source SHA: $(git rev-parse HEAD)"
+          echo "Source tree: $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Typecheck and execute typed Future select plus legacy channel select
+        run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest' test
+  full-maven:
+    needs: language-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Full JVM regression
+        run: mvn -B -ntp verify
+  compiled-native-future:
+    needs: language-contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [native-aot, native-hybrid]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify original private repository
+        run: test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          version: '25.3'
+          distribution: graalvm
+          cache: maven
+      - name: Build native Oreslang CLI
+        run: mvn -B -ntp -DskipTests -P${{ matrix.mode }} package
+      - name: Execute typed Future-select guest on native compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/ores-aot
+          if test "${{ matrix.mode }}" = "native-hybrid"; then bin=target/ores-hybrid; fi
+          timeout --signal=TERM --kill-after=5s 60s "$bin" examples/native-future-select-smoke.ores > /tmp/future-select-output.txt
+          test "$(cat /tmp/future-select-output.txt)" = "future:4"
+          echo "NATIVE_FUTURE_SELECT_PASS mode=${{ matrix.mode }}"
