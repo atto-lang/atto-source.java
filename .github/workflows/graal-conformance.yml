@@ -48,6 +48,14 @@ jobs:
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
       - name: Validate Java compiler admission
         run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
+      - name: Real Java compiler AI smoke (source acceptance, rejection, native guest exit)
+        run: |
+          python3 scripts/ai-conformance-smoke.py \
+            --backend java \
+            --compiler "$(command -v python3)" \
+            --java-probe "$(realpath contracts/v1/java_probe.py)" \
+            --source-sha "${{ github.sha }}" \
+            --report target/ai-conformance-graal.json
       - name: Validate Java borrow and semantic diagnostic cases
         run: python3 contracts/v1/semantics/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --run-command 'python3 contracts/v1/java_probe.py {source} --execute' --revision "${{ github.sha }}" --report target/semantics-graal.json
       - name: Verify real shared actor mailbox trace against the contract
@@ -61,5 +69,6 @@ jobs:
           path: |
             target/conformance-graal.json
             target/semantics-graal.json
+            target/ai-conformance-graal.json
             target/actor-trace-graal.json
           if-no-files-found: ignore
