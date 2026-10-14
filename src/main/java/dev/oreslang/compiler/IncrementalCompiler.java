@@ -262,8 +262,11 @@ public final class IncrementalCompiler {
                 appendParams(abi, klass.constructor().parameters());
                 abi.append('\n');
             } else if (klass.constructor() == null) {
-                // Legacy synthesized constructors are externally visible when
-                // their class is public; all positional field slots affect ABI.
+                // Legacy synthesized constructor layout is hashed conservatively,
+                // including private slots (default initialization and later public
+                // behavior can depend on them). Only public positional slots may
+                // be supplied by external callers; the typechecker and runtime
+                // both enforce that independently of this ABI fingerprint.
                 abi.append(" synthesized-constructor(");
                 for (Ast.FieldDecl field : klass.fields()) {
                     abi.append(field.type() == null
