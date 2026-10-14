@@ -1,0 +1,73 @@
+name: PR949 private native channel-select contract
+on:
+  push:
+    branches:
+      - integration/future-select-runtime-current-main-20261014
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  syntax-and-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Restrict execution to the private source repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          echo "Native contract source head: $(git rev-parse HEAD)"
+          echo "Native contract source tree: $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: graalvm
+          version: '25.3'
+          cache: maven
+      - name: Compile, typecheck and execute the same fixture on JVM
+        run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest' test
+  native-compiled-guest:
+    needs: syntax-and-guest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [native-aot, native-hybrid]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Restrict execution to original private source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          echo "Native contract source head: $(git rev-parse HEAD)"
+          echo "Native contract source tree: $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: graalvm
+          version: '25.3'
+          cache: maven
+      - name: Compile native guest runner
+        run: mvn -B -ntp -DskipTests -P${{ matrix.mode }} package
+      - name: Execute compiled native channel-select guest
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=target/ores-aot
+          if test "${{ matrix.mode }}" = "native-hybrid"; then
+            bin=target/ores-hybrid
+          fi
+          timeout --signal=TERM --kill-after=5s 60s "$bin" examples/native-channel-select-smoke.ores > /tmp/native-select-result.txt
+          actual="$(cat /tmp/native-select-result.txt)"
+          if test "$actual" != "first:7:9"; then
+            echo "::error::Compiled native channel-select guest produced unexpected output"
+            exit 1
+          fi
+          echo "NATIVE_CHANNEL_SELECT_PASS mode=${{ matrix.mode }}"
