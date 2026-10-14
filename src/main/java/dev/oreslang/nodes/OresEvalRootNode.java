@@ -1614,6 +1614,13 @@ public final class OresEvalRootNode extends RootNode {
                         || expressionContainsPotentialSuspension(
                                 assignment.value(), seen);
             }
+            if (expr instanceof Ast.MatchExpr match) {
+                if (expressionContainsPotentialSuspension(match.subject(), seen)) return true;
+                return match.arms().stream().anyMatch(arm ->
+                        (arm.guard() != null
+                                && expressionContainsPotentialSuspension(arm.guard(), seen))
+                                || expressionContainsPotentialSuspension(arm.value(), seen));
+            }
             if (expr instanceof Ast.ConditionalExpr conditional) {
                 return expressionContainsPotentialSuspension(
                                 conditional.condition(), seen)
