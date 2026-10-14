@@ -557,7 +557,7 @@ public final class OresEvalRootNode extends RootNode {
                 initializerEnv.define("self", object, Ast.BindingKind.VAL);
                 fields.put(
                         field.name(),
-                        eval(field.initializer(), initializerEnv));
+                        evaluateClassFieldInitializer(field, initializerEnv));
             }
 
             Ast.MethodDecl startup =
@@ -7508,6 +7508,18 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
         }
 
+        /**
+         * A final-const class field is evaluated only by the closed, pure
+         * constant evaluator, never through general guest expression execution.
+         * This also fails closed if an unchecked AST reaches the runtime.
+         */
+        private Object evaluateClassFieldInitializer(Ast.FieldDecl field, Env initializerEnv) {
+            if (field.compileTimeRequired()) {
+                return dev.oreslang.types.CompileTimeConstantEvaluator.evaluate(field.initializer());
+            }
+            return eval(field.initializer(), initializerEnv);
+        }
+
         private OresObject instantiate(
                 Ast.ClassDecl klass,
                 List<Object> args,
@@ -7535,6 +7547,11 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject object = new OresObject(this, klass, fields);
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
+                    if (i < args.size() && field.finalDeclaration() && field.initializer() != null) {
+                        throw new IllegalArgumentException(
+                                "constructor for " + klass.name() + " cannot replace initialized final field '"
+                                        + field.name() + "'");
+                    }
                     Object value;
                     if (i < args.size()) value = args.get(i);
                     else if (field.initializer() != null) {
@@ -7542,7 +7559,7 @@ public final class OresEvalRootNode extends RootNode {
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                         Env initializerEnv = new Env(null, false, fieldOwner);
                         initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                        value = eval(field.initializer(), initializerEnv);
+                        value = evaluateClassFieldInitializer(field, initializerEnv);
                     } else {
                         throw new IllegalArgumentException(
                                 "missing constructor field " + klass.name() + "." + field.name());
@@ -7578,7 +7595,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
                 Env initializerEnv = new Env(null, false, fieldOwner);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+                fields.put(field.name(), evaluateClassFieldInitializer(field, initializerEnv));
             }
 
             Env constructorEnv = new Env(null, false, klass, object);
