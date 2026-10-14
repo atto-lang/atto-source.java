@@ -1749,16 +1749,30 @@ public final class TypeChecker {
                         armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
-                    checkIsolatedArmBlock(arm.body(), armEnv, generics,
-                            Unknown.INSTANCE, self, true);
-                } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                    // Compatibility: detached legacy nb select arms cannot return a value.
-                    checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    if (selected.explicitDo()) {
+                        // A detached callback cannot return from the already-running
+                        // callable. Only do nb select discards an arm-local return.
+                        checkIsolatedArmBlock(arm.body(), armEnv, generics,
+                                Unknown.INSTANCE, self, true);
+                    } else {
+                        checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
+                    }
                 } else {
-                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    if (selected.explicitDo()) {
+                        // Procedural do select returns from its enclosing callable.
+                        // Keep existing select-arm loop-control isolation: a break/
+                        // continue cannot target an enclosing loop from inside an arm.
+                        int previousLoopDepth = loopDepth;
+                        loopDepth = 0;
+                        try {
+                            checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                        } finally {
+                            loopDepth = previousLoopDepth;
+                        }
+                    } else {
+                        checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                    }
                     exits.add(env.initializationSnapshot());
                 }
             }

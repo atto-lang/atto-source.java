@@ -799,9 +799,10 @@ public final class Ast {
     }
 
     /**
-     * Static select carries an explicitDo source marker for result-discarding
-     * dispatch. Historical select/nb select statement syntax remains accepted;
-     * callers that intentionally want side effects use "do select".
+     * Static select carries an explicitDo source marker for procedural dispatch.
+     * Blocking do select returns from the enclosing callable; detached do nb
+     * select retains its arm-local return boundary. Historical select/nb select
+     * statement syntax remains accepted.
      */
     public record SelectStmt(
             WaitMode mode,

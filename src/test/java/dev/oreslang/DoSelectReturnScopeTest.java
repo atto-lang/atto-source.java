@@ -13,28 +13,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class DoSelectReturnScopeTest {
     @Test
-    void blockingDoSelectReturnIsArmLocalAndItsValueIsDiscarded() throws Exception {
+    void blockingDoSelectReturnExitsContainingFunction() throws Exception {
         String program = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   val Channel<int> incoming = Channel.new<int>(1);
                   writech incoming, 7;
                   do select {
                     case readch incoming: val number {
                       stdio.stdout.write("selected:");
-                      stdio.stdout.write(number);
                       return number * 2;
                     }
                   }
-                  stdio.stdout.write(":continued");
+                  stdio.stdout.write("unreachable");
+                  return 99;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
 
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size(), result.warnings().toString());
-        assertTrue(result.warnings().getFirst().contains("W-SELECT-RETURN"));
-        assertEquals("selected:7:continued", run(program));
+        assertTrue(result.warnings().isEmpty(), result.warnings().toString());
+        assertEquals("selected:14", run(program));
     }
 
     @Test
@@ -57,7 +59,7 @@ final class DoSelectReturnScopeTest {
     }
 
     @Test
-    void bareReturnInDoSelectIsWarnedAndDoesNotEscapeCallable() throws Exception {
+    void bareReturnInBlockingDoSelectExitsCallable() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -67,14 +69,30 @@ final class DoSelectReturnScopeTest {
                       return;
                     }
                   }
-                  stdio.stdout.write("still-here");
+                  stdio.stdout.write("unreachable");
                   return;
                 }
                 """;
         OresCompiler.AnalysisResult result =
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size());
-        assertEquals("still-here", run(program));
+        assertTrue(result.warnings().isEmpty(), result.warnings().toString());
+        assertEquals("", run(program));
+    }
+
+    @Test
+    void blockingDoSelectReturnMustMatchEnclosingFunctionType() {
+        String source = """
+                pub fnc compute(): int {
+                  do select {
+                    default: {
+                      return "not an integer";
+                    }
+                  }
+                  return 12;
+                }
+                """;
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
     }
 
     private static String run(String program) throws Exception {

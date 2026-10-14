@@ -2456,8 +2456,8 @@ public final class OresEvalRootNode extends RootNode {
          * A selected branch is a source block, not an exception boundary. Run
          * it on the resumable source frame so RETURN/BREAK/CONTINUE propagate
          * as SourceFlow rather than escaping as host RuntimeExceptions.
-         * Explicit do-select suppresses only the arm-local RETURN; errors,
-         * cancellation and other failures still propagate.
+         * Only detached do nb select suppresses an arm-local RETURN; blocking
+         * do select propagates RETURN through the parent callable's source flow.
          */
         private void runSelectedArmSuspendable(
                 SourceTask task,
@@ -2479,7 +2479,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             runBlock(task, arm.body(), armEnv, (t, flow) ->
                     continuation.accept(t,
-                            select.explicitDo() && flow.kind() == SourceFlowKind.RETURN
+                            select.explicitDo()
+                                    && select.mode() == Ast.WaitMode.NONBLOCKING
+                                    && flow.kind() == SourceFlowKind.RETURN
                                     ? SourceFlow.normal()
                                     : flow));
         }
@@ -5395,19 +5397,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!detached) {
-                if (selected.explicitDo()) {
-                    try {
-                        // Return values are discarded, so this arm must be a
-                        // tail-call barrier even when the caller is in tail
-                        // position. Otherwise 'return fn();' escapes as a
-                        // TailCallSignal and hijacks the enclosing callable.
-                        executeBlock(arm.body(), armEnv, true);
-                    } catch (ReturnSignal ignored) {
-                        // Do-select return is arm-local; expression evaluated, value discarded.
-                    }
-                } else {
-                    executeBlock(arm.body(), armEnv, tailBarrier);
-                }
+                // Blocking do select has the same callable-return semantics as
+                // procedural do match/do switch. The containing callable owns
+                // ReturnSignal and TailCallSignal, including defers/finally.
+                executeBlock(arm.body(), armEnv, tailBarrier);
                 return;
             }
 

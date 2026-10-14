@@ -13,30 +13,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectNestedReturnContractTest {
     @Test
-    void evaluatesDiscardedReturnOnlyOnce() throws Exception {
+    void evaluatesProceduralReturnOnceAndReturnsItsValue() throws Exception {
         String source = """
                 pub fnc produce(): int {
                   stdio.stdout.write("evaluated:");
                   return 9;
                 }
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       return produce();
                     }
                   }
-                  stdio.stdout.write("continued");
+                  stdio.stdout.write("unreachable");
+                  return 41;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("evaluated:continued", run(source));
+        assertWarnings(source, 0);
+        assertEquals("evaluated:9", run(source));
     }
 
     @Test
-    void nestedSelectionsOnlyExitTheirOwnArm() throws Exception {
+    void nestedProceduralSelectionsReturnFromSameContainingFunction() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       do select {
@@ -45,36 +49,36 @@ final class SelectNestedReturnContractTest {
                           return 1;
                         }
                       }
-                      stdio.stdout.write("outer:");
+                      stdio.stdout.write("unreachable-outer:");
                       return 2;
                     }
                   }
-                  stdio.stdout.write("done");
-                  return;
-                }
-                """;
-        assertWarnings(source, 2);
-        assertEquals("inner:outer:done", run(source));
-    }
-
-    @Test
-    void discardReturnCannotHijackEnclosingFunctionResult() throws Exception {
-        String source = """
-                pub fnc compute(): int {
-                  do select {
-                    default: {
-                      return "discarded";
-                    }
-                  }
-                  return 42;
+                  stdio.stdout.write("unreachable-done");
+                  return 3;
                 }
                 pub fnc main(): void {
                   stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("42", run(source));
+        assertWarnings(source, 0);
+        assertEquals("inner:1", run(source));
+    }
+
+    @Test
+    void proceduralReturnIsTypeCheckedAgainstEnclosingFunction() {
+        String source = """
+                pub fnc compute(): int {
+                  do select {
+                    default: {
+                      return "invalid";
+                    }
+                  }
+                  return 42;
+                }
+                """;
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
