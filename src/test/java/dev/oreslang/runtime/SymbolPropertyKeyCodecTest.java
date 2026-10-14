@@ -75,6 +75,13 @@ final class SymbolPropertyKeyCodecTest {
                 () -> SymbolPropertyKeyCodec.encode("\ud800"));
         assertThrows(IllegalArgumentException.class,
                 () -> SymbolPropertyKeyCodec.encode("x".repeat(16_385)));
+        // The codec must reject an oversized UTF-16 input before allocating
+        // a potentially much larger UTF-8 encoding buffer.
+        assertThrows(IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.encode("r".repeat(2_000_000)));
+        assertArrayEquals(
+                new byte[]{'O', 'K', 1, 0, 0, 2, (byte) 0xc3, (byte) 0xa9},
+                SymbolPropertyKeyCodec.encode("é"));
         assertThrows(IllegalArgumentException.class,
                 () -> SymbolPropertyKeyCodec.decode(new byte[100_000]));
     }
