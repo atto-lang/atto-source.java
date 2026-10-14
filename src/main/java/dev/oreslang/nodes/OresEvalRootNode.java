@@ -6473,8 +6473,10 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         payload = new ReadonlyRecordValue(snapshot);
                     }
-                    return new EnumValue(qualifiedEnumName(declarationEnum), declarationEnum.name(),
-                            variant.name(), variant.tag(), payload);
+                    return new dev.oreslang.runtime.NominalMessageValue(codeUnitId,
+                            qualifiedEnumName(declarationEnum), declarationEnum.name(),
+                            variant.name(), variant.tag(),
+                            payload == null ? null : (Map<String, ?>) payload);
                 };
             }
             if (receiver instanceof String text) {
@@ -8020,16 +8022,17 @@ public final class OresEvalRootNode extends RootNode {
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
         }
 
-        private boolean validNominalEnum(EnumValue value) {
+        private boolean validNominalEnum(dev.oreslang.runtime.NominalMessageValue value) {
+            if (!codeUnitId.equals(value.sourceUnitId())) return false;
             Ast.EnumDecl declarationEnum = findEnum(value.qualifiedEnumName());
             if (declarationEnum == null || !declarationEnum.name().equals(value.enumName())) return false;
             for (Ast.EnumVariant declared : declarationEnum.variants()) {
                 if (!declared.name().equals(value.variantName())) continue;
                 if (declared.tag() != value.tag()) return false;
                 if (declared.payload() == null) return value.payload() == null;
-                return value.payload() instanceof ReadonlyRecordValue fields
-                        && fields.keySet().equals(declared.payload().recordMembers().keySet())
-                        && oresTypeMatches(fields, declared.payload());
+                return value.payload() != null
+                        && value.payload().keySet().equals(declared.payload().recordMembers().keySet())
+                        && oresTypeMatches(value.payload(), declared.payload());
             }
             return false;
         }
@@ -8074,12 +8077,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.ConstructorPattern constructor) {
                 String name = constructor.constructor();
-                if (value instanceof EnumValue variant) {
+                if (value instanceof dev.oreslang.runtime.NominalMessageValue variant) {
                     String expected = variant.enumName() + "." + variant.variantName();
                     if (!name.equals(expected) || !validNominalEnum(variant)) return false;
                     if (variant.payload() == null) return constructor.arguments().isEmpty();
                     return constructor.arguments().size() == 1
-                            && patternMatches(constructor.arguments().getFirst(), variant.payload(), bindings);
+                            && patternMatches(constructor.arguments().getFirst(),
+                                    new ReadonlyRecordValue(variant.payload()), bindings);
                 }
                 if (name.equals("Some")) {
                     if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
@@ -8282,7 +8286,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             Ast.EnumDecl declarationEnum = findEnum(name);
-            if (declarationEnum != null) return value instanceof EnumValue enumValue
+            if (declarationEnum != null) return value instanceof dev.oreslang.runtime.NominalMessageValue enumValue
                     && enumValue.qualifiedEnumName().equals(qualifiedEnumName(declarationEnum))
                     && validNominalEnum(enumValue);
             if (name.equals("Option")) return value instanceof OptionValue;
@@ -8313,7 +8317,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private String oresRuntimeTypeName(Object value) {
             if (value instanceof OresObject object) return object.klass.name();
-            if (value instanceof EnumValue enumValue) return enumValue.enumName();
+            if (value instanceof dev.oreslang.runtime.NominalMessageValue enumValue) return enumValue.enumName();
             if (value instanceof OptionValue) return "Option";
             if (value instanceof ResultValue) return "Result";
             if (value instanceof ActorRuntime.ActorOutput<?>) return "ActorOutput";
@@ -9171,8 +9175,6 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record EnumNamespace(Ast.EnumDecl declaration) { }
-    private record EnumValue(String qualifiedEnumName, String enumName,
-                             String variantName, long tag, Object payload) { }
 
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
