@@ -165,6 +165,53 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void perChannelWaiterQuotaStillAppliesToMixedFutureSelections() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        var first = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+        var sharedProducer = new OresFuture<Integer>();
+
+        // Global pending-selection quota is not exhausted, but this channel's
+        // own one-waiter budget is. Reject the entire heterogeneous selection.
+        var rejected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(sharedProducer),
+                ChannelRuntime.read(channel))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        var failure = assertThrows(CompletionException.class, rejected::join);
+        assertTrue(failure.getCause()
+                instanceof ChannelRuntime.ChannelBackpressureException);
+        assertEquals(0, sharedProducer.pendingRuntimeWaiterCount());
+        assertFalse(sharedProducer.isDone());
+        assertFalse(first.isDone());
+
+        // Failed arbitration may neither steal the queued read nor retain a
+        // Future subscriber. The earlier registration is still deliverable.
+        assertEquals(ChannelRuntime.SelectOperation.WRITE,
+                ChannelRuntime.SelectSet.of(ChannelRuntime.write(channel, 31))
+                        .selectAsync().join().operation());
+        assertEquals(31, first.join().value());
+        assertTrue(sharedProducer.completeFromRuntime(99));
+    }
+
+    @Test
+    void readyFutureWinsBeforePerChannelQuotaIsEvaluated() {
+        var channel = new ChannelRuntime.Channel<Integer>(0, 1);
+        var waiting = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel))
+                .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
+        try {
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.await(OresFuture.completed(7)),
+                    ChannelRuntime.read(channel))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
+            assertEquals(0, selected.index());
+            assertEquals(7, selected.value());
+            assertFalse(waiting.isDone());
+        } finally {
+            waiting.cancel(false);
+        }
+    }
+
+    @Test
     void fullPendingQuotaCannotSuppressAnImmediatelyReadyFutureOrRead() {
         var pending = new java.util.ArrayList<OresFuture<ChannelRuntime.SelectResult>>();
         try {
