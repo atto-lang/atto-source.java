@@ -27,13 +27,13 @@ def verify() -> None:
         raise AssertionError("invalid Native Image stdlib resource pattern")
 
     source = LOADER.read_text(encoding="utf-8")
-    declaration = re.search(r"PACKAGED_SOURCES\\s*=\\s*Set\\.of\\(([^)]*)\\)", source)
+    declaration = re.search(r"PACKAGED_SOURCES\s*=\s*Set\.of\(([^)]*)\)", source)
     if declaration is None:
         raise AssertionError("cannot identify the closed core-library registry")
     permitted = re.findall(r'"([^"]+)"', declaration.group(1))
     if not permitted or len(permitted) != len(set(permitted)):
         raise AssertionError("invalid or duplicate PACKAGED_SOURCES")
-    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+\\.ores", name) for name in permitted):
+    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+\.ores", name) for name in permitted):
         raise AssertionError("malformed stdlib registry filename")
 
     actual = {path.name for path in SOURCES.glob("*.ores")}
