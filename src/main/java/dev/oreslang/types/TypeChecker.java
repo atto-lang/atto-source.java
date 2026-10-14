@@ -1997,10 +1997,9 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
-            if (containsTypedMapType(value)
-                    && !(assignment.target() instanceof Ast.IndexExpr)) {
+            if (containsTypedMapType(value)) {
                 throw new IllegalArgumentException(
-                        "typed Map cannot escape through an assignment without verified ownership transfer");
+                        "typed Map cannot escape through any assignment (including array indexes) without verified ownership transfer");
             }
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
