@@ -105,6 +105,30 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void finalConstInitializersExecuteThroughPureEvaluatorWithBothConstructors() throws Exception {
+        String source = """
+                define class Synthesized as
+                  final const int answer: (2 + 3) * 4
+                end
+                define class Explicit as
+                  final const int answer: 2 * 3
+                  constructor() { }
+                end
+
+                pub routine main(): void {
+                  val a = new Synthesized();
+                  val b = new Explicit();
+                  stdio.stdout.write(a.answer);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.answer);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("20|6", run(source));
+    }
+
+    @Test
     void parserRejectsJavaStyleDuplicateNestedAndTypedConstructors() {
         IllegalArgumentException javaStyle = assertThrows(
                 IllegalArgumentException.class,
