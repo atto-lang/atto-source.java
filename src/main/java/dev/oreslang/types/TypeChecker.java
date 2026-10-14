@@ -3409,10 +3409,16 @@ public final class TypeChecker {
         if (expr instanceof Ast.MatchExpr valueMatch) {
             Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
             Type declaredResult = valueMatch.resultType() == null ? null
-                    : deref(resolve(valueMatch.resultType(), generics, self));
+                    : resolve(valueMatch.resultType(), generics, self);
             if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
                 throw new IllegalArgumentException(
                         "value match result parameter must be a known, non-void value type");
+            }
+            if (declaredResult instanceof Borrow) {
+                // Inferred value matches already reject branch-local loan escape.
+                // An explicit type must not circumvent that check by erasing &T.
+                throw new IllegalArgumentException(
+                        "value match cannot produce an explicit borrowed result until loan escape is proven");
             }
             Type result = declaredResult;
             List<Ast.MatchArm> proofArms = new ArrayList<>();
