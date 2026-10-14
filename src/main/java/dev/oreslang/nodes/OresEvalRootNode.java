@@ -768,13 +768,13 @@ public final class OresEvalRootNode extends RootNode {
                 // temporary affine Map restriction. Only explicitly designed
                 // move/borrow signatures may transfer a mutable Map later.
                 for (Object argument : current.arguments()) {
-                    if (argument instanceof OresKeyedMap<?, ?>) {
+                    if (Env.containsEmbeddedTypedMap(argument, new IdentityHashMap<>(), 0)) {
                         throw new SecurityException(
                                 "typed Map call arguments require verified ownership transfer");
                     }
                 }
                 Object result = current.owner().executeRaw(current);
-                if (result instanceof OresKeyedMap<?, ?>) {
+                if (Env.containsEmbeddedTypedMap(result, new IdentityHashMap<>(), 0)) {
                     throw new SecurityException(
                             "typed Map return requires verified exclusive move semantics");
                 }
