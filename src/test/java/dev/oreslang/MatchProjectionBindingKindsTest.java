@@ -74,6 +74,28 @@ final class MatchProjectionBindingKindsTest {
     }
 
     @Test
+    void wholePatternDefaultCanBeOverriddenPerField() throws Exception {
+        String source = """
+                fnc extract(Option<{v: int, b: int}> item): int {
+                  do match item over
+                    on Some as const {v, let b} -> {
+                      b = b + 1;
+                      return v + b;
+                    }
+                    on None -> { return 0; }
+                  end
+                }
+                pub routine main(): void {
+                  val Option<{v: int, b: int}> item =
+                      Some(struct{v: int, b: int}{v: 6, b: 2});
+                  stdio.stdout.write(extract(item));
+                  return;
+                }
+                """;
+        assertEquals("9", outputOf(source));
+    }
+
+    @Test
     void tupleProjectionUsesPositionsAndIndependentKinds() throws Exception {
         String source = """
                 fnc extract(Option<Tuple[int, int]> item): int {
