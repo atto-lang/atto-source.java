@@ -177,7 +177,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "Map", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -1514,7 +1514,7 @@ public final class TypeChecker {
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
                                 "Tuple", "Array", "List", "Vector", "Slice",
-                                "FixedArray", "FixedList", "DynamicStruct", "Option",
+                                "FixedArray", "FixedList", "DynamicStruct", "Map", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
                                 "MutexGuard", "Mutex", "SharedMutex", "Channel",
@@ -7427,11 +7427,12 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "Map key type must be String, Symbol or String | Symbol");
                 }
+                if (!isRuntimeMapValueSource(ref.arguments().get(1))) {
+                    throw new IllegalArgumentException(
+                            "v1 Map value type must be a runtime-reifiable scalar: int, bool, String or Symbol");
+                }
                 Type key = resolve(ref.arguments().getFirst(), generics, self);
                 Type value = resolve(ref.arguments().get(1), generics, self);
-                if (value == Primitive.VOID || value instanceof Borrow) {
-                    throw new IllegalArgumentException("Map value type must be owned and non-void");
-                }
                 yield new Named("$builtin$Map", List.of(key, value));
             }
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
@@ -7829,6 +7830,15 @@ public final class TypeChecker {
     private Ast.TypeAliasDecl findTypeAlias(String name) {
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
+    }
+
+    private boolean isRuntimeMapValueSource(Ast.TypeRef ref) {
+        if (ref.inferArguments() || !ref.arguments().isEmpty() || ref.isUnion()
+                || ref.isBorrow()) return false;
+        return Set.of("int", "i8", "i16", "i32", "i64", "u8",
+                "u16", "u32", "u64", "uint", "bigint",
+                "bool", "Bool", "String", "string", "Symbol")
+                .contains(ref.name());
     }
 
     private boolean isRuntimeMapKeyAtom(Ast.TypeRef ref) {
