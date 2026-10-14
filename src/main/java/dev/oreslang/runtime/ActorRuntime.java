@@ -1435,6 +1435,10 @@ public final class ActorRuntime implements AutoCloseable {
         Object prepared = isPrivateKind(cell.kind)
                 ? isolateCopy(value)
                 : freezeForTransport(value);
+        // Validate the immutable snapshot actually published. A hostile or
+        // concurrently mutated input collection may differ from preflight.
+        validateMessageGraph(prepared);
+        rejectDataFreezeCapabilities(prepared, new IdentityHashMap<>(), 0);
         long bytes = estimateFrozenBytes(
                 prepared,
                 new IdentityHashMap<>(),
@@ -4781,6 +4785,18 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // Recheck the snapshot, not just caller-owned mutable input.
+        // Collection getters/iterators may return different values in the
+        // preflight scan and copy, laundering forbidden capabilities.
+        validateMessageGraph(prepared);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
@@ -5736,7 +5752,13 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        Object frozen = freeze(value, new IdentityHashMap<>(), 0);
+        // A source collection can mutate between validation and copying.
+        // Returning an immutable container is insufficient when it contains
+        // live capabilities; enforce data-only admission on the snapshot.
+        validateMessageGraph(frozen);
+        rejectDataFreezeCapabilities(frozen, new IdentityHashMap<>(), 0);
+        return frozen;
     }
 
     private static Object freezeForTransport(Object value) {
@@ -5806,7 +5828,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                List<Object> frozen = new ArrayList<>(list.size());
+                int size = list.size();
+                requireGraphNodeCapacity(0L, size);
+                List<Object> frozen = new ArrayList<>(size);
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
                 return List.copyOf(frozen);
             }
@@ -5869,7 +5893,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                List<Object> copy = new ArrayList<>(list.size());
+                int size = list.size();
+                requireGraphNodeCapacity(0L, size);
+                List<Object> copy = new ArrayList<>(size);
                 for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
                 return Collections.unmodifiableList(copy);
             }
@@ -6100,7 +6126,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
-        if (value instanceof Enum<?>) return 24L;
+        // Arbitrary Java enums can contain mutable instance fields.
+        if (value instanceof ActorKind) return 24L;
         return -1L;
     }
 
@@ -6151,7 +6178,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
-        if (value instanceof Enum<?>) return 24L;
+        // Arbitrary Java enums can contain mutable instance fields.
+        if (value instanceof ActorKind) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
@@ -6197,7 +6225,7 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof ActorKind || value instanceof UUID || value instanceof ActorId
                 || value instanceof ActorGroupId;
     }
 
