@@ -451,22 +451,39 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         RuntimeWaiterRegistration<T> waiter =
                 new RuntimeWaiterRegistration<>(this, callback);
         Object observed;
+        boolean queued;
         synchronized (waiterAdmissionLock) {
             observed = state.get();
-            if (observed == PENDING
+            queued = observed == PENDING
                     || (observed instanceof Cancelled
-                            && !cancelRevocationComplete.get())) {
+                            && !cancelRevocationComplete.get());
+            if (queued) {
                 // If terminal CAS races after this observation, the producer
-                // must enter the same lock before polling waiters. A pending
-                // cancellation keeps registrations queued until revocation
-                // completes, so no host callback runs before its barrier.
+                // must enter the same lock before polling waiters. Pending
+                // cancellation cannot notify before its revocation barrier.
                 waiters.add(waiter);
-                return waiter;
             }
         }
-        // Terminal callbacks run outside the admission lock. Already-settled
-        // futures need no queue node, preventing post-drain retention.
-        notifyWaiter(waiter, observed);
+        if (!queued) {
+            // No producer queue node is needed for an already-ready Future.
+            notifyWaiter(waiter, observed);
+            return waiter;
+        }
+
+        // A producer may have settled between the pending-state observation
+        // and returning this registration. Re-check after publication: either
+        // take ownership of a still-queued waiter and notify it, or leave it
+        // to the producer's drain. This second half of the handshake protects
+        // against missed terminal wakeups without running callbacks under the
+        // admission lock or before cancellation revocation completes.
+        Object afterAdmission = runtimeSelectReadyStateOrNull();
+        if (afterAdmission != null) {
+            boolean reclaimed;
+            synchronized (waiterAdmissionLock) {
+                reclaimed = waiters.remove(waiter);
+            }
+            if (reclaimed) notifyWaiter(waiter, afterAdmission);
+        }
         return waiter;
     }
 
