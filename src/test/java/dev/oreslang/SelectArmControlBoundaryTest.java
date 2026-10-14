@@ -49,19 +49,27 @@ final class SelectArmControlBoundaryTest {
     }
 
     @Test
-    void doSelectCanContinueEnclosingLoop() {
+    void doSelectCanContinueAndBreakEnclosingLoopAtRuntime() throws Exception {
         String source = """
                 pub fnc main(): void {
+                  let int iterations = 0;
                   loop {
+                    iterations = iterations + 1;
                     do select {
                       default: {
-                        continue;
+                        if iterations < 3; then
+                          continue;
+                        fi
+                        break;
                       }
                     }
                   }
+                  stdio.stdout.write(iterations);
+                  return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("3", SelectNestedReturnContractTest.run(source));
     }
 
     @Test
