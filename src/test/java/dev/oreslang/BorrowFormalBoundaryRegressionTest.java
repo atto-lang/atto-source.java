@@ -150,4 +150,48 @@ final class BorrowFormalBoundaryRegressionTest {
                 }
                 """, "SharedMutex.new requires an owned value");
     }
+
+    @Test
+    void lexicalBorrowMustNotBeErasedToAny() {
+        reject(BOX + """
+                fnc bad(): Any {
+                  val Box box = new Box();
+                  val Any erased = rt borrow box;
+                  return erased;
+                }
+                """, "borrowed reference cannot be erased to an owned type");
+    }
+
+    @Test
+    void ownedValueMustNotBeForgedIntoBorrowByAnnotation() {
+        reject(BOX + """
+                fnc bad(): void {
+                  val &Box forged = new Box();
+                  return;
+                }
+                """, "borrow-typed binding requires a proven borrowed initializer");
+    }
+
+    @Test
+    void sharedBorrowMustNotBeStrengthenedToMutableType() {
+        reject(BOX + """
+                fnc bad(): void {
+                  let Box box = new Box();
+                  val &mut Box forged = rt borrow box;
+                  return;
+                }
+                """, "shared borrow cannot be promoted to a mutable borrow");
+    }
+
+    @Test
+    void ordinaryTypedLexicalBorrowRemainsSupported() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
+                fnc good(): void {
+                  let Box box = new Box();
+                  val &Box view = rt borrow box;
+                  stdio.println(view.value);
+                  return;
+                }
+                """)));
+    }
 }
