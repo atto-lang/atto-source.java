@@ -609,7 +609,16 @@ public final class OwnershipChecker {
                         discardingSelectReturn = previousDiscard;
                     }
                 } else {
-                    checkBlock(arm.body(), armScope, returnType);
+                    int savedLoopDepth = loopDepth;
+                    loopDepth = 0;
+                    try {
+                        // Same activation for blocking/immediate select:
+                        // return targets the callable, but break/continue
+                        // cannot target an outer loop.
+                        checkBlock(arm.body(), armScope, returnType);
+                    } finally {
+                        loopDepth = savedLoopDepth;
+                    }
                 }
                 armScope.close();
                 Map<VarState, StateSnapshot> exit = stateSnapshot(scope);
