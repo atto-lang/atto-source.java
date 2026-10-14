@@ -851,11 +851,15 @@ public final class Ast {
             java.util.Objects.requireNonNull(value, "value match return expression");
         }
     }
-    public record MatchExpr(Expr subject, List<MatchValueArm> arms) implements Expr {
+    public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
         public MatchExpr {
             java.util.Objects.requireNonNull(subject, "value match subject");
             arms = List.copyOf(arms);
             if (arms.isEmpty()) throw new IllegalArgumentException("value match requires arms");
+        }
+        /** Backwards-compatible inferred-result expression. */
+        public MatchExpr(Expr subject, List<MatchValueArm> arms) {
+            this(subject, arms, null);
         }
     }
 
