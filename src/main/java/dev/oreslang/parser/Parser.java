@@ -1874,10 +1874,13 @@ public final class Parser {
         return parseStaticSelectBody(mode, policy, explicitDo, false);
     }
 
-    private Ast.Expr parseStaticSelectExpression() {
+    private Ast.Expr parseStaticSelectExpression(Ast.WaitMode mode) {
+        if (mode == Ast.WaitMode.IMMEDIATE) {
+            throw error(peek(), "value-select expressions require blocking select or nb select");
+        }
         Ast.SelectPolicy policy = parseSelectPolicy();
         return new Ast.StaticSelectExpr(
-                parseStaticSelectBody(Ast.WaitMode.BLOCKING, policy, false, true));
+                parseStaticSelectBody(mode, policy, false, true));
     }
 
     private List<Ast.Stmt> parseSelectArmBlock(boolean valueProducing) {
@@ -2021,6 +2024,16 @@ public final class Parser {
     }
 
     /** Look ahead without reserving contextual policy identifiers globally. */
+    private boolean staticSelectUsesDynamicCases() {
+        int saved = current;
+        try {
+            parseSelectPolicy();
+            return check(FROM);
+        } finally {
+            current = saved;
+        }
+    }
+
     private boolean isSelectPolicyToken() {
         return check(FIRST) || check(IDENT)
                 && (peek().lexeme().equals("first")
@@ -3082,7 +3095,12 @@ public final class Parser {
             }
             if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.NONBLOCKING);
             if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.NONBLOCKING);
-            if (match(SELECT)) return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+            if (match(SELECT)) {
+                if (staticSelectUsesDynamicCases()) {
+                    return parseDynamicSelect(Ast.WaitMode.NONBLOCKING);
+                }
+                return parseStaticSelectExpression(Ast.WaitMode.NONBLOCKING);
+            }
             throw error(previous(), "'nb' must prefix readch, writech, select, or cb writech");
         }
 
@@ -3100,14 +3118,10 @@ public final class Parser {
         if (match(READCH)) return parseChannelOperation(Ast.ChannelOperation.READ, Ast.WaitMode.BLOCKING);
         if (match(WRITECH)) return parseChannelOperation(Ast.ChannelOperation.WRITE, Ast.WaitMode.BLOCKING);
         if (match(SELECT)) {
-            if (check(FROM) || isSelectPolicyToken()) {
-                int saved = current;
-                Ast.SelectPolicy policy = parseSelectPolicy();
-                boolean dynamic = check(FROM);
-                current = saved;
-                if (dynamic) return parseDynamicSelect(Ast.WaitMode.BLOCKING);
+            if (staticSelectUsesDynamicCases()) {
+                return parseDynamicSelect(Ast.WaitMode.BLOCKING);
             }
-            return parseStaticSelectExpression();
+            return parseStaticSelectExpression(Ast.WaitMode.BLOCKING);
         }
 
         return parsePostfix();
