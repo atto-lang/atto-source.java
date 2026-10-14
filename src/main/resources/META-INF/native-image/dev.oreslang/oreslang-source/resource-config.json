@@ -1,0 +1,9 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "dev/oreslang/std/(core|testing|assert|trace|http_wire)\\.ores"
+      }
+    ]
+  }
+}
