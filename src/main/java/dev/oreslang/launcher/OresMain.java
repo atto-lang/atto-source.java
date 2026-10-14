@@ -13,6 +13,11 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
 import dev.oreslang.runtime.RuntimePermissions;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -202,7 +207,7 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
+        String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -236,7 +241,7 @@ public final class OresMain {
             if (!filename.endsWith(".ores")) {
                 throw new UsageException("--build-analysis currently requires a .ores source file");
             }
-            String source = Files.readString(path);
+            String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
                 OresCompiler.validateForIsolate(source, policy);
             }
@@ -283,6 +288,23 @@ public final class OresMain {
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
+    }
+
+    // Cap the directly supplied .ores CLI source before parsing or warning scans.
+    // Imported modules require their own separately enforced admission budgets.
+    private static String readBoundedOresSource(Path path) throws IOException {
+        final int maxBytes = 16 * 1024 * 1024;
+        byte[] bytes;
+        try (InputStream in = Files.newInputStream(path)) {
+            bytes = in.readNBytes(maxBytes + 1);
+        }
+        if (bytes.length > maxBytes) {
+            throw new IllegalArgumentException("Oreslang source exceeds 16 MiB CLI limit");
+        }
+        return StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes)).toString();
     }
 
     private static final class UsageException extends IllegalArgumentException {
