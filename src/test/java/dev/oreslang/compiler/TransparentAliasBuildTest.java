@@ -13,7 +13,7 @@ final class TransparentAliasBuildTest {
     @Test
     void libraryBuildKeepsPublicAliasesButNotUnusedPrivateOnes() {
         Ast.Program checked = TypeChecker.check(Parser.parse("""
-                define module products
+                define module products as
                     type Hidden = int;
                     define pub type Entry<K,V> = record { key: K, value: V };
                     define pub type alias Pair<K,V> as Entry<K,V>;
