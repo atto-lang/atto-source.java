@@ -37,6 +37,39 @@ final class TypedDispatchReturnIsolationTest {
     }
 
     @Test
+    void directReturnMatchWithoutRetAnnotationUsesCallableResultType() throws Exception {
+        String source = """
+                fnc classify(bool ready): int {
+                    return match ready over
+                        on true -> { return 42; }
+                        on _ -> { return 0; }
+                    end
+                }
+                pub fnc main(): void {
+                    stdio.println(classify(true));
+                    return;
+                }
+                """;
+        assertEquals("42\n", execute(source));
+    }
+
+    @Test
+    void plainValueMatchCannotBorrowEnclosingCallableReturnContract() {
+        IllegalArgumentException diagnostic = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    fnc classify(bool ready): int {
+                        const answer: int = match ready over
+                            on true -> { return 42; }
+                            on _ -> { return 0; }
+                        end;
+                        return answer;
+                    }
+                    """));
+        assertTrue(diagnostic.getMessage().contains("<ret=Type>"),
+                diagnostic::toString);
+    }
+
+    @Test
     void blockingDoSelectReturnExitsEnclosingCallableWithoutWarning() throws Exception {
         String source = """
                 fnc compute(): int {
