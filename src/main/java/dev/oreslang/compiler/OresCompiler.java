@@ -22,6 +22,23 @@ public final class OresCompiler {
         return program;
     }
 
+    /**
+     * Complete front-end admission for source units with linker-verified
+     * public class signatures. TypeChecker's linked-only entry point performs
+     * type analysis, not executable admission; ownership checks must still run.
+     *
+     * Callers must obtain linkedClasses/linkedAliases from a trusted resolver
+     * that binds each import to its exact source file and public declaration.
+     */
+    public static Ast.Program analyzeWithImportedClasses(
+            Ast.Program program,
+            java.util.Map<String, Ast.ClassDecl> linkedClasses,
+            java.util.Map<String, java.util.Map<String, Ast.TypeAliasDecl>> linkedAliases) {
+        program = TypeChecker.checkTypesWithImportedClasses(program, linkedClasses, linkedAliases);
+        OwnershipChecker.check(program);
+        return program;
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
