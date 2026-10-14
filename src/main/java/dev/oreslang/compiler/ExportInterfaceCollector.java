@@ -1,7 +1,6 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
-import dev.oreslang.ast.AnnotationExpander;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -91,10 +90,16 @@ public final class ExportInterfaceCollector {
                             annotations(sig, klass.constructor().annotations());
                         }
                     } else {
-                        // Synthesized constructors consume positional field types.
-                        // This may expose private field *types* in the contract,
-                        // but not private names or bodies. Never guess an inferred
-                        // field type until typed declarations are available.
+                        // Synthesized constructors currently consume all
+                        // positional fields. Do NOT leak private field layouts
+                        // into an exported descriptor until an opaque ABI hash
+                        // and native layout contract are implemented.
+                        for (Ast.FieldDecl f : klass.fields()) {
+                            if (f.visibility() != Ast.Visibility.PUBLIC) {
+                                throw new IllegalArgumentException(
+                                        "synthetic constructor with private fields has no safe public interface");
+                            }
+                        }
                         field(sig, "synthesized-constructor");
                         for (Ast.FieldDecl f : klass.fields()) requiredType(sig, f.type());
                     }
