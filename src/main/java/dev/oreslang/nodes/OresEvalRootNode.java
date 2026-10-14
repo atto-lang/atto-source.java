@@ -6034,7 +6034,10 @@ public final class OresEvalRootNode extends RootNode {
                 Invokable hostFunction = hostFunctions.get(name.name());
                 if (hostFunction != null) return hostFunction;
                 Ast.EnumDecl declarationEnum = findEnum(name.name());
-                if (declarationEnum != null) return new EnumNamespace(declarationEnum);
+                if (declarationEnum != null) {
+                    requireLexicalNamespaceAccess(env, name.name(), "same-file enum");
+                    return new EnumNamespace(declarationEnum);
+                }
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) {
                     requireLexicalNamespaceAccess(env, name.name(), "module");

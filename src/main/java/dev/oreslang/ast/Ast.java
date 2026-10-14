@@ -500,8 +500,22 @@ public final class Ast {
     /** Closed, nominal enum. Numeric tags are stable protocol identifiers. */
     public record EnumDecl(String name, Visibility visibility, List<EnumVariant> variants) implements Decl {
         public EnumDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("enum requires a name");
+            if (visibility == null) throw new IllegalArgumentException("enum requires visibility");
             variants = List.copyOf(variants);
             if (variants.isEmpty()) throw new IllegalArgumentException("enum requires at least one variant");
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            java.util.HashSet<Long> tags = new java.util.HashSet<>();
+            for (EnumVariant variant : variants) {
+                if (!names.add(variant.name())) throw new IllegalArgumentException(
+                        "duplicate enum variant name '" + variant.name() + "'");
+                if (!tags.add(variant.tag())) throw new IllegalArgumentException(
+                        "duplicate enum variant tag " + variant.tag());
+                if (variant.payload() != null && !variant.payload().isRecordType()) {
+                    throw new IllegalArgumentException(
+                            "enum variant '" + variant.name() + "' requires a closed record payload");
+                }
+            }
         }
     }
 

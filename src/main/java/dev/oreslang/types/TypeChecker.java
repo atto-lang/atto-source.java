@@ -1346,6 +1346,14 @@ public final class TypeChecker {
                         + "'; same-file placement does not grant actor dependency authority");
     }
 
+    private void rejectUnimportedEnumNamespace(Ast.EnumDecl target) {
+        if (!insideActorLexicalBoundary()) return;
+        throw new IllegalArgumentException(
+                "actor '" + lexicalClassOrigin.name()
+                        + "' cannot implicitly access same-file enum '" + target.name()
+                        + "'; move the dependency to another source unit and import it explicitly");
+    }
+
     private void rejectUnimportedClassNamespace(Ast.ClassDecl target) {
         if (!insideActorLexicalBoundary() || lexicalClassOrigin == target) return;
         throw new IllegalArgumentException(
@@ -1375,6 +1383,14 @@ public final class TypeChecker {
                             + "' cannot use same-file "
                             + (localInterface.moduleContract() ? "module contract '" : "interface '")
                             + name + "'; move the type to another source unit and import it explicitly");
+        }
+
+        Ast.EnumDecl localEnum = findEnum(name);
+        if (localEnum != null) {
+            throw new IllegalArgumentException(
+                    "actor '" + lexicalClassOrigin.name()
+                            + "' cannot use same-file enum '" + name
+                            + "'; move the dependency to another source unit and import it explicitly");
         }
 
         Ast.TypeAliasDecl localAlias = findTypeAlias(name);
@@ -1937,7 +1953,10 @@ public final class TypeChecker {
                 return moduleShape(moduleNamespace);
             }
             Ast.EnumDecl enumNamespace = findEnum(name.name());
-            if (enumNamespace != null) return new Named("$enum$" + qualifiedEnumName(enumNamespace), List.of());
+            if (enumNamespace != null) {
+                rejectUnimportedEnumNamespace(enumNamespace);
+                return new Named("$enum$" + qualifiedEnumName(enumNamespace), List.of());
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) {
                 rejectUnimportedClassNamespace(classNamespace);
@@ -2197,6 +2216,7 @@ public final class TypeChecker {
                     && env.lookup(namespace.name()) == null) {
                 Ast.EnumDecl declarationEnum = findEnum(namespace.name());
                 if (declarationEnum != null) {
+                    rejectUnimportedEnumNamespace(declarationEnum);
                     if (call.typeArgumentsPresent()) {
                         throw new IllegalArgumentException("enum variant constructors do not accept type arguments");
                     }
@@ -3025,6 +3045,7 @@ public final class TypeChecker {
                     && env.lookup(enumName.name()) == null) {
                 Ast.EnumDecl declarationEnum = findEnum(enumName.name());
                 if (declarationEnum != null) {
+                    rejectUnimportedEnumNamespace(declarationEnum);
                     Ast.EnumVariant variant = enumVariant(declarationEnum, member.member());
                     Type result = new Named(qualifiedEnumName(declarationEnum), List.of());
                     return new Function(variant.payload() == null

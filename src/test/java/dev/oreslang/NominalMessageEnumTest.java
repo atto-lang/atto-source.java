@@ -116,4 +116,37 @@ final class NominalMessageEnumTest {
                         """)));
     }
 
+    @Test
+    void forgedAstCannotIntroduceDuplicateTagsOrNames() {
+        Ast.EnumVariant reset = new Ast.EnumVariant("Reset", null, 1);
+        assertThrows(IllegalArgumentException.class, () -> new Ast.EnumDecl(
+                "Messages", Ast.Visibility.PRIVATE,
+                java.util.List.of(reset, new Ast.EnumVariant("Delta", null, 1))));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.EnumDecl(
+                "Messages", Ast.Visibility.PRIVATE,
+                java.util.List.of(reset, new Ast.EnumVariant("Reset", null, 2))));
+        assertThrows(IllegalArgumentException.class, () -> new Ast.EnumDecl(
+                "Messages", Ast.Visibility.PRIVATE,
+                java.util.List.of(new Ast.EnumVariant("Unsafe", Ast.TypeRef.simple("int"), 1))));
+    }
+
+    @Test
+    void actorCannotObtainSameFileEnumConstructorOrMessageType() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                DECLARATION + """
+                        define actor Worker as
+                          pub run(): void {
+                            val message = Messages.Ready();
+                            return;
+                          }
+                        end
+                        """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                DECLARATION + """
+                        define actor Worker as
+                          pub receive(Messages message): void { return; }
+                        end
+                        """)));
+    }
+
 }
