@@ -743,20 +743,6 @@ public final class ChannelRuntime {
         return false;
     }
 
-    /** All participating channel arms must fit their budgets, or none remain. */
-    private static boolean exceedsPendingBudgetLocked(SelectRegistration selection) {
-        for (CaseRegistration registration : selection.registrations) {
-            if (registration.selectCase instanceof ReadCase<?>
-                    || registration.selectCase instanceof WriteCase<?>) {
-                Channel<?> channel = registration.channel();
-                if (channel.registrations.size() > channel.maxPendingRegistrations) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
         selection.registered = true;
