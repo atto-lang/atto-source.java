@@ -1429,6 +1429,9 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         destructure.initializer(), seen);
             }
+            if (stmt instanceof Ast.ThrowStmt thrown) {
+                return expressionContainsPotentialSuspension(thrown.value(), seen);
+            }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 return ret.value() != null
                         && expressionContainsPotentialSuspension(
