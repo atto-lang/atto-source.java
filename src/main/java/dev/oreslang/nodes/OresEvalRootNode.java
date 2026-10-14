@@ -8131,6 +8131,11 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 for (Ast.FieldDecl required : contract.fields()) {
                     if (required.visibility() != Ast.Visibility.PUBLIC) continue;
+                    // Inferred class field types cannot be proved against a
+                    // runtime structural contract without resolved type
+                    // metadata. Fail closed rather than passing null to the
+                    // runtime matcher or accepting an unchecked member.
+                    if (required.type() == null) return false;
                     Object actual = publicStructuralMember(value, required.name());
                     if (actual == Env.MISSING
                             || !oresTypeMatches(
@@ -8150,6 +8155,7 @@ public final class OresEvalRootNode extends RootNode {
                             || actual.isStatic()
                             || actual.isAbstract()
                             || actual.async() != required.async()
+                            || actual.suspends() != required.suspends()
                             || actual.genericParameters().size()
                                 != required.genericParameters().size()) {
                         return false;
