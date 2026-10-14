@@ -854,7 +854,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, ARM_RESULT, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, ARM_RESULT, BREAK, CONTINUE, THROW, TERMINAL
         }
 
         private record SourceFlow(
@@ -888,34 +888,63 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
-                return new SourceFlow(
-                        SourceFlowKind.THROW,
-                        null,
-                        Objects.requireNonNull(failure, "failure"),
-                        0, null);
+                Throwable cause = OresFuture.unwrap(
+                        Objects.requireNonNull(failure, "failure"));
+                SourceFlowKind kind = cause instanceof Error
+                        || cause instanceof java.util.concurrent.CancellationException
+                        || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException
+                        ? SourceFlowKind.TERMINAL : SourceFlowKind.THROW;
+                return new SourceFlow(kind, null, cause, 0, null);
             }
         }
 
+        private static boolean sourceHostFatal(Throwable failure) {
+            return failure instanceof VirtualMachineError
+                    || failure instanceof ThreadDeath
+                    || failure instanceof LinkageError;
+        }
+
         /**
-         * Merge one cleanup outcome into the execution-context completion.
-         * The first guest failure keeps its identity; cleanup failures become
-         * suppressed causes. In contrast, a failed cleanup overrides a pending
-         * ordinary/lexical result. This is independent of carrier threads.
+         * Preserve a terminal failure through guest cleanup/return and retain
+         * bounded suppressed diagnostics. A host-fatal cleanup has precedence
+         * over ordinary cancellation; ordinary guest failures retain their
+         * existing first-failure precedence on this integration branch.
          */
         private static SourceFlow sourceCleanup(SourceFlow pending, Throwable failure) {
             Objects.requireNonNull(pending, "pending");
-            Objects.requireNonNull(failure, "failure");
-            if (pending.kind() == SourceFlowKind.THROW) {
-                preserveCleanupFailure(pending.failure(), failure);
+            SourceFlow cleanup = SourceFlow.throwing(failure);
+            if (sourceHostFatal(pending.failure())) {
+                preserveCleanupFailure(pending.failure(), cleanup.failure());
                 return pending;
             }
-            return SourceFlow.throwing(failure);
+            if (sourceHostFatal(cleanup.failure())) {
+                preserveCleanupFailure(cleanup.failure(), pending.failure());
+                return cleanup;
+            }
+            if (pending.kind() == SourceFlowKind.TERMINAL) {
+                preserveCleanupFailure(pending.failure(), cleanup.failure());
+                return pending;
+            }
+            if (cleanup.kind() == SourceFlowKind.TERMINAL) {
+                preserveCleanupFailure(cleanup.failure(), pending.failure());
+                return cleanup;
+            }
+            if (pending.kind() == SourceFlowKind.THROW) {
+                preserveCleanupFailure(pending.failure(), cleanup.failure());
+                return pending;
+            }
+            return cleanup;
         }
 
         private static SourceFlow sourceFinally(SourceFlow pending, SourceFlow cleanup) {
             if (cleanup.kind() == SourceFlowKind.NORMAL) return pending;
-            if (cleanup.kind() == SourceFlowKind.THROW)
+            if (cleanup.kind() == SourceFlowKind.THROW
+                    || cleanup.kind() == SourceFlowKind.TERMINAL) {
                 return sourceCleanup(pending, cleanup.failure());
+            }
+            // A guest finally return/break/arm-result cannot swallow actor
+            // cancellation or terminal host control signals.
+            if (pending.kind() == SourceFlowKind.TERMINAL) return pending;
             return cleanup;
         }
 
@@ -1169,7 +1198,7 @@ public final class OresEvalRootNode extends RootNode {
                             }
                             done(null);
                         }
-                        case THROW -> throw sourceFailure(flow.failure());
+                        case THROW, TERMINAL -> throw sourceFailure(flow.failure());
                         case ARM_RESULT -> throw new IllegalStateException(
                                 "ARM_RESULT escaped its owning value match frame");
                         case BREAK, CONTINUE ->
@@ -1182,7 +1211,7 @@ public final class OresEvalRootNode extends RootNode {
                 switch (flow.kind()) {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
-                    case THROW -> throw sourceFailure(flow.failure());
+                    case THROW, TERMINAL -> throw sourceFailure(flow.failure());
                     case ARM_RESULT -> throw new IllegalStateException(
                             "ARM_RESULT escaped its owning value match frame");
                     case BREAK, CONTINUE ->
@@ -2689,7 +2718,8 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
@@ -2735,7 +2765,8 @@ public final class OresEvalRootNode extends RootNode {
                                     t,
                                     SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2841,7 +2872,8 @@ public final class OresEvalRootNode extends RootNode {
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
                         finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
-                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
+                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                         finishAsyncForOf(t2, generator, flow, continuation);
                     } else {
                         runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
@@ -2876,7 +2908,8 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2928,7 +2961,8 @@ public final class OresEvalRootNode extends RootNode {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
                         } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                                || flow.kind() == SourceFlowKind.THROW
+                                || flow.kind() == SourceFlowKind.TERMINAL) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -3115,7 +3149,8 @@ public final class OresEvalRootNode extends RootNode {
                     } else {
                         continuation.accept(t, flow.value(), null);
                     }
-                } else if (flow.kind() == SourceFlowKind.THROW) {
+                } else if (flow.kind() == SourceFlowKind.THROW
+                        || flow.kind() == SourceFlowKind.TERMINAL) {
                     continuation.accept(t, null, flow.failure());
                 } else {
                     continuation.accept(t, null, new IllegalStateException(
