@@ -797,6 +797,10 @@ public final class Ast {
                 if (operation == ChannelOperation.WRITE && bindingName != null) {
                     throw new IllegalArgumentException("write select arm cannot bind a read value");
                 }
+                if (bindingName == null && mutableReferent) {
+                    throw new IllegalArgumentException(
+                            "select arm without a binding cannot request mutable referent access");
+                }
             }
             if (declaredBindingType != null
                     && (operation != ChannelOperation.READ || bindingName == null)) {
