@@ -53,7 +53,7 @@ final class MatchSelectArrowProjectionTest {
                 """;
         Ast.Program program = checked(source);
         var fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
-        assertTrue(((Ast.MatchStmt) fn.body().get(1)).explicitDo());
+        assertTrue(((Ast.MatchStmt) fn.body().get(1)).procedural());
         assertEquals("7:end", run(source));
     }
 
