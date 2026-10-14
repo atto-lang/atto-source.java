@@ -45,7 +45,7 @@ jobs:
       - name: Run ADT guest compiler/runtime conformance and stress tests
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest \
+            -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest,NumericPatternEqualityTest \
             test
       - name: Upload exact-head targeted test reports
         if: always()
