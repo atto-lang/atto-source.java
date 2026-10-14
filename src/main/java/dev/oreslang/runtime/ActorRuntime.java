@@ -1755,6 +1755,18 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
+        // Scheduler-level deferred cancellation is not enough for actors:
+        // this branch's STOP closes the control mailbox and revokes every
+        // per-task SerialExecutionTicket before any cleanup resume. Explicitly
+        // reject cleanup-aware host tasks rather than promise after-STOP
+        // lexical cleanup that cannot be executed under a valid actor lease.
+        // SourceTask remains a regular Task until the ticket/STOP lattice is
+        // integrated with actor-scoped cleanup authorization.
+        if (task instanceof OresScheduler.CleanupAwareTask<?>) {
+            throw new UnsupportedOperationException(
+                    "actor cleanup-aware source tasks require STOP-safe ticketed "
+                    + "continuation admission and bounded lexical cleanup; not yet supported");
+        }
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
