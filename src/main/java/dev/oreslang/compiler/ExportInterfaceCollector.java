@@ -105,7 +105,15 @@ public final class ExportInterfaceCollector {
                     }
                     List<String> members = new ArrayList<>();
                     for (Ast.FieldDecl f : klass.fields()) {
-                        if (f.visibility() != Ast.Visibility.PUBLIC) continue;
+                        if (f.visibility() != Ast.Visibility.PUBLIC) {
+                            for (Ast.Annotation annotation : f.annotations()) {
+                                if (annotation.name().equals("FromJson")) {
+                                    throw new IllegalArgumentException(
+                                            "private serialized field requires opaque wire ABI policy");
+                                }
+                            }
+                            continue;
+                        }
                         StringBuilder part = new StringBuilder();
                         field(part, "field");
                         field(part, f.name());
@@ -163,7 +171,9 @@ public final class ExportInterfaceCollector {
 
     private static void stringsSorted(StringBuilder dst, List<String> values) {
         List<String> copy = new ArrayList<>(values);
-        copy.sort(String::compareTo);
+        copy.sort((a, b) -> java.util.Arrays.compareUnsigned(
+                a.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                b.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         strings(dst, copy);
     }
 
