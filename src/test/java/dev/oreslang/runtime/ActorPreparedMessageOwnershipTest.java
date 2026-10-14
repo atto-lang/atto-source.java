@@ -33,7 +33,7 @@ final class ActorPreparedMessageOwnershipTest {
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && (frame.getMethodName().equals("freeze")
                                     || frame.getMethodName().equals("isolateCopy"))
-                                && frame.getMethodType().parameterCount() == 3));
+                                && frame.getMethodType().parameterCount() == 4));
                 if (snapshotCopy) copyObserved.set(true);
                 return Set.of(Map.entry("ref",
                         snapshotCopy ? foreignRef : "safe"));
@@ -56,7 +56,7 @@ final class ActorPreparedMessageOwnershipTest {
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && frame.getMethodName().equals(copierName)
-                                && frame.getMethodType().parameterCount() == 3));
+                                && frame.getMethodType().parameterCount() == 4));
                 if (!copying) {
                     return Set.of(
                             Map.entry("left", "safe"),
@@ -164,9 +164,9 @@ final class ActorPreparedMessageOwnershipTest {
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && frame.getMethodName().equals("freeze")
                                 // Exclude the public freeze(Object) preflight
-                                // wrapper; only the 3-argument recursive copy
+                                // wrapper; only the 4-argument recursive copy
                                 // is the authoritative snapshot phase.
-                                && frame.getMethodType().parameterCount() == 3));
+                                && frame.getMethodType().parameterCount() == 4));
                 if (!copying) return Set.of(Map.entry("safe", 1));
                 expanded.set(true);
                 // The source Map advertises one entry throughout preflight;
@@ -205,7 +205,7 @@ final class ActorPreparedMessageOwnershipTest {
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && frame.getMethodName().equals("isolateCopy")
-                                && frame.getMethodType().parameterCount() == 3));
+                                && frame.getMethodType().parameterCount() == 4));
                 if (!copying) return Set.of(Map.entry("safe", 1));
                 expanded.set(true);
                 return new java.util.AbstractSet<>() {
