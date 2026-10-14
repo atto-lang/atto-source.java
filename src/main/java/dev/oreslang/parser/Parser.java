@@ -1832,7 +1832,11 @@ public final class Parser {
                         || tokens.get(i).lexeme().equals("random"))) {
             i++;
         }
-        return i < tokens.size() && tokens.get(i).type() == LBRACE;
+        return i < tokens.size()
+                && (tokens.get(i).type() == LBRACE
+                        || (tokens.get(i).type() == IDENT
+                                && (tokens.get(i).lexeme().equals("over")
+                                        || tokens.get(i).lexeme().equals("among"))));
     }
 
     /** A select arm participates in one atomic selection; only the enclosing select sets its wait mode. */
@@ -1864,11 +1868,29 @@ public final class Parser {
 
         consume(SELECT, "expected 'select'");
         Ast.SelectPolicy policy = parseSelectPolicy();
-        consume(LBRACE, "static select requires '{ ... }'; use 'select from cases' for dynamic select");
+        boolean endDelimited = matchContextualIdentifier("over")
+                || matchContextualIdentifier("among");
+        if (endDelimited) {
+            // Value-producing select expressions require dedicated AST/return
+            // lowering. Never reinterpret them as side-effect-only statements.
+            if (!explicitDo || mode != Ast.WaitMode.BLOCKING) {
+                throw error(previous(),
+                        "end-delimited static select currently requires 'do select over/among'; "
+                                + "value-producing 'select' and 'nb select' are not implemented");
+            }
+        } else {
+            consume(LBRACE,
+                    "static select requires '{ ... }' or 'do select over/among ... end'; "
+                            + "use 'select from cases' for dynamic select");
+        }
 
         List<Ast.SelectArm> arms = new ArrayList<>();
-        while (!check(RBRACE) && !check(EOF)) {
+        boolean sawDefault = false;
+        while (!(endDelimited ? check(END) : check(RBRACE)) && !check(EOF)) {
             if (matchContextualKeyword("when", "case")) {
+                if (sawDefault) {
+                    throw error(previous(), "select default arm must be last");
+                }
                 rejectPerArmChannelWaitModifier();
                 Ast.ChannelOperation operation;
                 Ast.Expr channel;
@@ -1915,6 +1937,9 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // Both legacy 'readch ch: val x { ... }' and canonical
+                // 'readch ch: val x -> { ... }' remain parseable.
+                if (check(ARROW)) advance();
                 if (!check(LBRACE)) {
                     throw error(peek(), "select arm requires a braced body '{ ... }'");
                 }
@@ -1931,7 +1956,11 @@ public final class Parser {
             }
 
             if (match(DEFAULT)) {
-                consume(COLON, "select default arm requires ':'");
+                if (sawDefault) throw error(previous(), "select permits at most one default arm");
+                sawDefault = true;
+                if (!match(ARROW)) {
+                    consume(COLON, "select default arm requires ':' or '->'");
+                }
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
@@ -1949,7 +1978,11 @@ public final class Parser {
             throw error(peek(), "expected when/case/default inside select");
         }
 
-        consume(RBRACE, "expected '}' after select");
+        if (endDelimited) {
+            consume(END, "expected 'end' after select over/among");
+        } else {
+            consume(RBRACE, "expected '}' after select");
+        }
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
     }
 
