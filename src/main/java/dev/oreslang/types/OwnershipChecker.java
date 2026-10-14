@@ -1748,6 +1748,39 @@ public final class OwnershipChecker {
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
         int parameterIndex = 0;
+        List<Ast.Param> sourceParameters = params;
+        List<FixedProductCallPlan.InputSlot> inputs = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow()) type = type.borrowedTarget();
+                if (type.isReadonlyRecordType()) {
+                    for (String name : type.recordMembers().keySet()) {
+                        inputs.add(FixedProductCallPlan.InputSlot.named(name));
+                    }
+                } else if (type.isTupleType()) {
+                    for (int i = 0; i < type.arguments().size(); i++) {
+                        inputs.add(FixedProductCallPlan.InputSlot.positional());
+                    }
+                } else {
+                    // TypeChecker retains the authoritative diagnostic for
+                    // unbounded and unresolved spread operands.
+                    inputs.add(FixedProductCallPlan.InputSlot.positional());
+                }
+            } else {
+                inputs.add(FixedProductCallPlan.InputSlot.positional());
+            }
+        }
+        if (inputs.stream().anyMatch(input -> input.label() != null)
+                && inputs.size() == params.size()) {
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(), inputs);
+            List<Ast.Param> reordered = new ArrayList<>(params.size());
+            for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
+                reordered.add(params.get(slot.parameterIndex()));
+            }
+            sourceParameters = List.copyOf(reordered);
+        }
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
         try {
@@ -1766,6 +1799,27 @@ public final class OwnershipChecker {
                         }
                         spreadType = referent;
                     }
+                    if (spreadType.isReadonlyRecordType()) {
+                        Map<String, Ast.TypeRef> fields = spreadType.recordMembers();
+                        if (fields.isEmpty() || fields.values().stream().anyMatch(t -> !isCopyType(t))) {
+                            throw error(callable + " record spread requires Copy-only scalar fields");
+                        }
+                        if (parameterIndex + fields.size() > sourceParameters.size()) return;
+                        for (int i = 0; i < fields.size(); i++) {
+                            Ast.Param target = sourceParameters.get(parameterIndex + i);
+                            if (target.structural() || target.type().isBorrow()) {
+                                throw error(callable + " record spread cannot bind structural/borrowed parameters");
+                            }
+                        }
+                        ValueInfo aggregate = checkExpr(spread.expression(), scope, false);
+                        if (!aggregate.type.isReadonlyRecordType()
+                                || aggregate.type.recordMembers().values().stream().anyMatch(t -> !isCopyType(t))
+                                || containsMutexGuardType(aggregate.type)) {
+                            throw error(callable + " record spread must remain closed and Copy-only");
+                        }
+                        parameterIndex += fields.size();
+                        continue;
+                    }
                     if (!spreadType.isTupleType()) {
                         throw error(callable
                                 + " spread requires a statically known tuple; runtime-length collections "
@@ -1773,9 +1827,9 @@ public final class OwnershipChecker {
                     }
 
                     int width = spreadType.arguments().size();
-                    if (parameterIndex + width > params.size()) return; // TypeChecker reports arity.
+                    if (parameterIndex + width > sourceParameters.size()) return; // TypeChecker reports arity.
                     for (int i = 0; i < width; i++) {
-                        Ast.Param target = params.get(parameterIndex + i);
+                        Ast.Param target = sourceParameters.get(parameterIndex + i);
                         if (target.structural() || target.type().isBorrow()) {
                             throw error(callable + " argument " + (parameterIndex + i + 1)
                                     + " cannot currently receive tuple spread into a structural/borrowed parameter; "
@@ -1791,8 +1845,8 @@ public final class OwnershipChecker {
                     continue;
                 }
 
-                if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                if (parameterIndex >= sourceParameters.size()) return; // TypeChecker reports arity.
+                Ast.Param param = sourceParameters.get(parameterIndex);
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
@@ -2846,6 +2900,13 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.TupleExpr tuple) {
             return Ast.TypeRef.tupleType(tuple.elements().stream().map(item -> syntacticType(item, scope)).toList());
         }
+        if (expr instanceof Ast.ObjectExpr record && record.recordLiteral()) {
+            LinkedHashMap<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            for (Ast.ObjectField field : record.fields()) {
+                fields.put(field.name(), syntacticType(field.value(), scope));
+            }
+            return Ast.TypeRef.readonlyRecordType(fields);
+        }
         if (expr instanceof Ast.ListExpr list && !list.elements().isEmpty()) {
             return new Ast.TypeRef("Array", List.of(syntacticType(list.elements().getFirst(), scope)), false);
         }
@@ -2884,6 +2945,8 @@ public final class OwnershipChecker {
                 if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
                 if (spreadType.isTupleType()) {
                     result.addAll(spreadType.arguments());
+                } else if (spreadType.isReadonlyRecordType()) {
+                    result.addAll(spreadType.recordMembers().values());
                 } else {
                     result.add(Ast.TypeRef.inferred());
                 }
