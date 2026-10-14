@@ -920,6 +920,13 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // A shared Future must have one readiness observation per arbitration
+        // pass. Otherwise it can settle between duplicate arm probes, causing
+        // a later alias to win PRIORITY while an earlier alias saw PENDING.
+        // Cache PENDING (null) as well as terminal states by object identity.
+        java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates =
+                new java.util.IdentityHashMap<>();
+
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
@@ -929,9 +936,15 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (registration.selectCase instanceof FutureCase<?> awaiting) {
-                if (awaiting.future().runtimeSelectReadyStateOrNull() != null) {
-                    return registration;
+                OresFuture<?> producer = awaiting.future();
+                Object observed;
+                if (observedFutureStates.containsKey(producer)) {
+                    observed = observedFutureStates.get(producer);
+                } else {
+                    observed = producer.runtimeSelectReadyStateOrNull();
+                    observedFutureStates.put(producer, observed);
                 }
+                if (observed != null) return registration;
                 continue;
             }
             Channel<?> channel = registration.channel();
