@@ -1625,7 +1625,9 @@ public final class Parser {
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
         if (looksLikeStaticSelectStatement()) {
-            if (!check(DO)) throw error(peek(), "bare static select statement is forbidden; use do select or return select");
+            // Both 'select { ... }' and 'do select { ... }' are legal
+            // statements. The explicit-do marker retains the existing
+            // return-suppression semantics of select arm callbacks.
             return parseStaticSelectStatement();
         }
         // "cb" is reserved for callback-bearing writech; it is not the
@@ -1733,14 +1735,21 @@ public final class Parser {
         }
         if (match(IF)) return parseIf();
         if (check(DO) && checkNext(MATCH)) {
-            advance(); advance(); return parseMatch();
+            advance();
+            advance();
+            return parseMatch();
         }
         if (check(DO) && checkNext(SWITCH)) {
-            advance(); advance(); return parseSwitch();
+            advance();
+            advance();
+            return parseSwitch();
         }
-        if (check(MATCH) || check(SWITCH)) {
-            throw error(peek(), "bare match/switch statement is forbidden; use do or value-returning forms");
-        }
+        // 'match ... over' and 'do match ... over' are both supported.
+        // The 'do' prefix is not required for statement-form dispatch;
+        // likewise for switch. Do not change legacy exclusive matching
+        // into ordered matching when normalizing this spelling.
+        if (match(MATCH)) return parseMatch();
+        if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
             advance();
