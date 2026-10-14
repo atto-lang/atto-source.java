@@ -124,6 +124,70 @@ final class ConditionalOptionBindingTest {
     }
 
     @Test
+    void movedGuardArgumentsCannotReviveOnElseOrElifFailureEdges() {
+        String header = """
+                define class Box as
+                end
+
+                fnc consume(Box box): Option<int> {
+                  return Some(15);
+                }
+                """;
+
+        // A producer consumes its argument whether it returns Some or None.
+        // The false edge must retain that ownership effect.
+        rejects(header + """
+                fnc bad(Box box): void {
+                  if consume(box) as const found then
+                    return;
+                  else
+                    consume(box);
+                  fi
+                  return;
+                }
+                """, "moved");
+
+        // elif is evaluated only after the preceding guard failed, but the
+        // preceding guard's move has already happened.
+        rejects(header + """
+                fnc bad(Box box): void {
+                  if consume(box) as const first then
+                    return;
+                  elif consume(box) as let second then
+                    return;
+                  fi
+                  return;
+                }
+                """, "moved");
+
+        // The short-circuited RHS may consume the owner. A sound checker
+        // conservatively treats the owner as moved on either failure edge
+        // until path-sensitive ownership effects are implemented.
+        rejects(header + """
+                fnc bad(bool enabled, Box box): void {
+                  if enabled && (consume(box) as const found) then
+                    return;
+                  else
+                    consume(box);
+                  fi
+                  return;
+                }
+                """, "moved");
+
+        // An independent owner remains usable in the else path.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(header + """
+                fnc good(Box first, Box second): void {
+                  if consume(first) as let value then
+                    return;
+                  else
+                    consume(second);
+                  fi
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void scopeMutabilityAndCarrierTypeFailClosed() {
         rejects("""
                 fnc bad(Option<int> maybe): void {
