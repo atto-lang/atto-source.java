@@ -8412,13 +8412,18 @@ public final class OresEvalRootNode extends RootNode {
                         || tuple.size() != projection.bindings().size()) return false;
                 LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
                 for (int i = 0; i < projection.bindings().size(); i++) {
+                    Object element = tuple.get(i);
+                    // Every slot, including a discarded _, must be fully
+                    // initialized before any projection becomes observable.
+                    if (element == UNINITIALIZED_FIELD) return false;
                     Ast.DestructureBinding binding = projection.bindings().get(i);
                     if (binding.isDiscard()) continue;
                     if (bindings.containsKey(binding.name())
-                            || staged.putIfAbsent(binding.name(), tuple.get(i)) != null) {
+                            || staged.containsKey(binding.name())) {
                         throw new IllegalStateException("tuple match projection binds '"
                                 + binding.name() + "' more than once");
                     }
+                    staged.put(binding.name(), element);
                 }
                 bindings.putAll(staged);
                 return true;
