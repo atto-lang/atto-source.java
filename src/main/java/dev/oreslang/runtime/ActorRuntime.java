@@ -1757,50 +1757,59 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public <T> OresFuture<T> startActorTask(OresScheduler.Task<T> task) {
         Objects.requireNonNull(task, "task");
-        // Scheduler-level deferred cancellation is not enough for actors:
-        // this branch's STOP closes the control mailbox and revokes every
-        // per-task SerialExecutionTicket before any cleanup resume. Explicitly
-        // reject cleanup-aware host tasks rather than promise after-STOP
-        // lexical cleanup that cannot be executed under a valid actor lease.
-        // SourceTask remains a regular Task until the ticket/STOP lattice is
-        // integrated with actor-scoped cleanup authorization.
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        // Check actor authority before the implementation-admission gate, but
-        // reject unsupported post-STOP cleanup before issuing any task ticket.
-        if (task instanceof OresScheduler.CleanupAwareTask<?>) {
-            throw new UnsupportedOperationException(
-                    "actor cleanup-aware source tasks require STOP-safe ticketed "
-                    + "continuation admission and bounded lexical cleanup; not yet supported");
-        }
-        final SerialExecutionTicket ticket = cell.issueSourceTaskTicket();
-        OresFuture<T> completion;
-        try {
-            completion = cell.sourceScheduler().startActorBound(task, command -> {
-                if (!ticket.mayEnqueue()) {
-                    throw new RejectedExecutionException(
-                            "actor task ticket revoked before enqueue");
-                }
-                if (!enqueueContinuation(cell.ref.id(), command, ticket)) {
-                    throw new RejectedExecutionException(
-                            "actor task " + ticket.taskId() + " lost its continuation lane");
+        // STOP and task registration are one lifecycle transaction. Otherwise
+        // a cancellation can seal an actor between ticket issuance and cleanup
+        // task registration, leaving a Future pending forever after teardown.
+        synchronized (cell.lifecycleLock) {
+            final SerialExecutionTicket ticket = cell.issueSourceTaskTicket();
+            final boolean cleanupAware =
+                    task instanceof OresScheduler.CleanupAwareTask<?>;
+            OresFuture<T> completion;
+            try {
+                completion = cell.sourceScheduler().startActorBound(task, command -> {
+                    boolean cleanup = command instanceof OresScheduler.CleanupTurn turn
+                            && turn.authorizedBy(cell.sourceScheduler)
+                            && cell.stopped.get()
+                            && cleanupAware;
+                    if (!cleanup && !ticket.mayEnqueue()) {
+                        throw new RejectedExecutionException(
+                                "actor task ticket revoked before enqueue");
+                    }
+                    if (!enqueueContinuation(cell.ref.id(), command, ticket)) {
+                        throw new RejectedExecutionException(
+                                "actor task " + ticket.taskId()
+                                        + " lost its continuation lane");
+                    }
+                });
+            } catch (RuntimeException | Error failure) {
+                ticket.retire();
+                throw failure;
+            }
+            if (cleanupAware) cell.sourceCleanupTasks.add(completion);
+            completion.whenCompleteRuntime((ignored, failure) -> {
+                // The Future cannot be published until the scheduler carrier
+                // exits its guest turn. Only then retire its serial task ticket.
+                ticket.retire();
+                if (cleanupAware) {
+                    synchronized (cell.lifecycleLock) {
+                        if (cell.stopped.get() && failure != null)
+                            cell.recordDominantSourceFailure(failure);
+                        cell.sourceCleanupTasks.remove(completion);
+                        if (cell.stopped.get()) cell.finalizeStopLocked();
+                        cell.lifecycleLock.notifyAll();
+                    }
                 }
             });
-        } catch (RuntimeException | Error failure) {
-            ticket.retire();
-            throw failure;
+            return completion;
         }
-        // The handler admission can outlive this individual source task.
-        // A canceled or completed task must not replay an already-enqueued
-        // continuation under the still-live handler's ticket.
-        completion.whenCompleteRuntime((ignored, failure) -> ticket.retire());
-        return completion;
     }
 
-    private boolean ownFuture(
+        private boolean ownFuture(
             ActorCell<?> cell,
             OresFuture<?> future) {
         if (cell.stopped.get() || cell.finalized || closed.get()) {
