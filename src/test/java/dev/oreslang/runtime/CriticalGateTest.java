@@ -6,6 +6,113 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class CriticalGateTest {
     @Test
+    void allHostReleaseStopAndDomainCloseOrdersRespectPhysicalGrant()
+            throws Exception {
+        // Replay each permutation against the real actor runtime, rather than
+        // treating an abstract model as proof that critical admission works.
+        // The owning guest is kept inside a physical turn until every host
+        // operation has run; no earlier operation may grant the queued reader.
+        for (int order = 0; order < 24; order++) {
+            int[] operations = {0, 1, 2, 3};
+            int permutation = order;
+            for (int n = 4; n > 1; n--) {
+                int next = permutation % n;
+                permutation /= n;
+                int displaced = operations[n - 1];
+                operations[n - 1] = operations[next];
+                operations[next] = displaced;
+            }
+            CriticalGate gate = new CriticalGate();
+            OresFuture<Void> foreignCompletion = new OresFuture<>();
+            java.util.concurrent.CountDownLatch entered =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch leave =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<CriticalGate.Ticket> grant =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            Thread stopping = null;
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                try {
+                    var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                        try {
+                            var writer = gate.newTicket();
+                            grant.set(writer);
+                            assertTrue(writer.enterAsync().isDone());
+                            writer.releaseOnCompletion(foreignCompletion);
+                            entered.countDown();
+                            assertTrue(leave.await(5,
+                                    java.util.concurrent.TimeUnit.SECONDS));
+                            assertTrue(writer.isHeld(),
+                                    "foreign release must not revoke a physical guest grant");
+                        } catch (Throwable error) {
+                            failure.compareAndSet(null, error);
+                        } finally {
+                            entered.countDown();
+                        }
+                    });
+                    actor.send("hold");
+                    assertTrue(entered.await(5,
+                            java.util.concurrent.TimeUnit.SECONDS));
+                    assertNotNull(grant.get());
+                    var queued = gate.newTicket(CriticalGate.Mode.READ);
+                    var pending = queued.enterAsync();
+                    assertFalse(pending.isDone());
+
+                    for (int action : operations) {
+                        switch (action) {
+                            case 0 -> grant.get().close();
+                            case 1 -> foreignCompletion.completeFromRuntime(null);
+                            case 2 -> gate.closeAll();
+                            case 3 -> {
+                                stopping = Thread.ofVirtual().start(() -> {
+                                    try { runtime.stop(actor); }
+                                    catch (Throwable error) {
+                                        failure.compareAndSet(null, error);
+                                    }
+                                });
+                                long deadline = System.nanoTime()
+                                        + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                                while (runtime.isAlive(actor)
+                                        && System.nanoTime() < deadline) {
+                                    Thread.onSpinWait();
+                                }
+                                assertFalse(runtime.isAlive(actor));
+                            }
+                            default -> throw new AssertionError("unexpected operation");
+                        }
+                        assertTrue(grant.get().isHeld(),
+                                "release order " + order + " revoked live guest writer");
+                        assertFalse(queued.isHeld(),
+                                "release order " + order + " admitted reader early");
+                    }
+                    assertEquals(0, gate.queuedCount());
+                    assertTrue(pending.isDone());
+                    leave.countDown();
+                    if (stopping != null) stopping.join(5_000);
+                    assertNull(failure.get(), "release order " + order);
+                    long deadline = System.nanoTime()
+                            + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+                    while ((grant.get().isHeld()
+                            || runtime.trackedActorResourceCount(actor) != 0)
+                            && System.nanoTime() < deadline) Thread.onSpinWait();
+                    assertFalse(grant.get().isHeld());
+                    assertFalse(queued.isHeld());
+                    assertEquals(0, runtime.trackedActorResourceCount(actor));
+                } finally {
+                    leave.countDown();
+                    if (stopping != null) stopping.join(5_000);
+                    gate.closeAll();
+                }
+            }
+            assertNull(failure.get(), "release order " + order);
+            assertFalse(gate.held());
+            assertEquals(0, CriticalGate.waitingLogicalDomains());
+        }
+    }
+
+    @Test
     void anotherMessageOnSameActorCannotReleasePriorMessageGrantInline() throws Exception {
         CriticalGate gate = new CriticalGate();
         java.util.concurrent.CountDownLatch firstEntered =
