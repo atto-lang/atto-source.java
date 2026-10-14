@@ -65,6 +65,30 @@ public final class InterfaceSccPlanner {
     }
 
     /**
+     * Checker-minted alternative to the lower-level AST-taking planning APIs.
+     * The local admission token has a private constructor and can only be
+     * obtained by executing OresCompiler's semantic and ownership passes.
+     *
+     * Since admitLocal currently rejects imports, nontrivial SCCs must wait
+     * for the full cross-file semantic linker. Do NOT strip imports to mint a
+     * local token: that would bypass the linked typechecker.
+     */
+    public static Plan fromCompilerAdmitted(
+            Map<String, OresCompiler.CheckedProgram> admittedPrograms,
+            Map<String, ExportInterfaceCodec.Header> environmentByUnit) {
+        Objects.requireNonNull(admittedPrograms, "admittedPrograms");
+        Map<String, dev.oreslang.ast.Ast.Program> programs = new LinkedHashMap<>();
+        for (Map.Entry<String, OresCompiler.CheckedProgram> entry : admittedPrograms.entrySet()) {
+            if (entry.getValue() == null || programs.put(entry.getKey(), entry.getValue().program()) != null) {
+                throw new IllegalArgumentException("duplicate or missing checker admission");
+            }
+        }
+        Map<String, Map<String, String>> emptyExternal = new LinkedHashMap<>();
+        for (String unit : programs.keySet()) emptyExternal.put(unit, Map.of());
+        return fromCheckedPrograms(programs, environmentByUnit, Map.of(), emptyExternal);
+    }
+
+    /**
      * Preferred import-plan entry point for already type/ownership-admitted
      * programs: derive public API fingerprints from those *same* ASTs rather
      * than trusting caller-supplied export envelopes. This closes accidental
