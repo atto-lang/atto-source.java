@@ -827,7 +827,14 @@ public final class Ast {
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
-            ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            ListExpr, TupleExpr, ObjectExpr, LambdaExpr, MatchExpr { }
+
+    /** Value-producing, exhaustive match. Arm returns are values of this expression,
+     * never returns from the enclosing callable or actor replies. */
+    public record MatchExpr(Expr subject, List<MatchValueArm> arms) implements Expr {
+        public MatchExpr { arms = List.copyOf(arms); }
+    }
+    public record MatchValueArm(Pattern pattern, Expr guard, Expr value) { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
