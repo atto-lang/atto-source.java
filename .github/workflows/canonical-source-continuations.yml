@@ -7,6 +7,7 @@ on:
       - integrate/canonical-with-using-20261012
     paths:
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/main/java/dev/oreslang/runtime/OresScheduler.java"
       - "src/main/java/dev/oreslang/runtime/OresFuture.java"
       - "src/test/java/dev/oreslang/runtime/OresSchedulerTest.java"
