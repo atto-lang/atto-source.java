@@ -38,6 +38,9 @@ public final class OresKeyedMap<K, V> {
     // Existing String-keyed records and ordinary guest Strings are unaffected.
     public static final int MAX_ENTRIES = 4_096;
     public static final int MAX_TEXT_KEY_BYTES = 16_384;
+    // Include each key's six-byte tag/version/length envelope, matching v1
+    // SymbolPropertyKeyCodec. Entry count alone permits ~64 MiB of key text.
+    public static final long MAX_KEY_SET_WIRE_BYTES = 1_048_576L;
 
     public enum KeyDomain {
         STRING, SYMBOL, STRING_OR_SYMBOL
@@ -54,6 +57,8 @@ public final class OresKeyedMap<K, V> {
     private final ValueDomain valueDomain;
     private final KeyDomain domain;
     private final LinkedHashMap<K, V> entries = new LinkedHashMap<>();
+    // Tracked while holding this map's monitor; never expose a mutable view.
+    private long storedKeyWireBytes;
 
     private OresKeyedMap(KeyDomain domain, ValueDomain valueDomain) {
         this.domain = Objects.requireNonNull(domain, "key domain");
@@ -173,13 +178,28 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
+    private static int wireKeyBytes(Object key) {
+        // The canonical tagged-key codec defines the identical logical
+        // String/PROCESS/STABLE footprint used by bulk serialization.
+        return SymbolPropertyKeyCodec.encode(key).length;
+    }
+
     public synchronized V put(K key, V value) {
         checkKey(key);
         checkValue(value);
-        if (!entries.containsKey(key) && entries.size() >= MAX_ENTRIES) {
-            throw new IllegalArgumentException("typed Map exceeds maximum key count");
+        long addedBytes = 0L;
+        if (!entries.containsKey(key)) {
+            if (entries.size() >= MAX_ENTRIES) {
+                throw new IllegalArgumentException("typed Map exceeds maximum key count");
+            }
+            addedBytes = wireKeyBytes(key);
+            if (addedBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
+            }
         }
-        return entries.put(key, value);
+        V previous = entries.put(key, value);
+        storedKeyWireBytes += addedBytes;
+        return previous;
     }
 
     /**
@@ -217,8 +237,15 @@ public final class OresKeyedMap<K, V> {
             prepared.add(Map.entry(key, value));
         }
         Set<K> additions = new HashSet<>();
+        long additionalKeyWireBytes = 0L;
         for (Map.Entry<K, V> entry : prepared) {
-            if (!entries.containsKey(entry.getKey())) additions.add(entry.getKey());
+            K key = entry.getKey();
+            if (!entries.containsKey(key) && additions.add(key)) {
+                additionalKeyWireBytes += wireKeyBytes(key);
+                if (additionalKeyWireBytes > MAX_KEY_SET_WIRE_BYTES - storedKeyWireBytes) {
+                    throw new IllegalArgumentException("typed Map exceeds aggregate key byte budget");
+                }
+            }
         }
         if (additions.size() > MAX_ENTRIES - entries.size()) {
             throw new IllegalArgumentException("typed Map exceeds maximum key count");
@@ -226,15 +253,19 @@ public final class OresKeyedMap<K, V> {
         for (Map.Entry<K, V> entry : prepared) {
             entries.put(entry.getKey(), entry.getValue());
         }
+        storedKeyWireBytes += additionalKeyWireBytes;
     }
 
     public synchronized V remove(Object key) {
         checkKey(key);
-        return entries.remove(key);
+        V removed = entries.remove(key);
+        if (removed != null) storedKeyWireBytes -= wireKeyBytes(key);
+        return removed;
     }
 
     public synchronized void clear() {
         entries.clear();
+        storedKeyWireBytes = 0L;
     }
 
     /**
