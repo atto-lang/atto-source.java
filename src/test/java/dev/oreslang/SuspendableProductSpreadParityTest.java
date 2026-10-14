@@ -171,6 +171,99 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void positionalPrefixAndNamedTailPreserveAbiMapping() throws Exception {
+        String code = """
+                fnc calculate(int base, int multiplier, int offset): int {
+                    return base * multiplier + offset;
+                }
+                pub routine main(): void {
+                    const args = (offset: 2, multiplier: 4);
+                    stdio.stdout.write(calculate(10, ...args));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void asyncPositionalPrefixAndInlineTailKeepLexicalSideEffects() throws Exception {
+        String code = """
+                fnc base(): int { stdio.stdout.write("B"); return 10; }
+                fnc offset(): int { stdio.stdout.write("O"); return 2; }
+                fnc multiplier(): int { stdio.stdout.write("M"); return 4; }
+                fnc calculate(int base, int multiplier, int offset): int {
+                    return base * multiplier + offset;
+                }
+                async fnc forwarded(): int {
+                    return calculate(base(), ...(offset: offset(), multiplier: multiplier()));
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+        assertEquals("BOM42", checkedExecution(code));
+    }
+
+    @Test
+    void multipleRecordPacksBindEachParameterExactlyOnce() throws Exception {
+        String code = """
+                fnc calculate(int a, int b, int c): int { return a * 100 + b * 10 + c; }
+                pub routine main(): void {
+                    const first = (b: 2, a: 1);
+                    const last = (c: 3);
+                    stdio.stdout.write(calculate(...first, ...last));
+                    return;
+                }
+                """;
+        assertEquals("123", checkedExecution(code));
+    }
+
+    @Test
+    void recordPackRejectsDuplicateAcrossSpreadsOrPositionalPrefix() {
+        String prefix = "fnc calculate(int base, int multiplier, int offset): int { return base * multiplier + offset; }\\n";
+        for (String call : new String[] {
+                "calculate(10, ...(base: 2, multiplier: 4))",
+                "calculate(...(base: 10, offset: 2), ...(offset: 3))",
+                "calculate(...(offset: 2, multiplier: 4), 10)",
+                "calculate(...(offset: 2, multiplier: 4), ...(base: 10))"
+        }) {
+            String code = prefix + "pub routine main(): void { stdio.stdout.write("
+                    + call + "); return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)), call);
+        }
+    }
+
+    @Test
+    void recordPackCannotBypassBorrowedOrStructuralParameterAdmission() {
+        String code = """
+                fnc receive(&int value, int other): int { return other; }
+                pub routine main(): void {
+                    const pack = (other: 42, value: 19);
+                    stdio.stdout.write(receive(...pack));
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+    }
+
+    @Test
+    void recordLikeReadonlyInferredStructIsNotImplicitlyARecordPack() {
+        String code = """
+                fnc calculate(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    const pack = infer struct { b: 23, a: 19 };
+                    stdio.stdout.write(calculate(...pack));
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+    }
+
+    @Test
     void recordSpreadRejectsUnknownDuplicateAndPositionalTail() {
         String prefix = "fnc add(int a, int b): int { return a + b; }\n";
         for (String call : new String[] {
