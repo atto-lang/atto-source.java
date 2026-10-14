@@ -11,6 +11,7 @@ import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
+import dev.oreslang.runtime.CleanupFailureDiagnostics;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.NativeIo;
@@ -1891,10 +1892,10 @@ public final class OresEvalRootNode extends RootNode {
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
             if (earlier != null && (isUnmaskableFailure(earlier)
                     || cleanupFailure instanceof ProcessExitSignal)) {
-                earlier.addSuppressed(cleanupFailure);
+                CleanupFailureDiagnostics.suppress(earlier, cleanupFailure);
                 return currentFlow;
             }
-            if (earlier != null) cleanupFailure.addSuppressed(earlier);
+            if (earlier != null) CleanupFailureDiagnostics.suppress(cleanupFailure, earlier);
             return SourceFlow.throwing(cleanupFailure);
         }
 
@@ -1910,7 +1911,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (isUnmaskableFailure(earlier)) {
                     if (finallyFlow.kind() == SourceFlowKind.THROW
                             && earlier != finallyFlow.failure()) {
-                        earlier.addSuppressed(finallyFlow.failure());
+                        CleanupFailureDiagnostics.suppress(earlier, finallyFlow.failure());
                     }
                     return pending;
                 }
@@ -5179,16 +5180,16 @@ public final class OresEvalRootNode extends RootNode {
                         if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                             // Never let a deferred ordinary failure replace a panic,
                             // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) CleanupFailureDiagnostics.suppress(pendingFailure, failure);
                         } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                             // A deferred exit(0) must not convert an earlier
                             // unhandled failure into a successful process exit.
                             // Keep the original failure authoritative; the exit
                             // attempt is diagnostic only.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) CleanupFailureDiagnostics.suppress(pendingFailure, failure);
                         } else {
                             if (pendingFailure != null && pendingFailure != failure) {
-                                failure.addSuppressed(pendingFailure);
+                                CleanupFailureDiagnostics.suppress(failure, pendingFailure);
                             }
                             pendingFailure = failure;
                         }
@@ -5198,14 +5199,14 @@ public final class OresEvalRootNode extends RootNode {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
                     if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) CleanupFailureDiagnostics.suppress(pendingFailure, failure);
                     } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                         // Mutex cleanup cannot downgrade an already failing
                         // root task into successful exit(0).
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) CleanupFailureDiagnostics.suppress(pendingFailure, failure);
                     } else {
                         if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
+                            CleanupFailureDiagnostics.suppress(failure, pendingFailure);
                         }
                         pendingFailure = failure;
                     }
@@ -5451,11 +5452,11 @@ public final class OresEvalRootNode extends RootNode {
                                 && (isUnmaskableFailure(pendingTryFailure)
                                         || cleanupFailure instanceof ProcessExitSignal)) {
                             if (pendingTryFailure != cleanupFailure) {
-                                pendingTryFailure.addSuppressed(cleanupFailure);
+                                CleanupFailureDiagnostics.suppress(pendingTryFailure, cleanupFailure);
                             }
                         } else {
                             if (pendingTryFailure != null && pendingTryFailure != cleanupFailure) {
-                                cleanupFailure.addSuppressed(pendingTryFailure);
+                                CleanupFailureDiagnostics.suppress(cleanupFailure, pendingTryFailure);
                             }
                             throw cleanupFailure;
                         }
