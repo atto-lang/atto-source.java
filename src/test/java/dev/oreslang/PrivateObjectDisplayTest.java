@@ -34,7 +34,7 @@ final class PrivateObjectDisplayTest {
 
                 pub routine main(): void {
                   val Vault vault = new Vault();
-                  stdio.stdout.write(vault);
+                  print(vault);
                   return;
                 }
                 """);
