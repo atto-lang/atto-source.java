@@ -1763,6 +1763,16 @@ public final class TypeChecker {
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
                 env.restoreInitialization(before);
             } else {
+                if (selected.mode() == Ast.WaitMode.IMMEDIATE
+                        && selected.arms().stream().noneMatch(arm ->
+                                arm.operation() == Ast.ChannelOperation.DEFAULT)) {
+                    // try select is only a probe. With no ready case and no
+                    // default, execution falls through WITHOUT running an arm.
+                    // Its pre-select initialization state is a real CFG exit.
+                    // Omitting this predecessor unsoundly promotes writes in
+                    // speculative arms to definite initialization.
+                    exits.add(before);
+                }
                 env.mergeInitialization(exits);
             }
             return;
