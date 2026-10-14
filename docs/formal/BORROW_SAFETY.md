@@ -98,6 +98,25 @@ effects, interprocedural lifetimes, or compiler-to-SMT refinement. In
 particular, generic unknown functions and low-level host interop require
 separate effect/lifetime reasoning; we make no whole-language soundness claim.
 
+## 2026-10-14 borrow coercion and dynamic-call boundary audit
+
+A lexical loan must not lose its type/provenance by annotating its binding as
+`Any` or another owned type. A shared borrow may not become `borrow mut`
+through an annotation. Owned parameters (including `Any` and structural
+by-value parameters), first-class callables with owned arguments, unresolved
+host/dynamic calls, owned `Some/Ok/Err` constructors, and `Option/Result`
+extraction must not conceal borrowed values or recursively nested borrowed
+types. MutexGuard-protected List mutation also refuses such nested payloads.
+These are fail-closed rules pending explicit lexical/container lifetime
+parameters and a checked host callable effect contract.
+
+The latest exact-source private regression run is
+https://github.com/canonical-cloud/canonical-docs/actions/runs/38638671694
+and reports **103 tests passed, 0 failed, 0 errors** across nine original Java
+ownership regression classes, including 24 tests in the focused formal boundary
+regression class. This is source-level/JVM admission evidence, not a Native
+Image Truffle launcher proof or comprehensive lifetime/refinement theorem.
+
 ## Follow-up formal program
 
 Prove (using a proof assistant or a checked transition-system/refinement proof)
