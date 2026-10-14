@@ -1680,6 +1680,22 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.ActorEffectStmt effect) {
+            if (currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        effect.kind() + " requires an actor execution domain");
+            }
+            if (currentMaySuspend) {
+                throw new IllegalArgumentException(
+                        effect.kind() + " inside async/suspending actor callable awaits task-local CONTROL lowering");
+            }
+            Type original = typeOf(effect.value(), env, generics, self);
+            if (original instanceof Borrow || !isStaticallyGuestErrorType(original)) {
+                throw new IllegalArgumentException(
+                        effect.kind() + " requires an owned statically proven Error-derived guest value");
+            }
+            return;
+        }
         if (stmt instanceof Ast.ThrowStmt thrown) {
             if (currentActorKind != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
