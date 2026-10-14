@@ -14,12 +14,16 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Run only inside the private Oreslang source repository
+      - name: Verify private source and exact integration branch
+        shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
-          echo "Source SHA: $(git rev-parse HEAD)"
-          echo "Source tree: $(git rev-parse HEAD^{tree})"
+          test "$GITHUB_REF" = "refs/heads/integration/future-select-guest-on-runtime-20261014"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "Verified source SHA: $(git rev-parse HEAD)"
+          echo "Verified source tree: $(git rev-parse HEAD^{tree})"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           java-version: '25'
@@ -27,7 +31,7 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: Typecheck and execute typed Future select plus legacy channel select
-        run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest' test
+        run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,SelectTypedBindingOwnershipTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest' test
   full-maven:
     needs: language-contract
     runs-on: ubuntu-24.04
@@ -36,6 +40,16 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+      - name: Verify private source and exact integration branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/integration/future-select-guest-on-runtime-20261014"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "Verified source SHA: $(git rev-parse HEAD)"
+          echo "Verified source tree: $(git rev-parse HEAD^{tree})"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           java-version: '25'
@@ -56,8 +70,16 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Verify original private repository
-        run: test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+      - name: Verify private source and exact integration branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/integration/future-select-guest-on-runtime-20261014"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "Verified source SHA: $(git rev-parse HEAD)"
+          echo "Verified source tree: $(git rev-parse HEAD^{tree})"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           java-version: '25'
