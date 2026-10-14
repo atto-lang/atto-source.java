@@ -173,4 +173,26 @@ final class InterfaceSccPlannerTest {
         }
     }
 
+    @Test void compilerDerivedExportsCannotSilentlyReuseStaleCallerEnvelope() {
+        var header=new ExportInterfaceCodec.Header("", "compiler-1", "x86_64", "safe");
+        var checked=Map.of("a.ores",source(use("./b.ores")),
+                           "b.ores",source());
+        var env=Map.of("a.ores",header,"b.ores",header);
+        var pins=Map.of("a.ores",Map.<String,String>of(),
+                        "b.ores",Map.<String,String>of());
+        var first=InterfaceSccPlanner.fromCheckedPrograms(checked,env,Map.of(),pins);
+        var differentReturn=new Ast.FunctionDecl("work",Ast.Visibility.PUBLIC,false,
+                List.of(),List.of(),Ast.TypeRef.simple("String"),List.of(),List.of());
+        var changed=new LinkedHashMap<>(checked);
+        changed.put("b.ores",new Ast.Program(List.of(),
+                List.of(new Ast.ModuleDecl("api",List.of(differentReturn)))));
+        var second=InterfaceSccPlanner.fromCheckedPrograms(changed,env,Map.of(),pins);
+        assertNotEquals(first.unitFingerprint().get("a.ores"),
+                second.unitFingerprint().get("a.ores"),
+                "a changed checked public export must invalidate its importer");
+        assertThrows(IllegalArgumentException.class, () ->
+                InterfaceSccPlanner.fromCheckedPrograms(checked,
+                        Map.of("a.ores",header),Map.of(),pins));
+    }
+
 }
