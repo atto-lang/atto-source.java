@@ -156,7 +156,19 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "outer actor state loan cannot be captured by nested handle_state");
             }
-            String variable = lambda.parameters().getFirst().name();
+            Ast.Param loanParameter = lambda.parameters().getFirst();
+            // The sealed intrinsic, not a user-specified lambda annotation,
+            // supplies the state capability type and its read/write mode.
+            // An explicit/structural/mutable parameter could counterfeit a
+            // wider view before the ownership checker synthesizes the loan.
+            if (loanParameter.structural() || loanParameter.mutable()
+                    || !loanParameter.type().name().equals("$infer$")
+                    || !loanParameter.type().arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "sealed actor state loan parameter must be untyped and "
+                        + "lexically inferred; use critical for exclusive write authority");
+            }
+            String variable = loanParameter.name();
             if (variable.equals("self")) {
                 throw new IllegalArgumentException("actor state access parameter cannot shadow self");
             }
@@ -294,8 +306,15 @@ public final class ActorStateContract {
                 throw new IllegalArgumentException(
                         "critical state callback may only appear inline in self.handle_state");
             }
-            visit(lambda.expressionBody(), actor, keys, activeAccess, true, instanceMethod, accessMode);
-            visit(lambda.blockBody(), actor, keys, activeAccess, true, instanceMethod, accessMode);
+            // A nested lambda parameter can shadow the enclosing state
+            // capability name. Its local references are not actor-state
+            // accesses; retaining activeAccess here rejects harmless local
+            // functions and obscures real capture diagnostics.
+            boolean shadowsLoan = activeAccess != null && lambda.parameters().stream()
+                    .anyMatch(parameter -> parameter.name().equals(activeAccess));
+            String nestedAccess = shadowsLoan ? null : activeAccess;
+            visit(lambda.expressionBody(), actor, keys, nestedAccess, true, instanceMethod, accessMode);
+            visit(lambda.blockBody(), actor, keys, nestedAccess, true, instanceMethod, accessMode);
             return;
         }
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
