@@ -300,6 +300,8 @@ public final class ReturnCleanupChecker {
             expression(test.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.PatternTestExpr test) {
             expression(test.value(), scope, inDefer, state);
+        } else if (expr instanceof Ast.OptionBindExpr binding) {
+            expression(binding.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.CastExpr cast) {
             expression(cast.value(), scope, inDefer, state);
         } else if (expr instanceof Ast.SpreadExpr spread) {
