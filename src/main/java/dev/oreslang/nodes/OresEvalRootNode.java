@@ -2931,6 +2931,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.OptionBindExpr binding && binding.binding().equals(name)) {
                 return binding.kind();
             }
+            if (expr instanceof Ast.TypeTestExpr test) {
+                return conditionalBindingKind(test.value(), name);
+            }
             if (expr instanceof Ast.BinaryExpr binary) {
                 Ast.BindingKind left = conditionalBindingKind(binary.left(), name);
                 return left != Ast.BindingKind.VAL ? left
@@ -3005,6 +3008,21 @@ public final class OresEvalRootNode extends RootNode {
                                 (binary.operator().equals("eq") ? equal : !equal)
                                         ? extracted : ConditionResult.noMatch());
                     });
+                });
+                return;
+            }
+            if (condition instanceof Ast.TypeTestExpr test
+                    && test.value() instanceof Ast.OptionBindExpr binding) {
+                evalSuspendableExpr(task, binding.value(), env, (t, value, failure) -> {
+                    if (failure != null) throw sourceFailure(failure);
+                    ConditionResult extracted = optionBindingResult(binding, value);
+                    if (!extracted.matched()) {
+                        continuation.accept(t, extracted);
+                        return;
+                    }
+                    continuation.accept(t, oresTypeMatches(
+                            extracted.bindings().get(binding.binding()), test.targetType())
+                            ? extracted : ConditionResult.noMatch());
                 });
                 return;
             }
@@ -7990,6 +8008,13 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 return new ConditionResult(true, Map.copyOf(merged));
+            }
+            if (condition instanceof Ast.TypeTestExpr test
+                    && test.value() instanceof Ast.OptionBindExpr binding) {
+                ConditionResult extracted = optionBindingResult(binding, eval(binding.value(), env));
+                if (!extracted.matched()) return extracted;
+                return oresTypeMatches(extracted.bindings().get(binding.binding()), test.targetType())
+                        ? extracted : ConditionResult.noMatch();
             }
             if (condition instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
