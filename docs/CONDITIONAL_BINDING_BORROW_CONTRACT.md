@@ -1,8 +1,14 @@
 # Conditional optional binding and borrow-checker admission
 
-Status: **design contract / not yet implemented**. Do not accept the surface
-syntax in Java, LLVM, Wasm, or interpreters until the admission tests below pass.
-This document does not claim backend support.
+Status: **Java draft implementation, unverified** for Copy payloads only in
+`if` and `elif` conditional guards. The grammar, type checker, interpreter
+and ownership checker have new paths for `Option<int>`, `Option<bool>`,
+`Option<float>` and `Option<String>`. This is not a tested or released
+contract: CI validation and behavior/ownership tests are still required.
+
+Non-Copy payloads, borrow-bearing payloads, arbitrary unions, `Result<T,E>`,
+and cross-backend parity remain **explicitly unsupported**. LLVM and Wasm
+must continue to fail closed until independently implemented and verified.
 
 ## Separate Boolean predicates from bindings
 
@@ -12,7 +18,7 @@ Every ordinary `if`, `elif`, `for`, ternary, and match guard requires a
 comparison (`eq` / compatibility `==`) and cannot occur anywhere inside a
 Boolean control-flow predicate.
 
-Proposed guarded binding syntax:
+Java draft guarded binding syntax (Copy payloads only):
 
 ```ores
 if get_optional() as const value then
@@ -33,7 +39,7 @@ AST node, a distinct presence predicate and a success-edge-only binding.
 - `let`: reassignable runtime local binding; this does not grant a mutable
   reference to immutable/borrowed storage.
 - `final` is not a local binding keyword.
-- Initially only `Option<T>` is eligible. The carrier is `Some(payload)`
+- Initially only `Option<Copy T>` is eligible in Java. The carrier is `Some(payload)`
   or `None` (including `Some(false)`, `Some(0)`). `Result<T,E>`, nullable
   foreign values, and bare `Any` remain unsupported without explicit contracts.
 
@@ -104,4 +110,5 @@ in the left-success scope, preserving the ownership root across aliases.
   closed until native provenance and lowering are implemented.
 
 Do not treat parser acceptance alone, or a green JVM-only fixture, as proof
-that optional binding is ownership safe on all targets.
+that optional binding is ownership safe on all targets. Keep the PR draft until
+its tests and differential checks actually execute and pass.
