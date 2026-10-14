@@ -1930,6 +1930,13 @@ public final class TypeChecker {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
                 if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+                // Rebinding can manufacture a second writable alias without
+                // transferring exclusive ownership. Keep affine maps fixed
+                // to their initial binding until a move checker is available.
+                if (isTypedMapType(binding.type())) {
+                    throw new IllegalArgumentException(
+                            "typed Map rebinding is disabled until exclusive move semantics are implemented");
+                }
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
