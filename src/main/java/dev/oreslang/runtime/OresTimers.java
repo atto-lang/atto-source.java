@@ -70,8 +70,8 @@ public final class OresTimers implements AutoCloseable {
             }
             // Register cleanup BEFORE arming the timer. A zero-delay
             // expiration is allowed to run before schedule() returns.
+            boolean registeredCleanup = false;
             try {
-                active.add(future);
                 future.whenCompleteRuntime((ignored, failure) -> {
                     // Never retain completed/cancelled timers or their slots.
                     synchronized (admission) {
@@ -79,13 +79,19 @@ public final class OresTimers implements AutoCloseable {
                     }
                     GLOBAL_SLOTS.release();
                 });
+                registeredCleanup = true;
+                active.add(future);
                 scheduled.set(CLOCK.schedule(
                         () -> future.completeFromRuntime(null),
                         delayNanos, TimeUnit.NANOSECONDS));
             } catch (RuntimeException | Error failure) {
                 // No Future escapes before this block exits. Settle it to
                 // run the same exact-once cleanup on failed admission.
-                future.failFromRuntime(failure);
+                if (registeredCleanup) {
+                    future.failFromRuntime(failure);
+                } else {
+                    GLOBAL_SLOTS.release();
+                }
                 throw failure;
             }
         }
@@ -127,8 +133,7 @@ public final class OresTimers implements AutoCloseable {
          * intervals neither pile up missed ticks nor execute guest callbacks.
          */
         public synchronized OresFuture<Long> next() {
-            if (cancelled || closed) return OresFuture.failed(
-                    new CancellationException("interval owner closed or cancelled"));
+            if (cancelled || closed) return cancelledNext();
             if (pending != null) {
                 throw new IllegalStateException("interval already has an awaiting consumer");
             }
@@ -138,8 +143,10 @@ public final class OresTimers implements AutoCloseable {
             } catch (RejectedExecutionException rejected) {
                 // Owner close racing with next() is a cancellation, not a
                 // surprise synchronous exception from the interval API.
-                if (closed) return OresFuture.failed(
-                        new CancellationException("interval owner closed"));
+                if (closed) {
+                    cancel();
+                    return cancelledNext();
+                }
                 throw rejected;
             }
             OresFuture<Long> result = new OresFuture<>(() -> wake.cancel(false));
@@ -168,6 +175,12 @@ public final class OresTimers implements AutoCloseable {
                     }
                 }
             });
+            return result;
+        }
+
+        private OresFuture<Long> cancelledNext() {
+            OresFuture<Long> result = new OresFuture<>();
+            result.cancel(false);
             return result;
         }
 
