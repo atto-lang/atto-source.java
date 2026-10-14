@@ -955,7 +955,13 @@ public final class TypeChecker {
             if (op.operator().equals("/") || op.operator().equals("%")) return true;
             return fieldInitializerMaySuspend(op.left(), scalarInitializerArgs) || fieldInitializerMaySuspend(op.right(), scalarInitializerArgs);
         }
-        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand(), scalarInitializerArgs);
+        if (expr instanceof Ast.UnaryExpr op) {
+            // Borrowing a constructor parameter is a lifetime operation, not
+            // a pure scalar read. A nested & / &mut must not bypass the
+            // partial-construction ownership boundary.
+            if (op.operator().equals("&") || op.operator().equals("&mut")) return true;
+            return fieldInitializerMaySuspend(op.operand(), scalarInitializerArgs);
+        }
         if (expr instanceof Ast.ConditionalExpr op) {
             return fieldInitializerMaySuspend(op.condition(), scalarInitializerArgs)
                     || fieldInitializerMaySuspend(op.whenTrue(), scalarInitializerArgs)
@@ -966,7 +972,7 @@ public final class TypeChecker {
             // synchronous zero-argument function whose *entire* body is one
             // return of a primitive scalar expression. No user callbacks,
             // mutations, dynamic dispatch, suspension or partial-self escape.
-            return !isConstructorSafeScalarCall(call);
+            return !isConstructorSafeScalarCall(call, scalarInitializerArgs);
         }
         if (expr instanceof Ast.NewExpr created) {
             // Nested construction is itself a transitive initialization
@@ -980,7 +986,8 @@ public final class TypeChecker {
             if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
                 return true;
             Ast.ClassDecl nested = findClass(created.type().name());
-            if (nested == null || nested.constructor() != null || !nested.parents().isEmpty()
+            if (importedValues.contains(created.type().name())
+                    || nested == null || nested.constructor() != null || !nested.parents().isEmpty()
                     || nested.actorKind() != Ast.ActorKind.NONE) return true;
             return nested.fields().stream().anyMatch(field ->
                     !(field.initializer() instanceof Ast.LiteralExpr));
@@ -1024,7 +1031,11 @@ public final class TypeChecker {
             // Imported values may be lazily evaluated by Evaluator.exportValue,
             // which can execute an arbitrary declaration initializer. That
             // code is outside this class's checked constructor effect bound.
-            return importedValues.contains(name.name()) && scalarInitializerArgs.lookup(name.name()) == null;
+            // Only the constructor's already checked scalar parameters are
+            // value leaves in this lexical frame. Otherwise runtime name
+            // resolution can bind a global, imported, host or module value,
+            // which has no transitive eager-initializer effect proof.
+            return scalarInitializerArgs.lookup(name.name()) == null;
         }
         return !(expr instanceof Ast.LiteralExpr || expr instanceof Ast.LambdaExpr);
     }
@@ -1035,11 +1046,16 @@ public final class TypeChecker {
      * return expression. This is independent of the function's name or
      * visibility; it never assumes that a routine is pure by default.
      */
-    private boolean isConstructorSafeScalarCall(Ast.CallExpr call) {
+    private boolean isConstructorSafeScalarCall(Ast.CallExpr call, Env scalarInitializerArgs) {
         if (!call.arguments().isEmpty() || call.typeArgumentsPresent()) return false;
         List<Ast.Stmt> body = null;
         Ast.TypeRef returnType = null;
         if (call.callee() instanceof Ast.NameExpr name) {
+            // Runtime invocation resolves bound constructor arguments before
+            // ordinary top-level functions. Do not authorize a function by
+            // its spelling when a scalar parameter shadows its name.
+            if (scalarInitializerArgs.lookup(name.name()) != null
+                    || importedValues.contains(name.name())) return false;
             Ast.FunctionDecl fn = findFunction(name.name(), 0);
             // A literal-looking body is not enough if the callable's
             // invocation contract is trapped or actor-dispatched. Keep the
@@ -1051,6 +1067,10 @@ public final class TypeChecker {
             returnType = fn.returnType();
         } else if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr name) {
+            // A scalar constructor parameter can shadow a class namespace,
+            // and an imported class has not been proven local to this frame.
+            if (scalarInitializerArgs.lookup(name.name()) != null
+                    || importedValues.contains(name.name())) return false;
             Ast.ClassDecl owner = findClass(name.name());
             if (owner == null) return false;
             Ast.MethodDecl candidate = null;
