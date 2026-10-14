@@ -904,7 +904,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private enum SourceFlowKind {
-            NORMAL, RETURN, BREAK, CONTINUE, THROW
+            NORMAL, RETURN, SELECT_VALUE_RETURN, BREAK, CONTINUE, THROW
         }
 
         private record SourceFlow(
@@ -917,6 +917,10 @@ public final class OresEvalRootNode extends RootNode {
 
             private static SourceFlow returning(Object value) {
                 return new SourceFlow(SourceFlowKind.RETURN, value, null);
+            }
+
+            private static SourceFlow selectReturning(Object value) {
+                return new SourceFlow(SourceFlowKind.SELECT_VALUE_RETURN, value, null);
             }
 
             private static SourceFlow breaking() {
@@ -1190,9 +1194,9 @@ public final class OresEvalRootNode extends RootNode {
                             done(null);
                         }
                         case THROW -> throw sourceFailure(flow.failure());
-                        case BREAK, CONTINUE ->
+                        case BREAK, CONTINUE, SELECT_VALUE_RETURN ->
                                 throw new IllegalStateException(
-                                        "loop control crossed a source continuation boundary");
+                                        "control flow crossed a source continuation boundary");
                     }
                     return;
                 }
@@ -1201,9 +1205,9 @@ public final class OresEvalRootNode extends RootNode {
                     case NORMAL -> done(shapeSourceReturn(null, null));
                     case RETURN -> done(shapeSourceReturn(flow.value(), null));
                     case THROW -> throw sourceFailure(flow.failure());
-                    case BREAK, CONTINUE ->
+                    case BREAK, CONTINUE, SELECT_VALUE_RETURN ->
                             throw new IllegalStateException(
-                                    "loop control crossed a source function boundary");
+                                    "control flow crossed a source function boundary");
                 }
             }
 
@@ -1537,6 +1541,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Set<Object> seen) {
             if (expr == null) return false;
+            if (expr instanceof Ast.StaticSelectExpr) return true;
             if (expr instanceof Ast.AwaitExpr
                     || expr instanceof Ast.ChannelOpExpr channel
                         && channel.mode() == Ast.WaitMode.BLOCKING
@@ -2018,7 +2023,9 @@ public final class OresEvalRootNode extends RootNode {
                                         continuation.accept(
                                                 t,
                                                 failure == null
-                                                        ? SourceFlow.returning(value)
+                                                        ? returned.target() == Ast.ReturnTarget.SELECT_VALUE
+                                                                ? SourceFlow.selectReturning(value)
+                                                                : SourceFlow.returning(value)
                                                         : SourceFlow.throwing(failure)));
                     }
                     return;
@@ -2676,8 +2683,9 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     SourceFlow.normal());
-                        } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                        } else if ((flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.SELECT_VALUE_RETURN
+                                || flow.kind() == SourceFlowKind.THROW)) {
                             continuation.accept(t, flow);
                         } else {
                             if (loop.update() == null) {
@@ -2722,8 +2730,9 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(
                                     t,
                                     SourceFlow.normal());
-                        } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                        } else if ((flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.SELECT_VALUE_RETURN
+                                || flow.kind() == SourceFlowKind.THROW)) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2829,7 +2838,7 @@ public final class OresEvalRootNode extends RootNode {
                 runBlock(t, body, iteration, (t2, flow) -> {
                     if (flow.kind() == SourceFlowKind.BREAK) {
                         finishAsyncForOf(t2, generator, SourceFlow.normal(), continuation);
-                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.THROW) {
+                    } else if (flow.kind() == SourceFlowKind.RETURN || flow.kind() == SourceFlowKind.SELECT_VALUE_RETURN || flow.kind() == SourceFlowKind.THROW) {
                         finishAsyncForOf(t2, generator, flow, continuation);
                     } else {
                         runAsyncForOfIteration(t2, generator, env, body, bind, continuation);
@@ -2863,8 +2872,9 @@ public final class OresEvalRootNode extends RootNode {
                     (t, flow) -> {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
-                        } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                        } else if ((flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.SELECT_VALUE_RETURN
+                                || flow.kind() == SourceFlowKind.THROW)) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -2915,8 +2925,9 @@ public final class OresEvalRootNode extends RootNode {
                     (t, flow) -> {
                         if (flow.kind() == SourceFlowKind.BREAK) {
                             continuation.accept(t, SourceFlow.normal());
-                        } else if (flow.kind() == SourceFlowKind.RETURN
-                                || flow.kind() == SourceFlowKind.THROW) {
+                        } else if ((flow.kind() == SourceFlowKind.RETURN
+                                || flow.kind() == SourceFlowKind.SELECT_VALUE_RETURN
+                                || flow.kind() == SourceFlowKind.THROW)) {
                             continuation.accept(t, flow);
                         } else {
                             t.scheduleLoopContinuation(
@@ -4730,6 +4741,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
+            if (failure instanceof SelectValueReturnSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
@@ -4749,6 +4761,7 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
+            if (failure instanceof SelectValueReturnSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
@@ -4877,7 +4890,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
             } catch (TailCallSignal signal) {
                 throw signal;
-            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
+            } catch (ReturnSignal | SelectValueReturnSignal | BreakSignal | ContinueSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
@@ -4981,6 +4994,9 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ReturnStmt ret) {
+                if (ret.target() == Ast.ReturnTarget.SELECT_VALUE) {
+                    throw new SelectValueReturnSignal(eval(ret.value(), env));
+                }
                 returnFrom(
                         ret.value(),
                         env,
@@ -8974,6 +8990,15 @@ public final class OresEvalRootNode extends RootNode {
     private static final class ReturnSignal extends RuntimeException {
         private final Object value;
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
+    }
+
+    /** Value-select return is never a callable return or a guest-catchable failure. */
+    private static final class SelectValueReturnSignal extends RuntimeException {
+        private final Object value;
+        private SelectValueReturnSignal(Object value) {
+            super(null, null, false, false);
+            this.value = value;
+        }
     }
 
     private static final class BreakSignal extends RuntimeException {
