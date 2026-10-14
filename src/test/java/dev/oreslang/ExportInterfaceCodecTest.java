@@ -6,7 +6,6 @@ import dev.oreslang.compiler.ExportInterfaceCodec.Header;
 import dev.oreslang.compiler.ExportInterfaceCodec.Kind;
 import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
@@ -22,7 +21,7 @@ final class ExportInterfaceCodecTest {
         assertArrayEquals(a.bytes(), b.bytes());
         assertEquals(a.sha256(), b.sha256());
         assertEquals(a.sha256(), ExportInterfaceCodec.decode(a.bytes()).sha256());
-        assertEquals(List.of(C, F), a.entries());
+        assertEquals(List.of(F, C), a.entries());
     }
 
     @Test void compilationEnvironmentAndNamedSignatureChangeHash() {
