@@ -8032,6 +8032,25 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralPatternMatches(value, alias.target());
             }
 
+            // Named class contracts participate in structural matching via
+            // their PUBLIC shape. The typechecker accepts these targets;
+            // runtime must neither reject every class pattern nor inspect
+            // private class slots to decide whether the pattern matches.
+            Ast.ClassDecl contractClass = findClass(target.name());
+            if (contractClass != null) {
+                if (contractClass.actorKind() != Ast.ActorKind.NONE
+                        || contractClass.genericParameters().size() != target.arguments().size()) {
+                    return false;
+                }
+                Map<String, Ast.TypeRef> substitutions = new LinkedHashMap<>();
+                for (int i = 0; i < contractClass.genericParameters().size(); i++) {
+                    substitutions.put(contractClass.genericParameters().get(i),
+                            target.arguments().get(i));
+                }
+                return structuralClassMatches(
+                        value, contractClass, substitutions, new LinkedHashSet<>());
+            }
+
             Ast.InterfaceDecl iface = findInterface(target.name());
             if (iface == null || iface.moduleContract()) return false;
             if (iface.genericParameters().size() != target.arguments().size()) return false;
@@ -8077,6 +8096,83 @@ public final class OresEvalRootNode extends RootNode {
                         : member;
             }
             return Env.MISSING;
+        }
+
+        private boolean structuralClassMatches(
+                Object value,
+                Ast.ClassDecl contract,
+                Map<String, Ast.TypeRef> bindings,
+                Set<Ast.ClassDecl> seen) {
+            if (!(value instanceof OresObject object)
+                    || object.klass.actorKind() != Ast.ActorKind.NONE
+                    || !seen.add(contract)) {
+                return false;
+            }
+            try {
+                for (Ast.TypeRef parentType : contract.parents()) {
+                    if (parentType.name().equals("Object")
+                            || parentType.name().equals("List")) {
+                        continue;
+                    }
+                    Ast.ClassDecl parent = findClass(parentType.name());
+                    if (parent == null
+                            || parent.actorKind() != Ast.ActorKind.NONE
+                            || parent.genericParameters().size() != parentType.arguments().size()) {
+                        return false;
+                    }
+                    Map<String, Ast.TypeRef> inherited = new LinkedHashMap<>();
+                    for (int i = 0; i < parent.genericParameters().size(); i++) {
+                        inherited.put(parent.genericParameters().get(i),
+                                substituteStructuralType(parentType.arguments().get(i), bindings));
+                    }
+                    if (!structuralClassMatches(value, parent, inherited, seen)) {
+                        return false;
+                    }
+                }
+                for (Ast.FieldDecl required : contract.fields()) {
+                    if (required.visibility() != Ast.Visibility.PUBLIC) continue;
+                    Object actual = publicStructuralMember(value, required.name());
+                    if (actual == Env.MISSING
+                            || !oresTypeMatches(
+                                    actual,
+                                    substituteStructuralType(required.type(), bindings))) {
+                        return false;
+                    }
+                }
+                for (Ast.MethodDecl required : contract.methods()) {
+                    if (required.visibility() != Ast.Visibility.PUBLIC
+                            || required.isStatic()) continue;
+                    Ast.MethodDecl actual = object.owner.findMethod(
+                            object.klass,
+                            CallableSelector.instance(required.name(), required.arity()));
+                    if (actual == null
+                            || actual.visibility() != Ast.Visibility.PUBLIC
+                            || actual.isStatic()
+                            || actual.isAbstract()
+                            || actual.async() != required.async()
+                            || actual.genericParameters().size()
+                                != required.genericParameters().size()) {
+                        return false;
+                    }
+                    for (int i = 0; i < required.parameters().size(); i++) {
+                        Ast.Param expectedParam = required.parameters().get(i);
+                        Ast.Param actualParam = actual.parameters().get(i);
+                        if (expectedParam.mutable() != actualParam.mutable()
+                                || !actualParam.type().equals(
+                                        substituteStructuralType(
+                                                expectedParam.type(), bindings))) {
+                            return false;
+                        }
+                    }
+                    if (!actual.returnType().equals(
+                            substituteStructuralType(required.returnType(), bindings))) {
+                        return false;
+                    }
+                }
+                return true;
+            } finally {
+                seen.remove(contract);
+            }
         }
 
         private boolean structuralInterfaceMatches(
