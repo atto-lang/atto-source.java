@@ -2869,41 +2869,10 @@ public final class OwnershipChecker {
             Map<String, Ast.TypeRef> initialBindings) {
         Map<String, Ast.TypeRef> bindings = new HashMap<>(initialBindings);
         Set<String> fixed = new HashSet<>(initialBindings.keySet());
-        if (!call.typeArguments().isEmpty()) {
-            if (call.typeArguments().size() > explicitGenericNames.size()) {
-                throw new IllegalArgumentException("too many explicit generic call arguments");
-            }
-            Set<String> supplied = new HashSet<>();
-            boolean seenNamed = false;
-            int positionalIndex = 0;
-            for (Ast.TypeRef argument : call.typeArguments()) {
-                String name;
-                Ast.TypeRef type;
-                if (argument.isNamedParameter()) {
-                    seenNamed = true;
-                    name = argument.namedParameterName();
-                    type = argument.namedParameterValue();
-                    if (!explicitGenericNames.contains(name)) {
-                        throw new IllegalArgumentException("unknown generic call argument '" + name + "'");
-                    }
-                } else {
-                    if (seenNamed) {
-                        throw new IllegalArgumentException(
-                                "positional generic arguments must precede named arguments");
-                    }
-                    name = explicitGenericNames.get(positionalIndex++);
-                    type = argument;
-                }
-                if (!supplied.add(name)) {
-                    throw new IllegalArgumentException("duplicate generic call argument '" + name + "'");
-                }
-                if (type.name().equals("_") && type.arguments().isEmpty() && !type.inferArguments()) {
-                    continue;
-                }
-                bindings.put(name, type);
-                fixed.add(name);
-            }
-        }
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(explicitGenericNames, call.typeArguments(), "generic call");
+        bindings.putAll(bound.explicitTypes());
+        fixed.addAll(bound.explicitTypes().keySet());
         List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
