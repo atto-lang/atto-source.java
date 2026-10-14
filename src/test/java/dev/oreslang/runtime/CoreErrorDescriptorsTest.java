@@ -82,4 +82,24 @@ final class CoreErrorDescriptorsTest {
         assertFalse(network.isSubtypeOf(fs));
         assertThrows(NullPointerException.class, () -> missing.isSubtypeOf(null));
     }
+
+    @Test void nominalCoreInterfacesAreInheritedButNotInferredFromNames() {
+        var actor = CoreErrorDescriptors.requireKnown("ActorError");
+        var ask = CoreErrorDescriptors.requireKnown("ActorAskTimeoutError");
+        var missingProcess = CoreErrorDescriptors.requireKnown("ProcessNotFoundError");
+        var mailboxFull = CoreErrorDescriptors.requireKnown("MailboxFullError");
+        var timeout = CoreErrorDescriptors.requireKnown("TimeoutError");
+        var root = CoreErrorDescriptors.requireKnown("Error");
+        assertTrue(actor.abstractType());
+        assertTrue(actor.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(ask.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(missingProcess.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(mailboxFull.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertFalse(timeout.implementsInterface(CoreErrorDescriptors.CoreInterface.ACTOR_API_ERROR));
+        assertTrue(timeout.implementsInterface(CoreErrorDescriptors.CoreInterface.RETRY_ADVISORY));
+        assertFalse(root.implementsInterface(CoreErrorDescriptors.CoreInterface.RETRY_ADVISORY));
+        assertTrue(root.implementsInterface(CoreErrorDescriptors.CoreInterface.CODED_ERROR));
+        assertTrue(ask.implementsInterface(CoreErrorDescriptors.CoreInterface.SERIALIZABLE));
+        assertThrows(NullPointerException.class, () -> root.implementsInterface(null));
+    }
 }
