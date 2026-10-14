@@ -712,11 +712,26 @@ public final class OresScheduler implements AutoCloseable {
             // A cleanup-aware task publishes cancellation only after its
             // cleanup continuation returns or terminally fails and after the
             // scheduler has left the guest/context turn.
-            if (completion.deferredCancellationCause() != null
+            java.util.concurrent.CancellationException requested =
+                    completion.deferredCancellationCause();
+            if (requested != null
                     && !(outcome instanceof TerminalFailure<?> failure
                          && (failure.failure() instanceof VirtualMachineError
                              || failure.failure() instanceof ThreadDeath
-                             || failure.failure() instanceof LinkageError))) {
+                             || failure.failure() instanceof LinkageError
+                             || failure.failure() instanceof
+                                    ActorRuntime.UntrustedActorQuotaExceededException))) {
+                if (outcome instanceof TerminalFailure<?> failed
+                        && failed.failure() != requested) {
+                    // Keep bounded evidence of failed cleanup without
+                    // replacing the original cancellation or growing an
+                    // untrusted exception chain without limit.
+                    synchronized (requested) {
+                        if (requested.getSuppressed().length < 64) {
+                            requested.addSuppressed(failed.failure());
+                        }
+                    }
+                }
                 completion.completeDeferredCancellationFromRuntime();
             } else if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
