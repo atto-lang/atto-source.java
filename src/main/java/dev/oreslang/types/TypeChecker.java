@@ -90,6 +90,8 @@ public final class TypeChecker {
     private boolean inDiscardingSelectArm;
     /** Innermost static value-select result context, null outside its arms. */
     private List<Type> currentSelectReturnTypes;
+    /** Deferred select-value arms cannot unwind a completed callable. */
+    private boolean inDeferredValueSelectArm;
     /** Callable return type stays available while checking nested expression arms. */
     private Type currentCallableReturnType;
     private final List<String> warnings = new ArrayList<>();
@@ -1586,6 +1588,10 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (inDeferredValueSelectArm && ret.target() == Ast.ReturnTarget.FUNCTION) {
+                throw new IllegalArgumentException(
+                        "deferred nb select arms cannot return from the enclosing callable");
+            }
             if (ret.target() == Ast.ReturnTarget.SELECT_VALUE) {
                 if (currentSelectReturnTypes == null || ret.value() == null) {
                     throw new IllegalArgumentException(
@@ -1724,6 +1730,13 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
+            if (inDeferredValueSelectArm && selected.explicitDo()
+                    && selected.mode() == Ast.WaitMode.BLOCKING) {
+                // A nested procedural arm cannot return from an outer callable
+                // after the deferred value select has returned its Future.
+                throw new IllegalArgumentException(
+                        "procedural do select inside deferred nb select value arm is not yet safe");
+            }
             if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && currentActorKind == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -3454,17 +3467,26 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.StaticSelectExpr resultSelect) {
             Ast.SelectStmt selected = resultSelect.select();
-            // Select-result returns are lexically distinct from callable
-            // returns; nested value selects get an independent result collector.
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "nb select value expressions require an actor execution domain");
+            }
+            // Each nested select has its own lexical result target. An outer
+            // detached arm remains detached even when it contains a blocking
+            // value-select or ordinary nested blocks.
             List<Type> prior = currentSelectReturnTypes;
+            boolean priorDeferred = inDeferredValueSelectArm;
             List<Type> returns = new ArrayList<>();
             currentSelectReturnTypes = returns;
+            inDeferredValueSelectArm |= selected.mode() == Ast.WaitMode.NONBLOCKING;
             try {
                 checkStatement(selected, env, generics,
                         currentCallableReturnType == null
                                 ? Primitive.VOID : currentCallableReturnType, self);
             } finally {
                 currentSelectReturnTypes = prior;
+                inDeferredValueSelectArm = priorDeferred;
             }
             for (Ast.SelectArm arm : selected.arms()) {
                 if (!definitelySelectArmReturns(arm.body())) {
@@ -3493,7 +3515,9 @@ public final class TypeChecker {
                         "value-select return");
                 requireAssignable(returned, joined, "value-select return");
             }
-            return joined;
+            return selected.mode() == Ast.WaitMode.NONBLOCKING
+                    ? new Named("Future", List.of(joined))
+                    : joined;
         }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
