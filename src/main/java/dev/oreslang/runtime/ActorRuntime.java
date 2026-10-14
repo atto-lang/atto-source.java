@@ -1503,18 +1503,9 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                // STOP rejects ordinary emits, but a scheduler-owned
-                // lexical cleanup still has the actor's single-flight lease
-                // and may publish its final bounded output before DONE.
-                boolean authenticatedCleanupOutput =
-                        cell.stopped.get()
-                        && !cell.sourceCleanupRevoked
-                        && !cell.forceKillFenced
-                        && OresScheduler.current() == cell.sourceScheduler
-                        && OresScheduler.currentTaskInCleanup();
                 if ((cell.stopped.get()
                         && !cell.endRequested
-                        && !authenticatedCleanupOutput)
+                        && !cell.authorizedCleanupOutput())
                         || cell.finalized) {
                     throw terminated(cell.ref);
                 }
@@ -6943,6 +6934,19 @@ public final class ActorRuntime implements AutoCloseable {
             return 0;
         }
 
+        /**
+         * Output during STOP belongs exclusively to an already executing,
+         * cancellation-injected source task on the actor's own serial lane.
+         * It is not authority to enqueue new user messages or mint new tasks.
+         */
+        private boolean authorizedCleanupOutput() {
+            return stopped.get() && !sourceCleanupRevoked && !forceKillFenced
+                    && !finalized && !closed.get()
+                    && sourceScheduler != null
+                    && OresScheduler.current() == sourceScheduler
+                    && OresScheduler.currentTaskInCleanup();
+        }
+
         private boolean authorizedCleanupContinuation(Runnable command) {
             // A cancellation turn may be ENQUEUED while STOP is still injecting
             // cancellations. hasSourceCleanup() gates EXECUTION until the
@@ -7162,7 +7166,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // self.end/self.endWithCleanup seals the mailbox immediately, but
                 // the current turn and its final cleanup retain the actor's output
                 // capability until finalization closes the stream.
-                if ((stopped.get() && !endRequested) || finalized) {
+                if ((stopped.get()
+                        && !endRequested
+                        && !authorizedCleanupOutput())
+                        || finalized) {
                     throw terminated(ref);
                 }
 
