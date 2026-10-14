@@ -4751,16 +4751,33 @@ public final class TypeChecker {
                         "record match projection requires a statically known record/struct payload, got "
                                 + subject);
             }
-            for (String field : projection.fields()) {
+            for (int i = 0; i < projection.fields().size(); i++) {
+                String field = projection.fields().get(i);
                 Type member = record.members().get(field);
                 if (member == null) {
                     throw new IllegalArgumentException(
                             "match record projection field '" + field
                                     + "' does not exist in " + subject);
                 }
-                // Preserve readonly capabilities; a match arm receives a
-                // field view, never a new ownership or mutation grant.
-                bindings.define(field, member, Ast.BindingKind.VAL);
+                // Binding kinds control local rebinding, not the readonly
+                // capabilities or ownership of the projected field.
+                bindings.define(field, member, projection.kinds().get(i));
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException("positional tuple match projection requires a Tuple, got " + subject);
+            }
+            if (tuple.elements().size() != projection.bindings().size()) {
+                throw new IllegalArgumentException("tuple match projection arity "
+                        + projection.bindings().size() + " does not match " + tuple.elements().size());
+            }
+            for (int i = 0; i < projection.bindings().size(); i++) {
+                Ast.DestructureBinding binding = projection.bindings().get(i);
+                if (!binding.isDiscard()) {
+                    bindings.define(binding.name(), tuple.elements().get(i), binding.kind());
+                }
             }
             return;
         }
@@ -4909,8 +4926,12 @@ public final class TypeChecker {
             return java.util.Objects.equals(a.value(), b.value());
         }
         if (earlier instanceof Ast.RecordPattern a && later instanceof Ast.RecordPattern b) {
-            // Projection patterns only bind existing keys, never test values.
+            // Binding kinds do not affect match coverage.
             return b.fields().containsAll(a.fields());
+        }
+        if (earlier instanceof Ast.TupleProjectionPattern a
+                && later instanceof Ast.TupleProjectionPattern b) {
+            return a.bindings().size() == b.bindings().size();
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
@@ -5094,6 +5115,11 @@ public final class TypeChecker {
         if (pattern instanceof Ast.RecordPattern projection) {
             return subject instanceof Record record
                     && record.members().keySet().containsAll(projection.fields());
+        }
+        if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            return subject instanceof Tuple tuple
+                    && tuple.kind() == TupleKind.TUPLE
+                    && tuple.elements().size() == projection.bindings().size();
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
