@@ -2,13 +2,14 @@
 > import-visibility integration is on this stacked branch over PR #850.
 > The canonical Entry, Pair and Two declarations are in `stdlib/core.ores`.
 > Exact-source targeted Java 25 CI has passed; full Maven, GraalVM Native Image,
-> public alias cross-file resolution and LLVM parity remain merge blockers.
+> transitive cross-file alias chains, full native toolchain validation and LLVM parity remain merge blockers.
 
 # Transparent type aliases, records, tuples and entries
 
 Status: **integrated Java parser/typechecker and import visibility; targeted verification passed; native parity pending**.
 This document defines the intended cross-backend contract. It does not claim
-native-image, LLVM, formatter, imported-symbol or runtime serialization parity.
+native-image, LLVM or runtime serialization parity. Targeted Java linked-import
+and formatter verification is documented below.
 
 ## Identity and capabilities
 
@@ -33,7 +34,7 @@ native-image, LLVM, formatter, imported-symbol or runtime serialization parity.
 | `struct{key: K, value: V}` in type position | Structural fields | Same field contract as `record` | Existing struct/record shape |
 | `Tuple[K,V]` and `[K,V]` | Structural positional | Exact **two** slots | Existing tuple representation |
 | `FixedArray[K,V]` | Fixed-array kind | Exact arity; distinct from tuple | Existing fixed-array representation |
-| `Entry<K,V>` | No implicit builtin currently | To be declared/imported | No new runtime representation |
+| `Entry<K,V>` | Defined in `std/core.ores` | Named `key` and `value` | Existing record representation |
 | `Pair<K,V>` | Transparent alias if declared | Whatever `Entry` defines | Exactly target representation |
 
 Example of **a named-field** key/value entry:
@@ -52,9 +53,8 @@ new code and examples must include it.
 
 This is **not** equal to the positional type `Tuple[K,V]`.
 A separate alias `type Two<A,B> = Tuple[A,B];` names a positional pair.
-Which underlying shape a future standard-library Entry should use remains a
-library/API compatibility decision; do **not** silently make every two-element
-tuple an Entry.
+The core library now defines Entry with named fields; do **not** silently
+make every two-element tuple an Entry.
 
 ## Compiler invariants to prove and test
 
@@ -90,16 +90,14 @@ tuple an Entry.
 
 ## Known audit concerns
 
-The current Java type model's general `Record` compatibility is field-wise
-covariant. This requires careful handling when a record can be written through
-more than one alias: writable fields must not be widened into unsound types.
-The ongoing structural-ownership hardening should be integrated, not forked
-here. The compiler also has an opaque-name fallback when a named type is not
+The integrated structural ownership model from PR #850 enforces invariant
+writable record slots and no-coercion readonly projections; these assertions
+are covered by bounded Java type-model tests. Full native parity remains open. The compiler also has an opaque-name fallback when a named type is not
 resolved locally; requiring alias targets to resolve conclusively needs a
 whole-program/import-linking contract, not a parser-only check.
 
-Finally, no built-in `Entry` or `Pair` type or constructors are implemented
-by the declaration spelling change. This proposal does not silently add them.
+The stdlib supplies `Entry` and `Pair` as compile-time declarations, not
+primitive builtins or new runtime constructors/wire representations.
 
 ## Cross-source hardening (October 14, 2026)
 
@@ -133,3 +131,21 @@ real Oreslang `Parser`, `TypeChecker`, `OwnershipChecker`,
 `IncrementalCompiler`, `ImportGraph`, and `PublicTypeAliasLinker`.
 This is not whole-repository Maven, native GraalVM, actor transport or
 LLVM conformance evidence.
+
+## Latest exact-source audit (October 14, 2026)
+
+- Generic aliases are lexically scoped: free type parameters inside private
+  aliases cannot capture exported alias parameters.
+- Instantiation-key cycle detection accepts `Box<Box<int>>`, while cyclic
+  and expanding recursive aliases are bounded by both 64-level and 16,384-node
+  limits; the main type checker bounds the logical generic DAG *before*
+  structural hashing.
+- Simple module headers are formatted as `define module Name as`, and new
+  fixtures/docs use the same canonical syntax. Legacy headers still parse.
+- [Java 25 focused source JUnit](https://github.com/embedded-alerts-test/web-ui-e2e/actions/runs/38624987260)
+  **29 passed / zero failures**; [cross-file compiler harness](https://github.com/embedded-alerts-test/web-ui-e2e/actions/runs/38624987037)
+  passed. [Exact formatter Rust CI](https://github.com/embedded-alerts-test/web-ui-e2e/actions/runs/38624267047)
+  **152 passed**.
+- Full-repository Maven, GraalVM Native Image, LLVM front-end/lowering,
+  actor transport parity and multiple-hop foreign alias linking are
+  **not yet verified or fully supported**. This remains a draft PR.
