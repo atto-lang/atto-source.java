@@ -78,6 +78,37 @@ final class ChannelFutureSelectQuotaTest {
     }
 
     @Test
+    void globalArmQuotaIncludesFutureCasesAndRefundsOnCancellation() {
+        var producer = new OresFuture<Integer>();
+        var operations = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < ChannelRuntime.MAX_SELECT_CASES; i++) {
+            operations.add(ChannelRuntime.await(producer));
+        }
+        var set = new ChannelRuntime.SelectSet(operations);
+        var accepted = new java.util.ArrayList<OresFuture<ChannelRuntime.SelectResult>>();
+        try {
+            // Sixteen selections, each with 256 pending Future cases, occupy
+            // all 4,096 global registration credits without a channel.
+            for (int i = 0; i < 16; i++) accepted.add(set.selectAsync());
+            assertEquals(4_096, producer.pendingRuntimeWaiterCount());
+
+            var rejected = set.selectAsync();
+            var failure = assertThrows(CompletionException.class, rejected::join);
+            assertTrue(failure.getCause() instanceof ChannelRuntime.SelectAdmissionException);
+            assertEquals(4_096, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isDone(), "selection failure must not cancel its source");
+        } finally {
+            for (var selected : accepted) selected.cancel(false);
+        }
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+
+        var retry = set.selectAsync();
+        assertEquals(ChannelRuntime.MAX_SELECT_CASES, producer.pendingRuntimeWaiterCount());
+        assertTrue(retry.cancel(false));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void immediateProbeLeavesNoWaitersEvenAtPerChannelQuota() {
         var channel = new ChannelRuntime.Channel<Integer>(0, 1);
         var waiting = ChannelRuntime.SelectSet.of(ChannelRuntime.read(channel)).selectAsync();
