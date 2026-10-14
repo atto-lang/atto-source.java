@@ -2194,9 +2194,7 @@ public final class TypeChecker {
             // an argument transfer could create a second live owner. No
             // function, host intrinsic or callback can receive a typed Map.
             for (Ast.Expr argument : call.arguments()) {
-                Ast.Expr value = argument instanceof Ast.SpreadExpr spread
-                        ? spread.expression() : argument;
-                if (isTypedMapType(typeOf(value, env, generics, self))) {
+                if (containsUnmovedMapValue(argument, env)) {
                     throw new IllegalArgumentException(
                             "typed Map cannot escape through a call argument without move/borrow semantics");
                 }
@@ -7887,6 +7885,46 @@ public final class TypeChecker {
     private Ast.TypeAliasDecl findTypeAlias(String name) {
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
+    }
+
+    /**
+     * Escape preflight runs before call-specialization and must not invoke
+     * typeOf twice: type analysis may itself validate lambdas, update
+     * inference state and emit diagnostics. Recursively scan the immutable
+     * source AST instead. Indirect/host callees require a runtime fence too.
+     */
+    private boolean containsUnmovedMapValue(Ast.Expr expr, Env env) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            return binding != null && isTypedMapType(binding.type());
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            return created.type().name().equals("Map")
+                    || created.arguments().stream().anyMatch(
+                            arg -> containsUnmovedMapValue(arg, env));
+        }
+        if (expr instanceof Ast.SpreadExpr spread) {
+            return containsUnmovedMapValue(spread.expression(), env);
+        }
+        if (expr instanceof Ast.CastExpr cast) {
+            return cast.targetType().name().equals("Map")
+                    || containsUnmovedMapValue(cast.value(), env);
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return containsUnmovedMapValue(conditional.condition(), env)
+                    || containsUnmovedMapValue(conditional.whenTrue(), env)
+                    || containsUnmovedMapValue(conditional.whenFalse(), env);
+        }
+        if (expr instanceof Ast.ListExpr list) {
+            return list.elements().stream().anyMatch(arg -> containsUnmovedMapValue(arg, env));
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().anyMatch(arg -> containsUnmovedMapValue(arg, env));
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return containsUnmovedMapValue(assignment.value(), env);
+        }
+        return false;
     }
 
     private static boolean isTypedMapType(Type type) {
