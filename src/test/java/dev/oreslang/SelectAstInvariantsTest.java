@@ -53,6 +53,20 @@ final class SelectAstInvariantsTest {
     }
 
     @Test
+    void rejectsUnboundMutableReferentOnReadOrWriteArm() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.SelectArm(
+                        Ast.ChannelOperation.READ,
+                        new Ast.NameExpr("input"), null,
+                        null, null, List.of(), true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.SelectArm(
+                        Ast.ChannelOperation.WRITE,
+                        new Ast.NameExpr("output"), new Ast.LiteralExpr(7L),
+                        null, null, List.of(), true));
+    }
+
+    @Test
     void permitsOrderedCasesFollowedByOneDefault() {
         assertDoesNotThrow(() -> new Ast.SelectStmt(
                 Ast.WaitMode.IMMEDIATE, Ast.SelectPolicy.PRIORITY,
