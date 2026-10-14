@@ -92,9 +92,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
 
         boolean detach() {
-            if (!claimed.compareAndSet(false, true)) return false;
+            boolean detached = claimed.compareAndSet(false, true);
+            // A concurrent settlement can have already claimed this waiter.
+            // Still remove the registration from the producer queue: claiming
+            // callback delivery and reclaiming queue retention are separate
+            // obligations. This is idempotent if the producer already polled it.
             owner.waiters.remove(this);
-            return true;
+            return detached;
         }
     }
 
