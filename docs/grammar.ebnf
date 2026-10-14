@@ -27,6 +27,10 @@ top_level_item  = annotated_module_decl
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
                         "as" { module_member } "end" ;
 
+(* Canonical module headers require 'as'; the parser temporarily accepts omitted
+   'as' in legacy source for backwards compatibility. The formatter should
+   always emit the canonical spelling. *)
+
 module_member   = contract_decl
                 | actor_decl
                 | actor_callable_decl
