@@ -6,6 +6,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Dedicated guest Map storage foundation. This is NOT a record/struct and does
@@ -23,6 +30,11 @@ import java.util.Objects;
  * and recursively copy values before crossing isolation boundaries.
  */
 public final class OresKeyedMap<K, V> {
+    // First-stage per-object budget, identical to the opt-in tagged key codec.
+    // Existing String-keyed records and ordinary guest Strings are unaffected.
+    public static final int MAX_ENTRIES = 4_096;
+    public static final int MAX_TEXT_KEY_BYTES = 16_384;
+
     public enum KeyDomain {
         STRING, SYMBOL, STRING_OR_SYMBOL
     }
@@ -87,6 +99,23 @@ public final class OresKeyedMap<K, V> {
         return entries.isEmpty();
     }
 
+    private static void checkStringKey(String text) {
+        if (text.length() > MAX_TEXT_KEY_BYTES) {
+            throw new IllegalArgumentException("Map String key exceeds byte limit");
+        }
+        try {
+            ByteBuffer bytes = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(text));
+            if (bytes.remaining() > MAX_TEXT_KEY_BYTES) {
+                throw new IllegalArgumentException("Map String key exceeds byte limit");
+            }
+        } catch (CharacterCodingException invalid) {
+            throw new IllegalArgumentException("Map String key must be valid Unicode", invalid);
+        }
+    }
+
     private void checkKey(Object key) {
         Objects.requireNonNull(key, "map key");
         boolean valid = switch (domain) {
@@ -97,6 +126,7 @@ public final class OresKeyedMap<K, V> {
         if (!valid) {
             throw new IllegalArgumentException("key is incompatible with Map key domain " + domain);
         }
+        if (key instanceof String text) checkStringKey(text);
     }
 
     public boolean containsKey(Object key) {
@@ -129,6 +159,9 @@ public final class OresKeyedMap<K, V> {
     public V put(K key, V value) {
         checkKey(key);
         checkValue(value);
+        if (!entries.containsKey(key) && entries.size() >= MAX_ENTRIES) {
+            throw new IllegalArgumentException("typed Map exceeds maximum key count");
+        }
         return entries.put(key, value);
     }
 
@@ -147,6 +180,13 @@ public final class OresKeyedMap<K, V> {
             checkKey(key);
             checkValue(value);
             prepared.add(Map.entry(key, value));
+        }
+        Set<K> additions = new HashSet<>();
+        for (Map.Entry<K, V> entry : prepared) {
+            if (!entries.containsKey(entry.getKey())) additions.add(entry.getKey());
+        }
+        if (additions.size() > MAX_ENTRIES - entries.size()) {
+            throw new IllegalArgumentException("typed Map exceeds maximum key count");
         }
         for (Map.Entry<K, V> entry : prepared) {
             entries.put(entry.getKey(), entry.getValue());
