@@ -71,6 +71,31 @@ final class StaticSelectValueExpressionTest {
     }
 
     @Test
+    void blockingValueSelectResumesFromPendingChannelAfterAsyncWriter() throws Exception {
+        String code = """
+                pub async fnc sendLater(Channel<int> channel): void {
+                  rt cooperate();
+                  writech channel, 7;
+                  return;
+                }
+
+                pub async routine main(): void {
+                  val Channel<int> incoming = Channel.new<int>(0);
+                  val Future<void> writer = sendLater(incoming);
+                  const int answer = select over
+                    when readch incoming: int x -> {
+                      return x * 3;
+                    }
+                  end;
+                  await writer;
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """;
+        assertEquals("21", run(code));
+    }
+
+    @Test
     void defaultResultIsAnExpressionAndSupportsNestedResults() throws Exception {
         String code = """
                 pub fnc main(): void {
