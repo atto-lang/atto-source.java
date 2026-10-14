@@ -4,11 +4,10 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Explicit procedural dispatch must not break existing statement programs.
- * Static value-producing select expressions are a separate compiler milestone.
+ * Value-producing static select expressions must remain distinct from statements.
  */
 final class ExplicitDispatchStatementSyntaxTest {
     @Test
@@ -58,8 +57,8 @@ final class ExplicitDispatchStatementSyntaxTest {
     }
 
     @Test
-    void unsupportedStaticValueExpressionFailsClosed() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    void typedStaticValueExpressionIsNowSupported() {
+        assertDoesNotThrow(() -> Parser.parse("""
                 fnc bad(): int {
                     const int value = select { default: { return 1; } };
                     return value;
