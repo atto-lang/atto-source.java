@@ -2502,7 +2502,13 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.TypePattern typed) {
-            if (typed.binding() != null) defineRefinementAlias(typed.binding(), typed.type(), source, destination);
+            if (typed.binding() != null) {
+                // A negative predicate rules out a type but must never grant
+                // the capabilities of the excluded positive type.
+                Ast.TypeRef bindingType = typed.type().isComplement()
+                        ? subjectType : typed.type();
+                defineRefinementAlias(typed.binding(), bindingType, source, destination);
+            }
             return;
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
