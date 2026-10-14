@@ -145,6 +145,25 @@ final class ProductRecordLifetimeAuditTest {
         }
     }
 
+    @Test
+    void borrowedTupleCannotSmuggleMoveOnlyElementAsOwnedCallParameter() {
+        String program = """
+                define class Cell as
+                    pub let int value = 7;
+                end
+                fnc consume(int n, Cell owned): int { return n + owned.value; }
+                fnc unsafe(borrow Tuple[int, Cell] loan): int {
+                    return consume(...loan);
+                }
+                """;
+        var parsed = Parser.parse(program);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(parsed));
+        assertTrue(failure.getMessage().contains(
+                "cannot spread non-Copy elements from a borrowed tuple"),
+                failure.getMessage());
+    }
+
     private static String execute(String code) throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (Context ctx = Context.newBuilder(OresLanguage.ID)
