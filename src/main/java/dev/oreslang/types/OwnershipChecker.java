@@ -2456,9 +2456,23 @@ public final class OwnershipChecker {
             Map<String, Ast.TypeRef> members =
                     shape != null && shape.isRecordType()
                             ? shape.recordMembers() : Map.of();
-            for (String field : projection.fields()) {
+            for (int i = 0; i < projection.fields().size(); i++) {
+                String field = projection.fields().get(i);
                 Ast.TypeRef declared = members.getOrDefault(field, Ast.TypeRef.inferred());
-                defineRefinementAlias(field, declared, source, destination);
+                defineProjectionAlias(field, declared, source, destination, projection.kinds().get(i));
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            List<Ast.TypeRef> elementTypes =
+                    subjectType != null && subjectType.isTupleType()
+                            ? subjectType.arguments() : List.of();
+            for (int i = 0; i < projection.bindings().size(); i++) {
+                Ast.DestructureBinding binding = projection.bindings().get(i);
+                if (binding.isDiscard()) continue;
+                Ast.TypeRef type = i < elementTypes.size()
+                        ? elementTypes.get(i) : Ast.TypeRef.inferred();
+                defineProjectionAlias(binding.name(), type, source, destination, binding.kind());
             }
             return;
         }
@@ -2501,6 +2515,27 @@ public final class OwnershipChecker {
             return List.of(subjectType.arguments().get(1));
         }
         return List.of();
+    }
+
+    /**
+     * Projections of Copy fields are independent local values. They must not
+     * carry an ownershipRoot alias back to the aggregate: rebinding a local
+     * otherwise could resurrect a moved original. Non-Copy projections stay
+     * conservative aliases; rebinding them requires a separate move proof.
+     */
+    private void defineProjectionAlias(String name, Ast.TypeRef type, VarState source,
+            Scope destination, Ast.BindingKind bindingKind) {
+        Ast.TypeRef safe = source == null ? type : overlayReadonlyCapabilities(source.type, type);
+        ValueKind kind = kindOfType(safe);
+        if (bindingKind == Ast.BindingKind.LET && kind != ValueKind.COPY) {
+            throw error("let match projection of non-Copy field '" + name
+                    + "' requires explicit move/loan lowering; use const or val");
+        }
+        VarState alias = new VarState(safe, false, bindingKind == Ast.BindingKind.LET,
+                kind, Origin.LOCAL);
+        alias.aliasSource = source != null && kind != ValueKind.COPY
+                ? ownershipRoot(source) : null;
+        destination.define(name, alias);
     }
 
     private void defineRefinementAlias(String name, Ast.TypeRef narrowedType, VarState source, Scope destination) {
@@ -2591,6 +2626,10 @@ public final class OwnershipChecker {
             names.add(structural.binding());
         } else if (pattern instanceof Ast.RecordPattern projection) {
             names.addAll(projection.fields());
+        } else if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            for (Ast.DestructureBinding binding : projection.bindings()) {
+                if (!binding.isDiscard()) names.add(binding.name());
+            }
         } else if (pattern instanceof Ast.TuplePattern tuple) {
             for (Ast.Pattern nested : tuple.elements()) collectPatternBindingNames(nested, names);
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
