@@ -904,6 +904,20 @@ public final class OresEvalRootNode extends RootNode {
                     || failure instanceof LinkageError;
         }
 
+        private static boolean sourceTerminalControl(Throwable failure) {
+            if (failure == null) return false;
+            Throwable cause = OresFuture.unwrap(failure);
+            return cause instanceof Error
+                    || cause instanceof java.util.concurrent.CancellationException
+                    || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException;
+        }
+
+        private static boolean sourceCleanupDominates(Throwable pending, Throwable cleanup) {
+            if (sourceHostFatal(pending)) return false;
+            if (sourceHostFatal(cleanup)) return true;
+            return !sourceTerminalControl(pending) && sourceTerminalControl(cleanup);
+        }
+
         /**
          * Preserve a terminal failure through guest cleanup/return and retain
          * bounded suppressed diagnostics. A host-fatal cleanup has precedence
@@ -4752,9 +4766,10 @@ public final class OresEvalRootNode extends RootNode {
             } catch (java.util.concurrent.CancellationException cancelled) {
                 throw cancelled;
             } catch (RuntimeException ordinaryFailure) {
-                // trap is deliberately lossy: ordinary guest/runtime failure
-                // becomes None. Panic and scheduler cancellation remain distinct
-                // non-trappable control channels.
+                // Quota exhaustion is runtime CONTROL, never ordinary guest
+                // failure; the same policy holds in resumable SourceFlow.
+                if (sourceTerminalControl(ordinaryFailure)) throw ordinaryFailure;
+                // trap is deliberately lossy only for ordinary exceptions.
                 return new OptionValue(false, null);
             }
         }
@@ -4913,10 +4928,17 @@ public final class OresEvalRootNode extends RootNode {
                         preserveCleanupFailure(cleanupFailure, failure);
                 }
                 if (originalFailure != null) {
-                    // Never mask the original guest failure with a later
-                    // deferred expression or MutexGuard release failure.
-                    if (cleanupFailure != null && cleanupFailure != originalFailure)
+                    // Keep first-failure semantics for ordinary guest errors,
+                    // but never let one mask a later terminal cancellation,
+                    // untrusted quota failure, or host-fatal cleanup.
+                    if (cleanupFailure != null && cleanupFailure != originalFailure) {
+                        if (sourceCleanupDominates(originalFailure, cleanupFailure)) {
+                            preserveCleanupFailure(cleanupFailure, originalFailure);
+                            if (cleanupFailure instanceof RuntimeException failure) throw failure;
+                            if (cleanupFailure instanceof Error failure) throw failure;
+                        }
                         preserveCleanupFailure(originalFailure, cleanupFailure);
+                    }
                 } else if (cleanupFailure instanceof RuntimeException failure) {
                     throw failure;
                 } else if (cleanupFailure instanceof Error failure) {
@@ -5139,6 +5161,9 @@ public final class OresEvalRootNode extends RootNode {
                     catch (ReturnSignal | ArmResultSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                     catch (OresPanic panic) { throw panic; }
                     catch (RuntimeException failure) {
+                        // Synchronous guest catch must obey the same CONTROL
+                        // boundary as resumable SourceTask try/catch.
+                        if (sourceTerminalControl(failure)) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
@@ -5158,10 +5183,15 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         executeBlock(tried.finallyBody(), env, true);
                     } catch (RuntimeException | Error cleanupFailure) {
-                        if (originalFailure != null && originalFailure != cleanupFailure)
+                        if (originalFailure != null && originalFailure != cleanupFailure) {
+                            if (sourceCleanupDominates(originalFailure, cleanupFailure)) {
+                                preserveCleanupFailure(cleanupFailure, originalFailure);
+                                throw cleanupFailure;
+                            }
                             preserveCleanupFailure(originalFailure, cleanupFailure);
-                        else
+                        } else {
                             throw cleanupFailure;
+                        }
                     }
                 }
                 return;
