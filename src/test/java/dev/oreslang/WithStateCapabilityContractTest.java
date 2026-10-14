@@ -50,6 +50,29 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void mutableExternalReferenceCannotEnterActorStateThroughWriteLoan() {
+        for (String statement : new String[] {
+                "s.cache = external;",
+                "s.cache = s.cache;",
+                "s.cache = factory();"
+        }) {
+            String source = actorWithReferenceState(statement + " return s.n;")
+                    .replace("probe(): int with state.read",
+                             "probe(Map<string, int> external): int with state.read, state.write")
+                    .replace("self.handle_state(|s|",
+                             "self.handle_state(critical |s|");
+            Ast.Program parsed = Parser.parse(source);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), statement);
+            assertTrue(failure.getMessage().contains("ownership transfer"),
+                    failure.getMessage());
+        }
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                actor("with state.read, state.write",
+                        "self.handle_state(critical |s| -> { "
+                        + "s.v = s.v + 1; return s.v; })"))));
+    }
+
     @Test void detachedPrimitiveAndImmutableTextReadsStayLegal() {
         assertDoesNotThrow(() -> ActorStateContract.verify(
                 Parser.parse(actorWithReferenceState("return s.n;"))));
