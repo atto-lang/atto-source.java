@@ -70,6 +70,51 @@ final class ActorUrgentMailboxTest {
     }
 
     @Test
+    void rejectedUrgentTransportReleasesOnlyItsOwnAdmissionCredit() throws Exception {
+        var baseline = IsolatePolicy.developer();
+        var policy = new IsolatePolicy(
+                baseline.capabilities(), baseline.maxHeapBytes(), 2,
+                Duration.ofMinutes(1), false);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var processed = new CountDownLatch(16);
+        try (var runtime = new ActorRuntime(policy,
+                new ActorRuntime.DispatcherConfig(2, 2, 1, 64))) {
+            var actor = runtime.<Object>spawnShared(() -> (message, context) -> {
+                if ("hold".equals(message)) {
+                    entered.countDown();
+                    if (!release.await(3, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("host test did not release turn");
+                    }
+                } else {
+                    processed.countDown();
+                }
+            });
+            actor.ready().get(3, TimeUnit.SECONDS);
+            try {
+                actor.send("hold");
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                // Channel capabilities cannot cross actor mailboxes. Reject
+                // after reserving the urgent credit, then refund it exactly.
+                assertThrows(IllegalArgumentException.class,
+                        () -> actor.sendUrgent(new ChannelRuntime.Channel<Integer>(1)));
+
+                // A leaked credit would reject the final legal urgent message.
+                for (int i = 0; i < 16; i++) actor.sendUrgent("urgent-" + i);
+                assertThrows(IllegalStateException.class,
+                        () -> actor.sendUrgent("overflow"));
+                release.countDown();
+                assertTrue(processed.await(5, TimeUnit.SECONDS));
+                assertTrue(actor.failure().isEmpty(), () -> actor.failure().toString());
+            } finally {
+                release.countDown();
+                actor.stop();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
     void guestActorCannotSpoofSupervisorUrgentPriority() throws Exception {
         var rejected = new AtomicBoolean();
         var done = new CountDownLatch(1);
