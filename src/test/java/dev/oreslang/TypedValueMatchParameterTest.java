@@ -145,4 +145,18 @@ final class TypedValueMatchParameterTest {
                 () -> TypeChecker.check(Parser.parse(guest)));
     }
 
+
+    @Test
+    void borrowedResultParameterMustNotEraseLoanCapability() {
+        String guest = """
+            fnc bad(bool x): int {
+                return match<&int> x over {
+                    on true { return 1; }
+                    on false { return 2; }
+                };
+            }
+            """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(guest)));
+    }
 }
