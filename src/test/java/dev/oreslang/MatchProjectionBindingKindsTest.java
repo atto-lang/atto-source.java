@@ -201,6 +201,62 @@ final class MatchProjectionBindingKindsTest {
     }
 
     @Test
+    void matchConditionsPreserveLetBindings() throws Exception {
+        String source = """
+                fnc choose(Option<{v: int}> item): int {
+                  if item matches Some as {let v} then
+                    v = v + 1;
+                    return v;
+                  fi
+                  return 0;
+                }
+                pub routine main(): void {
+                  val Option<{v: int}> input = Some(struct{v: int}{v: 40});
+                  stdio.stdout.write(choose(input));
+                  return;
+                }
+                """;
+        assertEquals("41", outputOf(source));
+    }
+
+    @Test
+    void inlineTupleScrutineePreservesCopyOwnership() throws Exception {
+        String source = """
+                pub routine main(): void {
+                  do match Some((7, 8)) over
+                    on Some as (const first, let second) -> {
+                      second = second + 1;
+                      stdio.stdout.write(first + second);
+                    }
+                    on None -> {
+                      stdio.stdout.write(0);
+                    }
+                  end
+                  return;
+                }
+                """;
+        assertEquals("16", outputOf(source));
+    }
+
+    @Test
+    void noncopyProjectionFromUntrackedExpressionIsRejected() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> checks("""
+                    fnc identity(Option<{items: List<int>}> item): Option<{items: List<int>}> {
+                      return item;
+                    }
+                    fnc f(Option<{items: List<int>}> item): int {
+                      do match identity(item) over
+                        on Some as {items} -> { return 1; }
+                        on None -> { return 0; }
+                      end
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("tracked source owner"),
+                failure.getMessage());
+    }
+
+    @Test
     void duplicateRecordAndTupleBindingsAreParseErrors() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 fnc f(Option<{v: int}> item): void {
