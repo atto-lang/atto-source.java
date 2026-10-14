@@ -106,4 +106,15 @@ final class ExportInterfaceCollectorTest {
                 "an unchanged local signature cannot hide a changed imported nominal identity");
     }
 
+    @Test void nestedContractLengthsAreUtf8ByteCounts() {
+        var publicFn = fn("f", "🌿", Ast.Visibility.PUBLIC);
+        var exported = ExportInterfaceCollector.collect(source(publicFn), HEADER);
+        assertTrue(exported.entries().stream()
+                .filter(e -> e.kind() == ExportInterfaceCodec.Kind.FUNCTION)
+                .anyMatch(e -> e.signature().contains("4:🌿")),
+                "supplementary characters require four UTF-8 bytes, not two UTF-16 units");
+        assertArrayEquals(exported.bytes(),
+                ExportInterfaceCodec.decode(exported.bytes()).bytes());
+    }
+
 }
