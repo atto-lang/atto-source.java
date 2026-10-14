@@ -537,12 +537,16 @@ public final class Ast {
             BindingKind kind,
             String name,
             boolean rest,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef declaredType) {
+        public DestructureBinding(BindingKind kind, String name, boolean rest, boolean mutableReferent) {
+            this(kind, name, rest, mutableReferent, null);
+        }
         public DestructureBinding(BindingKind kind, String name, boolean rest) {
-            this(kind, name, rest, kind == BindingKind.VAL);
+            this(kind, name, rest, kind == BindingKind.VAL, null);
         }
         public DestructureBinding(BindingKind kind, String name) {
-            this(kind, name, false, kind == BindingKind.VAL);
+            this(kind, name, false, kind == BindingKind.VAL, null);
         }
 
         public DestructureBinding {
@@ -551,6 +555,9 @@ public final class Ast {
             }
             if (rest && "_".equals(name)) {
                 throw new IllegalArgumentException("rest destructure binding cannot be a discard");
+            }
+            if ("_".equals(name) && declaredType != null) {
+                throw new IllegalArgumentException("discard cannot have a declared type");
             }
         }
 
@@ -569,6 +576,13 @@ public final class Ast {
         public DestructureStmt {
             bindings = List.copyOf(bindings);
             validateRestBinding(bindings, "destructure");
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (DestructureBinding binding : bindings) {
+                if (!binding.isDiscard() && !names.add(binding.name())) {
+                    throw new IllegalArgumentException(
+                            "duplicate binding '" + binding.name() + "' in destructure pattern");
+                }
+            }
         }
         public DestructureStmt(List<DestructureBinding> bindings, Expr initializer) {
             this(DestructureKind.SEQUENCE, bindings, initializer);
@@ -610,7 +624,8 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern { }
+            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern, RecordPattern,
+            TupleProjectionPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -640,6 +655,51 @@ public final class Ast {
         public ConstructorPattern { arguments = List.copyOf(arguments); }
     }
 
+    /**
+     * Closed record projection within a match pattern, e.g.:
+     *   on Some as {id, name} -> { ... }
+     * The projected fields bind by name; unlike a structural type guard,
+     * a record projection never invokes members or methods.
+     */
+    public record RecordPattern(List<String> fields, List<BindingKind> kinds) implements Pattern {
+        public RecordPattern(List<String> fields) {
+            this(fields, java.util.Collections.nCopies(fields.size(), BindingKind.VAL));
+        }
+        public RecordPattern {
+            fields = List.copyOf(fields);
+            kinds = List.copyOf(kinds);
+            if (fields.isEmpty() || fields.size() != kinds.size()) {
+                throw new IllegalArgumentException("record match projection requires matching fields and kinds");
+            }
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (String field : fields) {
+                if (field == null || field.isBlank() || field.equals("_") || !names.add(field)) {
+                    throw new IllegalArgumentException(
+                            "invalid or duplicate match record projection field: " + field);
+                }
+            }
+        }
+    }
+
+    /** Exact-arity positional constructor payload projection; never a record lookup. */
+    public record TupleProjectionPattern(List<DestructureBinding> bindings) implements Pattern {
+        public TupleProjectionPattern {
+            bindings = List.copyOf(bindings);
+            if (bindings.size() < 2) {
+                throw new IllegalArgumentException("tuple match projection requires at least two positions");
+            }
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (DestructureBinding binding : bindings) {
+                if (binding.rest() || binding.declaredType() != null || binding.mutableReferent()) {
+                    throw new IllegalArgumentException("tuple match projection does not support rest, type casts, or mut grants");
+                }
+                if (!binding.isDiscard() && !names.add(binding.name())) {
+                    throw new IllegalArgumentException("duplicate tuple projection binding: " + binding.name());
+                }
+            }
+        }
+    }
+
     public record MatchArm(Pattern pattern, Expr guard, List<Stmt> body) {
         public MatchArm { body = List.copyOf(body); }
     }
@@ -649,8 +709,13 @@ public final class Ast {
      * flag is retained for AST compatibility; canonical source syntax is
      * always ordered and the parser emits true.
      */
-    public record MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) implements Stmt {
+    public record MatchStmt(
+            Expr subject, boolean ordered, List<MatchArm> arms, boolean explicitDo)
+            implements Stmt {
         public MatchStmt { arms = List.copyOf(arms); }
+        public MatchStmt(Expr subject, boolean ordered, List<MatchArm> arms) {
+            this(subject, ordered, arms, false);
+        }
     }
 
     public record SwitchCase(List<Expr> constants, List<Stmt> body) {
@@ -756,14 +821,27 @@ public final class Ast {
             BindingKind bindingKind,
             String bindingName,
             List<Stmt> body,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef bindingType,
+            DestructureKind destructureKind,
+            List<DestructureBinding> destructureBindings) {
         public SelectArm {
-            if (operation == ChannelOperation.DEFAULT && mutableReferent) {
-                throw new IllegalArgumentException("default select arm cannot carry mutable binding");
-            }
             body = List.copyOf(body);
+            destructureBindings = List.copyOf(destructureBindings);
+            boolean hasSimpleBinding = bindingName != null;
+            boolean hasPattern = destructureKind != null;
+            if (hasPattern != !destructureBindings.isEmpty()) {
+                throw new IllegalArgumentException("select destructure kind/bindings must appear together");
+            }
+            if (hasSimpleBinding && hasPattern) {
+                throw new IllegalArgumentException("select arm cannot use both a name and destructure pattern");
+            }
+            if (bindingType != null && !hasSimpleBinding) {
+                throw new IllegalArgumentException("select binding type requires a named binding");
+            }
             if (operation == ChannelOperation.DEFAULT) {
-                if (channel != null || value != null || bindingKind != null || bindingName != null) {
+                if (channel != null || value != null || bindingKind != null
+                        || hasSimpleBinding || hasPattern || bindingType != null || mutableReferent) {
                     throw new IllegalArgumentException("default select arm cannot carry channel/value/binding metadata");
                 }
             } else {
@@ -774,13 +852,32 @@ public final class Ast {
                 if (operation == ChannelOperation.WRITE && value == null) {
                     throw new IllegalArgumentException("write select arm requires a value");
                 }
-                if ((bindingKind == null) != (bindingName == null)) {
+                if (hasSimpleBinding && bindingKind == null) {
                     throw new IllegalArgumentException("select binding kind/name must appear together");
                 }
-                if (operation == ChannelOperation.WRITE && bindingName != null) {
+                if (operation == ChannelOperation.WRITE && (hasSimpleBinding || hasPattern)) {
                     throw new IllegalArgumentException("write select arm cannot bind a read value");
                 }
+                if (hasPattern) {
+                    if (operation != ChannelOperation.READ || bindingKind == null) {
+                        throw new IllegalArgumentException("select destructuring requires a read arm and binding kind");
+                    }
+                    validateRestBinding(destructureBindings, "select destructure");
+                    java.util.Set<String> names = new java.util.HashSet<>();
+                    for (DestructureBinding binding : destructureBindings) {
+                        if (!binding.isDiscard() && !names.add(binding.name())) {
+                            throw new IllegalArgumentException(
+                                    "duplicate select destructure binding '" + binding.name() + "'");
+                        }
+                    }
+                }
             }
+        }
+        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
+                         BindingKind bindingKind, String bindingName, List<Stmt> body,
+                         boolean mutableReferent) {
+            this(operation, channel, value, bindingKind, bindingName, body, mutableReferent,
+                    null, null, List.of());
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body) {
