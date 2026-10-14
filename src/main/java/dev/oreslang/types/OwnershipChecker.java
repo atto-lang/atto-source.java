@@ -2507,10 +2507,13 @@ public final class OwnershipChecker {
                 && (binary.operator().equals("eq") || binary.operator().equals("neq"))
                 && binary.left() instanceof Ast.OptionBindExpr binding) {
             checkGuardExpr(binding, scope);
-            Scope rhs = new Scope(scope);
-            defineConditionAliases(binding, rhs, scope);
-            checkExpr(binary.right(), rhs, false);
-            rhs.close();
+            // The shorthand comparison only introduces the conditional local
+            // on the success edge. Its RHS is evaluated in the enclosing
+            // environment by both TypeChecker and the runtime (including the
+            // suspendable evaluator). Checking it in a child scope with the
+            // new binding can shadow an outer owner, silently missing moves
+            // or loans performed by the actual RHS at runtime.
+            checkExpr(binary.right(), scope, false);
             return;
         }
         checkExpr(expr, scope, false);
