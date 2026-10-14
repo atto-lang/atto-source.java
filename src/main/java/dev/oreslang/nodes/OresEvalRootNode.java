@@ -4064,8 +4064,11 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
-                if (direct != null) {
+                boolean spread = call.arguments().stream()
+                        .anyMatch(argument -> argument instanceof Ast.SpreadExpr);
+                Ast.FunctionDecl direct = spread ? null
+                        : findFunction(name.name(), call.arguments().size());
+                if (direct != null || (spread && hasFunctionFamily(name.name()))) {
                     requireExplicitClassCallableImport(env, name.name());
                     evalSuspendableArguments(
                             task,
@@ -4077,8 +4080,19 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
+                                    // For a fixed spread, select the overload
+                                    // by expanded arity, never by the count of
+                                    // syntactic aggregate arguments. Evaluate
+                                    // each spread source only once beforehand.
+                                    Ast.FunctionDecl selected = spread
+                                            ? findFunction(name.name(), values.size()) : direct;
+                                    if (selected == null) {
+                                        throw new IllegalArgumentException(
+                                                "no function " + name.name()
+                                                        + " with expanded arity " + values.size());
+                                    }
                                     Invocation invocation =
-                                            functionInvocation(direct, values);
+                                            functionInvocation(selected, values);
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -5650,11 +5664,21 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
-                if (direct != null) {
+                boolean spread = call.arguments().stream()
+                        .anyMatch(argument -> argument instanceof Ast.SpreadExpr);
+                Ast.FunctionDecl direct = spread ? null
+                        : findFunction(directName.name(), call.arguments().size());
+                if (direct != null || (spread && hasFunctionFamily(directName.name()))) {
                     requireExplicitClassCallableImport(env, directName.name());
                     List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    Ast.FunctionDecl selected = spread
+                            ? findFunction(directName.name(), args.size()) : direct;
+                    if (selected == null) {
+                        throw new IllegalArgumentException(
+                                "no function " + directName.name()
+                                        + " with expanded arity " + args.size());
+                    }
+                    return functionInvocation(selected, args);
                 }
             }
 
