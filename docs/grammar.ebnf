@@ -25,7 +25,7 @@ top_level_item  = annotated_module_decl
                 | binding_decl ;
 
 annotated_module_decl = { annotation } "define" "module" IDENT [ "conforms" type_ref { "," type_ref } ]
-                        [ "as" ] { module_member } "end" ;
+                        "as" { module_member } "end" ;
 
 module_member   = contract_decl
                 | actor_decl
