@@ -94,13 +94,6 @@ public final class ChannelRuntime {
         }
     }
 
-    /** Distinguishes a single channel's backlog quota from global admission. */
-    public static final class ChannelBackpressureException extends IllegalStateException {
-        public ChannelBackpressureException(String message) {
-            super(message);
-        }
-    }
-
     /**
      * Bounded MPMC channel. Capacity zero is a rendezvous channel.
      *
