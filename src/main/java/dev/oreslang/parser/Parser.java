@@ -151,6 +151,12 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
+                if (matchContextualIdentifier("enum")) {
+                    validateOnlyVisibilityModifiers(modifiers, "enums");
+                    rejectDiscardedDeclarationAnnotations(annotations, "enum declarations");
+                    rootDeclarations.add(parseEnum(modifiers.visibility));
+                    continue;
+                }
                 if (match(TYPE)) {
                     modifiers = mergeModifiers(modifiers, parseModifiers());
                     validateOnlyVisibilityModifiers(modifiers, "type aliases");
@@ -328,6 +334,11 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
                 return parseInterface(modifiers.visibility);
+            }
+            if (matchContextualIdentifier("enum")) {
+                validateOnlyVisibilityModifiers(modifiers, "enums");
+                rejectDiscardedDeclarationAnnotations(annotations, "enum declarations");
+                return parseEnum(modifiers.visibility);
             }
             if (match(TYPE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -1076,6 +1087,31 @@ public final class Parser {
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
+    }
+
+    private Ast.EnumDecl parseEnum(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected enum name").lexeme();
+        consume(AS, "enum declaration requires 'as'");
+        List<Ast.EnumVariant> variants = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
+        java.util.Set<Long> tags = new java.util.HashSet<>();
+        while (!check(END) && !check(EOF)) {
+            Token variant = consume(IDENT, "expected enum variant name");
+            if (!names.add(variant.lexeme())) throw error(variant,
+                    "duplicate enum variant name '" + variant.lexeme() + "'");
+            Ast.TypeRef payload = check(STRUCT) ? parseTypeRef() : null;
+            if (payload != null && !payload.isRecordType()) {
+                throw error(variant, "enum variant payload must be a closed struct type");
+            }
+            Token tagToken = consume(INT, "enum variant requires an explicit numeric tag");
+            long tag = parseSignedI64(tagToken);
+            if (tag <= 0) throw error(tagToken, "enum variant tag must be positive");
+            if (!tags.add(tag)) throw error(tagToken, "duplicate enum variant tag " + tag);
+            consumeStatementTerminator("enum variant must end with ';'");
+            variants.add(new Ast.EnumVariant(variant.lexeme(), payload, tag));
+        }
+        consume(END, "expected 'end' to close enum");
+        return new Ast.EnumDecl(name, visibility, variants);
     }
 
     private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
