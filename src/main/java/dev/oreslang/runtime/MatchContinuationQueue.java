@@ -1,82 +1,104 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayDeque;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Serial, stack-bounded queue for suspendable match continuations.
+ * Serial, stack-bounded and memory-bounded queue for suspendable match
+ * continuations. This class never creates scheduler threads: callers must
+ * arrange the appropriate source-task and actor-affine continuation.
  *
- * <p>Callbacks that complete inline schedule work behind the current scan
- * rather than recursively reentering it. An externally resumed callback may
- * start a new drain. Only one drain runs at a time; no producer executes
- * work after a terminal completion. This queue does not create or schedule
- * JVM threads: actor/source-task continuation affinity remains the
- * scheduler's responsibility.</p>
+ * <p>All terminal/drain/enqueue transitions share one monitor. In particular,
+ * a producer can never enqueue after termination or strand a queued callback
+ * between the last empty-poll and a concurrent enqueue. Guest work executes
+ * outside the monitor so a callback may suspend or enqueue its successor.</p>
  *
- * <p>Termination suppresses queued future work, not code already executing.
- * When a task is cancelled, its scheduler must also prevent the in-flight
- * continuation from resuming guest evaluation.</p>
+ * <p>Termination prevents *new* queue work, but cannot interrupt a Runnable
+ * already executing. Actor cancellation must also be enforced by the owning
+ * scheduler before it resumes suspended guest source tasks.</p>
  */
 public final class MatchContinuationQueue {
-    private final ConcurrentLinkedQueue<Runnable> pending = new ConcurrentLinkedQueue<>();
-    private final AtomicInteger workInProgress = new AtomicInteger();
-    private final AtomicBoolean terminated = new AtomicBoolean();
+    public static final int MAX_PENDING = 4096;
+
+    private final Object gate = new Object();
+    private final ArrayDeque<Runnable> pending = new ArrayDeque<>();
+    private boolean draining;
+    private boolean terminated;
 
     public boolean terminated() {
-        return terminated.get();
+        synchronized (gate) {
+            return terminated;
+        }
     }
 
     /**
-     * Run terminal delivery at most once. Terminal delivery may throw:
-     * the queue remains terminated in that case.
+     * Atomically seal this match and deliver a terminal continuation once.
+     * User delivery executes outside the monitor and may itself throw.
      */
     public boolean complete(Runnable terminalDelivery) {
         Objects.requireNonNull(terminalDelivery, "terminalDelivery");
-        if (!terminated.compareAndSet(false, true)) return false;
-        pending.clear();
+        synchronized (gate) {
+            if (terminated) return false;
+            terminated = true;
+            pending.clear();
+        }
         terminalDelivery.run();
         return true;
     }
 
-    /** Abort without delivering a terminal value (e.g. fatal host failure). */
+    /** Discard pending callbacks, e.g. on cancellation or host failure. */
     public void abort() {
-        terminated.set(true);
-        pending.clear();
+        synchronized (gate) {
+            terminated = true;
+            pending.clear();
+        }
     }
 
+    /**
+     * Enqueue and, if needed, start the sole draining caller. A bounded
+     * backlog is important if an untrusted host can complete many promises
+     * while another guest callback is still running.
+     */
     public void enqueue(Runnable work) {
         Objects.requireNonNull(work, "work");
-        if (terminated.get()) return;
-        pending.add(work);
-        // A completion may race with the add above. In that case make the
-        // task unreachable rather than leave a dormant closure on the queue.
-        if (terminated.get()) {
-            pending.remove(work);
-            return;
+        synchronized (gate) {
+            if (terminated) return;
+            if (pending.size() >= MAX_PENDING) {
+                terminated = true;
+                pending.clear();
+                throw new IllegalStateException("match continuation queue exceeds "
+                        + MAX_PENDING + " pending callbacks");
+            }
+            pending.addLast(work);
+            if (draining) return;
+            draining = true;
         }
-        if (workInProgress.getAndIncrement() != 0) return;
 
-        int missed = 1;
         try {
-            do {
+            while (true) {
                 Runnable next;
-                while ((next = pending.poll()) != null) {
-                    if (!terminated.get()) next.run();
+                synchronized (gate) {
+                    if (terminated) {
+                        pending.clear();
+                        draining = false;
+                        return;
+                    }
+                    next = pending.pollFirst();
+                    if (next == null) {
+                        draining = false;
+                        return;
+                    }
                 }
-                missed = workInProgress.addAndGet(-missed);
-            } while (missed != 0);
+                next.run();
+            }
         } catch (RuntimeException | Error fatal) {
-            // Never strand a positive drain counter on an exceptional exit.
-            // Propagate to the source task/supervisor; don't execute another
-            // arm on a partially failed interpreter continuation.
+            // The queue is irrecoverably failed. Do not run subsequent
+            // callbacks or leave the drain lock permanently held.
             abort();
             throw fatal;
         } finally {
-            if (terminated.get()) {
-                pending.clear();
-                workInProgress.set(0);
+            synchronized (gate) {
+                if (terminated) draining = false;
             }
         }
     }
