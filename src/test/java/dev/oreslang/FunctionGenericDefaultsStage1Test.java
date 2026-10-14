@@ -146,4 +146,52 @@ final class FunctionGenericDefaultsStage1Test {
                 privateSecond.units().get("hidden.ores").abiDigest(),
                 "a private generic default must not change the exported ABI");
     }
+
+    @Test
+    void unknownDefaultTypesFailEvenWhenCallOverridesThem() {
+        for (String declaration : List.of(
+                "fnc choose<T=TypoType>(): int { return 7; }",
+                "fnc choose<T=Array<MissingElement>>(): int { return 7; }",
+                "fnc choose<T=Option<MissingOption>>(): int { return 7; }")) {
+            String source = """
+                    define module app
+                      %s
+                      fnc use(): int { return choose<int>(); }
+                    end
+                    """.formatted(declaration);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(error.getMessage().contains("unresolved default type"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void opaqueOrDynamicNestedDefaultCannotEscapeGates() {
+        for (String declaration : List.of(
+                "fnc choose<T=Array<Unknown>>(): int { return 7; }",
+                "fnc choose<T=Option<Any>>(): int { return 7; }")) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(declaration)));
+            assertTrue(error.getMessage().contains("safe opaque/dynamic semantics"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
+    void defaultOrderPreservesExplicitAndInferredResultsAcrossCalls() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc identity<T=int>(T value): T { return value; }
+                  fnc none<T=int>(): T { return 7; }
+                  fnc check(): void {
+                    val int i = identity(7);
+                    val bool b = identity(true);
+                    val int explicit = identity<int>(7);
+                    val int fallback = none();
+                    return;
+                  }
+                end
+                """)));
+    }
 }
