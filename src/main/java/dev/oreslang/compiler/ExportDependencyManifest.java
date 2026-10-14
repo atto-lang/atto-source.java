@@ -77,7 +77,7 @@ public final class ExportDependencyManifest {
             this.publicApi = api;
             this.bindings = List.copyOf(bindings);
             this.encoded = bytes.clone();
-            this.digest = sha256(bytes);
+            this.digest = ExportDependencyManifest.sha256(bytes);
         }
         public String sourceUnit() { return sourceUnit; }
         public ExportInterfaceCodec.InterfaceFile publicApi() { return publicApi; }
