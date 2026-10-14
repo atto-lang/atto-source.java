@@ -4751,6 +4751,13 @@ public final class ActorRuntime implements AutoCloseable {
                     interrupted);
         }
         if (!cell.finalized()) {
+            synchronized (cell.lifecycleLock) {
+                // STOP is an admission seal, not proof that a suspended
+                // lexical cleanup has finished. Its Future / get_done()
+                // carries the physical-quiescence barrier; the cleanup
+                // deadline separately bounds incomplete shutdown.
+                if (cell.hasSourceCleanup() || cell.sourceCancellationPending) return;
+            }
             throw new IllegalStateException(
                     "actor " + ref.id()
                             + " or one of its child actors did not finalize within the stop deadline");
