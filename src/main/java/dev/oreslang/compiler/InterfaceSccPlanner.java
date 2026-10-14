@@ -35,6 +35,7 @@ import java.util.Set;
 public final class InterfaceSccPlanner {
     private static final int MAX_UNITS = 1024;
     private static final int MAX_EDGES = 16384;
+    private static final int MAX_SOURCE_IMPORTS = 4096;
     private static final int MAX_LABEL_BYTES = 65536;
     private static final byte[] MAGIC = {'O','S','C','C',1};
     private InterfaceSccPlanner() { }
@@ -75,6 +76,45 @@ public final class InterfaceSccPlanner {
         Objects.requireNonNull(admittedPrograms, "admittedPrograms");
         Objects.requireNonNull(resolvedOverrides, "resolvedOverrides");
         Objects.requireNonNull(externalImportPins, "externalImportPins");
+        Objects.requireNonNull(publicExports, "publicExports");
+        if (admittedPrograms.size() > MAX_UNITS) {
+            throw new IllegalArgumentException("too many source units");
+        }
+        if (!admittedPrograms.keySet().equals(publicExports.keySet())) {
+            throw new IllegalArgumentException("each checked source requires a public interface");
+        }
+        if (!admittedPrograms.keySet().containsAll(resolvedOverrides.keySet())) {
+            throw new IllegalArgumentException("resolution overrides for unknown source units");
+        }
+        int totalImports = 0;
+        for (Map.Entry<String, dev.oreslang.ast.Ast.Program> entry : admittedPrograms.entrySet()) {
+            String unit = entry.getKey();
+            validateUnit(unit);
+            if (!unit.equals(ImportGraph.normalizeUnitId(unit))) {
+                throw new IllegalArgumentException("noncanonical source unit ID: " + unit);
+            }
+            dev.oreslang.ast.Ast.Program program = Objects.requireNonNull(
+                    entry.getValue(), "source program");
+            ExportInterfaceCodec.InterfaceFile exported = Objects.requireNonNull(
+                    publicExports.get(unit), "public interface");
+            String namespace = program.namespace() == null ? "" : program.namespace();
+            if (!namespace.equals(exported.header().namespace())) {
+                throw new IllegalArgumentException("source namespace does not match exported interface");
+            }
+            totalImports += program.imports().size();
+            if (totalImports > MAX_SOURCE_IMPORTS) {
+                throw new IllegalArgumentException("source import budget exceeded");
+            }
+            Map<String, String> overrides = resolvedOverrides.getOrDefault(unit, Map.of());
+            if (overrides == null) throw new IllegalArgumentException("null resolution overrides");
+            Set<String> importedPaths = new HashSet<>();
+            for (dev.oreslang.ast.Ast.ImportDecl use : program.imports()) {
+                importedPaths.add(use.path());
+            }
+            if (!importedPaths.containsAll(overrides.keySet())) {
+                throw new IllegalArgumentException("unused import-resolution override");
+            }
+        }
         if (!admittedPrograms.keySet().equals(externalImportPins.keySet())) {
             throw new IllegalArgumentException("external pins must be specified per source unit");
         }
@@ -149,6 +189,9 @@ public final class InterfaceSccPlanner {
         ExportInterfaceCodec.Header environment = null;
         for (String unit : localEdges.keySet()) {
             validateUnit(unit);
+            if (!unit.equals(ImportGraph.normalizeUnitId(unit))) {
+                throw new IllegalArgumentException("noncanonical source unit ID: " + unit);
+            }
             if (publicExports.get(unit) == null || localEdges.get(unit) == null
                     || externalDependencies.get(unit) == null) {
                 throw new IllegalArgumentException("null interface/edge set/dependency map");
