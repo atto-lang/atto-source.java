@@ -104,17 +104,19 @@ public final class ExportInterfaceCollector {
                         field(sig, "synthesized-constructor");
                         for (Ast.FieldDecl f : klass.fields()) requiredType(sig, f.type());
                     }
-                    List<String> members = new ArrayList<>();
+                    // Native storage can change when any private field changes,
+                    // even when the class has an explicit public constructor.
+                    // The v1 interface does not yet encode an opaque physical-layout
+                    // contract. Refuse the class rather than silently reuse its
+                    // dependents under a stale ABI fingerprint.
                     for (Ast.FieldDecl f : klass.fields()) {
                         if (f.visibility() != Ast.Visibility.PUBLIC) {
-                            for (Ast.Annotation annotation : f.annotations()) {
-                                if (annotation.name().equals("FromJson")) {
-                                    throw new IllegalArgumentException(
-                                            "private serialized field requires opaque wire ABI policy");
-                                }
-                            }
-                            continue;
+                            throw new IllegalArgumentException(
+                                    "public class with private storage requires opaque layout ABI");
                         }
+                    }
+                    List<String> members = new ArrayList<>();
+                    for (Ast.FieldDecl f : klass.fields()) {
                         StringBuilder part = new StringBuilder();
                         field(part, "field");
                         field(part, f.name());
@@ -221,8 +223,15 @@ public final class ExportInterfaceCollector {
 
     private static void appendType(StringBuilder dst, Ast.TypeRef type, int depth) {
         if (depth > 128) throw new IllegalArgumentException("type signature too deeply nested");
+        if (type == null || type.name() == null || type.name().isBlank()
+                || type.name().equals("$infer$")
+                || type.name().equals("Unknown")
+                || type.inferArguments()) {
+            throw new IllegalArgumentException(
+                    "unresolved type or generic arguments cannot be exported");
+        }
         field(dst, type.name());
-        flags(dst, type.inferArguments());
+        flags(dst, false);
         dst.append(type.arguments().size()).append('(');
         for (Ast.TypeRef child : type.arguments()) appendType(dst, child, depth + 1);
         dst.append(')');
