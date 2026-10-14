@@ -107,4 +107,20 @@ final class TwoPhaseInterfaceLinkerTest {
                 () -> TwoPhaseInterfaceLinker.collectCheckedDeclarations(
                         aliased,Map.of("dir/../a.ores",ENV,"b.ores",ENV)));
     }
+    @Test void rejectNominalAndAliasImportsWithoutTypeIdentityProof() {
+        for (Ast.ImportKind kind : List.of(Ast.ImportKind.CLASS,
+                Ast.ImportKind.TYPE, Ast.ImportKind.INTERFACE)) {
+            var nominal = new Ast.ImportDecl(kind, List.of("Box"),
+                    false, null, "./b.ores");
+            var changed = new LinkedHashMap<>(cycle());
+            changed.put("a.ores", source("work", Ast.Visibility.PUBLIC, nominal));
+            var declarations = TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                    changed, environments());
+            assertThrows(IllegalArgumentException.class,
+                    () -> TwoPhaseInterfaceLinker.resolveLinkedImports(
+                            declarations, Map.of(), noExternal()),
+                    "lexical export names are not a sufficient nominal type proof");
+        }
+    }
+
 }
