@@ -81,12 +81,13 @@ public final class ActorErrorCatalog {
             int length = Character.charCount(codePoint);
             // Reject terminal controls, non-printing formatting and Unicode
             // bidirectional controls from cross-actor diagnostics.
-            if ((codePoint < 0x20 && codePoint != 0x09)
+            if (codePoint < 0x20
                     || (codePoint >= 0x7F && codePoint <= 0x9F)
                     || (codePoint >= 0xD800 && codePoint <= 0xDFFF)
-                    || (codePoint >= 0x202A && codePoint <= 0x202E)
-                    || (codePoint >= 0x2066 && codePoint <= 0x2069)
-                    || codePoint == 0x200B || codePoint == 0xFEFF) {
+                    || (codePoint >= 0x200B && codePoint <= 0x200F)
+                    || (codePoint >= 0x2028 && codePoint <= 0x202E)
+                    || (codePoint >= 0x2060 && codePoint <= 0x206F)
+                    || codePoint == 0xFEFF) {
                 codePoint = '?';
             }
             int size = codePoint <= 0x7F ? 1
