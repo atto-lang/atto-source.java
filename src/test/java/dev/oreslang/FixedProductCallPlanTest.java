@@ -82,6 +82,38 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
+    void publicConstructorCannotForgeNamedOrPositionalGrammar() {
+        // These are total permutations, but none could be produced by bind().
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "a"),
+                                new FixedProductCallPlan.BoundSlot(1, 1, "a")),
+                        List.of(0, 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "a"),
+                                new FixedProductCallPlan.BoundSlot(1, 1, null)),
+                        List.of(0, 1)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(0, 1, null),
+                                new FixedProductCallPlan.BoundSlot(1, 0, "a")),
+                        List.of(1, 0)));
+        assertThrows(IllegalArgumentException.class,
+                () -> new FixedProductCallPlan(
+                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "  "),
+                                new FixedProductCallPlan.BoundSlot(1, 1, "b")),
+                        List.of(0, 1)));
+
+        var validPrefix = new FixedProductCallPlan(
+                List.of(new FixedProductCallPlan.BoundSlot(0, 0, null),
+                        new FixedProductCallPlan.BoundSlot(1, 2, "c"),
+                        new FixedProductCallPlan.BoundSlot(2, 1, "b")),
+                List.of(0, 2, 1));
+        assertEquals(List.of(0, 2, 1), validPrefix.abiToSource());
+    }
+
+    @Test
     void binderSnapshotIsImmutableAndHandlesZeroArity() {
         assertEquals(List.of(), FixedProductCallPlan.bind(List.of(), List.of()).abiToSource());
         var inputs = new java.util.ArrayList<>(
