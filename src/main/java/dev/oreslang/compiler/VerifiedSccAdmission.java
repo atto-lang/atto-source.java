@@ -1,0 +1,172 @@
+package dev.oreslang.compiler;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
+import dev.oreslang.types.TypeChecker;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+/**
+ * First verifier-issued, all-or-nothing SCC admission for the restricted
+ * primitive, effect-free, explicitly named local-function import subset.
+ *
+ * This runs the REAL TypeChecker and OwnershipChecker for every unit, using
+ * peer declarations as exact import signatures. It does not perform guest
+ * initialization, runtime linking, import resolution of nominal types,
+ * external package authorization or any native code-cache approval.
+ *
+ * Invariants:
+ *   - Phase 1 collects declarations across the complete graph.
+ *   - Phase 2 validates the import graph and resolves each named function to
+ *     exactly one public provider declaration.
+ *   - Every unit is type- and ownership-checked against linked signatures.
+ *   - Only after ALL members pass may any VerifiedScc token be minted.
+ */
+public final class VerifiedSccAdmission {
+    private VerifiedSccAdmission() { }
+
+    public static final class VerifiedScc {
+        private final List<String> units;
+        private final Map<String, Ast.Program> checkedPrograms;
+        private final String interfaceFingerprint;
+        private VerifiedScc(List<String> units, Map<String, Ast.Program> checkedPrograms,
+                            String interfaceFingerprint) {
+            this.units = List.copyOf(units);
+            this.checkedPrograms = Map.copyOf(checkedPrograms);
+            this.interfaceFingerprint = interfaceFingerprint;
+        }
+        public List<String> units() { return units; }
+        public Map<String, Ast.Program> checkedPrograms() { return checkedPrograms; }
+        public String interfaceFingerprint() { return interfaceFingerprint; }
+    }
+
+    public static final class VerifiedGraph {
+        private final List<VerifiedScc> components;
+        private final InterfaceSccPlanner.Plan interfacePlan;
+        private VerifiedGraph(List<VerifiedScc> components,
+                              InterfaceSccPlanner.Plan interfacePlan) {
+            this.components = List.copyOf(components);
+            this.interfacePlan = interfacePlan;
+        }
+        public List<VerifiedScc> components() { return components; }
+        public InterfaceSccPlanner.Plan interfacePlan() { return interfacePlan; }
+    }
+
+    /**
+     * No certificates are returned or exposed until every unit has passed
+     * cross-file semantic and ownership checking. Unsupported syntax/ABI
+     * forms fail closed; callers cannot substitute arbitrary hash strings as
+     * linker or ownership proof.
+     */
+    public static VerifiedGraph verifyGraph(
+            Map<String, Ast.Program> sourcePrograms,
+            Map<String, ExportInterfaceCodec.Header> compilerEnvironments,
+            Map<String, Map<String, String>> resolvedOverrides) {
+        Objects.requireNonNull(sourcePrograms, "sourcePrograms");
+        Objects.requireNonNull(compilerEnvironments, "compilerEnvironments");
+        Objects.requireNonNull(resolvedOverrides, "resolvedOverrides");
+
+        TwoPhaseInterfaceLinker.Declarations staged =
+                TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                        sourcePrograms, compilerEnvironments);
+        Map<String, Map<String, String>> noExternal = new LinkedHashMap<>();
+        for (String unit : staged.unitIds()) noExternal.put(unit, Map.of());
+        // Includes all import reachability and visibility checks. Cannot
+        // create a valid token merely by passing a staged declaration map.
+        TwoPhaseInterfaceLinker.resolveLinkedImports(
+                staged, resolvedOverrides, noExternal);
+
+        Map<String, Ast.Program> passed = new LinkedHashMap<>();
+        Set<String> available = sourcePrograms.keySet();
+        for (Map.Entry<String, Ast.Program> importer : sourcePrograms.entrySet()) {
+            String sourceId = importer.getKey();
+            Map<String, Ast.FunctionDecl> signatures = new LinkedHashMap<>();
+            for (Ast.ImportDecl imported : importer.getValue().imports()) {
+                // Staged linker rejects other kinds, wildcards and external
+                // providers. Keep an independent guard in the verifier.
+                if (imported.wildcard() || imported.kind() != Ast.ImportKind.FUNCTION) {
+                    throw new IllegalArgumentException("unsupported SCC semantic import");
+                }
+                String providerId = ImportGraph.resolveImportUnitId(
+                        sourceId, imported, available, resolvedOverrides);
+                if (providerId == null) {
+                    throw new IllegalArgumentException("untrusted external dependency in SCC");
+                }
+                Ast.Program provider = Objects.requireNonNull(sourcePrograms.get(providerId));
+                for (String sourceName : imported.names()) {
+                    String local = ImportRules.localName(imported, sourceName);
+                    Ast.FunctionDecl declaration = uniquelyExportedFunction(
+                            provider, sourceName);
+                    if (signatures.putIfAbsent(local, declaration) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate resolved imported callable: " + local);
+                    }
+                }
+            }
+            // This pass checks the complete original importer AST (without
+            // stripping its imports), then checks ownership. Unlike the
+            // legacy checker, linked values are NOT typed as Unknown.
+            Ast.Program checked = TypeChecker.checkTypesWithLinkedFunctions(
+                    importer.getValue(), signatures);
+            passed.put(sourceId, checked);
+        }
+
+        // Annotation expansion and checked signatures may change the public
+        // ABI relative to phase-1 previews. Re-collect every checked program,
+        // re-resolve all imports, and commit the authoritative final plan only
+        // after the entire graph passes.
+        TwoPhaseInterfaceLinker.Declarations checkedDeclarations =
+                TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                        passed, compilerEnvironments);
+        InterfaceSccPlanner.Plan finalPlan =
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        checkedDeclarations, resolvedOverrides, noExternal).plan();
+
+        List<VerifiedScc> admitted = new ArrayList<>();
+        for (InterfaceSccPlanner.Group group : finalPlan.groups()) {
+            Map<String, Ast.Program> members = new LinkedHashMap<>();
+            for (String unit : group.units()) members.put(unit, passed.get(unit));
+            admitted.add(new VerifiedScc(
+                    group.units(), members, group.fingerprint()));
+        }
+        return new VerifiedGraph(admitted, finalPlan);
+    }
+
+    /** Reject disjoint DAGs when the caller requests exactly one verified SCC. */
+    public static VerifiedScc verifySingleScc(
+            Map<String, Ast.Program> sourcePrograms,
+            Map<String, ExportInterfaceCodec.Header> compilerEnvironments,
+            Map<String, Map<String, String>> resolvedOverrides) {
+        VerifiedGraph graph = verifyGraph(sourcePrograms, compilerEnvironments, resolvedOverrides);
+        if (graph.components().size() != 1) {
+            throw new IllegalArgumentException("expected one complete strongly connected component");
+        }
+        return graph.components().getFirst();
+    }
+
+    private static Ast.FunctionDecl uniquelyExportedFunction(
+            Ast.Program provider, String name) {
+        Ast.FunctionDecl matched = null;
+        for (Ast.ModuleDecl module : provider.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name)
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.kind() == Ast.CallableKind.FNC
+                        && fn.actorKind() == Ast.ActorKind.NONE) {
+                    if (matched != null) throw new IllegalArgumentException(
+                            "ambiguous exported cross-module callable: " + name);
+                    matched = fn;
+                }
+            }
+        }
+        if (matched == null) throw new IllegalArgumentException(
+                "missing public provider callable: " + name);
+        return matched;
+    }
+}
