@@ -291,6 +291,63 @@ final class ExclusiveAdtMatchSafetyTest {
     }
 
     @Test
+    void orderedMatchAwaitsGuardBeforeAdvancingToNextArm() throws Exception {
+        // The first arm suspends on a real async future and eventually
+        // returns false. The second guard returns true after another await.
+        // The dispatcher must not speculatively execute either body or
+        // finish the match twice.
+        for (String prefix : new String[]{"", "do "}) {
+            String program = """
+                    async fnc decide(bool approved): bool {
+                        return approved;
+                    }
+                    pub async routine main(): void {
+                        %smatch true over
+                            on true when await decide(false) -> {
+                                stdio.println("wrong");
+                            }
+                            on true when await decide(true) -> {
+                                stdio.println("chosen");
+                            }
+                            on _ -> { stdio.println("fallback"); }
+                        end
+                        stdio.println("after");
+                        return;
+                    }
+                    """.formatted(prefix);
+            accepts(program);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Source guest = Source.newBuilder(OresLanguage.ID,
+                    program, "ordered-async-guard-resumption.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).out(output).build()) {
+                context.eval(guest);
+            }
+            assertEquals("chosen\\nafter".replace("\\n", "\n"),
+                    output.toString(StandardCharsets.UTF_8)
+                            .strip().replace("\r\n", "\n"), prefix);
+        }
+    }
+
+    @Test
+    void exclusiveMatchDoesNotTreatAwaitedBooleanGuardsAsDisjointProof() {
+        rejectsOverlap("""
+                async fnc decide(bool approved): bool {
+                    return approved;
+                }
+                pub async routine main(): void {
+                    match true
+                        true when await decide(true) -> { stdio.println("first"); }
+                        true when await decide(false) -> { stdio.println("second"); }
+                        else -> { stdio.println("fallback"); }
+                    end
+                    return;
+                }
+                """);
+    }
+
+    @Test
     void maximumOrderedGuardMatrixDoesNotRecurseOnCompletedGuards() throws Exception {
         // 4095 guards that complete inline, then the 4096th fallback.
         // A recursive callback chain can overflow the Java stack even if
