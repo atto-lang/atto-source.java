@@ -1569,20 +1569,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw terminated(cell.ref);
                 }
                 OresFuture<T> future = cell.sourceScheduler().start(task);
-                if (task instanceof OresScheduler.CleanupAwareTask<?>) {
-                    cell.sourceCleanupTasks.add(future);
-                    future.whenCompleteRuntime((ignored, failure) -> {
-                        synchronized (cell.lifecycleLock) {
-                            if (cell.stopped.get() && failure != null) {
-                                cell.recordDominantSourceFailure(failure);
-                            }
-                            cell.sourceCleanupTasks.remove(future);
-                            if (cell.stopped.get()) cell.finalizeStopLocked();
-                            cell.lifecycleLock.notifyAll();
-                        }
-                    });
-                }
-                return future;
+                return trackActorSourceCleanup(cell, task, future);
             }
         }
         // Do not mint multiple independent root budgets from one physical
@@ -1672,32 +1659,46 @@ public final class ActorRuntime implements AutoCloseable {
             terminalSubscribersDrained.set(true);
             releaseTimedWhenSafe.run();
         };
+        // Quota instrumentation must retain the source task's cleanup-aware
+        // contract. A plain lambda silently downgrades deferred cancellation
+        // and lets STOP release an UNTRUSTED actor before lexical unwind.
+        OresScheduler.Task<T> quotaChecked = resume -> {
+            UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
+            CURRENT_UNTRUSTED_QUOTA.set(quota);
+            boolean entered = false;
+            try {
+                quota.enter();
+                entered = true;
+                quota.check();
+                OresScheduler.Step<T> result = task.resume(resume);
+                quota.check();
+                return result;
+            } finally {
+                try {
+                    if (entered) quota.leave();
+                } finally {
+                    if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
+                    else CURRENT_UNTRUSTED_QUOTA.set(previous);
+                }
+            }
+        };
+        OresScheduler.Task<T> admitted = task instanceof OresScheduler.CleanupAwareTask<?>
+                ? (OresScheduler.CleanupAwareTask<T>) quotaChecked::resume
+                : quotaChecked;
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
-                UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
-                CURRENT_UNTRUSTED_QUOTA.set(quota);
-                boolean entered = false;
-                try {
-                    quota.enter();
-                    entered = true;
-                    quota.check();
-                    OresScheduler.Step<T> result = task.resume(resume);
-                    quota.check();
-                    return result;
-                } finally {
-                    try {
-                        if (entered) quota.leave();
-                    } finally {
-                        if (previous == null) CURRENT_UNTRUSTED_QUOTA.remove();
-                        else CURRENT_UNTRUSTED_QUOTA.set(previous);
-                    }
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || closed.get()) {
+                    throw terminated(cell.ref);
                 }
-            }, retireOnce, quota.remainingWallNanos(),
-                    new UntrustedActorQuotaExceededException(
-                            UntrustedActorQuotaExceededException.Resource.WALL_TIME,
-                            "untrusted logical task exceeded wall-time budget while suspended"),
-                    notificationsDrained);
+                future = cell.sourceScheduler().startWithWallDeadline(
+                        admitted, retireOnce, quota.remainingWallNanos(),
+                        new UntrustedActorQuotaExceededException(
+                                UntrustedActorQuotaExceededException.Resource.WALL_TIME,
+                                "untrusted logical task exceeded wall-time budget while suspended"),
+                        notificationsDrained);
+                trackActorSourceCleanup(cell, admitted, future);
+            }
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this
@@ -1712,6 +1713,28 @@ public final class ActorRuntime implements AutoCloseable {
         // A caller may cancel the Future while the source turn is still
         // executing. The scheduler invokes retireOnce ONLY after guest
         // carrier quiescence, not merely when the Future settles.
+        return future;
+    }
+
+    /**
+     * Called with the actor lifecycle monitor held. Register before STOP can
+     * snapshot the live source tasks; a completion callback may re-enter this
+     * monitor synchronously if an initial dispatch settled immediately.
+     */
+    private <T> OresFuture<T> trackActorSourceCleanup(
+            ActorCell<?> cell, OresScheduler.Task<T> task, OresFuture<T> future) {
+        if (!(task instanceof OresScheduler.CleanupAwareTask<?>)) return future;
+        cell.sourceCleanupTasks.add(future);
+        future.whenCompleteRuntime((ignored, failure) -> {
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() && failure != null) {
+                    cell.recordDominantSourceFailure(failure);
+                }
+                cell.sourceCleanupTasks.remove(future);
+                if (cell.stopped.get()) cell.finalizeStopLocked();
+                cell.lifecycleLock.notifyAll();
+            }
+        });
         return future;
     }
 
