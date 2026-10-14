@@ -81,6 +81,49 @@ final class ConditionalOptionBindingTest {
     }
 
     @Test
+    void guardProducerMayConsumeItsMoveOnlyArgumentExactlyOnce() {
+        String valid = """
+                define class Box as
+                end
+
+                fnc consume(Box box): Option<int> {
+                  return Some(15);
+                }
+
+                fnc good(Box box): int {
+                  if consume(box) as let value && value eq 15 then
+                    return value;
+                  else
+                    return 0;
+                  fi
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(valid)));
+
+        String invalid = """
+                define class Box as
+                end
+
+                fnc consume(Box box): Option<int> {
+                  return Some(15);
+                }
+
+                fnc bad(Box box): int {
+                  if consume(box) as const value then
+                    consume(box);
+                    return value;
+                  else
+                    return 0;
+                  fi
+                }
+                """;
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(invalid)));
+        assertTrue(error.getMessage().contains("moved") || error.getMessage().contains("move"),
+                error.getMessage());
+    }
+
+    @Test
     void scopeMutabilityAndCarrierTypeFailClosed() {
         rejects("""
                 fnc bad(Option<int> maybe): void {
