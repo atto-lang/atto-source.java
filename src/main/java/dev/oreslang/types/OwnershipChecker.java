@@ -2580,7 +2580,9 @@ public final class OwnershipChecker {
             if (declarationEnum != null && (subjectType.name().equals(declarationEnum.name())
                     || subjectType.name().endsWith("." + declarationEnum.name()))) {
                 Ast.EnumVariant variant = enumVariant(declarationEnum, constructor.substring(separator + 1));
-                return variant.payload() == null ? List.of() : List.of(variant.payload());
+                return variant.payload() == null ? List.of()
+                        : List.of(Ast.TypeRef.readonlyRecordType(
+                                variant.payload().recordMembers()));
             }
         }
         if (constructor.equals("Some") && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {

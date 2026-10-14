@@ -2994,7 +2994,9 @@ public final class TypeChecker {
                     Ast.EnumVariant variant = enumVariant(declarationEnum, member.member());
                     Type result = new Named(qualifiedEnumName(declarationEnum), List.of());
                     return new Function(variant.payload() == null
-                            ? List.of() : List.of(resolve(variant.payload(), generics, self)), result);
+                            ? List.of() : List.of(resolve(
+                                    Ast.TypeRef.readonlyRecordType(variant.payload().recordMembers()),
+                                    generics, self)), result);
                 }
             }
             if (member.receiver() instanceof Ast.NameExpr namespace
@@ -4979,7 +4981,9 @@ public final class TypeChecker {
                     if (namedEnum == nominalEnum) {
                         Ast.EnumVariant variant = enumVariant(nominalEnum, constructor.constructor().substring(separator + 1));
                         args = variant.payload() == null ? List.of()
-                                : List.of(resolve(variant.payload(), generics, self));
+                                : List.of(resolve(
+                                        Ast.TypeRef.readonlyRecordType(variant.payload().recordMembers()),
+                                        generics, self));
                     }
                 }
             }
