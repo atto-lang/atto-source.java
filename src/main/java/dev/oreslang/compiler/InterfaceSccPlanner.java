@@ -146,11 +146,20 @@ public final class InterfaceSccPlanner {
             throw new IllegalArgumentException("all units must have edges, exports and external dependency maps");
         }
         int edgeCount = 0;
+        ExportInterfaceCodec.Header environment = null;
         for (String unit : localEdges.keySet()) {
             validateUnit(unit);
             if (publicExports.get(unit) == null || localEdges.get(unit) == null
                     || externalDependencies.get(unit) == null) {
                 throw new IllegalArgumentException("null interface/edge set/dependency map");
+            }
+            ExportInterfaceCodec.Header header = publicExports.get(unit).header();
+            if (environment == null) {
+                environment = header;
+            } else if (!environment.compilerVersion().equals(header.compilerVersion())
+                    || !environment.targetAbi().equals(header.targetAbi())
+                    || !environment.featurePolicy().equals(header.featurePolicy())) {
+                throw new IllegalArgumentException("mixed compiler/target/feature interfaces in one SCC plan");
             }
             for (String dependency : localEdges.get(unit)) {
                 validateUnit(dependency);
