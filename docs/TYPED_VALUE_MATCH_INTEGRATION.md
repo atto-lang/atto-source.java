@@ -28,8 +28,11 @@ unwinding. Guest `try/catch` does not intercept this lexical signal.
 A nested value-producing match has its own independent result boundary.
 
 This form produces an expression result, **not a containing-callable return**.
-The compiler requires an explicit return type, canonical ordered `over`
-dispatch and exhaustive scalar subject coverage (int, bool, string,
+The compiler requires a typed result contract: explicit `<ret=T>` for
+an arbitrary value expression, or the enclosing callable's declared
+return type for a **direct** `return match ... over` expression.
+Canonical ordered `over` dispatch and exhaustive scalar subject
+coverage (int, bool, string,
 float or decimal). Each arm must **prove a lexical result on every reachable
 normal path**. The checker admits owned scalar bindings, nested blocks,
 exhaustive `if/else`, nested typed value-matches used as scalar initializers,
@@ -41,8 +44,11 @@ expressions, with a vetted subset of unary/binary operations.
 Borrow-producing `&`/`&mut`, non-scalar ownership, unverified calls,
 await, assignments, loops, procedural nested dispatch, and general
 `recover` continue to fail closed.
-Async/suspending/generator callables and complex arm control flow are
-explicitly unsupported in this stage.
+The serial-actor integration adds a narrow resumable SourceTask path for
+typed match results across vetted `await`/`rt cooperate` suspension,
+with lexical owner identity and cleanup ordering. Generator support and
+general effects/control flow remain rejected. Current-branch guest and
+model tests are added, but the updated source head is not yet CI-verified.
 
 `do match<ret=T>` remains **procedural**, so its `return` still leaves the
 containing callable. This distinction must not be erased by later lowering.
