@@ -4508,7 +4508,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 List<?> captured = fn.async()
-                        ? detachAsyncArguments(normalized)
+                        ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
                     GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
@@ -4530,7 +4530,7 @@ public final class OresEvalRootNode extends RootNode {
                             startSourceFunctionTask(
                                     fn,
                                     fn.async()
-                                            ? detachAsyncArguments(normalized)
+                                            ? detachAsyncArguments(normalized, fn.parameters())
                                             : normalized);
 
                     if (fn.async()) {
@@ -4609,20 +4609,33 @@ public final class OresEvalRootNode extends RootNode {
             return objectArguments(args);
         }
 
-        private List<?> detachAsyncArguments(List<?> args) {
+        private List<?> detachAsyncArguments(
+                List<?> args,
+                List<Ast.Param> parameters) {
+            if (args.size() != parameters.size()) {
+                throw new IllegalArgumentException(
+                        "async task argument count differs from its formal parameters");
+            }
             ArrayList<Object> detached = new ArrayList<>(args.size());
-            for (Object arg : args) {
+            for (int i = 0; i < args.size(); i++) {
+                Object arg = args.get(i);
                 if (arg instanceof ChannelRuntime.Channel<?> channel) {
                     // Channel<T> is an Ores-owned synchronized, copyable handle
-                    // within an execution domain. Its shared coordinator must
-                    // be preserved, not deep-copied, across an async source
-                    // task's argument boundary. TypeChecker admits only an
-                    // explicitly typed, task-safe *top-level* Channel<T>
-                    // parameter; actor/message boundaries remain forbidden.
-                    //
-                    // Intentionally do not admit Channel inside OresObject,
-                    // Array/List, Map or returned results: detachAsyncValue
-                    // below still rejects such nested capabilities.
+                    // within an execution domain. Preserve its coordinator
+                    // identity across local async source task arguments, but
+                    // require the *formal* to explicitly declare Channel<T>.
+                    // This runtime gate also protects host-entered callables
+                    // that might bypass source expression type checking.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"Channel".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task channel argument " + (i + 1)
+                                        + " requires an explicit Channel<T> parameter");
+                    }
+                    // Actor/mailbox boundary capabilities remain forbidden.
+                    // Nested channel capabilities still fail detachAsyncValue.
                     detached.add(channel);
                 } else {
                     detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
@@ -4767,7 +4780,7 @@ public final class OresEvalRootNode extends RootNode {
                         startSourceFunctionTask(
                                 fn,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
@@ -7284,7 +7297,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn,
                                 null,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
