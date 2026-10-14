@@ -32,7 +32,9 @@ public final class IncrementalCompiler {
     // Never reuse checked bodies as parse input: imported type environments can change.
     private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
 
-    private record ParsedUnit(String sourceDigest, String abiDigest, Ast.Program program) { }
+    private record ParsedUnit(
+            String sourceDigest, String abiDigest, Ast.Program rawProgram,
+            Ast.Program expandedProgram) { }
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -61,6 +63,7 @@ public final class IncrementalCompiler {
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        Map<String, Ast.Program> rawParsed = new LinkedHashMap<>();
         Map<String, ParsedUnit> stagedParsed = new LinkedHashMap<>();
         LinkedHashSet<String> reparsed = new LinkedHashSet<>();
 
@@ -77,12 +80,15 @@ public final class IncrementalCompiler {
             if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
                 unit = previous;
             } else {
-                Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
-                unit = new ParsedUnit(sourceDigest, abiDigest(program), program);
+                Ast.Program rawProgram = Parser.parse(entry.getValue());
+                Ast.Program expandedProgram = AnnotationExpander.expand(rawProgram);
+                unit = new ParsedUnit(
+                        sourceDigest, abiDigest(expandedProgram), rawProgram, expandedProgram);
                 reparsed.add(id);
             }
             stagedParsed.put(id, unit);
-            parsed.put(id, unit.program());
+            parsed.put(id, unit.expandedProgram());
+            rawParsed.put(id, unit.rawProgram());
             abiHashes.put(id, unit.abiDigest());
         }
 
@@ -135,13 +141,16 @@ public final class IncrementalCompiler {
             LinkedClasses linked = linkedPublicClasses(
                     id, parsed.get(id), parsed, normalizedImportResolutions);
             if (linked.classes().isEmpty()) {
-                checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+                // Preserve the original raw AST: semantic passes perform their
+                // own annotation expansion and must see the same input as
+                // OresCompiler.parseAndTypeCheck previously did.
+                checked = OresCompiler.analyze(rawParsed.get(id));
             } else {
                 try {
                     // Foreign layouts are used for type and ownership proofs;
                     // their declarations are never executed in the importer.
                     checked = TypeChecker.checkTypesWithImportedClasses(
-                            Parser.parse(normalized.get(id)), linked.classes(), linked.aliases());
+                            rawParsed.get(id), linked.classes(), linked.aliases());
                     OwnershipChecker.checkWithImportedClasses(checked, linked.classes());
                 } catch (IllegalArgumentException invalid) {
                     throw new IllegalArgumentException(
