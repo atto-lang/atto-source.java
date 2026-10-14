@@ -6081,7 +6081,11 @@ public final class ActorRuntime implements AutoCloseable {
                     if (++inspected > MAX_MESSAGE_GRAPH_NODES) {
                         throw new IllegalArgumentException("actor frozen copy exceeds node budget");
                     }
-                    frozen.add(freeze(item, visiting, depth + 1, copiedNodes));
+                    Object element = freeze(item, visiting, depth + 1, copiedNodes);
+                    if (!frozen.add(element)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Set element in actor snapshot");
+                    }
                 }
                 return Collections.unmodifiableSet(frozen);
             }
@@ -6093,7 +6097,13 @@ public final class ActorRuntime implements AutoCloseable {
                     if (++inspected > MAX_MESSAGE_GRAPH_NODES / 2) {
                         throw new IllegalArgumentException("actor frozen copy exceeds node budget");
                     }
-                    frozen.put(freeze(entry.getKey(), visiting, depth + 1, copiedNodes), freeze(entry.getValue(), visiting, depth + 1, copiedNodes));
+                    Object key = freeze(entry.getKey(), visiting, depth + 1, copiedNodes);
+                    Object item = freeze(entry.getValue(), visiting, depth + 1, copiedNodes);
+                    if (frozen.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Map key in actor snapshot");
+                    }
+                    frozen.put(key, item);
                 }
                 return Collections.unmodifiableMap(frozen);
             }
@@ -6177,7 +6187,11 @@ public final class ActorRuntime implements AutoCloseable {
                     if (++inspected > MAX_MESSAGE_GRAPH_NODES) {
                         throw new IllegalArgumentException("private actor copy exceeds node budget");
                     }
-                    copy.add(isolateCopy(item, visiting, depth + 1, copiedNodes));
+                    Object element = isolateCopy(item, visiting, depth + 1, copiedNodes);
+                    if (!copy.add(element)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Set element in actor snapshot");
+                    }
                 }
                 return Collections.unmodifiableSet(copy);
             }
@@ -6189,7 +6203,13 @@ public final class ActorRuntime implements AutoCloseable {
                     if (++inspected > MAX_MESSAGE_GRAPH_NODES / 2) {
                         throw new IllegalArgumentException("private actor copy exceeds node budget");
                     }
-                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1, copiedNodes), isolateCopy(entry.getValue(), visiting, depth + 1, copiedNodes));
+                    Object key = isolateCopy(entry.getKey(), visiting, depth + 1, copiedNodes);
+                    Object item = isolateCopy(entry.getValue(), visiting, depth + 1, copiedNodes);
+                    if (copy.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Map key in actor snapshot");
+                    }
+                    copy.put(key, item);
                 }
                 return Collections.unmodifiableMap(copy);
             }
