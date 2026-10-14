@@ -4,6 +4,10 @@ import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.interop.MixedSourceUnit;
 import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Locale;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorErrorCatalogTest {
@@ -20,6 +24,35 @@ final class ActorErrorCatalogTest {
         assertFalse(ActorErrorCatalog.Kind.ACTOR_ISOLATION.recoverable());
         assertThrows(IllegalArgumentException.class, () -> ActorErrorCatalog.fromCode(1000));
         assertThrows(IllegalArgumentException.class, () -> ActorErrorCatalog.fromCode(1021));
+    }
+
+    @Test void frozenCatalogMatchesGuestDeclarationsAndHostCodeMap() throws Exception {
+        List<String> lines = Files.readAllLines(Path.of("contracts/v1/actor-errors.csv"));
+        assertEquals(21, lines.size());
+        assertEquals("symbol,code,key,description,guest_boundary", lines.getFirst());
+        String guest = CoreLibrarySources.source("std/actor_errors");
+        assertTrue(guest.contains("define pub class ActorError extends Error as"));
+        ActorErrorCatalog.Kind[] kinds = ActorErrorCatalog.Kind.values();
+        for (int i = 0; i < kinds.length; ++i) {
+            ActorErrorCatalog.Kind kind = kinds[i];
+            String[] cols = lines.get(i + 1).split(",", -1);
+            assertEquals(5, cols.length);
+            StringBuilder symbol = new StringBuilder();
+            for (String word : kind.name().split("_")) {
+                symbol.append(word.substring(0, 1))
+                        .append(word.substring(1).toLowerCase(Locale.ROOT));
+            }
+            symbol.append("Error");
+            assertEquals(symbol.toString(), cols[0]);
+            assertEquals(Integer.toString(kind.code()), cols[1]);
+            assertEquals(kind.wireName(), cols[2]);
+            assertFalse(cols[3].isBlank());
+            assertEquals(kind.recoverable() ? "recoverable" : "terminal", cols[4]);
+            assertTrue(guest.contains("define pub class " + symbol + " extends ActorError as"));
+            assertTrue(guest.contains("// " + kind.code() + " " + kind.wireName() + ":"));
+        }
+        String errors = CoreLibrarySources.source("std/errors");
+        assertTrue(errors.contains("define pub class RuntimeError extends Error as"));
     }
 
     @Test void actorEnvelopeIsValueOnlyAndBounded() {
