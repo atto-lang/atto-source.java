@@ -31,6 +31,11 @@ public final class IncrementalCompiler {
     // The untyped, annotation-expanded AST is immutable input to every build.
     // Never reuse checked bodies as parse input: imported type environments can change.
     private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
+    // Dependency SETS alone are insufficient: two imports may exchange targets
+    // without changing the set, or a package resolver may retarget one import.
+    private final Map<String, List<ImportBinding>> importBindingCache = new LinkedHashMap<>();
+
+    private record ImportBinding(Ast.ImportDecl declaration, String resolvedTarget) { }
 
     private record ParsedUnit(
             String sourceDigest, String abiDigest, Ast.Program rawProgram,
@@ -49,6 +54,7 @@ public final class IncrementalCompiler {
             // a subsequent empty build and later be mistaken for valid cache hits.
             cache.clear();
             parsedCache.clear();
+            importBindingCache.clear();
             return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
         }
 
@@ -99,14 +105,41 @@ public final class IncrementalCompiler {
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
+        Map<String, List<ImportBinding>> bindings = new LinkedHashMap<>();
+        LinkedHashSet<String> untrackedExternalImports = new LinkedHashSet<>();
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            List<ImportBinding> resolved = new ArrayList<>();
+            for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                String target = ImportGraph.resolveImportUnitId(
+                        entry.getKey(), imported, normalized.keySet(), normalizedImportResolutions);
+                resolved.add(new ImportBinding(imported, target));
+                if (target == null) {
+                    // External packages/host Java may change outside this source
+                    // snapshot. Until they have versioned interface fingerprints,
+                    // do not claim an unchanged checked result for this importer.
+                    untrackedExternalImports.add(entry.getKey());
+                }
+            }
+            bindings.put(entry.getKey(), List.copyOf(resolved));
+        }
+
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
             CompiledUnit previous = cache.get(id);
             boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
             boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
-            if (sourceChanged || depsChanged) dirty.add(id);
-            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
+            boolean bindingsChanged = previous == null
+                    || !bindings.get(id).equals(importBindingCache.get(id));
+            if (sourceChanged || depsChanged || bindingsChanged || untrackedExternalImports.contains(id)) {
+                dirty.add(id);
+            }
+            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))
+                    || bindingsChanged || untrackedExternalImports.contains(id)) {
+                // Import retargeting (including an unchanged target SET) can
+                // alter re-export identity and all transitive consumers.
+                abiChanged.add(id);
+            }
         }
 
         /*
@@ -176,6 +209,8 @@ public final class IncrementalCompiler {
         cache.putAll(next);
         parsedCache.clear();
         parsedCache.putAll(stagedParsed);
+        importBindingCache.clear();
+        importBindingCache.putAll(bindings);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
@@ -243,6 +278,7 @@ public final class IncrementalCompiler {
     public synchronized void clear() {
         cache.clear();
         parsedCache.clear();
+        importBindingCache.clear();
     }
 
     private static String abiDigest(Ast.Program program) {
@@ -251,6 +287,13 @@ public final class IncrementalCompiler {
 
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
+            // Public module contracts affect imported type/effect admission.
+            // Never reuse a dependent after these declarations change.
+            abi.append(" contracts(");
+            for (Ast.TypeRef contract : module.contracts()) {
+                abi.append(typeRef(contract)).append(',');
+            }
+            abi.append(")\n");
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
