@@ -225,4 +225,45 @@ final class ActorStopTwoPhaseTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void runtimeCloseContinuesStoppingOtherActorsAfterFaultyRelease() throws Exception {
+        try (var runtime = new ActorRuntime()) {
+            var faulty = runtime.<String>spawnShared(() -> (message, ctx) -> { });
+            var healthy = runtime.<String>spawnShared(() -> (message, ctx) -> { });
+            faulty.ready().get(5, TimeUnit.SECONDS);
+            healthy.ready().get(5, TimeUnit.SECONDS);
+
+            // Insert a transport envelope directly into the unscheduled
+            // mailbox so STOP, rather than an actor turn, owns its release.
+            // Only host-side fault injection can install this release hook.
+            var actorsField = ActorRuntime.class.getDeclaredField("actors");
+            actorsField.setAccessible(true);
+            Object cell = ((java.util.Map<?, ?>) actorsField.get(runtime)).get(faulty.id());
+            var reserve = cell.getClass().getDeclaredMethod("reserveMailboxSlot");
+            reserve.setAccessible(true);
+            assertTrue((boolean) reserve.invoke(cell));
+            var mailboxField = cell.getClass().getDeclaredField("mailbox");
+            mailboxField.setAccessible(true);
+            @SuppressWarnings("rawtypes")
+            var mailbox = (ChannelRuntime.Channel) mailboxField.get(cell);
+            var envelopeType = Class.forName("dev.oreslang.runtime.ActorRuntime$MessageEnvelope");
+            var ctor = envelopeType.getDeclaredConstructors()[0];
+            ctor.setAccessible(true);
+            Object envelope = ctor.newInstance(
+                    "fault", (Runnable) () -> { throw new IllegalStateException("close release fault"); },
+                    null, null, 0L, false);
+            assertTrue(mailbox.tryWrite(envelope));
+
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalStateException.class, runtime::close,
+                    "a failed release is reported after the global shutdown");
+            assertTrue(faulty.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(healthy.awaitTermination(5, TimeUnit.SECONDS),
+                    "a faulty sibling must not prevent actor termination");
+            assertTrue(healthy.done().isDone());
+            assertTrue(faulty.failure().isPresent());
+            // A completed close has no deferred teardown obligations.
+            runtime.close();
+        }
+    }
 }
