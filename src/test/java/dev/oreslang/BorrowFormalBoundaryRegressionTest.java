@@ -120,4 +120,34 @@ final class BorrowFormalBoundaryRegressionTest {
                 }
                 """, "writech cannot transport a borrowed reference");
     }
+
+    @Test
+    void listCannotConcealNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val values = [wrapped];
+                  return;
+                }
+                """, "borrowed references cannot be stored in an owned array/list");
+    }
+
+    @Test
+    void mutexCannotConcealNestedBorrowInState() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val cell = Mutex.new(wrapped);
+                  return;
+                }
+                """, "Mutex.new requires an owned value");
+    }
+
+    @Test
+    void sharedMutexCannotConcealNestedBorrowInState() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val cell = SharedMutex.new(wrapped);
+                  return;
+                }
+                """, "SharedMutex.new requires an owned value");
+    }
 }
