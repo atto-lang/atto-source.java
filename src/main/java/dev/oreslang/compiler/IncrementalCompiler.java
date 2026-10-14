@@ -28,6 +28,11 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // The untyped, annotation-expanded AST is immutable input to every build.
+    // Never reuse checked bodies as parse input: imported type environments can change.
+    private final Map<String, ParsedUnit> parsedCache = new LinkedHashMap<>();
+
+    private record ParsedUnit(String sourceDigest, String abiDigest, Ast.Program program) { }
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -37,7 +42,13 @@ public final class IncrementalCompiler {
             Map<String, String> sources,
             Map<String, Map<String, String>> importResolutions) {
         if (importResolutions == null) throw new IllegalArgumentException("import resolutions cannot be null");
-        if (sources.isEmpty()) return new BuildResult(Map.of(), Set.of(), Set.of(), List.of());
+        if (sources.isEmpty()) {
+            // A build is a complete source snapshot. Removed files must not survive
+            // a subsequent empty build and later be mistaken for valid cache hits.
+            cache.clear();
+            parsedCache.clear();
+            return new BuildResult(Map.of(), Set.of(), Set.of(), List.of(), Set.of());
+        }
 
         LinkedHashMap<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : sources.entrySet()) {
@@ -50,15 +61,29 @@ public final class IncrementalCompiler {
         Map<String, String> hashes = new LinkedHashMap<>();
         Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
+        Map<String, ParsedUnit> stagedParsed = new LinkedHashMap<>();
+        LinkedHashSet<String> reparsed = new LinkedHashSet<>();
 
-        // Parse the complete source set before resolving imports. This is the
-        // first half of cycle tolerance: A may name B while B names A because
-        // neither unit is recursively compiled while discovering the other.
+        // Resolve imports against a complete graph, including cycles, but only
+        // parse source units whose exact UTF-8 content has changed. Keep this
+        // cache distinct from typed results; no build may reuse stale type
+        // assumptions from an earlier import environment.
         for (Map.Entry<String, String> entry : normalized.entrySet()) {
-            hashes.put(entry.getKey(), digest(entry.getValue()));
-            Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
-            parsed.put(entry.getKey(), program);
-            abiHashes.put(entry.getKey(), abiDigest(program));
+            String id = entry.getKey();
+            String sourceDigest = digest(entry.getValue());
+            hashes.put(id, sourceDigest);
+            ParsedUnit previous = parsedCache.get(id);
+            ParsedUnit unit;
+            if (previous != null && previous.sourceDigest().equals(sourceDigest)) {
+                unit = previous;
+            } else {
+                Ast.Program program = AnnotationExpander.expand(Parser.parse(entry.getValue()));
+                unit = new ParsedUnit(sourceDigest, abiDigest(program), program);
+                reparsed.add(id);
+            }
+            stagedParsed.put(id, unit);
+            parsed.put(id, unit.program());
+            abiHashes.put(id, unit.abiDigest());
         }
 
         Map<String, Map<String, String>> normalizedImportResolutions =
@@ -136,13 +161,18 @@ public final class IncrementalCompiler {
             rebuilt.add(id);
         }
 
-        cache.keySet().retainAll(normalized.keySet());
+        // Commit both caches only after all import validation, type checking and
+        // ownership checking succeed. Failed builds cannot poison a later one.
+        cache.clear();
         cache.putAll(next);
+        parsedCache.clear();
+        parsedCache.putAll(stagedParsed);
         return new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
-                initializationGroups);
+                initializationGroups,
+                Set.copyOf(reparsed));
     }
 
     private record LinkedClasses(
@@ -203,6 +233,7 @@ public final class IncrementalCompiler {
 
     public synchronized void clear() {
         cache.clear();
+        parsedCache.clear();
     }
 
     private static String abiDigest(Ast.Program program) {
@@ -468,7 +499,8 @@ public final class IncrementalCompiler {
             Map<String, CompiledUnit> units,
             Set<String> rebuiltUnits,
             Set<String> reusedUnits,
-            List<List<String>> initializationGroups) {
+            List<List<String>> initializationGroups,
+            Set<String> reparsedUnits) {
         public BuildResult {
             units = Map.copyOf(units);
             rebuiltUnits = Set.copyOf(rebuiltUnits);
@@ -476,6 +508,16 @@ public final class IncrementalCompiler {
             initializationGroups = initializationGroups.stream()
                     .map(List::copyOf)
                     .toList();
+            reparsedUnits = Set.copyOf(reparsedUnits);
+        }
+
+        /** Preserve the four-argument constructor for source compatibility. */
+        public BuildResult(
+                Map<String, CompiledUnit> units,
+                Set<String> rebuiltUnits,
+                Set<String> reusedUnits,
+                List<List<String>> initializationGroups) {
+            this(units, rebuiltUnits, reusedUnits, initializationGroups, Set.of());
         }
 
         /** Backward-compatible constructor for callers that do not need lifecycle planning. */
