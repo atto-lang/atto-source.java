@@ -890,18 +890,18 @@ public final class OresEvalRootNode extends RootNode {
             private static SourceFlow throwing(Throwable failure) {
                 Throwable cause = OresFuture.unwrap(
                         Objects.requireNonNull(failure, "failure"));
-                SourceFlowKind kind = cause instanceof Error
-                        || cause instanceof java.util.concurrent.CancellationException
-                        || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException
+                SourceFlowKind kind = sourceTerminalControl(cause)
                         ? SourceFlowKind.TERMINAL : SourceFlowKind.THROW;
                 return new SourceFlow(kind, null, cause, 0, null);
             }
         }
 
         private static boolean sourceHostFatal(Throwable failure) {
-            return failure instanceof VirtualMachineError
-                    || failure instanceof ThreadDeath
-                    || failure instanceof LinkageError;
+            if (failure == null) return false;
+            Throwable cause = OresFuture.unwrap(failure);
+            return cause instanceof VirtualMachineError
+                    || cause instanceof ThreadDeath
+                    || cause instanceof LinkageError;
         }
 
         private static boolean sourceTerminalControl(Throwable failure) {
