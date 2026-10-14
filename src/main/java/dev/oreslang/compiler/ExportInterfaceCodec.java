@@ -40,12 +40,23 @@ public final class ExportInterfaceCodec {
         }
     }
 
-    public record InterfaceFile(Header header, List<Entry> entries, String sha256, byte[] bytes) {
-        public InterfaceFile {
-            entries = List.copyOf(entries);
-            bytes = bytes.clone();
+    public static final class InterfaceFile {
+        private final Header header;
+        private final List<Entry> entries;
+        private final String sha256;
+        private final byte[] bytes;
+
+        private InterfaceFile(Header header, List<Entry> entries, byte[] data) {
+            this.header = header;
+            this.entries = List.copyOf(entries);
+            this.bytes = data.clone();
+            this.sha256 = hash(this.bytes);
         }
-        @Override public byte[] bytes() { return bytes.clone(); }
+
+        public Header header() { return header; }
+        public List<Entry> entries() { return entries; }
+        public String sha256() { return sha256; }
+        public byte[] bytes() { return bytes.clone(); }
     }
 
     private static byte[] utf8(String text) {
@@ -133,7 +144,7 @@ public final class ExportInterfaceCodec {
             out.flush();
             byte[] data = buffer.toByteArray();
             if (data.length > LIMIT) throw new IllegalArgumentException("interface too large");
-            return new InterfaceFile(header, sorted, hash(data), data);
+            return new InterfaceFile(header, sorted, data);
         } catch (IOException e) { throw new IllegalStateException(e); }
     }
 
