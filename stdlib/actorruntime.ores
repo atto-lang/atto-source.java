@@ -16,6 +16,44 @@
 
 define module actorruntime as
 
+  // Provisional portable lifecycle phase representation:
+  // 0 REGISTERED, 1 READY, 2 STOPPING, 3 FINALIZED.
+  // Events: 1 READY, 2 STOP, 3 FINALIZE. -1 DENIED/INVALID.
+  //
+  // These are deterministic policy transitions, not actor capabilities.
+  // The VM must atomically authenticate a generation-scoped transition
+  // lease, commit the transition, and enforce physical quiescence. A
+  // caller-controlled 'quiescent' boolean NEVER permits memory retirement.
+  pub fnc next_phase(int phase, int event, bool quiescent): int {
+    if phase < 0 || phase > 3 || event < 1 || event > 3; do
+      return -1;
+    fi
+    if event == 1; do
+      if phase == 0; do
+        return 1;
+      fi
+      if phase == 1; do
+        return 1;
+      fi
+      return -1;
+    fi
+    if event == 2; do
+      // STOP is monotonic, including a STOP before the actor gets READY.
+      if phase == 0 || phase == 1 || phase == 2; do
+        return 2;
+      fi
+      return 3;
+    fi
+    // FINALIZE cannot skip STOP or retire an actor still owning a lease.
+    if phase == 2 && quiescent; do
+      return 3;
+    fi
+    if phase == 3; do
+      return 3;
+    fi
+    return -1;
+  }
+
   // User messages never enter a stopped or force-revoked actor.
   pub fnc accept_user_message(
     bool stopped,

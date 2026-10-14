@@ -107,6 +107,59 @@ it does not establish that the live runtime invokes this module or that LLVM
 can compile full actors. Gate 1 requires sealed intrinsics with generation-safe
 handles and actual .ores-owned actor state transitions.
 
+## Gate 1 prototype: native actor-turn ownership kernel
+
+The portable native **prototype** under `src/main/c/oresactorturn.h` and
+`src/main/c/oresactorturn.c` establishes a VM-private admission and
+incarnation boundary, independently of Java runtime class identity. The native
+kernel supplies opaque VM-owned actor handles, one-shot cleanup tickets, and
+carrier-bound leases, and offers atomic operations for register, claim, STOP,
+cleanup claim, cancellation, force revoke, release, and retirement.
+
+This is deliberately **not a public Oreslang FFI**. The C pointers MUST stay
+inside the trusted VM. A future compiler intrinsic returns a sealed typed Ores
+capability instead of an address or an integer supplied by guest code. The
+kernel validates membership before dereferencing a supplied handle, fences
+old actor incarnations and foreign registries, binds physical leases to the
+claiming native carrier, and prevents the same cleanup ticket from being used
+twice. A STOP decision and a new user-turn claim serialize under one lock, so
+neither can race an unguarded check. Existing leases must physically exit
+before final retirement.
+
+The prototype intentionally uses one VM-global mutex and a lifetime object
+budget, which is **correctness scaffolding, not the intended scalable
+scheduler**. Allocated handles are not reused until the VM is destroyed to
+prevent pointer ABA; therefore admission can fail when the bounded lifetime
+budget is exhausted even if many old turns have finished. The host must quiesce
+and fence every possible caller before destroying the native VM.
+
+**Critical limitations:** Native `force_revoke` fences *future* claims; it
+does not asynchronously terminate an already-running native carrier. Cleanup
+tickets may only be minted by the trusted scheduler for a real registered
+SourceTask; the prototype does not independently inspect SourceTask metadata.
+Physical turn admission and actor retirement still require the rest of the
+runtime's capability, child, cleanup and output barriers. C pointers are not
+safe to export into user code, IPC, Java interop or ordinary Ores values.
+This kernel is not linked into the current Java/Truffle actor dispatch and is
+not an LLVM guest actor implementation yet.
+
+`stdlib/actorruntime.ores` now separately owns the deterministic
+`next_phase` transition policy (REGISTERED, READY, STOPPING, FINALIZED).
+It rejects skipping STOP, rejects stale READY after finalization, and requires
+quiescence for FINALIZE. Returning a phase integer is an advisory policy
+result, **never** permission to commit an actor transition. The VM must
+atomically bind a generation-safe authenticated transition lease to that
+policy result before changing its private actor state.
+
+Native correctness smoke tests run at `-O0` and `-O2` through
+`sh scripts/test-native-actor-turn.sh`; optional ASan/UBSan execution
+uses `ORES_NATIVE_SANITIZE=1`. These cover forged and foreign handles,
+generation fencing across restart, wrong-carrier release, concurrent one-shot
+ticket claims, STOP and force revocation, resource exhaustion, and delayed
+physical retirement. The Oreslang guest fixture independently tests source
+lifecycle transitions. Both independent suites are necessary; neither by
+itself establishes that the live actor scheduler is using the new kernel.
+
 ## VM and trust boundary
 
 To bootstrap an Oreslang program, the VM must exist before any Oreslang module

@@ -3,6 +3,48 @@ import module actorruntime from "std/actorruntime";
 // Executable guest-language conformance for the Oreslang policy slice.
 // No java: import, JVM reflection or host-written test callback.
 pub routine main(): void {
+  // Oreslang owns the deterministic lifecycle transition table. A VM
+  // generation-scoped lease remains necessary for any actual state commit.
+  if actorruntime.next_phase(0, 1, false) != 1; do
+    rt fail("REGISTERED could not become READY");
+  fi
+  if actorruntime.next_phase(0, 2, false) != 2; do
+    rt fail("STOP before READY was rejected");
+  fi
+  if actorruntime.next_phase(1, 2, false) != 2; do
+    rt fail("READY failed to STOP");
+  fi
+  if actorruntime.next_phase(2, 2, false) != 2; do
+    rt fail("STOP was not idempotent");
+  fi
+  if actorruntime.next_phase(2, 3, false) != -1; do
+    rt fail("FINALIZE bypassed physical quiescence");
+  fi
+  if actorruntime.next_phase(2, 3, true) != 3; do
+    rt fail("quiescent STOP could not FINALIZE");
+  fi
+  if actorruntime.next_phase(3, 3, true) != 3; do
+    rt fail("FINALIZE was not idempotent");
+  fi
+  if actorruntime.next_phase(3, 2, true) != 3; do
+    rt fail("STOP resurrected a finalized actor");
+  fi
+  if actorruntime.next_phase(3, 1, true) != -1; do
+    rt fail("stale READY restarted a finalized actor");
+  fi
+  if actorruntime.next_phase(1, 3, true) != -1; do
+    rt fail("READY actor skipped STOP on FINALIZE");
+  fi
+  if actorruntime.next_phase(0, 3, true) != -1; do
+    rt fail("REGISTERED actor skipped STOP on FINALIZE");
+  fi
+  if actorruntime.next_phase(4, 2, true) != -1; do
+    rt fail("unknown phase was admitted");
+  fi
+  if actorruntime.next_phase(1, 4, true) != -1; do
+    rt fail("unknown event was admitted");
+  fi
+
   // Ordinary user mail is sealed as soon as STOP or revocation wins.
   if !actorruntime.accept_user_message(false, false, false, false, false); do
     rt fail("live actor must admit user messages");
