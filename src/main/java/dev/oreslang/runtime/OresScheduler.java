@@ -62,6 +62,38 @@ public final class OresScheduler implements AutoCloseable {
      */
     public interface CleanupAwareTask<T> extends Task<T> { }
 
+    /**
+     * Unforgeable runtime dispatch envelope for one source-task turn.
+     * The same queued envelope may become eligible for post-stop cleanup
+     * after its owning Future receives a terminal cancellation request.
+     */
+    public static final class CleanupTurn implements Runnable {
+        private final OresScheduler owner;
+        private final Runnable action;
+        private final java.util.function.BooleanSupplier cleanupAuthorized;
+
+        private CleanupTurn(OresScheduler owner, Runnable action,
+                java.util.function.BooleanSupplier cleanupAuthorized) {
+            this.owner = owner;
+            this.action = action;
+            this.cleanupAuthorized = cleanupAuthorized;
+        }
+
+        public boolean authorizedBy(OresScheduler expected) {
+            return expected != null && owner == expected
+                    && cleanupAuthorized.getAsBoolean();
+        }
+
+        @Override public void run() { action.run(); }
+    }
+
+    /** Return true only when a cancelled source continuation owns this carrier. */
+    public static boolean currentTaskInCleanup() {
+        Object current = CURRENT_TASK_DOMAIN.get();
+        return current instanceof OresScheduler.TaskRunner<?> runner
+                && runner.cleanupAuthorized();
+    }
+
     /** Result of one resumable task turn. */
     public sealed interface Step<T> permits Done, Await, Cooperate { }
 
@@ -352,11 +384,12 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
-            java.util.function.Consumer<Throwable> admissionFailure) {
+            java.util.function.Consumer<Throwable> admissionFailure,
+            java.util.function.BooleanSupplier cleanupAuthorized) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
-        executor.execute(() -> {
+        Runnable dispatch = () -> {
             boolean priorCarrier = Boolean.TRUE.equals(SCHEDULER_CARRIER.get());
             SCHEDULER_CARRIER.set(Boolean.TRUE);
             try {
@@ -376,7 +409,9 @@ public final class OresScheduler implements AutoCloseable {
                 }
                 afterTurn.run();
             }
-        });
+        };
+        executor.execute(cleanupAuthorized == null ? dispatch
+                : new CleanupTurn(this, dispatch, cleanupAuthorized));
     }
 
     private void ensureOpen() {
@@ -458,11 +493,19 @@ public final class OresScheduler implements AutoCloseable {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
                         runTurn();
                     }
-                }, this::afterCarrierTurn, this::failTerminal);
+                }, this::afterCarrierTurn, this::failTerminal,
+                        task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
+        }
+
+        private boolean cleanupAuthorized() {
+            return task instanceof CleanupAwareTask<?>
+                    && completion.deferredCancellationCause() != null
+                    && !completion.isDone()
+                    && phase.get() != TERMINAL;
         }
 
         private void runTurn() {
