@@ -354,6 +354,19 @@ public final class OwnershipChecker {
             if (loopDepth == 0) throw error("'continue' may only appear inside loop or for");
             return;
         }
+        if (stmt instanceof Ast.ThrowStmt thrown) {
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+                throw error("cannot throw while holding a MutexGuard");
+            }
+            if (scope.hasLiveBorrow()) {
+                throw error("cannot throw while a lexical borrow is live");
+            }
+            ValueInfo value = checkExpr(thrown.value(), scope, true);
+            if (value.type instanceof Borrow) {
+                throw error("guest throw cannot transfer a borrowed Error");
+            }
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (discardingSelectReturn) {
                 // The returned expression is evaluated as a side effect only.
@@ -2289,6 +2302,8 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                scanExpr(thrown.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
