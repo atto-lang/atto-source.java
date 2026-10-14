@@ -48,7 +48,8 @@ final class OresTimersTest {
             assertEquals(2L, interval.delivered());
             OresFuture<Long> pending = interval.next();
             assertThrows(IllegalStateException.class, interval::next);
-            interval.close();
+            assertTrue(interval.cancel());
+            assertFalse(interval.cancel());
             assertThrows(CancellationException.class,
                     () -> pending.get(5, TimeUnit.SECONDS));
             assertEquals(2L, interval.delivered());
