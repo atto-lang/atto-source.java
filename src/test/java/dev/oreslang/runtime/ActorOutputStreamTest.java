@@ -96,6 +96,38 @@ final class ActorOutputStreamTest {
         }
     }
 
+    /** A hostile mutable map may swap a live capability into its entries
+     * after the source-side policy walk but before transport freeze. */
+    @Test
+    void outputStreamRechecksCapabilitiesAfterPreparingSnapshot() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroupJoinCapability join =
+                    runtime.createActorGroup().joinCapability();
+            ActorRuntime.ActorRef<String> ref = runtime.spawnShared(
+                    context -> (message, turn) ->
+                            turn.runtime().emitCurrentActorOutput(
+                                    new java.util.AbstractMap<String, Object>() {
+                                        private int passes;
+
+                                        @Override
+                                        public java.util.Set<Entry<String, Object>> entrySet() {
+                                            // graph validation, source admission,
+                                            // transport validation, then freezing
+                                            Object item = ++passes >= 4 ? join : "safe";
+                                            return java.util.Set.of(
+                                                    java.util.Map.entry("payload", item));
+                                        }
+                                    }));
+            ref.ready().join();
+            ref.send("go");
+            CompletionException failed = assertThrows(
+                    CompletionException.class, () -> ref.done().join());
+            assertInstanceOf(IllegalArgumentException.class, failed.getCause());
+            assertTrue(failed.getCause().getMessage().contains("data values only"),
+                    failed.getCause().getMessage());
+        }
+    }
+
     @Test
     void outputStreamIsActorProducedAndReadOnlyByApiShape() {
         assertDoesNotThrow(() ->
