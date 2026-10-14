@@ -70,8 +70,8 @@ final class NominalMessageEnumTest {
                 .allowAllAccess(false).out(out).build()) {
             ctx.eval(program);
         }
-        assertEquals("42\\n6\\n1", out.toString(StandardCharsets.UTF_8)
-                .trim().replace("\\r", ""));
+        assertEquals("42\n6\n1", out.toString(StandardCharsets.UTF_8)
+                .trim().replace("\r", ""));
     }
 
     @Test
