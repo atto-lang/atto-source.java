@@ -181,6 +181,28 @@ final class OresKeyedMapTest {
                 strings.entrySnapshot().stream().map(Map.Entry::getKey).toList());
     }
 
+    @Test void batchRejectsDuplicateNominalSymbolKeysFromIdentityBasedMap() {
+        OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
+        OresSymbol existing = OresSymbol.process("already");
+        map.put(existing, 9);
+        java.util.IdentityHashMap<OresSymbol, Integer> batch =
+                new java.util.IdentityHashMap<>();
+        OresSymbol composed = OresSymbol.process("café");
+        OresSymbol decomposed = OresSymbol.process("cafe\\u0301");
+        assertNotSame(composed, decomposed);
+        assertEquals(composed, decomposed);
+        batch.put(composed, 1);
+        batch.put(decomposed, 2);
+        assertEquals(2, batch.size(), "identity map should expose both distinct Java keys");
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> map.putAll(batch));
+        assertTrue(denied.getMessage().contains("duplicate logical key"),
+                denied.getMessage());
+        assertEquals(Map.of(existing, 9), map.shallowSnapshot(),
+                "a failed batch must not modify previously stored entries");
+    }
+
     @Test void exportedViewsCannotMutateTheInternalMapping() {
         OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
         map.put(OresSymbol.process("a"), 1);
