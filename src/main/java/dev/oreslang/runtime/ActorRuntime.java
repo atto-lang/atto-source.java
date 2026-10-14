@@ -7629,13 +7629,14 @@ public final class ActorRuntime implements AutoCloseable {
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
+                // A termination observer must never overtake its CONTROL notice.
+                // ArrayBlockingQueue.offer is bounded, has no user callbacks,
+                // and cannot wait for capacity. Publish before finalization
+                // releases awaitTermination()/get_done() observers.
+                if (controlNotice != null) publishActorFailureNotice(controlNotice);
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
-
-            // Nonblocking, bounded CONTROL delivery outside actor/lifecycle locks.
-            // Exactly the first accepted typed effect can publish a notice.
-            if (controlNotice != null) publishActorFailureNotice(controlNotice);
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
