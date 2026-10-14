@@ -77,6 +77,71 @@ final class SuspendableProductSpreadParityTest {
                         """)));
     }
 
+    @Test
+    void directFunctionBindsStoredRecordByLabelRatherThanInitializerOrder() throws Exception {
+        String code = """
+                fnc add(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    const args = (b: 23, a: 19);
+                    stdio.stdout.write(add(...args));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
+    void directInlineRecordPreservesSourceEffectsAndPermutesOnlyAfterEvaluation() throws Exception {
+        String code = """
+                fnc first(): int { stdio.stdout.write("A"); return 19; }
+                fnc second(): int { stdio.stdout.write("B"); return 23; }
+                fnc encode(int a, int b): int { return a * 100 + b; }
+                pub routine main(): void {
+                    stdio.stdout.write(encode(...(b: second(), a: first())));
+                    return;
+                }
+                """;
+        assertEquals("BA1923", checkedExecution(code));
+    }
+
+    @Test
+    void asyncDirectFunctionBindsStoredRecordAndPreservesEffectiveArity() throws Exception {
+        String code = """
+                fnc encode(int a, int b): int { return a * 100 + b; }
+                fnc encode(int a): int { return a; }
+                async fnc forwarded(): int {
+                    const args = (b: 23, a: 19);
+                    return encode(...args);
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+        assertEquals("1923", checkedExecution(code));
+    }
+
+    @Test
+    void recordSpreadRejectsUnknownDuplicateAndPositionalTail() {
+        String prefix = "fnc add(int a, int b): int { return a + b; }\n";
+        for (String call : new String[] {
+                "add(...(c: 23, a: 19))",
+                "add(...(a: 19, b: 23), 1)",
+                "add(19, ...(a: 23))",
+                "add(...(a: 19, a: 23))",
+                "add(...(a: new Cell(), b: 23))"
+        }) {
+            String code = prefix + """
+                    define class Cell as
+                        pub let int value = 7;
+                    end
+                    """ + "pub routine main(): void { stdio.stdout.write("
+                    + call + "); return; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(code)), call);
+        }
+    }
+
     private static String checkedExecution(String code) throws Exception {
         var parsed = Parser.parse(code);
         var typed = TypeChecker.check(parsed);
