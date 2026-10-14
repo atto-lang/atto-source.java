@@ -8,7 +8,6 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 
 import java.io.ByteArrayOutputStream;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -25,9 +24,10 @@ import static org.junit.jupiter.api.Assertions.*;
  * source commit 84c04d974ea5385294d4e8627ca0e12417580c74.
  *
  * Git blob identity proves input integrity, not compiler correctness.
- * This checks Java parser/type/ownership admission only. It does not
- * mark any backend confirmed in the conformance manifest, and is not
- * a replacement for runtime execution or Native Image.
+ * This checks Java parser/type/ownership admission and focused GraalVM
+ * interpreter runtime outputs. It does not mark any backend confirmed in the
+ * conformance manifest: full JVM, Native Image and backend parity remain
+ * separate verification gates.
  */
 final class PinnedValueMatchConformanceTest {
     private static final Map<String, String> SOURCE_BLOBS = Map.of(
@@ -119,18 +119,23 @@ final class PinnedValueMatchConformanceTest {
      * to prove the value match returned to the expression rather than the
      * enclosing callable, or that do-match kept its procedural return.
      */
-    private static String executePinnedMain(String name) throws Exception {
-        String program = readPinned(name);
+    private static String executeCheckedProgram(String program, String sourceName) throws Exception {
         var typed = TypeChecker.check(Parser.parse(program));
         OwnershipChecker.check(typed);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source guest = Source.newBuilder(OresLanguage.ID, program, name)
+        Source guest = Source.newBuilder(OresLanguage.ID, program, sourceName)
                 .mimeType(OresLanguage.MIME_TYPE).build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).out(output).build()) {
             context.eval(guest);
         }
-        return output.toString(StandardCharsets.UTF_8).trim().replace("\r", "");
+        // No trim(), line-ending replacement or whitespace normalization:
+        // all guest output bytes matter, including accidental extra newlines.
+        return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static String executePinnedMain(String name) throws Exception {
+        return executeCheckedProgram(readPinned(name), name);
     }
 
     @Test
@@ -143,5 +148,34 @@ final class PinnedValueMatchConformanceTest {
     void proceduralReturnDoesNotReplaceValueExpressionReturn() {
         assertEquals("142:42", assertDoesNotThrow(
                 () -> executePinnedMain("value-vs-procedural.ores")));
+    }
+
+    /**
+     * The canonical guarded-match fixture deliberately has no main().
+     * Preserve its exact SHA-pinned source as the prefix, then append a
+     * small runtime entrypoint purely for this supplemental behavior test.
+     * This must not be recorded as "execution of exact fixture bytes alone":
+     * it is execution of an unchanged canonical fixture plus a harness.
+     */
+    @Test
+    void guardedOverEndFixtureExecutesBothGuardAndFallback() {
+        assertEquals("42:0:0:2", assertDoesNotThrow(() -> {
+            String source = readPinned("value-guard-over-end.ores");
+            String harness = """
+                
+                pub fnc main(): void {
+                    stdio.stdout.write(compute(41));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(compute(0));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(compute(-3));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(compute(1));
+                    return;
+                }
+                """;
+            return executeCheckedProgram(source + "\n" + harness,
+                    "guarded-value-match-with-runtime-harness.ores");
+        }));
     }
 }
