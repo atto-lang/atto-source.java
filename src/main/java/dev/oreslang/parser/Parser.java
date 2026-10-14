@@ -2799,7 +2799,7 @@ public final class Parser {
             if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
                 if (match(AS)) {
                     return new Ast.ConstructorPattern(
-                            name, List.of(parseMatchRecordProjection()));
+                            name, List.of(parseMatchProjection()));
                 }
                 return new Ast.ConstructorPattern(name, List.of());
             }
@@ -2817,22 +2817,45 @@ public final class Parser {
      * This is not a structural type inference or method lookup. Every
      * projected key must be a statically declared field of the payload.
      */
-    private Ast.RecordPattern parseMatchRecordProjection() {
-        consume(LBRACE, "match constructor 'as' requires record projection '{...}'");
-        if (check(RBRACE)) {
-            throw error(peek(), "match record projection must bind at least one field");
+    private Ast.Pattern parseMatchProjection() {
+        // Whole-pattern kind is a default. Explicit per-item kinds inherit for
+        // subsequent unqualified items, matching ordinary Oreslang destructuring.
+        Ast.BindingKind currentKind = isBindingKind(peek().type())
+                ? parseBindingKind() : Ast.BindingKind.VAL;
+        if (match(LBRACE)) {
+            if (check(RBRACE)) throw error(peek(), "match record projection must bind at least one field");
+            List<String> fields = new ArrayList<>();
+            List<Ast.BindingKind> kinds = new ArrayList<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            do {
+                if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+                Token field = consume(IDENT, "match record projection requires a declared field name");
+                if (field.lexeme().equals("_") || !seen.add(field.lexeme())) {
+                    throw error(field, "duplicate or invalid match record field '" + field.lexeme() + "'");
+                }
+                fields.add(field.lexeme());
+                kinds.add(currentKind);
+            } while (match(COMMA) && !check(RBRACE));
+            consume(RBRACE, "expected '}' after match record projection");
+            return new Ast.RecordPattern(fields, kinds);
         }
-        List<String> fields = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        do {
-            Token field = consume(IDENT, "match record projection requires a field name");
-            if (field.lexeme().equals("_") || !seen.add(field.lexeme())) {
-                throw error(field, "duplicate or invalid match record field '" + field.lexeme() + "'");
-            }
-            fields.add(field.lexeme());
-        } while (match(COMMA) && !check(RBRACE));
-        consume(RBRACE, "expected '}' after match record projection");
-        return new Ast.RecordPattern(fields);
+        if (match(LPAREN)) {
+            List<Ast.DestructureBinding> slots = new ArrayList<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            do {
+                if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+                Token binding = consume(IDENT, "tuple projection requires positional bindings");
+                String name = binding.lexeme();
+                if (!name.equals("_") && !seen.add(name)) {
+                    throw error(binding, "duplicate tuple projection binding '" + name + "'");
+                }
+                slots.add(name.equals("_") ? Ast.DestructureBinding.discard()
+                        : new Ast.DestructureBinding(currentKind, name, false, false));
+            } while (match(COMMA) && !check(RPAREN));
+            consume(RPAREN, "expected ')' after tuple match projection");
+            return new Ast.TupleProjectionPattern(slots);
+        }
+        throw error(peek(), "match constructor 'as' requires a named '{...}' record or positional '(...)' tuple projection");
     }
 
     private Ast.SwitchStmt parseSwitch() {
