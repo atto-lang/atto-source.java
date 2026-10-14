@@ -195,11 +195,15 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(actorId, "actorId");
             Objects.requireNonNull(effect, "effect");
             Objects.requireNonNull(envelope, "envelope");
+            String fixedDiagnostic = effect == GuestActorEffectSignal.Kind.RAISE
+                    ? "actor raised a typed Error"
+                    : "actor panicked with a typed Error";
             if (!envelope.actorId().equals(actorId.value().toString())
                     || !envelope.supervisorId().equals(
                             supervisorId == null ? "" : supervisorId.value().toString())
-                    || envelope.kind() != ActorErrorCatalog.Kind.ACTOR_SUPERVISION) {
-                throw new IllegalArgumentException("actor CONTROL envelope identity mismatch");
+                    || envelope.kind() != ActorErrorCatalog.Kind.ACTOR_SUPERVISION
+                    || !envelope.diagnostic().equals(fixedDiagnostic)) {
+                throw new IllegalArgumentException("invalid actor CONTROL envelope");
             }
         }
     }
