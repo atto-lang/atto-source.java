@@ -81,6 +81,59 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectEagerModuleMemberResolutionWithoutEffectProof() {
+        // A MemberExpr is not proved effect-free merely because its receiver
+        // is a simple name; module export resolution may evaluate user code.
+        String source = """
+                define module Settings as
+                  pub val int answer: 42;
+                end
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: Settings.answer;
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
+    void rejectNestedEagerMemberResolution() {
+        String source = """
+                define module Settings as
+                  pub val int answer: 42;
+                end
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: 1 + Settings.answer;
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
+    void rejectOpaqueImportedNamespaceAsEagerValue() {
+        // Imported value evaluation crosses source/module boundaries, and
+        // may invoke a declaration initializer at the time of first access.
+        String source = """
+                import module Remote from './remote';
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: Remote;
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
