@@ -7837,6 +7837,19 @@ public final class TypeChecker {
                     && !switched.defaultBody().isEmpty()
                     && switched.cases().stream().allMatch(arm -> definitelyReturns(arm.body()))
                     && definitelyReturns(switched.defaultBody())) return true;
+            if (stmt instanceof Ast.SelectStmt select
+                    && select.mode() != Ast.WaitMode.NONBLOCKING
+                    && (select.mode() != Ast.WaitMode.IMMEDIATE
+                            || select.arms().stream().anyMatch(arm ->
+                                    arm.operation() == Ast.ChannelOperation.DEFAULT))
+                    && select.arms().stream().allMatch(arm ->
+                            definitelyReturns(arm.body()))) {
+                // Blocking select never falls through normally without a
+                // selected arm; immediate select needs a default to rule out
+                // the no-winner edge. Detached nb select never returns from
+                // the enclosing callable, even if its own arms return.
+                return true;
+            }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
