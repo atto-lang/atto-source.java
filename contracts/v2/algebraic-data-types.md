@@ -179,7 +179,13 @@ Distinct registered nominal enum case tags, disjoint finite literals,
 and disjoint tuple/product projections can establish this proof.
 Numeric literals must compare with runtime equality semantics:
 `1` and `1.0` can match the same value, including nested literal
-constructor patterns. Guard-range disjointness is permitted only for
+constructor patterns. Mixed integral and binary floating comparisons MUST
+preserve the exact integer and the exact binary fraction: `9007199254740993`
+is not equal to `9007199254740992.0`. Decimal/string roundtripping of a
+binary float is not an equality proof. Signed floating zero is equal to
+integral zero; NaN is not equal to any number, including itself. Compiler
+arm-disjointness and runtime pattern matching MUST share these rules;
+unknown host Number types must not establish compile-time disjointness. Guard-range disjointness is permitted only for
 identical patterns binding the same immutable projection from the match
 subject (such as `Status.Count(x)` or `(x, _)`). A same-named outer variable
 is not a stable projection: it may change between guard evaluations and
