@@ -68,6 +68,39 @@ not the supervisor CONTROL channel.** Supervisor CONTROL is a distinct
 VM-reserved authenticated route and must never be writable from a guest
 `actorruntime.ores` invocation.
 
+### STOP arbitration hardening
+
+Selecting a mailbox lane and admitting a physical actor turn are different
+operations. The pure `choose_mailbox_lane` now accepts lifecycle state and
+a purported retained-cleanup permit so its decision table can be tested:
+
+- **LIVE:** authenticated scheduler continuations have precedence; after eight
+  urgent user messages, an already-queued normal message gets an opportunity.
+- **GRACEFULLY SEALED:** old user messages remain drainable; sealing is a
+  sender-admission condition, *not* a physical STOP.
+- **STOPPED:** no queued user message is selected. An internally scheduled
+  cleanup continuation is selected only if it is present **and** its retained
+  identity/cleanup permit has been attested by the VM.
+- **FINALIZED / FORCE REVOKED / VM CLOSED:** no guest turn is selected, even
+  when a purported cleanup continuation is present.
+- **CORRUPT URGENT BURST COUNT:** a negative value yields an invalid decision
+  rather than silently falling through to user execution.
+
+The scalar `retained_cleanup_continuation = true` argument is **not** a
+capability. Normal guest callers can supply it themselves; they gain no
+privileged actor access. Gate 1 MUST replace these attestations with a sealed
+generation-specific handle, validate it again at the atomic dispatch commit,
+and reject stale actor/restart/queue identities. A policy result without
+that VM check is advisory and never authorizes guest execution.
+
+Admission likewise rejects impossible queue snapshots (negative counts,
+lane count greater than aggregate count, or lane capacity greater than
+aggregate capacity). This is **not** an atomic quota implementation: both
+precheck and credit reservation must occur in one VM-owned synchronization
+transaction. If the VM exposes a separate control lane with reserved capacity,
+its accounting budget must explicitly include that reserved capacity; no
+application can mint CONTROL work by choosing a lane number.
+
 The Java/GraalVM backend still executes the live scheduling and cancellation
 runtime. A passing Gate 0 means Oreslang-owned policy can be linked/executed;
 it does not establish that the live runtime invokes this module or that LLVM

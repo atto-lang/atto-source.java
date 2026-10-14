@@ -43,15 +43,24 @@ define module actorruntime as
       && queued_in_lane < lane_capacity
       && queued_total >= 0 && total_capacity > 0
       && queued_total < total_capacity
-      && queued_total >= queued_in_lane;
+      && queued_total >= queued_in_lane
+      && lane_capacity <= total_capacity;
   }
 
   // Return 0 NONE, 1 INTERNAL_CONTINUATION, 2 URGENT, or 3 NORMAL.
-  // -1 is an invalid accounting state and MUST cause fail-closed shutdown.
-  // This is not supervisor CONTROL; guest code never owns that lane.
-  // Continuations precede all new user mail, even an URGENT flood.
-  // A logically suspended receive can only admit CONTROL continuations.
+  // -1 means corrupt accounting and must trigger fail-closed VM behavior.
+  // This is scheduling policy, NEVER a guest-visible authority check:
+  // continuation_ready and retained_cleanup_continuation must be backed by
+  // the same VM-validated identity/incarnation and one-shot turn claim.
+  // A graceful SEAL is intentionally absent: already-admitted user messages
+  // must still drain. STOP is distinct and permits cleanup continuations only.
+  // Supervisor CONTROL remains a separate VM-owned route.
   pub fnc choose_mailbox_lane(
+    bool stopped,
+    bool finalized,
+    bool force_revoked,
+    bool vm_closed,
+    bool retained_cleanup_continuation,
     bool continuation_ready,
     bool urgent_ready,
     bool normal_ready,
@@ -61,6 +70,16 @@ define module actorruntime as
     if consecutive_urgent < 0; do
       return -1;
     fi
+    if finalized || force_revoked || vm_closed; do
+      return 0;
+    fi
+    if stopped; do
+      if retained_cleanup_continuation && continuation_ready; do
+        return 1;
+      fi
+      return 0;
+    fi
+    // Even before STOP, the VM must authenticate continuation provenance.
     if continuation_ready; do
       return 1;
     fi
