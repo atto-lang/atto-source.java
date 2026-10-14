@@ -239,6 +239,8 @@ public final class IncrementalCompiler {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.actorKind()).append(' ');
             if (fn.async()) abi.append("async ");
+            if (fn.suspends()) abi.append("suspends ");
+            if (fn.trapped()) abi.append("trap ");
             if (fn.generator()) abi.append("generator ");
             if (fn.structural()) abi.append("structural ");
             abi.append(fn.kind()).append(" pub ").append(fn.name());
@@ -332,6 +334,7 @@ public final class IncrementalCompiler {
     private static String classMethodAbi(Ast.MethodDecl method) {
         StringBuilder out = new StringBuilder();
         if (method.async()) out.append("async ");
+        if (method.suspends()) out.append("suspends ");
         if (method.structural()) out.append("structural ");
         out.append(method.isStatic() ? " static-fnc " : " method ")
                 .append(method.name())
