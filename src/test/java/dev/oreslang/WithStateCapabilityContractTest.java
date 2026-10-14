@@ -34,6 +34,49 @@ final class WithStateCapabilityContractTest {
                 """.formatted(expression);
     }
 
+    @Test void actorStateDefaultsMustBeDetachedContextFreeScalars() {
+        for (String value : new String[] {
+                "compute()", "external", "1 + 2", "new Wrapper(1)"
+        }) {
+            String source = "define actor Bad as state { n: int = "
+                    + value + "; } end";
+            Ast.Program parsed = Parser.parse(source);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), value);
+            assertTrue(failure.getMessage().contains("detached scalar literal"),
+                    failure.getMessage());
+        }
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define actor Good as
+                  state { n: int = -3; ready: bool = true; label: string = "local"; }
+                  get(): int with state.read {
+                    return self.handle_state(|s| -> { return s.n; });
+                  }
+                end
+                """)));
+    }
+
+    @Test void discardedConstructorCannotCaptureReferenceBackedState() {
+        for (String callback : new String[] {
+                "self.handle_state(|s| -> { new Holder(s.cache); return s.n; })",
+                "using state.read(|s| -> { new Holder(s.cache); return s.n; })"
+        }) {
+            String source = """
+                    define actor Counter as
+                      state { n: int = 0; cache: Map<string, int>; }
+                      probe(): int with state.read {
+                        return %s;
+                      }
+                    end
+                    """.formatted(callback);
+            Ast.Program parsed = Parser.parse(source);
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), callback);
+            assertTrue(failure.getMessage().contains("reference projection"),
+                    failure.getMessage());
+        }
+    }
+
     @Test void slimArrowStateCallbackCannotImplicitlyReturnMutableReference() {
         for (String callback : new String[] {
                 "self.handle_state(|s| -> s.cache)",
