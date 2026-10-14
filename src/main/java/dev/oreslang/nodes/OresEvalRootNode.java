@@ -2472,8 +2472,9 @@ public final class OresEvalRootNode extends RootNode {
          * A selected branch is a source block, not an exception boundary. Run
          * it on the resumable source frame so RETURN/BREAK/CONTINUE propagate
          * as SourceFlow rather than escaping as host RuntimeExceptions.
-         * Explicit do-select suppresses only the arm-local RETURN; errors,
-         * cancellation and other failures still propagate.
+         * Blocking do-select does NOT consume RETURN: the enclosing callable
+         * owns that completion, including on the resumed source-task path.
+         * Detached nonblocking do-select is a different callback boundary.
          */
         private void runSelectedArmSuspendable(
                 SourceTask task,
