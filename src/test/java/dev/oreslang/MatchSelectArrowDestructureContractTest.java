@@ -171,4 +171,20 @@ final class MatchSelectArrowDestructureContractTest {
                         """));
         assertNotNull(wrong.getMessage());
     }
+
+    @Test
+    void bracedConstructorProjectionRequiresSlimArrowEvenWithLegacyBracedArms() {
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse("""
+                        fnc extract(Option<{v: int}> input): int {
+                          do match input over {
+                            on Some as {v} { return v; }
+                            on None -> { return 0; }
+                          }
+                          return -1;
+                        }
+                        """));
+        assertTrue(missing.getMessage().contains("->"), missing.getMessage());
+    }
+
 }
