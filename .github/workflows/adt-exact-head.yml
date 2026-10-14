@@ -12,6 +12,7 @@ on:
       - 'src/test/java/dev/oreslang/*Adt*'
       - 'src/test/java/dev/oreslang/*ADT*'
       - 'src/test/java/dev/oreslang/*Enum*'
+      - 'src/test/java/dev/oreslang/ExplicitDispatchStatementSyntaxTest.java'
       - 'contracts/v2/adt-conformance/**'
   workflow_dispatch:
 
@@ -44,7 +45,7 @@ jobs:
       - name: Run ADT guest compiler/runtime conformance and stress tests
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest \
+            -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest \
             test
       - name: Upload exact-head targeted test reports
         if: always()
