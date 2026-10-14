@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -61,6 +62,42 @@ final class ExplicitDispatchStatementSyntaxTest {
                         }
                     }
                     """.formatted(prefix)), prefix + "select");
+        }
+    }
+
+    @Test
+    void overControlsMatchDispatchModeAndDoDoesNot() {
+        for (boolean ordered : new boolean[]{false, true}) {
+            for (String prefix : new String[]{"", "do "}) {
+                String head = ordered ? "match true over" : "match true";
+                String arms = ordered
+                        ? "on true -> { return; }\\non _ -> { return; }"
+                        : "true -> { return; }\\nelse -> { return; }";
+                String source = "fnc execute(): void {\\n" + prefix
+                        + head + "\\n" + arms + "\\nend\\n}";
+                Ast.Program program = Parser.parse(source);
+                Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                        program.modules().getFirst().declarations().getFirst();
+                Ast.MatchStmt parsed = assertInstanceOf(
+                        Ast.MatchStmt.class, fn.body().getFirst());
+                assertEquals(ordered, parsed.ordered(),
+                        "dispatch mode must be controlled by over, not do");
+            }
+        }
+    }
+
+    @Test
+    void explicitDoRemainsVisibleOnlyOnSelectAst() {
+        for (boolean explicitDo : new boolean[]{false, true}) {
+            String program = "fnc execute(): void {\\n"
+                    + (explicitDo ? "do " : "")
+                    + "select { default: { return; } }\\n}";
+            Ast.Program parsed = Parser.parse(program);
+            Ast.FunctionDecl fn = (Ast.FunctionDecl)
+                    parsed.modules().getFirst().declarations().getFirst();
+            Ast.SelectStmt selected = assertInstanceOf(
+                    Ast.SelectStmt.class, fn.body().getFirst());
+            assertEquals(explicitDo, selected.explicitDo());
         }
     }
 
