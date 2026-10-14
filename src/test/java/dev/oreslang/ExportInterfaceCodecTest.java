@@ -99,4 +99,32 @@ final class ExportInterfaceCodecTest {
                 () -> ExportInterfaceCodec.decode(corrupted));
     }
 
+    @Test void deterministicMutationFuzzNeverAcceptsNoncanonicalBytes() {
+        java.util.Random random = new java.util.Random(0x0E51_2026L);
+        for (int round = 0; round < 256; round++) {
+            var entries = new java.util.ArrayList<Entry>();
+            int count = 1 + random.nextInt(8);
+            for (int i = 0; i < count; i++) {
+                entries.add(new Entry("module" + random.nextInt(5), Kind.FUNCTION,
+                        "function" + i, "(int value" + random.nextInt(2000) + "):int"));
+            }
+            byte[] valid = ExportInterfaceCodec.encode(HEADER, entries).bytes();
+            assertArrayEquals(valid, ExportInterfaceCodec.decode(valid).bytes());
+            for (int mutation = 0; mutation < 4; mutation++) {
+                byte[] damaged = valid.clone();
+                int position = random.nextInt(damaged.length);
+                damaged[position] ^= (byte) (1 << random.nextInt(8));
+                try {
+                    var decoded = ExportInterfaceCodec.decode(damaged);
+                    assertArrayEquals(damaged, decoded.bytes(),
+                            "every accepted encoding must already be canonical");
+                    assertArrayEquals(decoded.bytes(),
+                            ExportInterfaceCodec.decode(decoded.bytes()).bytes());
+                } catch (IllegalArgumentException invalid) {
+                    // Rejected malformed bytes are the expected outcome.
+                }
+            }
+        }
+    }
+
 }
