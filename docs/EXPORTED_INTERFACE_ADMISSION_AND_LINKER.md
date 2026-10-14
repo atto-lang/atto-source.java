@@ -50,6 +50,26 @@ and OwnershipChecker execution over the linked dependency component.
 3. Reuses `InterfaceSccPlanner` and `ImportGraph` for SCC-atomic,
    dependency-first fingerprints and exact import-selector target binding.
 
+### Audit and hardening
+
+The provisional linker rejects duplicate *local import bindings*, even when
+they arise from different providers, repeated entries inside a single named
+import, or two aliases mapping to the same local identifier. Otherwise a
+dependent module's import environment could be ambiguous even if each
+provider independently exports the requested symbol. Local declarations
+with the same spelling are a separate semantic-ownership question for the
+actual TypeChecker and remain permitted by this staging prototype.
+
+The `Linked` stage result is now a final, privately constructed class instead
+of a publicly constructible record. This reduces accidental fabrication of
+a "successfully linked" result by arbitrary downstream clients. It remains
+**interface-only** and must never serve as trusted semantic admission:
+`collectCheckedDeclarations` currently accepts caller-provided programs;
+no multi-file type/ownership checker has minted verified SCC admission.
+
+The targeted JDK 21 runner exercises duplicate-name, repeated-selection,
+alias-collision, and private-constructor regressions.
+
 **The staged API is not the authoritative semantic linker.** It still accepts
 caller-provided purportedly checked AST programs. Only a trusted compiler
 driver may call it after actual multi-file type and ownership admission.
