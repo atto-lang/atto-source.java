@@ -161,6 +161,23 @@ final class OresKeyedMapTest {
         assertEquals(Map.of("preserve", 3), map.shallowSnapshot());
     }
 
+    @Test void underreportedHostBatchSizeStillHonorsEnumeratedBudget() {
+        OresKeyedMap<String, Integer> destination = OresKeyedMap.stringKeys();
+        destination.put("existing", 3);
+        java.util.Set<Map.Entry<String, Integer>> oversized = new java.util.LinkedHashSet<>();
+        for (int index = 0; index <= OresKeyedMap.MAX_ENTRIES; index++) {
+            oversized.add(Map.entry("k" + index, index));
+        }
+        Map<String, Integer> lyingSource = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Map.Entry<String, Integer>> entrySet() {
+                return oversized;
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> destination.putAll(lyingSource));
+        assertEquals(Map.of("existing", 3), destination.shallowSnapshot());
+    }
+
     @Test void mapCapacityFailsBeforeInsertionIncludingAtomicBatch() {
         OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
         for (int i = 0; i < OresKeyedMap.MAX_ENTRIES - 1; i++) {
