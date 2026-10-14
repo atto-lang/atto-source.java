@@ -7182,6 +7182,13 @@ public final class ActorRuntime implements AutoCloseable {
                             // suspended handler's runnable state. A queued task
                             // from another receive or actor must not wake it.
                             SerialExecutionTicket ticket = activeEnvelope.taskTicket();
+                            boolean cleanupTurn = stopped.get()
+                                    && authorizedCleanupContinuation(
+                                            activeEnvelope.continuation());
+                            if (cleanupTurn && ticket == null) {
+                                throw new SecurityException(
+                                        "post-STOP cleanup requires an issued task ticket");
+                            }
                             if (ticket != null && ticket.isRetired()) {
                                 // Cancellation may retire a queued scheduler turn
                                 // before the actor carrier consumes it. Discard
@@ -7195,8 +7202,15 @@ public final class ActorRuntime implements AutoCloseable {
                                 boolean admitted = true;
                                 if (ticket != null) {
                                     try {
-                                        ticket.requireAdmissible(
-                                                ref.id(), executionDomain, serialReceiveLease);
+                                        if (cleanupTurn) {
+                                            if (!ticket.issuedFor(ref.id(), executionDomain)) {
+                                                throw new SecurityException(
+                                                        "foreign cleanup actor incarnation");
+                                            }
+                                        } else {
+                                            ticket.requireAdmissible(
+                                                    ref.id(), executionDomain, serialReceiveLease);
+                                        }
                                     } catch (SerialExecutionTicket.RetiredTaskException canceled) {
                                         admitted = false;
                                     }
@@ -7211,8 +7225,17 @@ public final class ActorRuntime implements AutoCloseable {
                                         boolean runnable = true;
                                         if (ticket != null) {
                                             try {
-                                                ticket.requireRunnable(
-                                                        ref.id(), executionDomain, serialReceiveLease);
+                                                if (cleanupTurn) {
+                                                    ticket.requireCleanupRunnable(
+                                                            ref.id(), executionDomain,
+                                                            serialReceiveLease,
+                                                            authorizedCleanupContinuation(
+                                                                    activeEnvelope.continuation()));
+                                                } else {
+                                                    ticket.requireRunnable(
+                                                            ref.id(), executionDomain,
+                                                            serialReceiveLease);
+                                                }
                                             } catch (SerialExecutionTicket.RetiredTaskException canceled) {
                                                 runnable = false;
                                             }
