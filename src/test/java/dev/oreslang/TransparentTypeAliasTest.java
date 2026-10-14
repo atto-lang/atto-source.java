@@ -114,4 +114,21 @@ final class TransparentTypeAliasTest {
         assertEquals(Ast.Visibility.PUBLIC, alias.visibility());
         assertEquals(java.util.List.of("A", "B"), alias.genericParameters());
     }
+
+    @Test
+    void nestedFiniteGenericAliasesAreNotDeclarationCycles() {
+        accepted("""
+                type Box<T> = Tuple[T];
+                type Nested = Box<Box<int>>;
+                fnc unwrap(Nested value): int { return value[0][0]; }
+                """);
+    }
+
+    @Test
+    void GenuinelyExpandingGenericRecursionHasBoundedDiagnostic() {
+        rejected("""
+                type Grow<T> = Grow<Tuple[T,T]>;
+                fnc impossible(Grow<int> value): void { return; }
+                """, "type alias expansion exceeds");
+    }
 }
