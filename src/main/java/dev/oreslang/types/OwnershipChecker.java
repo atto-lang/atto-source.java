@@ -1668,6 +1668,15 @@ public final class OwnershipChecker {
             if (parameterCount == call.arguments().size()) {
                 for (int i = 0; i < call.arguments().size(); i++) {
                     ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
+                    Ast.TypeRef expected = callableType.arguments().get(i);
+                    // A first-class callable with an owned/Any parameter may
+                    // retain its argument. Never erase a scoped borrow simply
+                    // because the callable's concrete body is not statically
+                    // available at this call site.
+                    if (!expected.isBorrow()
+                            && (isBorrowValue(argument) || containsBorrowType(argument.type))) {
+                        throw error("borrowed references cannot cross an owned first-class Fnc parameter");
+                    }
                     if (containsMutexGuardType(argument.type)) {
                         throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
                     }
@@ -1683,6 +1692,9 @@ public final class OwnershipChecker {
         // Unknown host/dynamic callables remain conservative and consuming.
         for (Ast.Expr arg : call.arguments()) {
             ValueInfo argument = checkExpr(arg, scope, true);
+            if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+                throw error("borrowed references cannot cross an unknown call boundary without a proven borrowed-parameter contract");
+            }
             if (containsMutexGuardType(argument.type)) {
                 throw error("guard-bearing values cannot cross an arbitrary call boundary");
             }
@@ -1742,7 +1754,7 @@ public final class OwnershipChecker {
         }
 
         Ast.TypeRef okType = option ? receiverType.arguments().getFirst() : receiverType.arguments().get(0);
-        if (okType.isBorrow()) {
+        if (containsBorrowType(okType)) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
         }
