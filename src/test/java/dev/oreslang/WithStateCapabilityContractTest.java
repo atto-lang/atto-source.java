@@ -34,6 +34,54 @@ final class WithStateCapabilityContractTest {
                 """.formatted(expression);
     }
 
+    @Test void nestedReferenceStateOperationsFailClosedWithoutGraphOwnershipProof() {
+        // Direct s.cache egress was already rejected. Member/index
+        // operations on s.cache are more subtle: they access state-owned
+        // heap identity while allowing method effects and nested writes.
+        for (String statement : new String[] {
+                "s.cache.item = 1; return s.n;",
+                "s.cache.put(\"item\", 1); return s.n;",
+                "return s.cache[\"item\"];",
+                "return s.cache.item;",
+                "return (s.cache).item;"
+        }) {
+            for (String acquisition : new String[] {
+                    "self.handle_state(critical |s| -> {",
+                    "using state.write(critical |s| -> {"
+            }) {
+                String source = actorWithReferenceState(statement)
+                        .replace("with state.read", "with state.read, state.write")
+                        .replace("self.handle_state(|s| -> {", acquisition);
+                Ast.Program parsed = Parser.parse(source);
+                var failure = assertThrows(IllegalArgumentException.class,
+                        () -> ActorStateContract.verify(parsed),
+                        acquisition + " " + statement);
+                assertTrue(failure.getMessage().contains("nested actor state reference"),
+                        failure.getMessage());
+            }
+        }
+    }
+
+    @Test void referenceDefaultsCannotImportUnprovenExternalHeapObjects() {
+        for (String declaration : new String[] {
+                "cache: Map<string, int> = external;",
+                "cache: Map<string, int> = 1;",
+                "cache: Map<string, int> = factory();"
+        }) {
+            Ast.Program parsed = Parser.parse(
+                    "define actor Bad as state { " + declaration + " } end");
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), declaration);
+            assertTrue(failure.getMessage().contains("reference default"),
+                    failure.getMessage());
+        }
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(
+                "define actor Good as "
+                + "state { n: int = 3; label: string = \"local\"; } "
+                + "get(): int with state.read { "
+                + "return self.handle_state(|s| -> { return s.n; }); } end")));
+    }
+
     @Test void referenceValuedStateProjectionCannotEscapeLoan() {
         for (String body : new String[] {
                 "return s.cache;",
