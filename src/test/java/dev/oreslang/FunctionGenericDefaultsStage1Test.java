@@ -124,4 +124,26 @@ final class FunctionGenericDefaultsStage1Test {
         assertEquals("T", fn.genericSpecs().getFirst().name());
         assertNull(fn.genericSpecs().getFirst().defaultType());
     }
+
+    @Test
+    void exportedGenericDefaultsArePartOfIncrementalAbi() {
+        dev.oreslang.compiler.IncrementalCompiler compiler =
+                new dev.oreslang.compiler.IncrementalCompiler();
+        var first = compiler.compile(java.util.Map.of(
+                "api.ores", "pub fnc api<T=int>(): int { return 7; }"));
+        var second = compiler.compile(java.util.Map.of(
+                "api.ores", "pub fnc api<T=string>(): int { return 7; }"));
+        assertNotEquals(first.units().get("api.ores").abiDigest(),
+                second.units().get("api.ores").abiDigest(),
+                "changing a public generic default must change the exported ABI");
+
+        var privateCompiler = new dev.oreslang.compiler.IncrementalCompiler();
+        var privateFirst = privateCompiler.compile(java.util.Map.of(
+                "hidden.ores", "fnc helper<T=int>(): int { return 7; }"));
+        var privateSecond = privateCompiler.compile(java.util.Map.of(
+                "hidden.ores", "fnc helper<T=string>(): int { return 7; }"));
+        assertEquals(privateFirst.units().get("hidden.ores").abiDigest(),
+                privateSecond.units().get("hidden.ores").abiDigest(),
+                "a private generic default must not change the exported ABI");
+    }
 }
