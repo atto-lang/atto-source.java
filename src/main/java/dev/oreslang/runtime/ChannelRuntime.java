@@ -821,7 +821,7 @@ public final class ChannelRuntime {
                 if (chosen == null) continue;
 
                 if (chosen.selectCase instanceof FutureCase<?> awaiting) {
-                    Object settled = awaiting.future().runtimeTerminalStateOrNull();
+                    Object settled = awaiting.future().runtimeSelectReadyStateOrNull();
                     if (settled == null) continue;
                     Throwable failure = OresFuture.runtimeTerminalFailure(settled);
                     if (failure != null) {
@@ -923,7 +923,7 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (registration.selectCase instanceof FutureCase<?> awaiting) {
-                if (awaiting.future().runtimeTerminalStateOrNull() != null) {
+                if (awaiting.future().runtimeSelectReadyStateOrNull() != null) {
                     return registration;
                 }
                 continue;
@@ -972,7 +972,7 @@ public final class ChannelRuntime {
 
     private static boolean basicReadyLocked(CaseRegistration registration) {
         if (registration.selectCase instanceof FutureCase<?> awaiting) {
-            return awaiting.future().runtimeTerminalStateOrNull() != null;
+            return awaiting.future().runtimeSelectReadyStateOrNull() != null;
         }
         Channel<?> channel = registration.channel();
 
