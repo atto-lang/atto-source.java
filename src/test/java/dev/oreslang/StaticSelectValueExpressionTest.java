@@ -71,24 +71,36 @@ final class StaticSelectValueExpressionTest {
     }
 
     @Test
-    void blockingValueSelectResumesFromPendingChannelAfterAsyncWriter() throws Exception {
+    void blockingValueSelectResumesFromPendingActorLocalWriter() throws Exception {
+        // The deferred writer and waiting reader run in one actor domain.
+        // A Channel capability must never be passed across an async-task
+        // boundary just to manufacture a pending-select test.
         String code = """
-                pub async fnc sendLater(Channel<int> channel): void {
-                  rt cooperate();
-                  writech channel, 7;
-                  return;
-                }
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val Channel<int> incoming = Channel.new<int>(0);
+                    do nb select {
+                      default: {
+                        writech incoming, 7;
+                      }
+                    }
+                    const int answer = select over
+                      when readch incoming: int x -> {
+                        return x * 3;
+                      }
+                    end;
+                    self.send(answer);
+                    self.end();
+                    return;
+                  }
+                end
 
                 pub async routine main(): void {
-                  val Channel<int> incoming = Channel.new<int>(0);
-                  val Future<void> writer = sendLater(incoming);
-                  const int answer = select over
-                    when readch incoming: int x -> {
-                      return x * 3;
-                    }
-                  end;
-                  await writer;
-                  stdio.stdout.write(answer);
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  val out = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(out.value);
+                  await worker.get_done();
                   return;
                 }
                 """;
