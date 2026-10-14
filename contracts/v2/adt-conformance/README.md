@@ -23,9 +23,22 @@ implemented compiler behavior.
 
 From `oreslang-source.java` at the *tested commit*:
 
+The queue's own failure-injection and 4096-callback smoke suite needs only
+JDK 21, not Maven or GraalVM. Run it first:
+
+```sh
+bash scripts/verify-adt-queue.sh
+```
+
+This is a **partial**, portable runtime check. It does not prove guest
+language parsing, ownership checking, cancellation through the actor
+scheduler, full Java 25 behavior, or LLVM parity.
+
+Then run the exact-head full Java/GraalVM verification:
+
 ```sh
 mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AdtConformanceCorpusTest test
-mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest,NumericPatternEqualityTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
+mvn -B -ntp -Dores.runtime.carriers=native -Dtest=AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest,NumericPatternEqualityTest,MatchContinuationQueueTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest test
 mvn -B -ntp -Dores.runtime.carriers=native verify
 ```
 
@@ -41,9 +54,12 @@ a native backend `required` based only on source parsing.
 
 The dedicated `.github/workflows/adt-exact-head.yml` workflow is scoped to
 ADT compiler/runtime changes. It records the exact Git commit and source tree,
-runs all nine targeted JUnit classes (including the 4096-arm suspendable-match
-trampoline regressions), uploads Surefire reports, then runs full `mvn verify`
-on GraalVM 25. Its full suite job depends on targeted success.
+first runs an independent JDK 21 portable gate against the production
+`MatchContinuationQueue` implementation. Only if that succeeds does it run
+all ten targeted JUnit classes (including the 4096-arm suspendable-match
+trampoline and direct duplicate-callback/cancellation-injection tests), upload
+Surefire reports, and then run full `mvn verify` on GraalVM 25. A portable
+smoke success does **not** substitute for full compiler/runtime verification.
 
 GitHub Actions showing `failure` with **zero executed steps** is an
 infrastructure/admission failure, not a failing compiler assertion. Check
