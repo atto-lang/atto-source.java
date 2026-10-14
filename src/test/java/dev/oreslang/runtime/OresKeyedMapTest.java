@@ -59,6 +59,55 @@ final class OresKeyedMapTest {
         assertEquals(0, strings.size());
     }
 
+    @Test void reifiedValueDomainsRejectWrongRuntimeValues() {
+        OresKeyedMap<OresSymbol, Object> integers =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.INT);
+        OresSymbol key = OresSymbol.process("ready");
+        integers.put(key, 17L);
+        integers.put(key, java.math.BigInteger.valueOf(20));
+        assertThrows(IllegalArgumentException.class, () -> integers.put(key, "wrong"));
+        assertThrows(IllegalArgumentException.class, () -> integers.put(key, 1.0));
+        assertEquals(java.math.BigInteger.valueOf(20), integers.get(key));
+        assertEquals(1, integers.size());
+
+        OresKeyedMap<String, Object> booleans =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.BOOL);
+        booleans.put("ok", Boolean.TRUE);
+        assertThrows(IllegalArgumentException.class, () -> booleans.put("ok", 1));
+        assertEquals(Boolean.TRUE, booleans.get("ok"));
+
+        OresKeyedMap<OresSymbol, Object> symbols =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.SYMBOL);
+        symbols.put(key, OresSymbol.process("value"));
+        assertThrows(IllegalArgumentException.class, () -> symbols.put(key, "value"));
+
+        OresKeyedMap<String, Object> text =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.STRING);
+        text.put("status", "#ready");
+        assertThrows(IllegalArgumentException.class,
+                () -> text.put("status", OresSymbol.process("ready")));
+    }
+
+    @Test void invalidValueInBatchNeverCommitsEarlierEntries() {
+        OresKeyedMap<String, Object> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("existing", 5);
+        LinkedHashMap<String, Object> batch = new LinkedHashMap<>();
+        batch.put("valid", 7L);
+        batch.put("invalid", "not an int");
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertEquals(Map.of("existing", 5), map.shallowSnapshot());
+    }
+
+    @Test void mutableMapsAreNotSendableActorMessages() {
+        OresKeyedMap<OresSymbol, Integer> map =
+                OresKeyedMap.symbolKeys(OresKeyedMap.ValueDomain.INT);
+        map.put(OresSymbol.process("ready"), 1);
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(map));
+        assertThrows(IllegalArgumentException.class, () ->
+                ActorRuntime.freeze(List.of(Map.of("embedded", map))));
+    }
+
     @Test void putAllRejectsEntireInvalidBatchBeforeMutation() {
         OresKeyedMap<String, Integer> strings = OresKeyedMap.stringKeys();
         strings.put("already", 7);
