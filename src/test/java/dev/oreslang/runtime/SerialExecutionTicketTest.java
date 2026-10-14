@@ -7,6 +7,69 @@ import static dev.oreslang.runtime.SerialActorAdmission.Kind.MESSAGE;
 
 /** Trust-boundary tests for scheduler-issued per-source-task execution tickets. */
 final class SerialExecutionTicketTest {
+    @Test void stopCleanupTicketRequiresFreshSchedulerPermitAndOriginalIncarnation() {
+        Object epoch = new Object();
+        AtomicBoolean actorAlive = new AtomicBoolean(true);
+        AtomicBoolean cleanupPermit = new AtomicBoolean(false);
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        var lease = gate.submit(MESSAGE).join();
+        var ticket = new SerialExecutionTicket(
+                "actor", epoch, 7L, gate, lease, actorAlive::get);
+        java.util.concurrent.atomic.AtomicInteger reservations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        lease.suspend();
+        actorAlive.set(false); // STOP revoked ordinary actor callbacks.
+        assertFalse(ticket.mayEnqueue());
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveCleanupControlSlotFor(
+                        "actor", epoch, cleanupPermit::get,
+                        () -> { reservations.incrementAndGet(); return true; }));
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveCleanupControlSlotFor(
+                        "actor", new Object(), () -> true,
+                        () -> { reservations.incrementAndGet(); return true; }));
+        assertEquals(0, reservations.get());
+        cleanupPermit.set(true);
+        assertEquals(SerialExecutionTicket.ControlReservation.RESERVED,
+                ticket.reserveCleanupControlSlotFor(
+                        "actor", epoch, cleanupPermit::get,
+                        () -> { reservations.incrementAndGet(); return true; }));
+        assertEquals(1, reservations.get());
+        lease.resume();
+        assertThrows(SecurityException.class, () ->
+                ticket.requireCleanupRunnable("actor", epoch, lease, false));
+        assertThrows(SecurityException.class, () ->
+                ticket.requireCleanupRunnable("actor", new Object(), lease, true));
+        ticket.requireCleanupRunnable("actor", epoch, lease, true);
+        ticket.retire();
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveCleanupControlSlotFor(
+                        "actor", epoch, () -> true,
+                        () -> { reservations.incrementAndGet(); return true; }));
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireCleanupRunnable("actor", epoch, lease, true));
+        lease.close();
+        gate.close();
+    }
+
+    @Test void stopCleanupCannotBorrowNewHandlerAfterOldLeaseFinishes() {
+        Object epoch = new Object();
+        SerialActorAdmission gate = new SerialActorAdmission(2);
+        var first = gate.submit(MESSAGE).join();
+        var ticket = new SerialExecutionTicket(
+                "actor", epoch, 11L, gate, first, () -> true);
+        first.close();
+        var next = gate.submit(MESSAGE).join();
+        assertEquals(SerialExecutionTicket.ControlReservation.REVOKED,
+                ticket.reserveCleanupControlSlotFor(
+                        "actor", epoch, () -> true,
+                        () -> { fail("stale cleanup reserved CONTROL slot"); return true; }));
+        assertThrows(SerialExecutionTicket.RetiredTaskException.class,
+                () -> ticket.requireCleanupRunnable("actor", epoch, next, true));
+        next.close();
+        gate.close();
+    }
+
     @Test void ticketRetainsExactHandlerThroughSuspendButNotAnotherReceive() {
         Object incarnation = new Object();
         SerialActorAdmission gate = new SerialActorAdmission(3);
