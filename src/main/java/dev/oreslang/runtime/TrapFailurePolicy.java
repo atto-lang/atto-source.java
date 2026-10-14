@@ -48,6 +48,7 @@ public final class TrapFailurePolicy {
             Throwable current = pending.removeFirst();
             if (visited.put(current, Boolean.TRUE) != null) return false;
             if (panicType.isInstance(current)
+                    || current instanceof GuestActorEffectSignal
                     || current instanceof Error
                     || current instanceof CancellationException
                     || current instanceof InterruptedException
