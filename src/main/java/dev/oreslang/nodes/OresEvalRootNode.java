@@ -1944,7 +1944,7 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                env.define(binding.name(), value, binding.kind(), binding.mutableReferent());
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -4499,6 +4499,11 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
                 if (receiver instanceof OresKeyedMap<?, ?> map) {
+                    if (!(index.receiver() instanceof Ast.NameExpr owner)
+                            || !env.canWriteMap(owner.name(), map)) {
+                        throw new SecurityException(
+                                "typed Map indexed write requires directly owned let mut or val binding");
+                    }
                     @SuppressWarnings("unchecked")
                     OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
                     typed.put(key, value);
@@ -5020,7 +5025,8 @@ public final class OresEvalRootNode extends RootNode {
                     env.reserve(binding.name(), binding.kind());
                     env.initialize(binding.name(), eval(binding.initializer(), env));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind(),
+                            binding.mutableReferent());
                 }
                 return;
             }
@@ -6155,6 +6161,11 @@ public final class OresEvalRootNode extends RootNode {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
                     if (receiver instanceof OresKeyedMap<?, ?> map) {
+                        if (!(target.receiver() instanceof Ast.NameExpr owner)
+                                || !env.canWriteMap(owner.name(), map)) {
+                            throw new SecurityException(
+                                    "typed Map indexed write requires directly owned let mut or val binding");
+                        }
                         @SuppressWarnings("unchecked")
                         OresKeyedMap<Object, Object> typed = (OresKeyedMap<Object, Object>) map;
                         typed.put(index, value);
@@ -8885,7 +8896,25 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            define(name, value, kind, false);
+        }
+        private void define(String name, Object value, Ast.BindingKind kind,
+                            boolean mutableReferent) {
+            if (value instanceof OresKeyedMap<?, ?> && mutableReferent
+                    && hasExistingMapAlias(value)) {
+                throw new SecurityException("cannot create a second writable typed Map alias");
+            }
+            if (slots.putIfAbsent(name, new Slot(value, kind, mutableReferent)) != null)
+                throw new IllegalArgumentException("duplicate binding " + name);
+        }
+        private boolean hasExistingMapAlias(Object value) {
+            for (Slot slot : slots.values()) if (slot.value == value) return true;
+            return parent != null && parent.hasExistingMapAlias(value);
+        }
+        private boolean canWriteMap(String name, OresKeyedMap<?, ?> expected) {
+            Slot slot = slots.get(name);
+            if (slot != null) return slot.mutableReferent && slot.value == expected;
+            return parent != null && parent.canWriteMap(name, expected);
         }
         private void reserve(String name, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
@@ -9039,7 +9068,13 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
-        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+        private final boolean mutableReferent;
+        private Slot(Object value, Ast.BindingKind kind) { this(value, kind, false); }
+        private Slot(Object value, Ast.BindingKind kind, boolean mutableReferent) {
+            this.value = value;
+            this.kind = kind;
+            this.mutableReferent = mutableReferent;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
