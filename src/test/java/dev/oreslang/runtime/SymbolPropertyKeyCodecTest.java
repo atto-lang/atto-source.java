@@ -214,6 +214,23 @@ final class SymbolPropertyKeyCodecTest {
                 SymbolPropertyKeyCodec.decodeDistinctKeys(liar));
     }
 
+    @Test void inconsistentHostListSizeCannotSilentlyChangeDecodedKeySet() {
+        byte[] encoded = SymbolPropertyKeyCodec.encode("smuggled");
+        List<byte[]> inconsistent = new java.util.AbstractList<>() {
+            @Override public int size() { return 0; }
+            @Override public byte[] get(int index) {
+                throw new AssertionError("test uses a custom iterator");
+            }
+            @Override public java.util.Iterator<byte[]> iterator() {
+                return List.of(encoded).iterator();
+            }
+        };
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> SymbolPropertyKeyCodec.decodeDistinctKeys(inconsistent));
+        assertTrue(denied.getMessage().contains("size changed"));
+    }
+
     @Test void validatedKeyCollectionIsImmutableAndDoesNotAliasWireArrays() {
         byte[] wire = SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"));
         List<Object> decoded = SymbolPropertyKeyCodec.decodeDistinctKeys(List.of(wire));

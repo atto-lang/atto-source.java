@@ -285,6 +285,21 @@ final class OresKeyedMapTest {
                 "quota failure must be transactional");
     }
 
+    @Test void inconsistentHostMapSizeIsRejectedBeforeMutation() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 9);
+        Map<String, Integer> inconsistent = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                return java.util.Set.of(Map.entry("smuggled", 5));
+            }
+        };
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> map.putAll(inconsistent));
+        assertTrue(denied.getMessage().contains("size changed"));
+        assertEquals(Map.of("original", 9), map.shallowSnapshot());
+    }
+
     @Test void aggregateWireKeyBudgetRejectsOversizedKeySetAndRefundsOnRemove() {
         OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
         String prefix = "x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES - 2);
