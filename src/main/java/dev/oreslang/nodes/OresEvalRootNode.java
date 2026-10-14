@@ -8900,9 +8900,9 @@ public final class OresEvalRootNode extends RootNode {
         }
         private void define(String name, Object value, Ast.BindingKind kind,
                             boolean mutableReferent) {
-            if (value instanceof OresKeyedMap<?, ?> && mutableReferent
-                    && hasExistingMapAlias(value)) {
-                throw new SecurityException("cannot create a second writable typed Map alias");
+            if (value instanceof OresKeyedMap<?, ?> && hasExistingMapAlias(value)) {
+                throw new SecurityException(
+                        "typed Map aliases require lifetime tracking; even readonly aliases are currently forbidden");
             }
             if (slots.putIfAbsent(name, new Slot(value, kind, mutableReferent)) != null)
                 throw new IllegalArgumentException("duplicate binding " + name);
