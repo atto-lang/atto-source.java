@@ -58,6 +58,29 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectPotentiallyUnwindingArithmeticAndCastsDuringEagerInitialization() {
+        // A division/remainder exception or checked-cast failure may unwind
+        // after an earlier slot was installed. We do not yet have a proof of
+        // partial-construction resource cleanup for these expressions.
+        for (String declaration : java.util.List.of(
+                "final float second: 1 / 0;",
+                "final int second: 1 % 0;",
+                "final int second: 42 as int;")) {
+            String source = """
+                    define class Unsafe as
+                      final int first: 42;
+                      %s
+                    end
+                    """.formatted(declaration);
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)),
+                    "eager initializer must fail closed: " + declaration);
+            assertTrue(error.getMessage().contains("without a proven transitive effect bound"),
+                    error.getMessage());
+        }
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
