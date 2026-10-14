@@ -156,6 +156,117 @@ final class ActorStopLexicalCleanupTest {
     }
 
     @Test
+    void successfulForceKillRevokesAlreadyStoppedCleanupWithoutAwaitingGraceDeadline()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            // The host hook stands in for a successful outer isolation
+            // revoker. Logical teardown must not depend on the original
+            // STOP deadline once that physical authority has been revoked.
+            AtomicInteger revocations = new AtomicInteger();
+            runtime.setForceCancellationTreeHook(request -> {
+                revocations.incrementAndGet();
+                return true;
+            });
+            OresFuture<Integer> sourceGate = new OresFuture<>();
+            OresFuture<Integer> stalledCleanup = new OresFuture<>();
+            CountDownLatch originalEntered = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            AtomicReference<OresFuture<Integer>> task = new AtomicReference<>();
+            AtomicInteger turns = new AtomicInteger();
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (msg, ctx) -> {
+                task.set(ctx.runtime().startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                            int step = turns.getAndIncrement();
+                            if (step == 0) {
+                                originalEntered.countDown();
+                                return OresScheduler.await(sourceGate);
+                            }
+                            if (step == 1) {
+                                assertTrue(OresScheduler.currentTaskInCleanup());
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(stalledCleanup);
+                            }
+                            fail("force-killed actor must not run cleanup after revocation");
+                            return OresScheduler.done(0);
+                        }));
+            });
+
+            actor.send("start");
+            assertTrue(originalEntered.await(5, TimeUnit.SECONDS));
+            awaitRegistration(sourceGate);
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            awaitRegistration(stalledCleanup);
+            assertFalse(actor.done().isDone(),
+                    "STOP cleanup is still suspended before the force revoker");
+
+            assertTrue(runtime.controlHandle(actor).kill(),
+                    "confirmed isolation revocation must succeed on a stopped actor");
+            assertEquals(1, revocations.get());
+            assertTrue(actor.awaitTermination(1, TimeUnit.SECONDS),
+                    "force revocation must bypass the two-second lexical grace period");
+            assertEquals(0, stalledCleanup.pendingRuntimeWaiterCount(),
+                    "force revocation must immediately detach cleanup await");
+            assertTrue(task.get().isDone());
+            sourceGate.completeFromRuntime(11);
+            stalledCleanup.completeFromRuntime(22);
+            assertEquals(2, turns.get(),
+                    "neither late producer may execute source after successful force kill");
+        }
+    }
+
+    @Test
+    void rejectedForceRevokerCannotShortCircuitAlreadyStoppedCleanup()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            runtime.setForceCancellationTreeHook(request -> false);
+            OresFuture<Integer> sourceGate = new OresFuture<>();
+            OresFuture<Integer> cleanupGate = new OresFuture<>();
+            CountDownLatch originalEntered = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            AtomicInteger turns = new AtomicInteger();
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (msg, ctx) -> {
+                ctx.runtime().startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                            int step = turns.getAndIncrement();
+                            if (step == 0) {
+                                originalEntered.countDown();
+                                return OresScheduler.await(sourceGate);
+                            }
+                            if (step == 1) {
+                                assertTrue(OresScheduler.currentTaskInCleanup());
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertEquals(2, step);
+                            assertEquals(47, resume.value());
+                            return OresScheduler.done(9);
+                        });
+            });
+            actor.send("start");
+            assertTrue(originalEntered.await(5, TimeUnit.SECONDS));
+            awaitRegistration(sourceGate);
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            awaitRegistration(cleanupGate);
+
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.controlHandle(actor).kill(),
+                    "a failed isolation revoker must never publish logical force kill");
+            assertFalse(actor.done().isDone(),
+                    "failed revoker must leave the accepted cleanup barrier intact");
+            assertEquals(1, cleanupGate.pendingRuntimeWaiterCount());
+            cleanupGate.completeFromRuntime(47);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(3, turns.get(),
+                    "cancelled cleanup must complete once after failed revocation");
+        }
+    }
+
+    @Test
     void wrappedFatalCleanupFailureOverridesEarlierActorCancellation()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),

@@ -4835,6 +4835,22 @@ public final class ActorRuntime implements AutoCloseable {
             attempt.root.cancel(new ActorCancelledException(
                     ref.id(),
                     "actor " + ref.id() + " was force-cancelled"));
+            // The root can already be STOPPED while its admitted lexical
+            // cleanup awaits another Future. terminateTree() is deliberately
+            // idempotent for ordinary STOP, so its early return does NOT revoke
+            // that existing cleanup. A successful isolated revocation must
+            // close every affected source scheduler before dropping the fence.
+            // Also seal descendants of a previously stopped root: its
+            // original STOP may have finished before they were observed here.
+            for (ActorCell<?> cell : attempt.cells) {
+                if (cell != attempt.root) {
+                    cell.cancel(new ActorCancelledException(
+                            cell.ref.id(),
+                            "actor " + cell.ref.id()
+                                    + " was force-cancelled with ancestor " + ref.id()));
+                }
+                cell.revokeStoppedCleanupAfterForce();
+            }
             return true;
         } finally {
             clearForceKillFence(attempt, false);
@@ -6976,6 +6992,31 @@ public final class ActorRuntime implements AutoCloseable {
                 releaseMailboxSlot(false);
                 envelope.close();
             })) { /* Ordinary user mail may never run after STOP. */ }
+        }
+
+        /**
+         * A confirmed isolation revocation may tear down pending lexical
+         * cleanup even after the ordinary STOP flag was already set. Never
+         * call close() while holding lifecycleLock: retirement listeners can
+         * reacquire that lock and arbitrary Future subscribers are synchronous.
+         * The actor's carrier/children barrier remains the final owner of
+         * state release and get_done publication.
+         */
+        private void revokeStoppedCleanupAfterForce() {
+            OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (!stopped.get() || finalized) return;
+                sourceCancellationPending = false;
+                scheduler = sourceCleanupTasks.isEmpty() ? null : sourceScheduler;
+            }
+            try {
+                if (scheduler != null) scheduler.close();
+            } finally {
+                synchronized (lifecycleLock) {
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
         }
 
         private void expireSourceCleanup() {

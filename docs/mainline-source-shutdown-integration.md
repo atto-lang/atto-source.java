@@ -15,19 +15,19 @@ This branch is intentionally based on Java `main` at `97e28489ece594d6e664932106
 - Reconciles current-main scheduler owner lease, wall-clock deadline admission, waiter notification drain, and `OresFuture` channel/select cancellation behavior.
 - A closed scheduler revokes parked cleanup and producer waiters without running guest code off-lane.
 - New race regressions cover async cleanup and late producers, wrapped-fatal precedence, scheduler-close revocation, and deferred cancel-vs-settlement arbitration.
-- **This is NOT yet actor STOP authorization.** The post-STOP actor CONTROL mailbox remains sealed; actor-lifecycle cleanup authentication/timeout and serial tickets from #922 require separate integration and tests.
+- **Scheduler-only groundwork at this point in history:** the subsequent authenticated actor STOP candidate is described below. Serial ticket/incarnation proof from #922 remains a separate acceptance gate.
 
 ## Actor STOP admission fence
 
 - Trusted source task startup is now atomic with the actor lifecycle STOP seal; already-running actor turns cannot admit fresh user work once STOP has linearized.
 - Untrusted source task admission checks STOP both before reserving its bounded logical quota and again while publishing the scheduler task. An aborted admission releases the existing quota reservation.
 - The new host-STOP race regression proves rejection happens while the stopped actor still physically owns its active turn. No source guest task is allowed to start.
-- These are **admission protections only**. Authenticated post-STOP lexical cleanup continuations remain a separate integration gate.
+- These are admission protections; the subsequent authenticated post-STOP cleanup candidate is described below and still requires latest-tree CI.
 
 ## Still excluded / mandatory gates
 
 - The older inline critical-state/handle_state fixture was excluded from active Maven tests: current main's actor-state declaration contract differs, and simply changing its spelling would weaken the sealed-state proof. It remains in #823 until its feature-level lowering is ported.
-- Actor STOP authorization, bounded actor cleanup deadline, force-revocation and typed supervisor propagation are **not yet ported**. Never claim runtime parity from this evaluator slice.
+- The branch now contains an actor STOP cleanup/deadline candidate, but authenticated serial ticket/incarnation parity, force-kill race acceptance, and typed parent CONTROL propagation are **not yet fully validated**. Never claim runtime parity from the evaluator/scheduler slice.
 - Do not overwrite mainline's wall-clock deadline admission, physical execution lease, blocking subscriber notification lifetime, or Future channel/select arbitration.
 - Reconcile PR #906's typed Future select only after this branch passes JDK25 tests on an exact-tree mirror.
 - Require actor parent/child CONTROL + wrapped fatal regression, STOP-vs-force-kill deterministic races, full Maven verify, Native Image AOT/hybrid real guest execution before merge.
@@ -47,3 +47,11 @@ This document records deliberate incremental integration, not a claim that PR #8
 
 - `expireSourceCleanup()` guarantees lifecycle finalization inspection even if the scheduler's close path fails, while the physical actor carrier exit remains the immutable resource-release barrier.
 - Actor-level deadline regression parks cleanup on a never-completing Future, waits for bounded revocation and confirms the abandoned waiter cannot replay guest code after finalization.
+
+### Confirmed force cancellation versus an already stopped cleanup actor
+
+- Successful **host-authorized isolation revocation** must revoke suspended cleanup Futures immediately. Calling `terminateTree()` again is insufficient because STOP is idempotent: when the actor is already stopped, that path returns before touching outstanding cleanup tasks.
+- The successful-force path now explicitly fences and cancels each snapshot descendant, then closes each stopped actor's source scheduler **outside its lifecycle monitor** before lifting the force-kill fence. No guest cleanup is permitted to run off the actor's lane or after confirmed revocation.
+- A failed/false isolation revoker must **not** run this new teardown path: previously accepted lexical cleanup remains live and may finish normally. Tests cover both a successful force-kill with a permanently suspended cleanup Future and a rejected revoker while cleanup is awaiting.
+- Actor state and `get_done()` remain guarded by the existing quiescence/children barriers. The force revoker is responsible for genuine atomic outer isolation revocation; the unit-test hook returning true simulates success and does not independently prove hardware/process isolation.
+- Newest merge-head exact-source JDK25 and native AOT/hybrid acceptance remains **blocked** until source-org Actions capacity is available or a reviewed, private CI destination is added to `.github/private-ci-approved-repositories.txt`. Previously used `zed-pkg-test/java-app` is public and is not an approved destination; never send additional private source there.
