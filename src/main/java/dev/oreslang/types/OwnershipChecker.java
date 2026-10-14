@@ -63,7 +63,13 @@ public final class OwnershipChecker {
     /** Reuse only public, explicitly linked class layouts for cross-file loans. */
     public static Ast.Program checkWithImportedClasses(
             Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses) {
-        if (linkedClasses == null) {
+        return checkWithImportedSymbols(program, linkedClasses, Map.of());
+    }
+
+    public static Ast.Program checkWithImportedSymbols(
+            Ast.Program program, Map<String, Ast.ClassDecl> linkedClasses,
+            Map<String, TypeChecker.LinkedEnum> linkedEnums) {
+        if (linkedClasses == null || linkedEnums == null) {
             throw new IllegalArgumentException("linked public classes cannot be null");
         }
         OwnershipChecker checker = new OwnershipChecker(program);
@@ -83,6 +89,15 @@ public final class OwnershipChecker {
                         "linked ownership class was not uniquely imported: " + name);
             }
             checker.classes.put(name, declaration);
+        }
+        for (Map.Entry<String, TypeChecker.LinkedEnum> entry : linkedEnums.entrySet()) {
+            String local = entry.getKey();
+            Ast.EnumDecl decl = entry.getValue().declaration();
+            if (checker.enums.containsKey(local) || checker.ambiguousEnums.contains(local)
+                    || decl.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("invalid ownership imported enum '" + local + "'");
+            }
+            checker.enums.put(local, decl);
         }
         checker.validate(program);
         return program;
