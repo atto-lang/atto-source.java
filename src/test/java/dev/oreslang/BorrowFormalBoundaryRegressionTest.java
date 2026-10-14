@@ -194,4 +194,49 @@ final class BorrowFormalBoundaryRegressionTest {
                 }
                 """)));
     }
+
+    @Test
+    void ownedAnyCallMustNotConsumeEphemeralBorrow() {
+        reject(BOX + """
+                fnc sink(Any value): void { return; }
+                fnc bad(): void {
+                  val Box box = new Box();
+                  sink(rt borrow box);
+                  return;
+                }
+                """, "cannot consume a borrowed value through an owned parameter");
+    }
+
+    @Test
+    void ownedAnyCallMustNotConsumeNestedBorrow() {
+        reject(BOX + """
+                fnc sink(Any value): void { return; }
+                fnc bad(Option<borrow Box> wrapped): void {
+                  sink(wrapped);
+                  return;
+                }
+                """, "cannot consume a borrowed value through an owned parameter");
+    }
+
+    @Test
+    void someCannotPackageNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val result = Some(wrapped);
+                  return;
+                }
+                """, "Some cannot store a borrow in an owned sum value");
+    }
+
+    @Test
+    void explicitBorrowParameterStillAcceptsValidBorrow() {
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(BOX + """
+                fnc peek(borrow Box value): int { return value.value; }
+                fnc good(): void {
+                  val Box box = new Box();
+                  val int number = peek(rt borrow box);
+                  return;
+                }
+                """)));
+    }
 }
