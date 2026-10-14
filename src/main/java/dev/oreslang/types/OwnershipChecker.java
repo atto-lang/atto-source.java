@@ -395,6 +395,19 @@ public final class OwnershipChecker {
             if (loopDepth == 0) throw error("'continue' may only appear inside loop or for");
             return;
         }
+        if (stmt instanceof Ast.ActorEffectStmt effect) {
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()
+                    || scope.hasLiveBorrow()) {
+                throw error("actor effect cannot unwind with a live MutexGuard or borrow");
+            }
+            ValueInfo value = checkExpr(effect.value(), scope, true);
+            if (value.kind == ValueKind.IMM_BORROW
+                    || value.kind == ValueKind.MUT_BORROW
+                    || value.type != null && value.type.isBorrow()) {
+                throw error("actor effect requires an owned Error");
+            }
+            return;
+        }
         if (stmt instanceof Ast.ThrowStmt thrown) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot throw while holding a MutexGuard");
@@ -2394,6 +2407,8 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
+            } else if (stmt instanceof Ast.ActorEffectStmt effect) {
+                scanExpr(effect.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ThrowStmt thrown) {
                 scanExpr(thrown.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
