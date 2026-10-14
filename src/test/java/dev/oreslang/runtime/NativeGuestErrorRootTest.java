@@ -164,7 +164,8 @@ final class NativeGuestErrorRootTest {
                     () -> OresCompiler.parseAndTypeCheck(
                             "pub fnc main(): void { " + effect
                                 + " new MyError(); }"));
-            assertTrue(unsupported.getMessage().contains("not yet enabled"));
+            assertTrue(unsupported.getMessage().contains(
+                    effect.equals("recover") ? "not yet enabled" : "actor execution domain"));
         }
     }
 }
