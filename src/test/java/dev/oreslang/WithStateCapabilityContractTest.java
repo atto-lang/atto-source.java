@@ -34,6 +34,37 @@ final class WithStateCapabilityContractTest {
                 """.formatted(expression);
     }
 
+    @Test void slimArrowStateCallbackCannotImplicitlyReturnMutableReference() {
+        for (String callback : new String[] {
+                "self.handle_state(|s| -> s.cache)",
+                "using state.read(|s| -> s.cache)"
+        }) {
+            String source = """
+                    define actor Counter as
+                      state { n: int = 0; cache: Map<string, int>; }
+                      probe(): Map<string, int> with state.read {
+                        return %s;
+                      }
+                    end
+                    """.formatted(callback);
+            Ast.Program parsed = Parser.parse(source);
+            var rejected = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), callback);
+            assertTrue(rejected.getMessage().contains("expression-bodied"),
+                    rejected.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(parsed), callback);
+        }
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse("""
+                define actor Counter as
+                  state { n: int = 2; }
+                  probe(): int with state.read {
+                    return using state.read(|s| -> s.n);
+                  }
+                end
+                """)));
+    }
+
     @Test void nestedReferenceStateOperationsFailClosedWithoutGraphOwnershipProof() {
         // Direct s.cache egress was already rejected. Member/index
         // operations on s.cache are more subtle: they access state-owned
