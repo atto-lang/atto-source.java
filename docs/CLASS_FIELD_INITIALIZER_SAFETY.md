@@ -24,6 +24,13 @@ proven effect-free. Indexing is rejected even when its operands are pure,
 because bounds failure could unwind an incompletely constructed object and
 partial-construction resource cleanup remains unproven.
 
+Member reads and imported runtime value names are also rejected in eager
+initializers. Resolving a module export, imported namespace or host member can
+execute code outside the local initializer's effect proof; visiting only the
+receiver expression is not sufficient. Scalar constructor parameters remain
+available directly, and explicitly verified zero-argument scalar helpers
+remain admissible.
+
 The synchronous scalar-helper exception requires a statically resolved
 zero-argument, non-generic, non-async, non-suspending, non-generator,
 non-trapped, non-actor-dispatched callable. Its entire body must be one
@@ -44,8 +51,9 @@ all required field slots are initialized.
 
 ## Verification gate
 
-This branch is a **draft integration candidate**, not a release artifact.
-Required before merge: exact-head Maven/JDK25, GraalVM AOT and hybrid,
-Graal conformance, scheduler deadline permit retirement tests, and real
-execution of the source-identical Java/LLVM scalar-constructor guest returning
-`40`. Workflow failures with no executed steps do not prove any of these.
+Every source change requires exact-head Maven/JDK25, GraalVM native AOT
+and hybrid guest execution, Graal conformance, and the source-identical
+Java/LLVM scalar-constructor guest returning `40`. Record the source and
+mirror Git tree SHAs before reporting a pass. A workflow failure without
+executed steps is not evidence of compiler failure; a historical green run
+cannot verify a newly modified Git tree.
