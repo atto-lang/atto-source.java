@@ -2352,12 +2352,7 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 Env selectedEnv = new Env(env);
-                bindings.forEach(
-                        (name, value) ->
-                                selectedEnv.define(
-                                        name,
-                                        value,
-                                        Ast.BindingKind.VAL));
+                defineMatchBindings(fallback.pattern(), bindings, selectedEnv);
                 runBlock(
                         task,
                         fallback.body(),
@@ -2400,12 +2395,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env armEnv = new Env(env);
-            bindings.forEach(
-                    (name, value) ->
-                            armEnv.define(
-                                    name,
-                                    value,
-                                    Ast.BindingKind.VAL));
+            defineMatchBindings(arm.pattern(), bindings, armEnv);
 
             if (arm.guard() == null) {
                 runBlock(
@@ -5057,8 +5047,7 @@ public final class OresEvalRootNode extends RootNode {
                     LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                     if (!patternMatches(arm.pattern(), subject, bindings)) continue;
                     Env armEnv = new Env(env);
-                    bindings.forEach((name, value) ->
-                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    defineMatchBindings(arm.pattern(), bindings, armEnv);
                     if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
 
                     if (matched.ordered()) {
@@ -5091,8 +5080,7 @@ public final class OresEvalRootNode extends RootNode {
                             "exhaustive match invariant violated at runtime: no arm matched");
                 }
                 Env selectedEnv = new Env(env);
-                selectedBindings.forEach((name, value) ->
-                        selectedEnv.define(name, value, Ast.BindingKind.VAL));
+                defineMatchBindings(selected.pattern(), selectedBindings, selectedEnv);
                 executeBlock(
                         selected.body(),
                         selectedEnv,
@@ -8323,6 +8311,31 @@ public final class OresEvalRootNode extends RootNode {
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
         }
 
+        private void defineMatchBindings(Ast.Pattern pattern, Map<String, Object> values, Env target) {
+            values.forEach((name, value) -> target.define(name, value,
+                    projectionBindingKind(pattern, name)));
+        }
+
+        /** Binding kind is lexical metadata, never a permission to mutate a field. */
+        private Ast.BindingKind projectionBindingKind(Ast.Pattern pattern, String name) {
+            if (pattern instanceof Ast.RecordPattern record) {
+                int position = record.fields().indexOf(name);
+                return position < 0 ? Ast.BindingKind.VAL : record.kinds().get(position);
+            }
+            if (pattern instanceof Ast.TupleProjectionPattern tuple) {
+                for (Ast.DestructureBinding binding : tuple.bindings()) {
+                    if (binding.name().equals(name)) return binding.kind();
+                }
+            }
+            if (pattern instanceof Ast.ConstructorPattern constructor) {
+                for (Ast.Pattern nested : constructor.arguments()) {
+                    Ast.BindingKind kind = projectionBindingKind(nested, name);
+                    if (kind != Ast.BindingKind.VAL) return kind;
+                }
+            }
+            return Ast.BindingKind.VAL;
+        }
+
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
@@ -8370,6 +8383,22 @@ public final class OresEvalRootNode extends RootNode {
                     if (bindings.containsKey(field.getKey())) {
                         throw new IllegalStateException(
                                 "pattern binds '" + field.getKey() + "' more than once");
+                    }
+                }
+                bindings.putAll(staged);
+                return true;
+            }
+            if (pattern instanceof Ast.TupleProjectionPattern projection) {
+                if (!(value instanceof List<?> tuple)
+                        || tuple.size() != projection.bindings().size()) return false;
+                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+                for (int i = 0; i < projection.bindings().size(); i++) {
+                    Ast.DestructureBinding binding = projection.bindings().get(i);
+                    if (binding.isDiscard()) continue;
+                    if (bindings.containsKey(binding.name())
+                            || staged.putIfAbsent(binding.name(), tuple.get(i)) != null) {
+                        throw new IllegalStateException("tuple match projection binds '"
+                                + binding.name() + "' more than once");
                     }
                 }
                 bindings.putAll(staged);
