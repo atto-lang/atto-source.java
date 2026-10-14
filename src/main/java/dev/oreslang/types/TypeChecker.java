@@ -7970,8 +7970,15 @@ public final class TypeChecker {
                             arm -> definitelySelectArmReturns(arm.body()))
                     && definitelySelectArmReturns(switched.defaultBody())) return true;
             if (stmt instanceof Ast.TryStmt attempted
-                    && definitelySelectArmReturns(attempted.body())
-                    && definitelySelectArmReturns(attempted.catchBody())) return true;
+                    && (definitelySelectArmReturns(attempted.finallyBody())
+                            || (definitelySelectArmReturns(attempted.body())
+                                    && definitelySelectArmReturns(attempted.catchBody())))) {
+                // A finally arm with an unconditional select-value return
+                // produces a result even if try/catch falls through. Normal
+                // completion without that finally return still requires both
+                // try and catch to yield their own select result.
+                return true;
+            }
         }
         return false;
     }
