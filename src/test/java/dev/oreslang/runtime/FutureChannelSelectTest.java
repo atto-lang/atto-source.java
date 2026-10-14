@@ -14,6 +14,31 @@ import org.junit.jupiter.api.Test;
 /** Future completion and channel transfer must share one atomic select winner. */
 final class FutureChannelSelectTest {
     @Test
+    void pendingFutureOnlyAndMixedSelectionsRespectSeparateAdmissionDomains() {
+        var futureOnlySource = new OresFuture<Integer>();
+        var futureOnly = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(futureOnlySource)).selectAsync();
+        assertFalse(futureOnly.isDone());
+        assertEquals(1, futureOnlySource.pendingRuntimeWaiterCount());
+        assertTrue(futureOnly.cancel(false));
+        assertEquals(0, futureOnlySource.pendingRuntimeWaiterCount());
+        assertFalse(futureOnlySource.isDone());
+
+        var channel = new ChannelRuntime.Channel<Integer>(0);
+        var sharedSource = new OresFuture<Integer>();
+        var mixed = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(sharedSource),
+                ChannelRuntime.read(channel)).selectAsync();
+        assertFalse(mixed.isDone());
+        assertEquals(1, sharedSource.pendingRuntimeWaiterCount());
+        assertEquals(1, channel.pendingRegistrations());
+        assertTrue(mixed.cancel(false));
+        assertEquals(0, sharedSource.pendingRuntimeWaiterCount());
+        assertEquals(0, channel.pendingRegistrations());
+        assertFalse(sharedSource.isDone());
+    }
+
+    @Test
     void pendingFutureWakesHeterogeneousSelectWithoutConsumingLosingChannel() {
         var channel = new ChannelRuntime.Channel<Integer>(1);
         var producer = new OresFuture<Integer>();

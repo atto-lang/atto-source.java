@@ -752,6 +752,12 @@ public final class ChannelRuntime {
     private static boolean exceedsPendingBudgetLocked(
             SelectRegistration selection) {
         for (CaseRegistration registration : selection.registrations) {
+            // Future arms have no channel quota or channel registration.
+            // They are accounted for by the global selection/arm budgets.
+            if (!(registration.selectCase instanceof ReadCase<?>)
+                    && !(registration.selectCase instanceof WriteCase<?>)) {
+                continue;
+            }
             Channel<?> channel = registration.channel();
             if (channel.registrations.size() > channel.maxPendingRegistrations) {
                 return true;
