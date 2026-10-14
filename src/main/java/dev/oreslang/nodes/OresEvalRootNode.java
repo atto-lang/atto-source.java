@@ -1965,21 +1965,15 @@ public final class OresEvalRootNode extends RootNode {
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
                                         List<?> items = asSequence(value);
-                                        if (items.size()
-                                                != destructure.bindings().size()) {
-                                            throw new IllegalArgumentException(
-                                                    "destructure arity mismatch");
-                                        }
-                                        for (int i = 0; i < items.size(); i++) {
-                                            Ast.DestructureBinding binding =
-                                                    destructure.bindings().get(i);
-                                            if (!binding.isDiscard()) {
-                                                env.define(
-                                                        binding.name(),
-                                                        items.get(i),
-                                                        binding.kind());
-                                            }
-                                        }
+                                        // A destructure selects a prefix. Evaluate
+                                        // the source once, and bind only requested
+                                        // positions; omitted suffix items are not
+                                        // new locals. Rest explicitly retains them.
+                                        bindSequenceDestructure(
+                                                items,
+                                                destructure.bindings(),
+                                                env,
+                                                "destructure");
                                     } else {
                                         for (Ast.DestructureBinding binding :
                                                 destructure.bindings()) {
@@ -2308,12 +2302,8 @@ public final class OresEvalRootNode extends RootNode {
                     (t, condition) -> {
                         if (condition.matched()) {
                             Env branchEnv = new Env(env);
-                            condition.bindings().forEach(
-                                    (name, value) ->
-                                            branchEnv.define(
-                                                    name,
-                                                    value,
-                                                    Ast.BindingKind.VAL));
+                            defineConditionBindings(branch.condition(),
+                                    condition.bindings(), branchEnv);
                             runBlock(
                                     t,
                                     branch.body(),
@@ -2360,12 +2350,7 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
                 Env selectedEnv = new Env(env);
-                bindings.forEach(
-                        (name, value) ->
-                                selectedEnv.define(
-                                        name,
-                                        value,
-                                        Ast.BindingKind.VAL));
+                defineMatchBindings(fallback.pattern(), bindings, selectedEnv);
                 runBlock(
                         task,
                         fallback.body(),
@@ -2408,12 +2393,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env armEnv = new Env(env);
-            bindings.forEach(
-                    (name, value) ->
-                            armEnv.define(
-                                    name,
-                                    value,
-                                    Ast.BindingKind.VAL));
+            defineMatchBindings(arm.pattern(), bindings, armEnv);
 
             if (arm.guard() == null) {
                 runBlock(
@@ -2473,9 +2453,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
-                    && arm.bindingName() != null) {
-                armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
+            if (arm.operation() == Ast.ChannelOperation.READ) {
+                try {
+                    bindSelectedReadPayload(arm, selected.value(), armEnv);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, SourceFlow.throwing(failure));
+                    return;
+                }
             }
             runBlock(task, arm.body(), armEnv, continuation);
         }
@@ -2939,10 +2923,12 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, left);
                                 return;
                             }
+                            Env rightEnv = new Env(env);
+                            defineConditionBindings(binary.left(), left.bindings(), rightEnv);
                             evalSuspendableCondition(
                                     t,
                                     binary.right(),
-                                    env,
+                                    rightEnv,
                                     (t2, right) ->
                                             continuation.accept(
                                                     t2,
@@ -5052,8 +5038,7 @@ public final class OresEvalRootNode extends RootNode {
                     ConditionResult condition = evalCondition(branch.condition(), env);
                     if (condition.matched()) {
                         Env branchEnv = new Env(env);
-                        condition.bindings().forEach((name, value) ->
-                                branchEnv.define(name, value, Ast.BindingKind.VAL));
+                        defineConditionBindings(branch.condition(), condition.bindings(), branchEnv);
                         executeBlock(
                                 branch.body(),
                                 branchEnv,
@@ -5085,8 +5070,7 @@ public final class OresEvalRootNode extends RootNode {
                     LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                     if (!patternMatches(arm.pattern(), subject, bindings)) continue;
                     Env armEnv = new Env(env);
-                    bindings.forEach((name, value) ->
-                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    defineMatchBindings(arm.pattern(), bindings, armEnv);
                     if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
 
                     if (matched.ordered()) {
@@ -5119,8 +5103,7 @@ public final class OresEvalRootNode extends RootNode {
                             "exhaustive match invariant violated at runtime: no arm matched");
                 }
                 Env selectedEnv = new Env(env);
-                selectedBindings.forEach((name, value) ->
-                        selectedEnv.define(name, value, Ast.BindingKind.VAL));
+                defineMatchBindings(selected.pattern(), selectedBindings, selectedEnv);
                 executeBlock(
                         selected.body(),
                         selectedEnv,
@@ -5404,12 +5387,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
-                    && arm.bindingName() != null) {
-                armEnv.define(
-                        arm.bindingName(),
-                        result.value(),
-                        arm.bindingKind());
+            if (arm.operation() == Ast.ChannelOperation.READ) {
+                bindSelectedReadPayload(arm, result.value(), armEnv);
             }
 
             if (!detached) {
@@ -7929,8 +7908,7 @@ public final class OresEvalRootNode extends RootNode {
                 ConditionResult left = evalCondition(binary.left(), env);
                 if (!left.matched()) return ConditionResult.noMatch();
                 Env rightEnv = new Env(env);
-                left.bindings().forEach((name, value) ->
-                        rightEnv.define(name, value, Ast.BindingKind.VAL));
+                defineConditionBindings(binary.left(), left.bindings(), rightEnv);
                 ConditionResult right = evalCondition(binary.right(), rightEnv);
                 if (!right.matched()) return ConditionResult.noMatch();
                 LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
@@ -7958,6 +7936,54 @@ public final class OresEvalRootNode extends RootNode {
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
         }
 
+        /** Keep the binding-kind semantics of match patterns inside if/is arms.
+         * A pattern nested in && must also be visible to the RHS with its
+         * declared local rebinding policy in both sync and suspendable paths.
+         */
+        private void defineConditionBindings(Ast.Expr condition,
+                Map<String, Object> values, Env target) {
+            values.forEach((name, value) ->
+                    target.define(name, value, conditionBindingKind(condition, name)));
+        }
+
+        private Ast.BindingKind conditionBindingKind(Ast.Expr condition, String name) {
+            if (condition instanceof Ast.PatternTestExpr test) {
+                return projectionBindingKind(test.pattern(), name);
+            }
+            if (condition instanceof Ast.BinaryExpr binary
+                    && binary.operator().equals("&&")) {
+                Ast.BindingKind left = conditionBindingKind(binary.left(), name);
+                if (left != Ast.BindingKind.VAL) return left;
+                return conditionBindingKind(binary.right(), name);
+            }
+            return Ast.BindingKind.VAL;
+        }
+
+        private void defineMatchBindings(Ast.Pattern pattern, Map<String, Object> values, Env target) {
+            values.forEach((name, value) -> target.define(name, value,
+                    projectionBindingKind(pattern, name)));
+        }
+
+        /** Binding kind is lexical metadata, never a permission to mutate a field. */
+        private Ast.BindingKind projectionBindingKind(Ast.Pattern pattern, String name) {
+            if (pattern instanceof Ast.RecordPattern record) {
+                int position = record.fields().indexOf(name);
+                return position < 0 ? Ast.BindingKind.VAL : record.kinds().get(position);
+            }
+            if (pattern instanceof Ast.TupleProjectionPattern tuple) {
+                for (Ast.DestructureBinding binding : tuple.bindings()) {
+                    if (binding.name().equals(name)) return binding.kind();
+                }
+            }
+            if (pattern instanceof Ast.ConstructorPattern constructor) {
+                for (Ast.Pattern nested : constructor.arguments()) {
+                    Ast.BindingKind kind = projectionBindingKind(nested, name);
+                    if (kind != Ast.BindingKind.VAL) return kind;
+                }
+            }
+            return Ast.BindingKind.VAL;
+        }
+
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
@@ -7983,6 +8009,52 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalStateException(
                             "pattern binds '" + structural.binding() + "' more than once");
                 }
+                return true;
+            }
+            if (pattern instanceof Ast.RecordPattern projection) {
+                if (!(value instanceof Map<?, ?> record)
+                        || !(value instanceof ReadonlyRecordValue
+                            || value.getClass() == LinkedHashMap.class
+                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$"))) {
+                    return false;
+                }
+                // Stage all required fields before introducing any bound name.
+                // A failed field projection can never partially bind an arm.
+                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+                for (String field : projection.fields()) {
+                    if (!record.containsKey(field)) return false;
+                    Object fieldValue = record.get(field);
+                    if (fieldValue == UNINITIALIZED_FIELD) return false;
+                    staged.put(field, fieldValue);
+                }
+                for (Map.Entry<String, Object> field : staged.entrySet()) {
+                    if (bindings.containsKey(field.getKey())) {
+                        throw new IllegalStateException(
+                                "pattern binds '" + field.getKey() + "' more than once");
+                    }
+                }
+                bindings.putAll(staged);
+                return true;
+            }
+            if (pattern instanceof Ast.TupleProjectionPattern projection) {
+                if (!(value instanceof List<?> tuple)
+                        || tuple.size() != projection.bindings().size()) return false;
+                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+                for (int i = 0; i < projection.bindings().size(); i++) {
+                    Object element = tuple.get(i);
+                    // Every slot, including a discarded _, must be fully
+                    // initialized before any projection becomes observable.
+                    if (element == UNINITIALIZED_FIELD) return false;
+                    Ast.DestructureBinding binding = projection.bindings().get(i);
+                    if (binding.isDiscard()) continue;
+                    if (bindings.containsKey(binding.name())
+                            || staged.containsKey(binding.name())) {
+                        throw new IllegalStateException("tuple match projection binds '"
+                                + binding.name() + "' more than once");
+                    }
+                    staged.put(binding.name(), element);
+                }
+                bindings.putAll(staged);
                 return true;
             }
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
@@ -8648,20 +8720,49 @@ public final class OresEvalRootNode extends RootNode {
 
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
 
+        /**
+         * Bind only the winning readch payload. Pattern projection is staged
+         * inside an arm-local scope, so failed shape validation cannot leak
+         * a partially bound record into the enclosing callable.
+         */
+        private void bindSelectedReadPayload(
+                Ast.SelectArm arm, Object value, Env destination) {
+            if (arm.destructureKind() == Ast.DestructureKind.SEQUENCE) {
+                bindSequenceDestructure(
+                        iterableValues(value, destination),
+                        arm.destructureBindings(),
+                        destination,
+                        "select readch destructure");
+                return;
+            }
+            if (arm.destructureKind() == Ast.DestructureKind.OBJECT) {
+                Set<String> selected = new LinkedHashSet<>();
+                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                    if (!binding.rest()) selected.add(binding.name());
+                }
+                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                    staged.put(binding.name(),
+                            binding.rest()
+                                    ? destructureRestObject(value, selected)
+                                    : destructureMember(value, binding.name(), destination));
+                }
+                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                    destination.define(
+                            binding.name(), staged.get(binding.name()), binding.kind());
+                }
+                return;
+            }
+            if (arm.bindingName() != null) {
+                destination.define(arm.bindingName(), value, arm.bindingKind());
+            }
+        }
+
         private void bindSequenceDestructure(
                 Iterable<?> values,
                 List<Ast.DestructureBinding> bindings,
                 Env destination,
                 String label) {
-            List<Object> items = new ArrayList<>();
-            try {
-                for (Object value : values) {
-                    context.schedulerSafepoint();
-                    items.add(value);
-                }
-            } finally {
-                closeIterable(values);
-            }
             int restIndex = -1;
             for (int i = 0; i < bindings.size(); i++) {
                 if (bindings.get(i).rest()) {
@@ -8669,15 +8770,24 @@ public final class OresEvalRootNode extends RootNode {
                     break;
                 }
             }
-
             int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
-            if (restIndex < 0 && items.size() != fixedArity) {
-                throw new IllegalArgumentException(label + " arity mismatch: value has " + items.size()
-                        + " element(s), pattern has " + fixedArity);
+            List<Object> items = new ArrayList<>();
+            try {
+                // Do not call next() for the first unrequested element: lazy
+                // iterators may have side effects or be unbounded. A rest
+                // binding explicitly requests the full remaining tail.
+                java.util.Iterator<?> cursor = values.iterator();
+                while ((restIndex >= 0 || items.size() < fixedArity) && cursor.hasNext()) {
+                    context.schedulerSafepoint();
+                    items.add(cursor.next());
+                }
+            } finally {
+                closeIterable(values);
             }
-            if (restIndex >= 0 && items.size() < fixedArity) {
+            if (items.size() < fixedArity) {
                 throw new IllegalArgumentException(label + " arity mismatch: value has " + items.size()
-                        + " element(s), pattern requires at least " + fixedArity + " before rest");
+                        + " element(s), pattern requires at least " + fixedArity
+                        + (restIndex >= 0 ? " before rest" : ""));
             }
 
             for (int i = 0; i < fixedArity; i++) {
