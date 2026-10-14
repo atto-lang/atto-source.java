@@ -225,4 +225,37 @@ final class SelectDestructuringTest {
                 rest.getMessage());
     }
 
+
+    @Test
+    void nonCopyRecordFieldsCannotBecomeIndependentChannelReadOwners() {
+        IllegalArgumentException failure = rejects("""
+                fnc receive(Channel<{items: List<int>}> input): void {
+                  select {
+                    when readch input: const {items} -> {
+                      stdio.println(items);
+                    }
+                  }
+                  return;
+                }
+                """);
+        assertTrue(failure.getMessage().contains("non-Copy select read projection"),
+                failure.getMessage());
+    }
+
+    @Test
+    void nonCopyTupleElementsCannotBecomeIndependentChannelReadOwners() {
+        IllegalArgumentException failure = rejects("""
+                fnc receive(Channel<[List<int>, int]> input): void {
+                  select {
+                    when readch input: const [items] -> {
+                      stdio.println(items);
+                    }
+                  }
+                  return;
+                }
+                """);
+        assertTrue(failure.getMessage().contains("non-Copy select read projection"),
+                failure.getMessage());
+    }
+
 }
