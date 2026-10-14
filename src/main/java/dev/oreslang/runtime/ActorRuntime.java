@@ -7438,8 +7438,8 @@ public final class ActorRuntime implements AutoCloseable {
                     pruneStoppedContinuationQueueLocked();
                     drainUserMailboxReservations();
                 }
-                for (var waiter : pendingSourceReceiveWaiters) waiter.detach();
-                pendingSourceReceiveWaiters.clear();
+                // Existing #709 runtime tracks await producers through the
+                // scheduler's detachable waiter registration and pendingOperations.
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
