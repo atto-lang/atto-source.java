@@ -177,7 +177,14 @@ public final class OresKeyedMap<K, V> {
      */
     public synchronized void putAll(Map<? extends K, ? extends V> values) {
         Objects.requireNonNull(values, "map entries");
-        List<Map.Entry<K, V>> prepared = new ArrayList<>(values.size());
+        // Reject reported oversized batches *before* allocating a collection
+        // of attacker-controlled size. A map has unique keys, so a source
+        // larger than MAX_ENTRIES cannot fit even with overwrites.
+        int sourceSize = values.size();
+        if (sourceSize < 0 || sourceSize > MAX_ENTRIES) {
+            throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
+        }
+        List<Map.Entry<K, V>> prepared = new ArrayList<>(sourceSize);
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
             K key = Objects.requireNonNull(entry, "map entry").getKey();
             V value = entry.getValue();
