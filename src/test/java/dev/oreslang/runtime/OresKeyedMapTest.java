@@ -108,6 +108,34 @@ final class OresKeyedMapTest {
                 ActorRuntime.freeze(List.of(Map.of("embedded", map))));
     }
 
+    @Test void mapRejectsOversizedAndMalformedUtf8Keys() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES), 1);
+        assertThrows(IllegalArgumentException.class, () ->
+                map.put("x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES + 1), 2));
+        assertThrows(IllegalArgumentException.class, () ->
+                map.put("\uD800", 3));
+        assertThrows(IllegalArgumentException.class, () ->
+                map.put("🚀".repeat(4097), 4));
+        assertEquals(1, map.size());
+    }
+
+    @Test void mapCapacityFailsBeforeInsertionIncludingAtomicBatch() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        for (int i = 0; i < OresKeyedMap.MAX_ENTRIES - 1; i++) {
+            map.put("key" + i, i);
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                map.putAll(Map.of("next", 1, "overflow", 2)));
+        assertFalse(map.containsKey("next"));
+        assertFalse(map.containsKey("overflow"));
+        map.put("last", 3);
+        assertEquals(OresKeyedMap.MAX_ENTRIES, map.size());
+        assertThrows(IllegalArgumentException.class, () -> map.put("too-many", 4));
+        assertEquals(3, map.put("last", 5));
+        assertEquals(5, map.get("last"));
+    }
+
     @Test void putAllRejectsEntireInvalidBatchBeforeMutation() {
         OresKeyedMap<String, Integer> strings = OresKeyedMap.stringKeys();
         strings.put("already", 7);
