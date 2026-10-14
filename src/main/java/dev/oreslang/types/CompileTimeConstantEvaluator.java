@@ -149,12 +149,24 @@ public final class CompileTimeConstantEvaluator {
     }
 
     private static boolean identicalScalar(Object a, Object b) {
-        if (a == null || b == null || a.getClass() != b.getClass()) {
-            throw reject("equality requires constants of the same primitive type");
+        // Match Oreslang's runtime valueEquals for closed scalar constants.
+        // Two integers compare exactly, even above 2^53; a float comparison
+        // widens to f64. Double.equals would incorrectly distinguish -0.0 and
+        // +0.0 and would not recognize 1L == 1.0d.
+        if (a instanceof Number left && b instanceof Number right) {
+            if (a instanceof Long l && b instanceof Long r) {
+                return l.longValue() == r.longValue();
+            }
+            return left.doubleValue() == right.doubleValue();
         }
-        if (a instanceof Long || a instanceof Boolean || a instanceof String || a instanceof OresSymbol) {
-            return a.equals(b);
+        // Symbols are nominal: #ready is not the String "ready", even when
+        // the textual names coincide. Other cross-kind scalar pairs are false
+        // rather than running any user-defined equality method.
+        if (a instanceof OresSymbol || b instanceof OresSymbol) {
+            return a instanceof OresSymbol && b instanceof OresSymbol && a.equals(b);
         }
+        if (a instanceof String && b instanceof String) return a.equals(b);
+        if (a instanceof Boolean && b instanceof Boolean) return a.equals(b);
         throw reject("unsupported compile-time equality operands");
     }
 
