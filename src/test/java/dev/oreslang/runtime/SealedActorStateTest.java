@@ -100,4 +100,98 @@ final class SealedActorStateTest {
             assertThrows(IllegalStateException.class, () -> state.get().critical(s -> s.read("count")));
         }
     }
+
+    @Test void ownedByteMoveInvalidatesSourceAndRetirementRevokesAllocations() throws Exception {
+        var failure = new AtomicReference<Throwable>();
+        var completed = new CountDownLatch(1);
+        var escaped = new AtomicReference<SealedActorState.OwnedBytes>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(() -> (mail, context) -> {
+                try {
+                    var state = new SealedActorState(context.self().id(),
+                            Map.of("blob", "owned:bytes", "count", "int"),
+                            Map.of("count", 0L));
+                    var fresh = state.allocateOwnedBytes(3);
+                    fresh.write(0, 42);
+                    fresh.write(1, 255);
+                    assertEquals(3, fresh.length());
+                    assertThrows(IllegalArgumentException.class,
+                            () -> fresh.write(0, 256));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.allocateOwnedBytes(64 * 1024 + 1));
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(true, access -> {
+                                access.takeOwnedBytes("count", fresh);
+                                return null;
+                            }));
+                    assertEquals(42, fresh.read(0)); // failed transfer is non-consuming
+                    assertThrows(SecurityException.class,
+                            () -> state.critical(false, access -> {
+                                access.takeOwnedBytes("blob", fresh);
+                                return null;
+                            }));
+                    var other = new SealedActorState(context.self().id(),
+                            Map.of("blob", "owned:bytes"), Map.of());
+                    var foreignIssuer = other.allocateOwnedBytes(1);
+                    assertThrows(SecurityException.class,
+                            () -> state.critical(true, access -> {
+                                access.takeOwnedBytes("blob", foreignIssuer);
+                                return null;
+                            }));
+                    assertEquals(1, foreignIssuer.length());
+                    other.retireFromRuntime(context.self().id());
+
+                    state.critical(true, access -> {
+                        assertThrows(IllegalStateException.class,
+                                () -> state.retireFromRuntime(context.self().id()));
+                        access.takeOwnedBytes("blob", fresh);
+                        assertEquals(42, access.readOwnedByte("blob", 0));
+                        assertEquals(255, access.readOwnedByte("blob", 1));
+                        assertThrows(SecurityException.class, () -> access.read("blob"));
+                        assertThrows(IllegalStateException.class, () -> fresh.read(0));
+                        assertThrows(IllegalStateException.class,
+                                () -> access.takeOwnedBytes("blob", fresh));
+                        access.writeOwnedByte("blob", 2, 99);
+                        return null;
+                    });
+                    assertEquals(99, state.critical(false,
+                            access -> access.readOwnedByte("blob", 2)));
+                    assertThrows(SecurityException.class,
+                            () -> state.critical(false, access -> {
+                                access.writeOwnedByte("blob", 0, 11);
+                                return null;
+                            }));
+                    var replacement = state.allocateOwnedBytes(2);
+                    replacement.write(0, 7);
+                    state.critical(true, access -> {
+                        access.takeOwnedBytes("blob", replacement);
+                        assertEquals(7, access.readOwnedByte("blob", 0));
+                        assertThrows(IndexOutOfBoundsException.class,
+                                () -> access.readOwnedByte("blob", 2));
+                        return null;
+                    });
+                    assertThrows(IllegalStateException.class, () -> replacement.length());
+
+                    var untransferred = state.allocateOwnedBytes(2);
+                    untransferred.write(0, 17);
+                    escaped.set(untransferred);
+                    assertThrows(IllegalArgumentException.class,
+                            () -> state.critical(true, access -> fresh));
+                    state.retireFromRuntime(context.self().id());
+                    assertThrows(IllegalStateException.class, () -> untransferred.read(0));
+                    assertThrows(IllegalStateException.class,
+                            () -> state.allocateOwnedBytes(1));
+                    completed.countDown();
+                } catch (Throwable thrown) {
+                    failure.set(thrown);
+                    completed.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(completed.await(15, TimeUnit.SECONDS));
+            if (failure.get() != null) fail(failure.get());
+            assertThrows(IllegalStateException.class, () -> escaped.get().read(0));
+        }
+    }
+
 }
