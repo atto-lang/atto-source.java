@@ -616,6 +616,10 @@ public final class ChannelRuntime {
         private final OresFuture<SelectResult> future;
         private boolean decided;
         private boolean registered;
+        /** Registrations that may still return after a winner is chosen. */
+        private int attachingFutureWaiters;
+        /** Complete only after late registrations have been detached. */
+        private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
@@ -722,24 +726,49 @@ public final class ChannelRuntime {
                 COORDINATOR.lock();
                 try {
                     if (decided) return;
+                    attachingFutureWaiters++;
                 } finally {
                     COORDINATOR.unlock();
                 }
-                OresFuture.RuntimeWaiterRegistration<?> waiter =
-                        candidate.future().whenCompleteRuntimeCancellable(
-                                (ignored, failure) -> futureBecameReady());
-                boolean lost;
-                COORDINATOR.lock();
+                OresFuture.RuntimeWaiterRegistration<?> waiter = null;
+                ArrayList<Runnable> readyToPublish = new ArrayList<>();
                 try {
-                    lost = decided;
-                    if (!lost) futureWaiters.add(waiter);
+                    waiter = candidate.future().whenCompleteRuntimeCancellable(
+                            (ignored, failure) -> futureBecameReady());
                 } finally {
-                    COORDINATOR.unlock();
+                    boolean lost;
+                    COORDINATOR.lock();
+                    try {
+                        lost = decided;
+                        if (!lost && waiter != null) futureWaiters.add(waiter);
+                        attachingFutureWaiters--;
+                        if (attachingFutureWaiters == 0 && !deferredPublication.isEmpty()) {
+                            readyToPublish.addAll(deferredPublication);
+                            deferredPublication.clear();
+                        }
+                    } finally {
+                        COORDINATOR.unlock();
+                    }
+                    // A decision may have been made by the synchronous callback.
+                    // Reclaim the late waiter before making that decision visible.
+                    if (lost && waiter != null) waiter.detach();
+                    runCompletions(readyToPublish);
                 }
-                // Dequeue outside the global lock, including a just-settled
-                // Future whose synchronous callback already selected a winner.
-                if (lost) waiter.detach();
             }
+        }
+
+        /** Called outside COORDINATOR: publication cannot overtake waiter attachment. */
+        private void publishAfterAttachment(Runnable action) {
+            COORDINATOR.lock();
+            try {
+                if (attachingFutureWaiters > 0) {
+                    deferredPublication.add(action);
+                    return;
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            action.run();
         }
 
         private void futureBecameReady() {
@@ -1119,10 +1148,10 @@ public final class ChannelRuntime {
                 SelectOperation.WRITE,
                 null);
 
-        completions.add(() ->
-                reader.selection.future.completeFromRuntime(readResult));
-        completions.add(() ->
-                writer.selection.future.completeFromRuntime(writeResult));
+        completions.add(() -> reader.selection.publishAfterAttachment(
+                () -> reader.selection.future.completeFromRuntime(readResult)));
+        completions.add(() -> writer.selection.publishAfterAttachment(
+                () -> writer.selection.future.completeFromRuntime(writeResult)));
     }
 
     private static void commitSingleLocked(
@@ -1135,8 +1164,8 @@ public final class ChannelRuntime {
         selection.decided = true;
         selection.set.selected(result.index(), selection.policy);
         unregisterLocked(selection, completions);
-        completions.add(() ->
-                selection.future.completeFromRuntime(result));
+        completions.add(() -> selection.publishAfterAttachment(
+                () -> selection.future.completeFromRuntime(result)));
     }
 
     private static void commitFailureLocked(
@@ -1152,8 +1181,8 @@ public final class ChannelRuntime {
         selection.decided = true;
         selection.set.selected(registration.index, selection.policy);
         unregisterLocked(selection, completions);
-        completions.add(() ->
-                selection.future.failFromRuntime(failure));
+        completions.add(() -> selection.publishAfterAttachment(
+                () -> selection.future.failFromRuntime(failure)));
     }
 
     private static Channel<?> channelOf(SelectCase selectCase) {
