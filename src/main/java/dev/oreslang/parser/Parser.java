@@ -2706,7 +2706,48 @@ public final class Parser {
         return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, procedural);
     }
 
+    /**
+     * A value match cannot be implemented by reinterpreting a procedural
+     * return. Each arm yields exactly one expression; the return belongs to
+     * MatchExpr rather than the enclosing callable's control flow.
+     */
+    private Ast.MatchExpr parseValueMatch() {
+        // A single result type is an expression constraint, not the subject type.
+        // Preserve the historical <ret=T> spelling while preferring <T>.
+        Ast.TypeRef declaredResult = null;
+        if (match(LT)) {
+            if (check(IDENT) && checkNext(EQUAL)) {
+                String name = advance().lexeme();
+                consume(EQUAL, "expected '=' in named match result parameter");
+                if (!name.equals("ret")) {
+                    throw error(previous(), "match supports only the named result parameter 'ret'");
+                }
+            }
+            declaredResult = parseTypeRef();
+            consume(GT, "match result parameter requires exactly one type argument and closing '>'");
+        }
+        Ast.MatchStmt parsed = parseMatch(true);
+        List<Ast.MatchValueArm> valueArms = new ArrayList<>();
+        for (Ast.MatchArm arm : parsed.arms()) {
+            if (arm.body().size() != 1
+                    || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                    || returned.value() == null) {
+                throw error(previous(),
+                        "value match arms require exactly one 'return expression;' and no other statements");
+            }
+            valueArms.add(new Ast.MatchValueArm(arm.pattern(), arm.guard(), returned.value()));
+        }
+        return new Ast.MatchExpr(parsed.subject(), valueArms, declaredResult);
+    }
+
     private Ast.Pattern parsePattern() {
+        if (match(BANG)) {
+            // A negative type pattern is a complement of the runtime-reifiable
+            // type test, not a cast to the excluded type.
+            Ast.TypeRef negative = Ast.TypeRef.complement(parseTypeAtom());
+            String binding = match(AS) ? consume(IDENT, "expected name after 'as'").lexeme() : null;
+            return new Ast.TypePattern(negative, binding);
+        }
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
             Ast.TypeRef target = parseTypeRef();
             String binding = check(IDENT) && !peek().lexeme().equals("_")
@@ -2717,7 +2758,9 @@ public final class Parser {
 
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+            String binding = match(AS)
+                    ? consume(IDENT, "expected name after type pattern 'as'").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
 
@@ -2748,6 +2791,10 @@ public final class Parser {
             int patternStart = current;
             try {
                 Ast.TypeRef target = parseTypeRef();
+                if (match(AS)) {
+                    return new Ast.TypePattern(
+                            target, consume(IDENT, "expected binding name after 'as'").lexeme());
+                }
                 if (check(IDENT) && !peek().lexeme().equals("_")) {
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
@@ -3304,6 +3351,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {

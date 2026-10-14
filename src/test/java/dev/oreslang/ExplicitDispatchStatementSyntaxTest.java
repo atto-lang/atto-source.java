@@ -32,16 +32,16 @@ final class ExplicitDispatchStatementSyntaxTest {
     }
 
     @Test
-    void returnMatchRemainsUnimplementedAndCannotMasqueradeAsImplicitActorReply() {
-        // A future expression match must have its own type/result semantics.
-        // A parser-only procedural match must not fake a value-producing result.
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    void returnMatchIsAnExpressionWithItsOwnResult() {
+        // A value match is a separate AST and return-scope operation, not a
+        // procedural match or implicit actor response.
+        assertDoesNotThrow(() -> dev.oreslang.types.TypeChecker.check(Parser.parse("""
                 fnc compute(int x): int {
                     return match x over {
                         on _ { return x; }
                     };
                 }
-                """));
+                """)));
     }
 
     @Test
