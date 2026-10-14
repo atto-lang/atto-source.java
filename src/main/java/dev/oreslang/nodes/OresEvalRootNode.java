@@ -2652,12 +2652,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectStmt select = expression.select();
             if (select.mode() == Ast.WaitMode.NONBLOCKING) {
+                final OresFuture<Object> pending;
                 try {
-                    continuation.accept(
-                            task, startNonblockingValueSelect(expression, env), null);
+                    pending = startNonblockingValueSelect(expression, env);
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                // A downstream continuation owns any exception it raises.
+                // Never turn its error into a second completion.
+                continuation.accept(task, pending, null);
                 return;
             }
             final OresFuture<ChannelRuntime.SelectResult> future;
