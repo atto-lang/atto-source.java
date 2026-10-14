@@ -71,4 +71,18 @@ final class ValueMatchSuspensionTest {
                 output.toString(StandardCharsets.UTF_8)
                         .trim().replace("\r", ""));
     }
+
+    @Test
+    void groupedMatchGuardUsesArmArrowNotLambdaSyntax() {
+        String guest = """
+            fnc choice(bool selected): int {
+              return match<int> selected over
+                on true when (selected) -> { return 1; }
+                on _ -> { return 2; }
+              end;
+            }
+            """;
+        var typed = TypeChecker.check(Parser.parse(guest));
+        OwnershipChecker.check(typed);
+    }
 }
