@@ -198,8 +198,8 @@ public final class ActorStateContract {
         // whether the loop body contains an explicit await expression.
         if (activeAccess != null
                 && ((node instanceof Ast.ForOfStmt loop && loop.asyncIteration())
-                    || (node instanceof Ast.ForOfDestructureStmt loop
-                        && loop.asyncIteration()))) {
+                    || (node instanceof Ast.ForOfDestructureStmt destructure
+                        && destructure.asyncIteration()))) {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross async iteration or suspension");
         }
