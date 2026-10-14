@@ -1444,6 +1444,33 @@ public final class TypeChecker {
         checkIsolatedArmBlock(body, parent, generics, expectedReturn, self, false);
     }
 
+    /**
+     * A lambda owns its own return target, even when syntactically nested
+     * inside a deferred nb-select arm or an outer value-select expression.
+     * Preserve the outer selection's scope while checking the closure body:
+     * resetting these flags for all isolated blocks would incorrectly let a
+     * detached select arm unwind its already-completed caller.
+     */
+    private <T> T inLambdaReturnScope(
+            Type returnType, java.util.function.Supplier<T> check) {
+        List<Type> savedSelectResults = currentSelectReturnTypes;
+        boolean savedDeferred = inDeferredValueSelectArm;
+        boolean savedDiscard = inDiscardingSelectArm;
+        Type savedCallableReturn = currentCallableReturnType;
+        try {
+            currentSelectReturnTypes = null;
+            inDeferredValueSelectArm = false;
+            inDiscardingSelectArm = false;
+            currentCallableReturnType = returnType;
+            return check.get();
+        } finally {
+            currentSelectReturnTypes = savedSelectResults;
+            inDeferredValueSelectArm = savedDeferred;
+            inDiscardingSelectArm = savedDiscard;
+            currentCallableReturnType = savedCallableReturn;
+        }
+    }
+
     private void checkIsolatedArmBlock(List<Ast.Stmt> body, Env parent, Set<String> generics,
                                        Type expectedReturn, Type self, boolean discardReturn) {
         int previousLoopDepth = loopDepth;
@@ -3625,12 +3652,13 @@ public final class TypeChecker {
             currentConstructorOwner = null;
             Type result;
             try {
-                if (lambda.expressionBody() != null) {
-                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
-                } else {
+                result = inLambdaReturnScope(Unknown.INSTANCE, () -> {
+                    if (lambda.expressionBody() != null) {
+                        return typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    }
                     checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                    result = Unknown.INSTANCE;
-                }
+                    return Unknown.INSTANCE;
+                });
             } finally {
                 // Lambda bodies are checked now but execute later. Never let
                 // assignments inside a closure establish definite-init facts
@@ -4294,13 +4322,16 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
-            if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self);
-                requireAssignable(actual, Primitive.VOID, "mutex callback expression body");
-            } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
-            }
+            inLambdaReturnScope(Primitive.VOID, () -> {
+                if (lambda.expressionBody() != null) {
+                    Type actual = typeOfAgainstExpected(
+                            lambda.expressionBody(), Primitive.VOID, lambdaEnv, generics, self);
+                    requireAssignable(actual, Primitive.VOID, "mutex callback expression body");
+                } else {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+                }
+                return null;
+            });
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
@@ -4341,17 +4372,20 @@ public final class TypeChecker {
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
-            if (lambda.expressionBody() != null) {
-                Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
-                requireReadonlyCapabilityPreserved(
-                        actual,
-                        expected.result(),
-                        "lambda expression body");
-                requireAssignable(actual, expected.result(), "lambda expression body");
-            } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
-            }
+            inLambdaReturnScope(expected.result(), () -> {
+                if (lambda.expressionBody() != null) {
+                    Type actual = typeOfAgainstExpected(
+                            lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                    requireReadonlyCapabilityPreserved(
+                            actual,
+                            expected.result(),
+                            "lambda expression body");
+                    requireAssignable(actual, expected.result(), "lambda expression body");
+                } else {
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+                }
+                return null;
+            });
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
