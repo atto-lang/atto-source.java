@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -155,7 +156,7 @@ final class FutureChannelSelectTest {
     @Test
     void settlementDuringManyFutureListenerAttachmentsLeavesNoWaiters()
             throws Exception {
-        for (int round = 0; round < 32; round++) {
+        for (int round = 0; round < 128; round++) {
             var producer = new OresFuture<Integer>();
             var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
             for (int i = 0; i < 128; i++) {
@@ -182,9 +183,30 @@ final class FutureChannelSelectTest {
             }
             var winner = selected.get(5, TimeUnit.SECONDS);
             assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
-            assertEquals(0, winner.index());
-            assertEquals(17, winner.value());
-            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertAll("shared Future attachment race round " + round,
+                    () -> assertEquals(0, winner.index(),
+                            "PRIORITY must select the first alias"),
+                    () -> assertEquals(17, winner.value()),
+                    () -> assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                            "losing listeners must be detached independently of ordering"));
+        }
+    }
+
+    @Test
+    void alreadySettledSharedFutureAliasesAlwaysChooseEarliestPriorityArm() {
+        var producer = OresFuture.completed(71);
+        var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < ChannelRuntime.MAX_SELECT_CASES; i++) {
+            cases.add(ChannelRuntime.await(producer));
+        }
+        var selection = new ChannelRuntime.SelectSet(cases);
+
+        for (int round = 0; round < 16; round++) {
+            var winner = selection.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY).join();
+            assertAll("ready shared Future round " + round,
+                    () -> assertEquals(0, winner.index()),
+                    () -> assertEquals(71, winner.value()),
+                    () -> assertEquals(0, producer.pendingRuntimeWaiterCount()));
         }
     }
 
