@@ -39,6 +39,37 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void terminationBarrierNeverOvertakesTypedControlPublication() throws Exception {
+        try (ActorRuntime actors = new ActorRuntime()) {
+            // Repeated independent actor lifecycles exercise the race between
+            // finalizeStopLocked(), awaitTermination() and queue publication.
+            for (int i = 0; i < 24; i++) {
+                final int turn = i;
+                ActorRuntime.ActorRef<String> actor = actors.spawnShared(
+                        () -> (message, context) -> {
+                            if ((turn & 1) == 0) {
+                                throw GuestActorEffectSignal.raise();
+                            }
+                            throw GuestActorEffectSignal.panic();
+                        });
+                actor.send("terminate");
+                assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS),
+                        "actor lifecycle " + i + " did not finish");
+                // No eventual polling/retry: after the termination barrier, the
+                // notice must already be present and must belong to this actor.
+                ActorRuntime.ActorFailureNotice notice =
+                        actors.pollActorFailureNotice().orElseThrow();
+                assertEquals(actor.id(), notice.actorId());
+                assertEquals((i & 1) == 0
+                                ? GuestActorEffectSignal.Kind.RAISE
+                                : GuestActorEffectSignal.Kind.PANIC,
+                        notice.effect());
+                assertTrue(actors.pollActorFailureNotice().isEmpty());
+            }
+            assertEquals(0L, actors.actorFailureNoticesDropped());
+        }
+    }
+
     @Test void panicCannotBeDowngradedAndIsDistinctFromRaise() throws Exception {
         try (ActorRuntime actors = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> actor = actors.spawnShared(
