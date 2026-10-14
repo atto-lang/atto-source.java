@@ -94,7 +94,13 @@ public final class OresMain {
         Set<String> buildEntryPoints = new LinkedHashSet<>();
         String mode = envOrDefault("ORES_MODE", NativeBuildMode.defaultExecutionMode());
         String platform = envOrDefault("ORES_PLATFORM", "server");
-        PermissionCheckMode permissionCheckMode = PermissionCheckMode.parse(envOrDefault("ORES_PERMISSION_CHECK", "runtime"));
+        PermissionCheckMode permissionCheckMode;
+        try {
+            permissionCheckMode = PermissionCheckMode.parse(
+                    envOrDefault("ORES_PERMISSION_CHECK", "runtime"));
+        } catch (IllegalArgumentException invalidEnv) {
+            throw new UsageException(invalidEnv.getMessage());
+        }
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
         EnumSet<RuntimePermissions.Permission> touchedPermissions =
                 EnumSet.noneOf(RuntimePermissions.Permission.class);
@@ -105,12 +111,15 @@ public final class OresMain {
         for (String arg : args) {
             try {
                 if (arg.equals("--strict-isolate")) strict = true;
+                else if (arg.equals("--no-strict-isolate")) strict = false;
                 else if (arg.equals("--check")) checkOnly = true;
+                else if (arg.equals("--no-check")) checkOnly = false;
                 else if (arg.equals("--core-perf")) corePerf = true;
                 else if (arg.equals("--no-core-perf")) corePerf = false;
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.equals("--no-build-analysis")) buildAnalysis = false;
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
