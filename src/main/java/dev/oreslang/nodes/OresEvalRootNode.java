@@ -2300,12 +2300,8 @@ public final class OresEvalRootNode extends RootNode {
                     (t, condition) -> {
                         if (condition.matched()) {
                             Env branchEnv = new Env(env);
-                            condition.bindings().forEach(
-                                    (name, value) ->
-                                            branchEnv.define(
-                                                    name,
-                                                    value,
-                                                    Ast.BindingKind.VAL));
+                            defineConditionBindings(branch.condition(),
+                                    condition.bindings(), branchEnv);
                             runBlock(
                                     t,
                                     branch.body(),
@@ -2927,10 +2923,12 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, left);
                                 return;
                             }
+                            Env rightEnv = new Env(env);
+                            defineConditionBindings(binary.left(), left.bindings(), rightEnv);
                             evalSuspendableCondition(
                                     t,
                                     binary.right(),
-                                    env,
+                                    rightEnv,
                                     (t2, right) ->
                                             continuation.accept(
                                                     t2,
@@ -5014,8 +5012,7 @@ public final class OresEvalRootNode extends RootNode {
                     ConditionResult condition = evalCondition(branch.condition(), env);
                     if (condition.matched()) {
                         Env branchEnv = new Env(env);
-                        condition.bindings().forEach((name, value) ->
-                                branchEnv.define(name, value, Ast.BindingKind.VAL));
+                        defineConditionBindings(branch.condition(), condition.bindings(), branchEnv);
                         executeBlock(
                                 branch.body(),
                                 branchEnv,
@@ -8282,8 +8279,7 @@ public final class OresEvalRootNode extends RootNode {
                 ConditionResult left = evalCondition(binary.left(), env);
                 if (!left.matched()) return ConditionResult.noMatch();
                 Env rightEnv = new Env(env);
-                left.bindings().forEach((name, value) ->
-                        rightEnv.define(name, value, Ast.BindingKind.VAL));
+                defineConditionBindings(binary.left(), left.bindings(), rightEnv);
                 ConditionResult right = evalCondition(binary.right(), rightEnv);
                 if (!right.matched()) return ConditionResult.noMatch();
                 LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
@@ -8309,6 +8305,29 @@ public final class OresEvalRootNode extends RootNode {
                         : ConditionResult.noMatch();
             }
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
+        }
+
+        /** Keep the binding-kind semantics of match patterns inside if/is arms.
+         * A pattern nested in && must also be visible to the RHS with its
+         * declared local rebinding policy in both sync and suspendable paths.
+         */
+        private void defineConditionBindings(Ast.Expr condition,
+                Map<String, Object> values, Env target) {
+            values.forEach((name, value) ->
+                    target.define(name, value, conditionBindingKind(condition, name)));
+        }
+
+        private Ast.BindingKind conditionBindingKind(Ast.Expr condition, String name) {
+            if (condition instanceof Ast.PatternTestExpr test) {
+                return projectionBindingKind(test.pattern(), name);
+            }
+            if (condition instanceof Ast.BinaryExpr binary
+                    && binary.operator().equals("&&")) {
+                Ast.BindingKind left = conditionBindingKind(binary.left(), name);
+                if (left != Ast.BindingKind.VAL) return left;
+                return conditionBindingKind(binary.right(), name);
+            }
+            return Ast.BindingKind.VAL;
         }
 
         private void defineMatchBindings(Ast.Pattern pattern, Map<String, Object> values, Env target) {
