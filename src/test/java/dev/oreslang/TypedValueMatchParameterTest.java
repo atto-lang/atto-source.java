@@ -170,4 +170,75 @@ final class TypedValueMatchParameterTest {
                     () -> TypeChecker.check(Parser.parse(guest)));
         }
     }
+
+    @Test
+    void equivalentNumericLiteralArmsAreRejectedAsUnreachable() {
+        for (String arms : new String[] {
+                "on 1 -> { return 10; } on 1.0 -> { return 20; }",
+                "on 1.0 -> { return 10; } on 1 -> { return 20; }",
+                "on 2 -> { return 10; } on 2.0 -> { return 20; }"
+        }) {
+            String guest = "fnc unreachable(int n): int { return match<int> n over "
+                    + arms + " on _ -> { return 0; } end; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)), arms);
+        }
+    }
+
+    @Test
+    void largeIntegersDoNotAliasRoundedFloatingPointLiterals() throws Exception {
+        String guest = """
+            fnc score(int n): int {
+                return match<int> n over {
+                    on 9007199254740992.0 { return 10; }
+                    on 9007199254740993 { return 20; }
+                    on _ { return 30; }
+                };
+            }
+            pub fnc main(): void {
+                stdio.println(score(9007199254740993));
+                stdio.println(score(9007199254740992));
+                stdio.println(9007199254740993 == 9007199254740992.0);
+                return;
+            }
+            """;
+        var typed = TypeChecker.check(Parser.parse(guest));
+        OwnershipChecker.check(typed);
+        var output = new ByteArrayOutputStream();
+        var source = Source.newBuilder(OresLanguage.ID, guest, "numeric-literal-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(source);
+        }
+        assertEquals("20\n10\nfalse",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
+
+    @Test
+    void mixedNumericEqualityStillAcceptsExactlyEqualValues() throws Exception {
+        String guest = """
+            fnc score(int n): int {
+                return match<int> n over {
+                    on 1.0 { return 10; }
+                    on _ { return 20; }
+                };
+            }
+            pub fnc main(): void {
+                stdio.println(score(1));
+                stdio.println(score(2));
+                return;
+            }
+            """;
+        TypeChecker.check(Parser.parse(guest));
+        var output = new ByteArrayOutputStream();
+        var source = Source.newBuilder(OresLanguage.ID, guest, "numeric-mixed-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context ctx = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            ctx.eval(source);
+        }
+        assertEquals("10\n20",
+                output.toString(StandardCharsets.UTF_8).trim().replace("\r", ""));
+    }
 }

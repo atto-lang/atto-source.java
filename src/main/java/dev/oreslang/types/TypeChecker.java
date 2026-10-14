@@ -1957,6 +1957,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
+            List<Type> dynamicFixedSlots = List.of();
             String where;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
@@ -1999,8 +2000,23 @@ public final class TypeChecker {
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
-                    else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                    else throw new IllegalArgumentException(
+                    else if (receiver instanceof Tuple tuple) {
+                        // Fixed collection writes must satisfy the actual slot
+                        // type, not just a common supertype of all slots.
+                        Long constant = constantTupleIndex(indexed.index());
+                        if (tuple.elements().isEmpty() || (constant != null
+                                && (constant < 0 || constant >= tuple.elements().size()))) {
+                            throw new IllegalArgumentException("fixed collection index outside arity "
+                                    + tuple.elements().size());
+                        }
+                        if (constant != null) {
+                            targetType = tuple.elements().get(constant.intValue());
+                        } else {
+                            targetType = tuple.elements().stream()
+                                    .reduce(Unknown.INSTANCE, this::commonType);
+                            dynamicFixedSlots = tuple.elements();
+                        }
+                    } else throw new IllegalArgumentException(
                             "indexed assignment requires an array/list, tuple, or typed Map; structs have a closed static field set");
                 }
                 where = "index";
@@ -2008,6 +2024,10 @@ public final class TypeChecker {
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
+            for (Type slot : dynamicFixedSlots) {
+                requireReadonlyCapabilityPreserved(value, slot, "dynamic fixed collection slot assignment");
+                requireAssignable(value, slot, "dynamic fixed collection slot assignment");
+            }
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), member.member());
@@ -5202,6 +5222,42 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Keep static literal subsumption consistent with valueEquals in the
+     * evaluator. In particular, do not collapse large integral literals to
+     * double: 2^53+1 is not equal to the rounded float 2^53.
+     */
+    private boolean literalPatternRuntimeEquals(Object left, Object right) {
+        if (left instanceof Number a && right instanceof Number b) {
+            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+                try {
+                    return new java.math.BigDecimal(a.toString())
+                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
+                } catch (NumberFormatException ignored) {
+                    return a.doubleValue() == b.doubleValue();
+                }
+            }
+            boolean integralA = isRuntimeIntegralNumber(a);
+            boolean integralB = isRuntimeIntegralNumber(b);
+            if (integralA && integralB) return a.longValue() == b.longValue();
+            if (integralA != integralB) {
+                Number integer = integralA ? a : b;
+                Number floating = integralA ? b : a;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
+            return a.doubleValue() == b.doubleValue();
+        }
+        return java.util.Objects.equals(left, right);
+    }
+
+    private boolean isRuntimeIntegralNumber(Number value) {
+        return value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -5212,7 +5268,10 @@ public final class TypeChecker {
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
-            return java.util.Objects.equals(a.value(), b.value());
+            // Runtime patterns use numeric value equality, not Java boxed
+            // identity: 1 and 1.0 match the same input. A second literal
+            // representing the same runtime value is unreachable.
+            return literalPatternRuntimeEquals(a.value(), b.value());
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
@@ -5278,7 +5337,9 @@ public final class TypeChecker {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
-            return !java.util.Objects.equals(a.value(), b.value());
+            // Do not certify 1 and 1.0 as disjoint: runtime equality
+            // intentionally permits equal values across numeric types.
+            return !literalPatternRuntimeEquals(a.value(), b.value());
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
