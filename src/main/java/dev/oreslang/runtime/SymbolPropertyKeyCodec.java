@@ -132,21 +132,60 @@ public final class SymbolPropertyKeyCodec {
 
         ExportManifest(java.util.Map<AdmissionScope, Set<OresSymbol>> source) {
             Objects.requireNonNull(source, "export manifest");
+            // Configuration is still an input boundary. IdentityHashMap and
+            // identity-backed Sets can contain logically equal scope/Symbol
+            // objects, and Set.copyOf would silently collapse those entries.
+            // Check reported AND actual cardinality before sealing the policy.
+            int reportedScopes = source.size();
+            if (reportedScopes < 0 || reportedScopes > MAX_KEYS_PER_OBJECT) {
+                throw new IllegalArgumentException("too many Symbol export scopes");
+            }
             java.util.Map<AdmissionScope, Set<OresSymbol>> frozen =
                     new java.util.LinkedHashMap<>();
+            int visitedScopes = 0;
+            long totalExports = 0L;
             for (var entry : source.entrySet()) {
-                AdmissionScope scope = Objects.requireNonNull(entry.getKey(), "export scope");
-                Set<OresSymbol> exports = Set.copyOf(
-                        Objects.requireNonNull(entry.getValue(), "Symbol exports"));
-                // Reject invalid manifests at configuration time, not merely
-                // when an untrusted message eventually uses one of the keys.
-                for (OresSymbol symbol : exports) {
+                if (++visitedScopes > MAX_KEYS_PER_OBJECT) {
+                    throw new IllegalArgumentException("too many Symbol export scopes");
+                }
+                AdmissionScope scope = Objects.requireNonNull(
+                        Objects.requireNonNull(entry, "export entry").getKey(), "export scope");
+                Set<OresSymbol> incoming = Objects.requireNonNull(
+                        entry.getValue(), "Symbol exports");
+                int reportedExports = incoming.size();
+                if (reportedExports < 0 || reportedExports > MAX_KEYS_PER_OBJECT
+                        || reportedExports > MAX_KEYS_PER_OBJECT - totalExports) {
+                    throw new IllegalArgumentException("too many exported Symbols");
+                }
+                Set<OresSymbol> detached = new HashSet<>();
+                int visitedExports = 0;
+                for (OresSymbol symbol : incoming) {
+                    if (++visitedExports > MAX_KEYS_PER_OBJECT
+                            || ++totalExports > MAX_KEYS_PER_OBJECT) {
+                        throw new IllegalArgumentException("too many exported Symbols");
+                    }
+                    Objects.requireNonNull(symbol, "exported Symbol");
                     if (symbol.kind() != OresSymbol.Kind.PROCESS) {
                         throw new IllegalArgumentException(
                                 "v1 untrusted Symbol exports must be PROCESS identities");
                     }
+                    if (!detached.add(symbol)) {
+                        throw new IllegalArgumentException(
+                                "duplicate logical Symbol in export manifest");
+                    }
                 }
-                frozen.put(scope, exports);
+                if (visitedExports != reportedExports) {
+                    throw new IllegalArgumentException(
+                            "Symbol export set size changed during snapshot");
+                }
+                if (frozen.putIfAbsent(scope, Set.copyOf(detached)) != null) {
+                    throw new IllegalArgumentException(
+                            "duplicate logical export scope in manifest");
+                }
+            }
+            if (visitedScopes != reportedScopes) {
+                throw new IllegalArgumentException(
+                        "export manifest scope count changed during snapshot");
             }
             this.scopes = java.util.Map.copyOf(frozen);
         }
