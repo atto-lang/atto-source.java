@@ -47,13 +47,13 @@ final class ModuleVisibilityRuntimeTest {
                     "external.Service.answer()",
                     "external.answer()"
             }) {
-            String source = "import * as external from './lib';\n"
-                    + "pub routine main(): void {\n"
-                    + "  stdio.stdout.write(" + expression + ");\n"
-                    + "  return;\n"
-                    + "}\n";
-            PolyglotException failure = assertThrows(
-                    PolyglotException.class, () -> run(source), expression);
+                String source = "import * as external from './lib';\n"
+                        + "pub routine main(): void {\n"
+                        + "  stdio.stdout.write(" + expression + ");\n"
+                        + "  return;\n"
+                        + "}\n";
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class, () -> run(source), expression);
                 assertTrue(failure.getMessage().contains("does not export"),
                         header + ": " + failure.getMessage());
             }
