@@ -32,6 +32,33 @@ final class SwitchConstantProofHardeningTest {
     }
 
     @Test
+    void rejectsSemanticallyIdenticalScalarCasesWithDifferentSyntax() {
+        for (String[] pair : new String[][]{
+                {"1 + 2", "3"},
+                {"7 - 4", "3"},
+                {"3", "1 | 2"}
+        }) {
+            String source = """
+                    pub fnc main(): void {
+                      val int subject = 3;
+                      switch subject
+                        case %s -> { }
+                        case %s -> { }
+                        default -> { }
+                      end
+                      return;
+                    }
+                    """.formatted(pair[0], pair[1]);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)),
+                    source);
+            assertTrue(failure.getMessage().contains("duplicate switch case"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
     void rejectsUnsupportedOperationsAndOverflowBeforeRuntime() {
         for (String expression : new String[]{
                 "1 / 0",
