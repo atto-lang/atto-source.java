@@ -143,6 +143,19 @@ public final class OresKeyedMap<K, V> {
         return entries.get(key);
     }
 
+    /**
+     * Guest indexed reads are presence-sensitive, unlike host Map.get.
+     * Combining the presence test and read under one monitor prevents a
+     * concurrent removal from turning a previously present entry into null.
+     */
+    public synchronized V getRequired(Object key) {
+        checkKey(key);
+        if (!entries.containsKey(key)) {
+            throw new IllegalArgumentException("unknown typed Map key");
+        }
+        return entries.get(key);
+    }
+
     private void checkValue(Object value) {
         Objects.requireNonNull(value, "map value");
         boolean valid = switch (valueDomain) {
