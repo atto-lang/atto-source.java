@@ -230,6 +230,8 @@ final class ExclusiveAdtMatchSafetyTest {
                 pub fnc main(): void {
                     stdio.println(classify(9007199254740993));
                     stdio.println(classify(9007199254740992));
+                    stdio.println(9007199254740993 > 9007199254740992.0);
+                    stdio.println(9007199254740993 == 9007199254740992.0);
                     return;
                 }
                 """;
@@ -242,7 +244,7 @@ final class ExclusiveAdtMatchSafetyTest {
                 .allowAllAccess(false).out(output).build()) {
             context.eval(guest);
         }
-        assertEquals("2\n1", output.toString(StandardCharsets.UTF_8)
+        assertEquals("2\n1\ntrue\nfalse", output.toString(StandardCharsets.UTF_8)
                 .strip().replace("\r\n", "\n"));
     }
 
