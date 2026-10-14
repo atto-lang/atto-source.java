@@ -20,7 +20,7 @@ final class TypedExceptionalEffectAdmissionTest {
 
     @Test
     void unsupportedEffectsRejectBeforeSourceExecution() {
-        for (String effect : List.of("throw", "raise", "panic", "recover")) {
+        for (String effect : List.of("raise", "panic", "recover")) {
             String source = "pub fnc main(): int { " + effect + " 1; return 0; }";
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(source), effect);
@@ -29,6 +29,34 @@ final class TypedExceptionalEffectAdmissionTest {
             assertTrue(failure.getMessage().contains("not yet enabled"),
                     failure::getMessage);
         }
+    }
+
+    @Test
+    void typedThrowParsesButRequiresCompilerCheckedCatchAndGuestError() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class TaskError extends Error as
+                    pub val int code;
+                end
+                pub fnc main(): int {
+                    try {
+                        throw new TaskError(7);
+                    } catch (e) {
+                        return 7;
+                    }
+                    return 0;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): int {
+                            try {
+                                throw 1;
+                            } catch (e) {
+                                return 2;
+                            }
+                            return 0;
+                        }
+                        """));
     }
 
     @Test
