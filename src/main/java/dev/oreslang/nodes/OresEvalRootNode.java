@@ -8138,8 +8138,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ClassDecl contract,
                 Map<String, Ast.TypeRef> bindings,
                 Set<Ast.ClassDecl> seen) {
-            if (!(value instanceof OresObject object)
-                    || object.klass.actorKind() != Ast.ActorKind.NONE
+            // Named class shapes are structural contracts, not nominal
+            // instance tests. The typechecker admits plain record values
+            // satisfying a class's public fields, so runtime must do the
+            // same. Records cannot implement callable class methods.
+            OresObject object = value instanceof OresObject candidate ? candidate : null;
+            if ((object == null && !(value instanceof Map<?, ?>))
+                    || (object != null && object.klass.actorKind() != Ast.ActorKind.NONE)
                     || !seen.add(contract)) {
                 return false;
             }
@@ -8182,6 +8187,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.MethodDecl required : contract.methods()) {
                     if (required.visibility() != Ast.Visibility.PUBLIC
                             || required.isStatic()) continue;
+                    if (object == null) return false; // Maps have no methods.
                     Ast.MethodDecl actual = object.owner.findMethod(
                             object.klass,
                             CallableSelector.instance(required.name(), required.arity()));
