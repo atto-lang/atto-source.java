@@ -211,6 +211,18 @@ final class ConditionalOptionBindingTest {
                 }
                 """, "moved");
 
+        // The negated comparison and mutable spelling have the same
+        // surrounding-scope RHS resolution and must not mask that move.
+        rejects(prelude + """
+                fnc bad(Box value, Option<int> maybe): void {
+                  if (maybe as let value) neq consume(value) then
+                    return;
+                  fi
+                  consume(value);
+                  return;
+                }
+                """, "moved");
+
         // The RHS may consume an outer owner exactly once.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(prelude + """
                 fnc good(Box value, Option<int> maybe): void {
