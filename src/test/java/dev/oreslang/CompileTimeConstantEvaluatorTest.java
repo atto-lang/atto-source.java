@@ -95,6 +95,62 @@ final class CompileTimeConstantEvaluatorTest {
     }
 
     @Test
+    void exhaustiveSmallIntegerDomainMatchesExactArithmetic() {
+        // 16,641 pairs including negatives, zero and mixed signs. No guest
+        // execution, Java integer-promotion ambiguity, or random seed needed.
+        for (long left = -64; left <= 64; left++) {
+            for (long right = -64; right <= 64; right++) {
+                Ast.Expr a = new Ast.LiteralExpr(left);
+                Ast.Expr b = new Ast.LiteralExpr(right);
+                assertEquals(Math.addExact(left, right),
+                        CompileTimeConstantEvaluator.evaluate(new Ast.BinaryExpr("+", a, b)));
+                assertEquals(Math.subtractExact(left, right),
+                        CompileTimeConstantEvaluator.evaluate(new Ast.BinaryExpr("-", a, b)));
+                assertEquals(Math.multiplyExact(left, right),
+                        CompileTimeConstantEvaluator.evaluate(new Ast.BinaryExpr("*", a, b)));
+                assertEquals(left < right,
+                        CompileTimeConstantEvaluator.evaluate(new Ast.BinaryExpr("<", a, b)));
+                assertEquals(left == right,
+                        CompileTimeConstantEvaluator.evaluate(new Ast.BinaryExpr("eq", a, b)));
+                if (right != 0) {
+                    assertEquals(left % right,
+                            CompileTimeConstantEvaluator.evaluate(new Ast.BinaryExpr("%", a, b)));
+                }
+            }
+        }
+    }
+
+    @Test
+    void signedZeroAndIntegerTypeArePreserved() {
+        Object zero = CompileTimeConstantEvaluator.evaluate(
+                new Ast.UnaryExpr("-", new Ast.LiteralExpr(0.0d)));
+        assertInstanceOf(Double.class, zero);
+        assertEquals(Double.doubleToRawLongBits(-0.0d),
+                Double.doubleToRawLongBits((Double) zero));
+        Object integer = CompileTimeConstantEvaluator.evaluate(
+                new Ast.UnaryExpr("-", new Ast.LiteralExpr(2L)));
+        assertInstanceOf(Long.class, integer);
+        assertEquals(-2L, integer);
+        assertEquals(3L, CompileTimeConstantEvaluator.evaluate(
+                new Ast.BinaryExpr("+", new Ast.LiteralExpr(1L), new Ast.LiteralExpr(2L))));
+    }
+
+    @Test
+    void overflowingBoundaryOperationsAlwaysFailClosed() {
+        for (Ast.Expr expression : java.util.List.of(
+                new Ast.BinaryExpr("+", new Ast.LiteralExpr(Long.MAX_VALUE), new Ast.LiteralExpr(1L)),
+                new Ast.BinaryExpr("-", new Ast.LiteralExpr(Long.MIN_VALUE), new Ast.LiteralExpr(1L)),
+                new Ast.UnaryExpr("-", new Ast.LiteralExpr(Long.MIN_VALUE)),
+                new Ast.BinaryExpr("*", new Ast.LiteralExpr(Long.MIN_VALUE), new Ast.LiteralExpr(2L))
+        )) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> CompileTimeConstantEvaluator.evaluate(expression));
+            assertTrue(failure.getMessage().contains("overflow"), failure.getMessage());
+        }
+    }
+
+    @Test
     void protectsEvaluatorBudgetAndRejectsUserCodeWithoutRunningIt() {
         Ast.Expr expression = new Ast.LiteralExpr(1L);
         for (int i = 0; i < 70; i++) expression = new Ast.UnaryExpr("+", expression);
