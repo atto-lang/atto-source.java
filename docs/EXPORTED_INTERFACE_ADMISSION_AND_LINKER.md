@@ -62,7 +62,11 @@ actual TypeChecker and remain permitted by this staging prototype.
 
 The `Linked` stage result is now a final, privately constructed class instead
 of a publicly constructible record. This reduces accidental fabrication of
-a "successfully linked" result by arbitrary downstream clients. It remains
+a "successfully linked" result by arbitrary downstream clients. All
+source-unit keys in the external provider-pin map must exactly match the staged
+source units: extra, missing and unknown source-unit entries, plus unknown
+resolution-override source keys, are rejected before phase-two resolution.
+This prevents silently ignoring stale imported metadata. It remains
 **interface-only** and must never serve as trusted semantic admission:
 `collectCheckedDeclarations` currently accepts caller-provided programs;
 no multi-file type/ownership checker has minted verified SCC admission.
