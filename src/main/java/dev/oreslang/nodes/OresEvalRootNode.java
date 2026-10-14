@@ -4314,6 +4314,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ClassFacade klass) {
+                requireClassFacadeVisibleToCaller(klass);
                 Ast.MethodDecl method =
                         klass.owner().findStaticFunction(
                                 klass.klass(),
@@ -5777,6 +5778,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ClassFacade klass) {
+                    requireClassFacadeVisibleToCaller(klass);
                     Ast.MethodDecl fn = klass.owner().findStaticFunction(
                             klass.klass(), CallableSelector.staticFunction(methodCall.member(), args.size()));
                     if (fn == null) {
@@ -6995,6 +6997,7 @@ public final class OresEvalRootNode extends RootNode {
                 return namespace.owner().moduleMember(namespace.module(), name);
             }
             if (receiver instanceof ClassFacade klass) {
+                requireClassFacadeVisibleToCaller(klass);
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
@@ -7678,6 +7681,18 @@ public final class OresEvalRootNode extends RootNode {
         private static String normalizeUnitId(String id) {
             if (id == null || id.isBlank()) throw new IllegalArgumentException("code unit id cannot be blank");
             return Path.of(id).normalize().toString().replace('\\', '/');
+        }
+
+        private void requireClassFacadeVisibleToCaller(ClassFacade facade) {
+            // A class descriptor may travel through Any, a public callable
+            // or a collection without a compiler-known imported class name.
+            // A foreign descriptor must not expose a private class or one
+            // nested in a private module merely because a static member is pub.
+            if (facade.owner() != this && !facade.owner().exportedClass(facade.klass())) {
+                throw new IllegalArgumentException(
+                        "private class '" + facade.klass().name()
+                                + "' cannot be accessed outside its source unit");
+            }
         }
 
         private void requireModuleFacadeVisibleToCaller(ModuleFacade facade) {
