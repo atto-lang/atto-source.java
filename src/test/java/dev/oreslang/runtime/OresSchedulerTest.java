@@ -16,6 +16,44 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresSchedulerTest {
 
     @Test
+    void actorBoundTaskNeverFallsBackToTheUnissuedRootPlacement() throws Exception {
+        AtomicInteger rootPlacementCalls = new AtomicInteger();
+        AtomicInteger issuedTicketPlacementCalls = new AtomicInteger();
+        AtomicInteger resumes = new AtomicInteger();
+        OresFuture<Integer> producer = new OresFuture<>();
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "ticket-placement-only", 1,
+                command -> {
+                    rootPlacementCalls.incrementAndGet();
+                    throw new AssertionError("actor task escaped its issued serial ticket");
+                }, Runnable::run)) {
+            OresFuture<Integer> result = scheduler.startActorBound(
+                    resume -> {
+                        assertSame(scheduler, OresScheduler.current());
+                        int pc = resumes.getAndIncrement();
+                        if (pc == 0) {
+                            assertTrue(resume.initial());
+                            return OresScheduler.await(producer);
+                        }
+                        assertEquals(1, pc, "continuation must resume only once");
+                        assertEquals(21, resume.value());
+                        return OresScheduler.done(42);
+                    },
+                    command -> {
+                        issuedTicketPlacementCalls.incrementAndGet();
+                        command.run();
+                    });
+            producer.completeFromRuntime(21);
+            assertEquals(42, result.get(5, TimeUnit.SECONDS));
+            assertEquals(0, rootPlacementCalls.get(),
+                    "none of a source task's segments may bypass its ticket");
+            assertEquals(2, issuedTicketPlacementCalls.get(),
+                    "both initial and resumed dispatch must use the issued placement");
+            assertEquals(2, resumes.get());
+        }
+    }
+
+    @Test
     void cleanupPrivilegeBeginsOnlyAfterCancellationWasDeliveredToTask()
             throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
