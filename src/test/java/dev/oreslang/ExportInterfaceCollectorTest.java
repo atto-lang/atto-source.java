@@ -65,4 +65,35 @@ final class ExportInterfaceCollectorTest {
         assertThrows(IllegalArgumentException.class, () ->
                 ExportInterfaceCollector.collect(source(incomplete), HEADER));
     }
+    @Test void explicitPublicConstructorDoesNotHidePrivateNativeLayoutChanges() {
+        var privateStorage = new Ast.FieldDecl("internal", Ast.Visibility.PRIVATE,
+                Ast.BindingKind.VAL, Ast.TypeRef.simple("int"), null);
+        var ctor = new Ast.ConstructorDecl(Ast.Visibility.PUBLIC, List.of(), List.of(), List.of());
+        var klass = new Ast.ClassDecl("Opaque", Ast.Visibility.PUBLIC, false,
+                Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
+                List.of(privateStorage), ctor, List.of());
+        assertThrows(IllegalArgumentException.class, () ->
+                ExportInterfaceCollector.collect(source(klass), HEADER),
+                "private storage is part of physical ABI even with a public explicit constructor");
+    }
+
+    @Test void unresolvedNestedTypeOrUnsolvedGenericCannotBecomeExportedContract() {
+        var inferred = new Ast.FunctionDecl("unknownReturn", Ast.Visibility.PUBLIC, false,
+                List.of(), List.of(), Ast.TypeRef.inferred(), List.of(), List.of());
+        assertThrows(IllegalArgumentException.class, () ->
+                ExportInterfaceCollector.collect(source(inferred), HEADER));
+
+        var unresolvedNested = new Ast.FunctionDecl("nested", Ast.Visibility.PUBLIC, false,
+                List.of(), List.of(), new Ast.TypeRef("List",
+                        List.of(Ast.TypeRef.inferred()), false), List.of(), List.of());
+        assertThrows(IllegalArgumentException.class, () ->
+                ExportInterfaceCollector.collect(source(unresolvedNested), HEADER));
+
+        var inferArguments = new Ast.FunctionDecl("inferredArgs", Ast.Visibility.PUBLIC, false,
+                List.of(), List.of(), new Ast.TypeRef("List",
+                        List.of(Ast.TypeRef.simple("int")), true), List.of(), List.of());
+        assertThrows(IllegalArgumentException.class, () ->
+                ExportInterfaceCollector.collect(source(inferArguments), HEADER));
+    }
+
 }
