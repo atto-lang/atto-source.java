@@ -7843,14 +7843,26 @@ public final class TypeChecker {
     }
 
     private boolean constant(Ast.Expr expr) {
-        if (expr instanceof Ast.LiteralExpr) return true;
-        if (expr instanceof Ast.UnaryExpr unary) return constant(unary.operand());
-        if (expr instanceof Ast.BinaryExpr binary) return constant(binary.left()) && constant(binary.right());
-        if (expr instanceof Ast.ConditionalExpr conditional) return constant(conditional.condition()) && constant(conditional.whenTrue()) && constant(conditional.whenFalse());
-        if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
-        if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().allMatch(this::constant);
-        if (expr instanceof Ast.ObjectExpr object) return object.fields().stream().allMatch(field -> constant(field.value()));
-        return false;
+        // Preserve the existing closed aggregate switch cases, but validate
+        // scalar leaves using the same audited, budgeted constant evaluator as
+        // final-const fields. Merely having constant-shaped operands does NOT
+        // make an arbitrary operator (e.g. reference borrow, division by zero,
+        // or identity comparison) a legal compile-time constant.
+        if (expr instanceof Ast.ListExpr list) {
+            return list.elements().stream().allMatch(this::constant);
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            return tuple.elements().stream().allMatch(this::constant);
+        }
+        if (expr instanceof Ast.ObjectExpr object) {
+            return object.fields().stream().allMatch(field -> constant(field.value()));
+        }
+        try {
+            CompileTimeConstantEvaluator.evaluate(expr);
+            return true;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
