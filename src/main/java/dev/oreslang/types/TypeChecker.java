@@ -932,7 +932,7 @@ public final class TypeChecker {
      * during construction; directly invoking a lambda initializer remains
      * rejected until its body has a verified non-suspending effect bound.
      */
-    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr, Env scalarInitializerArgs) {
         if (expr instanceof Ast.AwaitExpr
                 || expr instanceof Ast.ChannelOpExpr
                 || expr instanceof Ast.DynamicSelectExpr
@@ -953,13 +953,13 @@ public final class TypeChecker {
             // Failure cleanup of a partially built instance is not proven.
             // Keep them outside eager initialization until that proof exists.
             if (op.operator().equals("/") || op.operator().equals("%")) return true;
-            return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
+            return fieldInitializerMaySuspend(op.left(), scalarInitializerArgs) || fieldInitializerMaySuspend(op.right(), scalarInitializerArgs);
         }
-        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand());
+        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand(), scalarInitializerArgs);
         if (expr instanceof Ast.ConditionalExpr op) {
-            return fieldInitializerMaySuspend(op.condition())
-                    || fieldInitializerMaySuspend(op.whenTrue())
-                    || fieldInitializerMaySuspend(op.whenFalse());
+            return fieldInitializerMaySuspend(op.condition(), scalarInitializerArgs)
+                    || fieldInitializerMaySuspend(op.whenTrue(), scalarInitializerArgs)
+                    || fieldInitializerMaySuspend(op.whenFalse(), scalarInitializerArgs);
         }
         if (expr instanceof Ast.CallExpr call) {
             // Constructor-safe calls must resolve to a statically known,
@@ -1001,21 +1001,21 @@ public final class TypeChecker {
             // failure cleanup is not proven, so reject indexing by default.
             return true;
         }
-        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
-        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
+        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
         if (expr instanceof Ast.CastExpr) {
             // Checked casts can fail independently of their source expression;
             // permitting one could unwind a partially constructed instance.
             return true;
         }
-        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
+        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression(), scalarInitializerArgs);
         if (expr instanceof Ast.ListExpr list)
-            return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+            return list.elements().stream().anyMatch(value -> fieldInitializerMaySuspend(value, scalarInitializerArgs));
         if (expr instanceof Ast.TupleExpr tuple)
-            return tuple.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+            return tuple.elements().stream().anyMatch(value -> fieldInitializerMaySuspend(value, scalarInitializerArgs));
         if (expr instanceof Ast.ObjectExpr object)
             return object.fields().stream().anyMatch(field ->
-                    fieldInitializerMaySuspend(field.value()));
+                    fieldInitializerMaySuspend(field.value(), scalarInitializerArgs));
         // These are the only effect-free leaf expressions. In particular a
         // lambda is stored, not invoked, and the initializer environment has
         // no self or reference-valued constructor arguments to capture.
@@ -1024,7 +1024,7 @@ public final class TypeChecker {
             // Imported values may be lazily evaluated by Evaluator.exportValue,
             // which can execute an arbitrary declaration initializer. That
             // code is outside this class's checked constructor effect bound.
-            return importedValues.contains(name.name());
+            return importedValues.contains(name.name()) && scalarInitializerArgs.lookup(name.name()) == null;
         }
         return !(expr instanceof Ast.LiteralExpr || expr instanceof Ast.LambdaExpr);
     }
@@ -1181,7 +1181,7 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() == Ast.ActorKind.NONE
                     && field.initializer() != null
-                    && fieldInitializerMaySuspend(field.initializer())) {
+                    && fieldInitializerMaySuspend(field.initializer(), fieldInitializerEnv)) {
                 throw new IllegalArgumentException("class field initializer '"
                         + klass.name() + "." + field.name()
                         + "' cannot await, select, call, or suspend during object construction "
