@@ -2471,6 +2471,14 @@ public final class OwnershipChecker {
             right.close();
             return;
         }
+        if (expr instanceof Ast.TypeTestExpr test
+                && test.value() instanceof Ast.OptionBindExpr binding) {
+            if (test.binding() != null) {
+                throw error("optional type test cannot introduce a second named binding");
+            }
+            checkGuardExpr(binding, scope);
+            return;
+        }
         if (expr instanceof Ast.BinaryExpr binary
                 && (binary.operator().equals("eq") || binary.operator().equals("neq"))
                 && binary.left() instanceof Ast.OptionBindExpr binding) {
@@ -2510,6 +2518,11 @@ public final class OwnershipChecker {
             destination.define(binding.binding(), new VarState(
                     payload, false, binding.kind() == Ast.BindingKind.LET,
                     ValueKind.COPY, Origin.LOCAL));
+            return;
+        }
+        if (condition instanceof Ast.TypeTestExpr test
+                && test.value() instanceof Ast.OptionBindExpr binding) {
+            defineConditionAliases(binding, destination, source);
             return;
         }
         if (condition instanceof Ast.BinaryExpr binary
