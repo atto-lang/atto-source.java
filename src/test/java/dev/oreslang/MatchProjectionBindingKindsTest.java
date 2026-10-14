@@ -144,10 +144,12 @@ final class MatchProjectionBindingKindsTest {
                   end
                 }
                 """;
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException badNames = assertThrows(IllegalArgumentException.class,
                 () -> checks(body.formatted("{const vx, let bx}")));
-        assertThrows(IllegalArgumentException.class,
+        assertTrue(badNames.getMessage().contains("does not exist"), badNames.getMessage());
+        IllegalArgumentException wrongShape = assertThrows(IllegalArgumentException.class,
                 () -> checks(body.formatted("(const vx, let bx)")));
+        assertTrue(wrongShape.getMessage().contains("requires a Tuple"), wrongShape.getMessage());
     }
 
     @Test
@@ -160,10 +162,14 @@ final class MatchProjectionBindingKindsTest {
                   end
                 }
                 """;
-        assertThrows(IllegalArgumentException.class,
+        IllegalArgumentException wrongShape = assertThrows(IllegalArgumentException.class,
                 () -> checks(body.formatted("{const first, let second}")));
-        assertThrows(IllegalArgumentException.class,
+        assertTrue(wrongShape.getMessage().contains("requires a statically known record"),
+                wrongShape.getMessage());
+        IllegalArgumentException wrongArity = assertThrows(IllegalArgumentException.class,
                 () -> checks(body.formatted("(const onlyOne, let second, val third)")));
+        assertTrue(wrongArity.getMessage().contains("tuple match projection arity"),
+                wrongArity.getMessage());
     }
 
     @Test
@@ -183,7 +189,7 @@ final class MatchProjectionBindingKindsTest {
 
     @Test
     void mutableRebindOfMoveOnlyProjectionFailsClosed() {
-        assertThrows(IllegalArgumentException.class, () -> checks("""
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> checks("""
                 fnc f(Option<{items: List<int>}> item): int {
                   do match item over
                     on Some as {let items} -> { return 1; }
@@ -191,6 +197,7 @@ final class MatchProjectionBindingKindsTest {
                   end
                 }
                 """));
+        assertTrue(failure.getMessage().contains("non-Copy field"), failure.getMessage());
     }
 
     @Test
