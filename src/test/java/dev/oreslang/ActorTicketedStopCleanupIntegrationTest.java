@@ -333,6 +333,7 @@ final class ActorTicketedStopCleanupIntegrationTest {
             CountDownLatch firstAwait = new CountDownLatch(1);
             CountDownLatch cleanupCompleted = new CountDownLatch(1);
             AtomicInteger ordinaryTaskRuns = new AtomicInteger();
+            AtomicInteger neverEnteredCleanupRuns = new AtomicInteger();
             AtomicInteger cleanupRuns = new AtomicInteger();
             AtomicReference<OresFuture<Void>> cleanupFuture = new AtomicReference<>();
             var actor = runtime.<String>spawnShared(() -> (message, context) -> {
@@ -368,6 +369,16 @@ final class ActorTicketedStopCleanupIntegrationTest {
                         return OresScheduler.done(null);
                     });
                 }
+                // These are cleanup-aware but NEVER entered a source frame.
+                // STOP must drop their queued initial CONTROL envelopes
+                // before a real suspended task requests terminal cleanup.
+                for (int i = 0; i < 256; i++) {
+                    context.runtime().startActorTask(
+                            (OresScheduler.CleanupAwareTask<Void>) resume -> {
+                                neverEnteredCleanupRuns.incrementAndGet();
+                                return OresScheduler.done(null);
+                            });
+                }
                 context.self().stop();
             });
 
@@ -377,6 +388,8 @@ final class ActorTicketedStopCleanupIntegrationTest {
             assertTrue(cleanupCompleted.await(5, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
             assertEquals(0, ordinaryTaskRuns.get());
+            assertEquals(0, neverEnteredCleanupRuns.get(),
+                    "unentered source tasks must not gain STOP cleanup authority");
             assertEquals(1, cleanupRuns.get());
             assertTrue(actor.failure().isEmpty());
             assertThrows(java.util.concurrent.CancellationException.class,
