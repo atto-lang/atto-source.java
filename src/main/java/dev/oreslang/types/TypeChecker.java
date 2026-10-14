@@ -8053,6 +8053,10 @@ public final class TypeChecker {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
+        // True only for the Env introduced at a lexical capture boundary.
+        // Ordinary nested scopes inherit deferred safety rules but must not
+        // treat lambda-local values as foreign captures.
+        private final boolean typedMapCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
@@ -8080,21 +8084,31 @@ public final class TypeChecker {
             this(
                     parent,
                     parent != null && parent.descendantsNonLexical,
-                    parent != null && parent.deferredCaptureBoundary);
+                    parent != null && parent.deferredCaptureBoundary,
+                    false);
         }
         private Env(Env parent, boolean descendantsNonLexical) {
             this(
                     parent,
                     descendantsNonLexical,
-                    parent != null && parent.deferredCaptureBoundary);
+                    parent != null && parent.deferredCaptureBoundary,
+                    false);
         }
         private Env(
                 Env parent,
                 boolean descendantsNonLexical,
                 boolean deferredCaptureBoundary) {
+            this(parent, descendantsNonLexical, deferredCaptureBoundary, deferredCaptureBoundary);
+        }
+        private Env(
+                Env parent,
+                boolean descendantsNonLexical,
+                boolean deferredCaptureBoundary,
+                boolean typedMapCaptureBoundary) {
             this.parent = parent;
             this.descendantsNonLexical = descendantsNonLexical;
             this.deferredCaptureBoundary = deferredCaptureBoundary;
+            this.typedMapCaptureBoundary = typedMapCaptureBoundary;
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
@@ -8122,7 +8136,7 @@ public final class TypeChecker {
             if (binding != null) return binding;
             if (parent == null) return null;
             Binding inherited = parent.lookup(name);
-            if (deferredCaptureBoundary
+            if (typedMapCaptureBoundary
                     && inherited != null
                     && isTypedMapType(inherited.type())) {
                 // A captured Map survives the creating scope. No loan can be
