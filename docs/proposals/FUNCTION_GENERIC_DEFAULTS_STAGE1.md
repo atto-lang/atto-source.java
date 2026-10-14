@@ -18,6 +18,9 @@ call generics PR #910. It is not a claim of complete language support.
   demands inference and never falls back to a default.
 - Ownership specialization follows the same substitution order and cannot
   silently ignore declared defaults in ordinary/qualified function calls.
+- Exported function defaults are serialized into incremental ABI fingerprints.
+  Changing a public generic default invalidates the imported contract, while
+  private-only defaults do not perturb the exported ABI.
 - Tests cover parser AST preservation, five-parameter dependent defaults,
   explicit overrides, inference priority, failure on uninferable holes,
   forward/self references and backwards-compatible AST constructors.
