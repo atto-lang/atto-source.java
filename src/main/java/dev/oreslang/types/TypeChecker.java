@@ -90,6 +90,8 @@ public final class TypeChecker {
     private boolean inDiscardingSelectArm;
     /** Innermost static value-select result context, null outside its arms. */
     private List<Type> currentSelectReturnTypes;
+    /** Callable return type stays available while checking nested expression arms. */
+    private Type currentCallableReturnType;
     private final List<String> warnings = new ArrayList<>();
 
     /** Non-fatal compiler diagnostics, detached from mutable checker state. */
@@ -1408,7 +1410,9 @@ public final class TypeChecker {
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         Env env = new Env(parent);
         Env previousTypeScope = currentTypeScope;
+        Type previousReturnType = currentCallableReturnType;
         currentTypeScope = env;
+        currentCallableReturnType = expectedReturn;
         try {
             // Reserve names before checking any initializer, so a use before the
             // declaration cannot silently resolve as an unrelated nominal type.
@@ -1421,6 +1425,7 @@ public final class TypeChecker {
             for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
         } finally {
             currentTypeScope = previousTypeScope;
+            currentCallableReturnType = previousReturnType;
         }
     }
 
@@ -3455,7 +3460,9 @@ public final class TypeChecker {
             List<Type> returns = new ArrayList<>();
             currentSelectReturnTypes = returns;
             try {
-                checkStatement(selected, env, generics, Primitive.VOID, self);
+                checkStatement(selected, env, generics,
+                        currentCallableReturnType == null
+                                ? Primitive.VOID : currentCallableReturnType, self);
             } finally {
                 currentSelectReturnTypes = prior;
             }
