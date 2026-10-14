@@ -71,10 +71,10 @@ final class ExplicitDispatchStatementSyntaxTest {
             for (String prefix : new String[]{"", "do "}) {
                 String head = ordered ? "match true over" : "match true";
                 String arms = ordered
-                        ? "on true -> { return; }\\non _ -> { return; }"
-                        : "true -> { return; }\\nelse -> { return; }";
-                String source = "fnc execute(): void {\\n" + prefix
-                        + head + "\\n" + arms + "\\nend\\n}";
+                        ? "on true -> { return; }\non _ -> { return; }"
+                        : "true -> { return; }\nelse -> { return; }";
+                String source = "fnc execute(): void {\n" + prefix
+                        + head + "\n" + arms + "\nend\n}";
                 Ast.Program program = Parser.parse(source);
                 Ast.FunctionDecl fn = (Ast.FunctionDecl)
                         program.modules().getFirst().declarations().getFirst();
@@ -89,9 +89,9 @@ final class ExplicitDispatchStatementSyntaxTest {
     @Test
     void explicitDoRemainsVisibleOnlyOnSelectAst() {
         for (boolean explicitDo : new boolean[]{false, true}) {
-            String program = "fnc execute(): void {\\n"
+            String program = "fnc execute(): void {\n"
                     + (explicitDo ? "do " : "")
-                    + "select { default: { return; } }\\n}";
+                    + "select { default: { return; } }\n}";
             Ast.Program parsed = Parser.parse(program);
             Ast.FunctionDecl fn = (Ast.FunctionDecl)
                     parsed.modules().getFirst().declarations().getFirst();
