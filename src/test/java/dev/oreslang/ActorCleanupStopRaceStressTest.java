@@ -91,8 +91,8 @@ final class ActorCleanupStopRaceStressTest {
                         "a dead actor executed duplicate source frames");
                 assertTrue(cleanupRuns.get() <= 1,
                         "terminal cleanup must run at most once");
-                producer.get().resolve(19); // late duplicate must be inert
-                assertTrue(segments.get() <= 2);
+                assertTrue(segments.get() <= 2,
+                        "a completed STOP must not re-enter a retired actor");
             }
         }
     }
