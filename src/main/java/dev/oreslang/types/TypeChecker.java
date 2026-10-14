@@ -1550,15 +1550,15 @@ public final class TypeChecker {
             // Mutable maps are affine until borrow tracking can prove there are
             // no competing live writable aliases. Read-only aliases cannot
             // be promoted into writable references.
-            if (isTypedMapType(actual)
-                    && !(binding.initializer() instanceof Ast.NewExpr created
+            if (containsTypedMapType(actual)
+                    && !(isTypedMapType(actual)
+                            && binding.initializer() instanceof Ast.NewExpr created
                             && created.type().name().equals("Map"))) {
-                // Even a readonly alias of a mutable map would need an active
-                // lifetime loan so owners cannot write while it exists.
-                // Reject all local aliases until non-lexical loan lifetimes
-                // and exclusive moves are tracked end to end.
+                // A Map hidden in a tuple, list, record, Option, or generic
+                // wrapper is still the same mutable owner. Do not allow
+                // aggregate alias laundering before move/lifetime analysis.
                 throw new IllegalArgumentException(
-                        "typed Map bindings must own a fresh new Map<K,V>() value; borrowed aliases are not implemented");
+                        "typed Map bindings require fresh ownership and cannot be aliased or embedded in another value");
             }
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields, binding.mutableReferent());
@@ -1620,7 +1620,7 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
-            if (isTypedMapType(actual)) {
+            if (containsTypedMapType(actual)) {
                 throw new IllegalArgumentException(
                         "typed Map return requires an exclusive move/borrow lifetime; not implemented");
             }
@@ -7923,6 +7923,25 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             return containsUnmovedMapValue(assignment.value(), env);
+        }
+        return false;
+    }
+
+    private static boolean containsTypedMapType(Type type) {
+        if (isTypedMapType(type)) return true;
+        if (type instanceof Borrow borrow) return containsTypedMapType(borrow.target());
+        if (type instanceof ListType list) return containsTypedMapType(list.element());
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(TypeChecker::containsTypedMapType);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(TypeChecker::containsTypedMapType);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(TypeChecker::containsTypedMapType);
+        }
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(TypeChecker::containsTypedMapType);
         }
         return false;
     }
