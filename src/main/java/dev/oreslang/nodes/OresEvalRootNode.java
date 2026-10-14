@@ -4938,7 +4938,18 @@ public final class OresEvalRootNode extends RootNode {
                                 ? new Ast.CallExpr(cleanup, List.of())
                                 : cleanup, env);
                     } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
+                        if (pendingFailure instanceof GuestThrowSignal) {
+                            // A cleanup failure may not export an owned guest
+                            // Error by retaining its signal as a host-suppressed
+                            // Throwable. Fatal process/control errors still win;
+                            // ordinary cleanup failures remain suppressed only
+                            // on the local guest signal.
+                            if (isUnmaskableFailure(failure)) {
+                                pendingFailure = failure;
+                            } else if (failure != pendingFailure) {
+                                pendingFailure.addSuppressed(failure);
+                            }
+                        } else if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                             // Never let a deferred ordinary failure replace a panic,
                             // denial, cancellation, host Error, or earlier process exit.
                             if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
@@ -4959,7 +4970,13 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
+                    if (pendingFailure instanceof GuestThrowSignal) {
+                        if (isUnmaskableFailure(failure)) {
+                            pendingFailure = failure;
+                        } else if (failure != pendingFailure) {
+                            pendingFailure.addSuppressed(failure);
+                        }
+                    } else if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                         if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
                     } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                         // Mutex cleanup cannot downgrade an already failing
