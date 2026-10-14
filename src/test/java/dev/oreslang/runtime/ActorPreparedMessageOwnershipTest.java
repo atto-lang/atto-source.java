@@ -32,7 +32,8 @@ final class ActorPreparedMessageOwnershipTest {
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && (frame.getMethodName().equals("freeze")
-                                    || frame.getMethodName().equals("isolateCopy"))));
+                                    || frame.getMethodName().equals("isolateCopy"))
+                                && frame.getMethodType().parameterCount() == 3));
                 if (snapshotCopy) copyObserved.set(true);
                 return Set.of(Map.entry("ref",
                         snapshotCopy ? foreignRef : "safe"));
@@ -50,7 +51,11 @@ final class ActorPreparedMessageOwnershipTest {
                 boolean copying = StackWalker.getInstance().walk(frames ->
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
-                                && frame.getMethodName().equals("freeze")));
+                                && frame.getMethodName().equals("freeze")
+                                // Exclude the public freeze(Object) preflight
+                                // wrapper; only the 3-argument recursive copy
+                                // is the authoritative snapshot phase.
+                                && frame.getMethodType().parameterCount() == 3));
                 if (!copying) return Set.of(Map.entry("safe", 1));
                 expanded.set(true);
                 // The source Map advertises one entry throughout preflight;
