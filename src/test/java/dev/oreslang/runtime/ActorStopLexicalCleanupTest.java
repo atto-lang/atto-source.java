@@ -107,6 +107,54 @@ final class ActorStopLexicalCleanupTest {
         }
     }
 
+
+    @Test
+    void cleanupDeadlineRevokesAbandonedAwaitWithoutOffLaneGuestReplay()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            OresFuture<Integer> neverFinishes = new OresFuture<>();
+            CountDownLatch sourceEntered = new CountDownLatch(1);
+            CountDownLatch cleanupStarted = new CountDownLatch(1);
+            AtomicInteger turns = new AtomicInteger();
+            AtomicReference<OresFuture<Integer>> task = new AtomicReference<>();
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(() -> (msg, ctx) -> {
+                task.set(ctx.runtime().startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                            int pc = turns.getAndIncrement();
+                            if (pc == 0) {
+                                sourceEntered.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            if (pc == 1) {
+                                assertTrue(OresScheduler.currentTaskInCleanup());
+                                cleanupStarted.countDown();
+                                return OresScheduler.await(neverFinishes);
+                            }
+                            fail("a forcibly revoked cleanup await may not run guest code");
+                            return OresScheduler.done(0);
+                        }));
+            });
+            actor.send("start");
+            assertTrue(sourceEntered.await(5, TimeUnit.SECONDS));
+            awaitRegistration(producer);
+            assertTrue(actor.cancel());
+            assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "finite STOP cleanup deadline must eventually release the actor");
+            assertTrue(actor.done().isDone());
+            assertTrue(task.get().isDone());
+            assertEquals(0, neverFinishes.pendingRuntimeWaiterCount(),
+                    "deadline revocation detaches the abandoned cleanup waiter");
+            producer.completeFromRuntime(10);
+            neverFinishes.completeFromRuntime(20);
+            assertEquals(2, turns.get(),
+                    "neither abandoned Future may resurrect stopped actor code");
+        }
+    }
+
     @Test
     void wrappedFatalCleanupFailureOverridesEarlierActorCancellation()
             throws Exception {

@@ -6987,10 +6987,16 @@ public final class ActorRuntime implements AutoCloseable {
                                 "actor source cleanup exceeded STOP deadline: " + ref.id()));
                 scheduler = sourceScheduler;
             }
-            if (scheduler != null) scheduler.close();
-            synchronized (lifecycleLock) {
-                finalizeStopLocked();
-                lifecycleLock.notifyAll();
+            try {
+                if (scheduler != null) scheduler.close();
+            } finally {
+                // Scheduler close can throw if its own carrier is still
+                // unwinding, but that must never suppress actor finalization.
+                // The physical carrier lease remains the final release gate.
+                synchronized (lifecycleLock) {
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
             }
         }
 

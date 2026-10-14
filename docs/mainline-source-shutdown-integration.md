@@ -42,3 +42,8 @@ This document records deliberate incremental integration, not a claim that PR #8
 - Active cleanup tasks hold the actor state/finalization barrier until deferred Future settlement and physical actor turn exit, with bounded 2-second deadline revocation on a host timer (no off-lane guest execution).
 - Late await producer settlement and fatal `CompletionException(LinkageError)` precedence are covered by actor-owned runtime tests.
 - This is a **mainline integration candidate**, not a merged behavior contract until exact-tree JVM and native tests pass. PR #922 serial execution ticket/actor-incarnation proof and force-isolate parity remain distinct acceptance gates.
+
+### Deadline revocation hardening
+
+- `expireSourceCleanup()` guarantees lifecycle finalization inspection even if the scheduler's close path fails, while the physical actor carrier exit remains the immutable resource-release barrier.
+- Actor-level deadline regression parks cleanup on a never-completing Future, waits for bounded revocation and confirms the abandoned waiter cannot replay guest code after finalization.
