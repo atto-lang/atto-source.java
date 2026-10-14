@@ -892,6 +892,17 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // Ordinary record field access is an aliasing read.
+                    // Explicit rt take instead promises an ownership transfer;
+                    // its per-field/element moved-bit and drop glue have not
+                    // been lowered on all exits. Reject before creating a
+                    // second owner or losing the original destructor.
+                    if (!(argument instanceof Ast.NameExpr)
+                            && isRootedAtRecordProjection(argument, scope)) {
+                        throw error("rt take from a record field/index requires "
+                                + "tracked partial moves and exactly-once drop; "
+                                + "take the whole record instead");
+                    }
                     if (argument instanceof Ast.MemberExpr member) {
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
@@ -1050,11 +1061,6 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
-                if (consuming && valueKind != ValueKind.COPY) {
-                    throw error("cannot move non-Copy record field '" + member.member()
-                            + "' without tracked field ownership and exactly-once drop; "
-                            + "move the containing record as a whole instead");
-                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1065,11 +1071,6 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
-                    if (consuming && isRootedAtRecordProjection(member.receiver(), scope)
-                            && fieldKind != ValueKind.COPY) {
-                        throw error("cannot move non-Copy member '" + member.member()
-                                + "' through an owned record projection; field moves need a checked drop plan");
-                    }
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
@@ -1089,11 +1090,6 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
-            if (consuming && isRootedAtRecordProjection(indexed.receiver(), scope)
-                    && elementKind != ValueKind.COPY) {
-                throw error("cannot move non-Copy indexed element through a record projection; "
-                        + "projected element moves need ownership and drop tracking");
-            }
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
@@ -3076,11 +3072,10 @@ public final class OwnershipChecker {
     }
 
     /**
-     * Product values have no tracked partial-move bitmap today. Reject
-     * consuming a non-Copy descendant of a record field, including nested
-     * record/class/index projections, until exact-once field-drop glue exists.
-     * Ordinary scalar/Copy field reads and immutable projected borrows remain
-     * admissible through their existing checks.
+     * Product values have no tracked partial-move bitmap today. Identify
+     * record-rooted field/index projections to fence explicit rt take until
+     * the compiler can track exactly-once moves and drops per field.
+     * Ordinary projections are reads (potential aliases), not implicit moves.
      */
     private boolean isRootedAtRecordProjection(Ast.Expr expr, Scope scope) {
         Ast.Expr rootExpr = expr;
