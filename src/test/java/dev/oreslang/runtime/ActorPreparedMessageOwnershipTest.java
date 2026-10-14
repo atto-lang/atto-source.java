@@ -41,6 +41,44 @@ final class ActorPreparedMessageOwnershipTest {
     }
 
     @Test
+    void frozenCopyRejectsHostileMapThatExpandsOnlyDuringSnapshot() {
+        AtomicBoolean expanded = new AtomicBoolean();
+        Map<String, Integer> hostile = new AbstractMap<>() {
+            @Override public int size() { return 1; }
+
+            @Override public Set<Entry<String, Integer>> entrySet() {
+                boolean copying = StackWalker.getInstance().walk(frames ->
+                        frames.anyMatch(frame ->
+                                frame.getClassName().equals(ActorRuntime.class.getName())
+                                && frame.getMethodName().equals("freeze")));
+                if (!copying) return Set.of(Map.entry("safe", 1));
+                expanded.set(true);
+                // The source Map advertises one entry throughout preflight;
+                // its malicious iterator grows only as the deep copy walks
+                // it. Repeated keys deliberately violate Set semantics.
+                return new java.util.AbstractSet<>() {
+                    @Override public int size() { return 1; }
+                    @Override public java.util.Iterator<Entry<String, Integer>> iterator() {
+                        return new java.util.Iterator<>() {
+                            private int produced;
+                            @Override public boolean hasNext() { return produced <= 50_000; }
+                            @Override public Entry<String, Integer> next() {
+                                if (!hasNext()) throw new java.util.NoSuchElementException();
+                                produced++;
+                                return Map.entry("safe", 1);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(hostile));
+        assertTrue(expanded.get(), "malicious iterator must run during deep copy");
+        assertTrue(denied.getMessage().contains("node budget"), denied.getMessage());
+    }
+
+    @Test
     void dataOnlyFreezeRejectsCapabilityInsertedDuringSnapshot() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<Integer>spawnShared(() -> (value, context) -> {});
