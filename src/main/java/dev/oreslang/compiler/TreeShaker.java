@@ -264,15 +264,15 @@ public final class TreeShaker {
                 return expression;
             }
             if (expression instanceof Ast.MatchExpr matched) {
-                Ast.Expr subject = rewriteExpression(matched.subject(), module, locals);
+                Ast.Expr subject = substitute(matched.subject(), substitutions, shadowed);
                 List<Ast.MatchValueArm> arms = new ArrayList<>();
                 for (Ast.MatchValueArm arm : matched.arms()) {
-                    LinkedHashMap<String, Object> armLocals = new LinkedHashMap<>(locals);
-                    addPatternLocals(arm.pattern(), armLocals);
+                    LinkedHashSet<String> armLocals = new LinkedHashSet<>(shadowed);
+                    addPatternLocalNames(arm.pattern(), armLocals);
                     arms.add(new Ast.MatchValueArm(
                             arm.pattern(),
-                            rewriteExpression(arm.guard(), module, armLocals),
-                            rewriteExpression(arm.value(), module, armLocals)));
+                            substitute(arm.guard(), substitutions, armLocals),
+                            substitute(arm.value(), substitutions, armLocals)));
                 }
                 return new Ast.MatchExpr(subject, arms);
             }
@@ -830,6 +830,19 @@ public final class TreeShaker {
             if (constant != UNKNOWN) return new Ast.LiteralExpr(constant);
 
             if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) return expression;
+            if (expression instanceof Ast.MatchExpr matched) {
+                Ast.Expr subject = rewriteExpression(matched.subject(), module, locals);
+                List<Ast.MatchValueArm> arms = new ArrayList<>();
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> armLocals = new LinkedHashMap<>(locals);
+                    addPatternLocals(arm.pattern(), armLocals);
+                    arms.add(new Ast.MatchValueArm(
+                            arm.pattern(),
+                            rewriteExpression(arm.guard(), module, armLocals),
+                            rewriteExpression(arm.value(), module, armLocals)));
+                }
+                return new Ast.MatchExpr(subject, arms);
+            }
             if (expression instanceof Ast.TypeTestExpr test) {
                 return new Ast.TypeTestExpr(
                         rewriteExpression(test.value(), module, locals),
