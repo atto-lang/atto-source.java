@@ -6,10 +6,11 @@ This branch is intentionally based on Java `main` at `97e28489ece594d6e664932106
 
 - Reconciles six expression-continuation catch/delivery boundaries without replacing newer evaluator code.
 - Prevents a downstream continuation failure from being treated as a second invocation failure in `completeSourceInvocation`. Maintains mainline's fast path for already-completed Futures and MutexGuard suspension policy.
-- Imports guest-source single-delivery and inline critical-state handoff regressions from PR #823.
+- Imports and adapts guest-source single-delivery regressions from PR #823. Six recoverable failure tests now use closed-channel read instead of terminal Option.unwrap(None) panic.
 
 ## Still excluded / mandatory gates
 
+- The older inline critical-state/handle_state fixture was excluded from active Maven tests: current main's actor-state declaration contract differs, and simply changing its spelling would weaken the sealed-state proof. It remains in #823 until its feature-level lowering is ported.
 - Cleanup-aware SourceTask cancellation and actor STOP/deadline/force revocation are **not yet ported**. Never claim runtime parity from this evaluator slice.
 - Do not overwrite mainline's wall-clock deadline admission, physical execution lease, blocking subscriber notification lifetime, or Future channel/select arbitration.
 - Reconcile PR #906's typed Future select only after this branch passes JDK25 tests on an exact-tree mirror.

@@ -25,8 +25,12 @@ final class SourceContinuationSingleDeliveryTest {
                     stdio.stdout.write("value:");
                     stdio.stdout.write(result);
                     stdio.stdout.write(":");
-                    val Option<int> empty = None;
-                    stdio.stdout.write(empty.unwrap());
+                    // Channel closure is recoverable; Option.unwrap(None) is a
+                    // terminal panic and must never be caught as an error.
+                    val Channel<int> closed = Channel.new<int>(0);
+                    closed.close();
+                    val ignored = readch closed;
+                    stdio.stdout.write(ignored);
                   } catch (err) {
                     stdio.stdout.write("caught:");
                   } finally {
@@ -51,8 +55,12 @@ final class SourceContinuationSingleDeliveryTest {
                     stdio.stdout.write("value:");
                     stdio.stdout.write(result);
                     stdio.stdout.write(":");
-                    val Option<int> empty = None;
-                    stdio.stdout.write(empty.unwrap());
+                    // Channel closure is recoverable; Option.unwrap(None) is a
+                    // terminal panic and must never be caught as an error.
+                    val Channel<int> closed = Channel.new<int>(0);
+                    closed.close();
+                    val ignored = readch closed;
+                    stdio.stdout.write(ignored);
                   } catch (err) {
                     stdio.stdout.write("caught:");
                   } finally {
@@ -98,8 +106,12 @@ final class SourceContinuationSingleDeliveryTest {
                     stdio.stdout.write("sum:");
                     stdio.stdout.write(sum);
                     stdio.stdout.write(":");
-                    val Option<int> empty = None;
-                    stdio.stdout.write(empty.unwrap());
+                    // Channel closure is recoverable; Option.unwrap(None) is a
+                    // terminal panic and must never be caught as an error.
+                    val Channel<int> closed = Channel.new<int>(0);
+                    closed.close();
+                    val ignored = readch closed;
+                    stdio.stdout.write(ignored);
                   } catch (err) {
                     stdio.stdout.write("caught:");
                   } finally {
@@ -125,8 +137,12 @@ final class SourceContinuationSingleDeliveryTest {
                     stdio.stdout.write("item:");
                     stdio.stdout.write(item);
                     stdio.stdout.write(":");
-                    val Option<int> empty = None;
-                    stdio.stdout.write(empty.unwrap());
+                    // Channel closure is recoverable; Option.unwrap(None) is a
+                    // terminal panic and must never be caught as an error.
+                    val Channel<int> closed = Channel.new<int>(0);
+                    closed.close();
+                    val ignored = readch closed;
+                    stdio.stdout.write(ignored);
                   } catch (err) {
                     stdio.stdout.write("caught:");
                   } finally {
@@ -152,8 +168,12 @@ final class SourceContinuationSingleDeliveryTest {
                     stdio.stdout.write("assigned:");
                     stdio.stdout.write(value);
                     stdio.stdout.write(":");
-                    val Option<int> empty = None;
-                    stdio.stdout.write(empty.unwrap());
+                    // Channel closure is recoverable; Option.unwrap(None) is a
+                    // terminal panic and must never be caught as an error.
+                    val Channel<int> closed = Channel.new<int>(0);
+                    closed.close();
+                    val ignored = readch closed;
+                    stdio.stdout.write(ignored);
                   } catch (err) {
                     stdio.stdout.write("caught:");
                   } finally {
@@ -170,8 +190,10 @@ final class SourceContinuationSingleDeliveryTest {
         assertEquals("defer:catch:finally:after", run("""
                 async fnc fail(): int {
                   rt cooperate;
-                  val Option<int> empty = None;
-                  return empty.unwrap();
+                  val Channel<int> closed = Channel.new<int>(0);
+                  closed.close();
+                  val ignored = readch closed;
+                  return ignored;
                 }
 
                 pub async routine main(): void {
