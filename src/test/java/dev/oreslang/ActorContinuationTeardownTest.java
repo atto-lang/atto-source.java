@@ -449,4 +449,49 @@ final class ActorContinuationTeardownTest {
         }
     }
 
+    @Test
+    void fatalCleanupFailureOutranksEarlierActorCancellation() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> abandoned = new AtomicReference<>();
+            OresFuture<Integer> producer = OresFuture.fromCallback(abandoned::set);
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            LinkageError fatal = new LinkageError("fatal during terminal cleanup");
+            AtomicInteger cleanupResumes = new AtomicInteger();
+
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                taskFuture.set(context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private boolean first = true;
+
+                            @Override
+                            public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                                if (first) {
+                                    first = false;
+                                    suspended.countDown();
+                                    return OresScheduler.await(producer);
+                                }
+                                assertInstanceOf(
+                                        java.util.concurrent.CancellationException.class,
+                                        resume.failure());
+                                cleanupResumes.incrementAndGet();
+                                throw fatal;
+                            }
+                        }));
+            });
+            actor.send(1);
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertSame(fatal, actor.failure().orElseThrow(),
+                    "fatal cleanup must reach actor get_done/parent supervision");
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+            assertSame(fatal, failure.getCause());
+            abandoned.get().resolve(3);
+            assertEquals(1, cleanupResumes.get(), "fatal unwind cannot replay");
+        }
+    }
+
 }
