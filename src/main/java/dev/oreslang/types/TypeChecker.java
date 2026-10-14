@@ -1619,8 +1619,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: legacy do nb select return; exits only the detached arm"
+                        : "W-SELECT-RETURN: legacy do nb select return value is arm-local and discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1786,9 +1786,9 @@ public final class TypeChecker {
                                 arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
+                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Legacy detached do-nb-select arms cannot return from an
+                    // already-continued enclosing callable.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
@@ -3529,6 +3529,72 @@ public final class TypeChecker {
                 case IMMEDIATE -> new Named("Option", List.of(element));
             };
         }
+        if (expr instanceof Ast.MatchExpr valueMatch) {
+            Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            Type declaredResult = valueMatch.resultType() == null ? null
+                    : resolve(valueMatch.resultType(), generics, self);
+            if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "value match result parameter must be a known, non-void value type");
+            }
+            if (declaredResult instanceof Borrow) {
+                // Inferred value matches already reject branch-local loan escape.
+                // An explicit type must not circumvent that check by erasing &T.
+                throw new IllegalArgumentException(
+                        "value match cannot produce an explicit borrowed result until loan escape is proven");
+            }
+            Type result = declaredResult;
+            List<Ast.MatchArm> proofArms = new ArrayList<>();
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            try {
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    env.restoreInitialization(before);
+                    Env armEnv = new Env(env);
+                    checkPattern(arm.pattern(), subject, armEnv, generics, self);
+                    if (arm.guard() != null) {
+                        requireAssignable(
+                                typeOfCondition(arm.guard(), armEnv, generics, self),
+                                Primitive.BOOL,
+                                "value match guard");
+                    }
+                    Type actual = declaredResult == null
+                            ? typeOf(arm.value(), armEnv, generics, self)
+                            : typeOfAgainstExpected(arm.value(), declaredResult, armEnv, generics, self);
+                    if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "value match arms must return a statically known non-void value");
+                    }
+                    if (declaredResult != null) {
+                        // An explicit result type constrains each arm, but
+                        // cannot erase readonly/ownership capabilities.
+                        requireReadonlyCapabilityPreserved(actual, declaredResult, "value match arm");
+                        requireAssignable(actual, declaredResult, "value match arm");
+                    } else if (result == null) {
+                        result = actual;
+                    } else {
+                        // Preserve the existing invariant inference contract
+                        // when no result parameter was supplied.
+                        requireReadonlyCapabilityPreserved(actual, result, "value match arm");
+                        requireAssignable(actual, result, "value match arm");
+                        requireAssignable(result, actual, "value match arm");
+                    }
+                    proofArms.add(new Ast.MatchArm(
+                            arm.pattern(), arm.guard(),
+                            List.of(new Ast.ReturnStmt(arm.value()))));
+                }
+                // Reuse the canonical finite-domain reachability and
+                // exhaustive-pattern checker. These arm returns are checked
+                // against MatchExpr's result, not the enclosing function.
+                checkMatch(
+                        new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
+                        subject, env, generics, result, self);
+                return result;
+            } finally {
+                // Only the selected arm executes at runtime. Type-checking
+                // all branches cannot establish outer definite-init facts.
+                env.restoreInitialization(before);
+            }
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -4970,6 +5036,20 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
+            requireKnownRuntimePatternTarget(typed.type(), new LinkedHashSet<>());
+            if (typed.type().isComplement()) {
+                Type excluded = deref(resolve(typed.type().complementedType(), generics, self));
+                if (runtimeValueTypeCovered(subject, excluded, 0)) {
+                    throw new IllegalArgumentException(
+                            "unreachable negative type pattern: " + subject + " is contained in " + excluded);
+                }
+                if (typed.binding() != null) {
+                    // A negative test does not prove a concrete positive
+                    // nominal type; retain the subject's static capabilities.
+                    bindings.define(typed.binding(), subject, Ast.BindingKind.VAL);
+                }
+                return;
+            }
             Type target = deref(resolve(typed.type(), generics, self));
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
@@ -5292,6 +5372,19 @@ public final class TypeChecker {
         for (Ast.Pattern pattern : patterns) {
             if (patternCoversType(pattern, subject, generics, self)) return true;
         }
+        // Every runtime value either satisfies a reifiable type predicate or
+        // its exact complement. The caller filtered guarded arms already.
+        // Matching TypeRef identities here avoids unsound subtype guesses.
+        for (Ast.Pattern a : patterns) {
+            if (!(a instanceof Ast.TypePattern positive) || positive.type().isComplement()) continue;
+            for (Ast.Pattern b : patterns) {
+                if (b instanceof Ast.TypePattern negative
+                        && negative.type().isComplement()
+                        && negative.type().complementedType().equals(positive.type())) {
+                    return true;
+                }
+            }
+        }
 
         if (subject instanceof Union union) {
             return union.options().stream().allMatch(option ->
@@ -5518,8 +5611,56 @@ public final class TypeChecker {
         return a.equals(b);
     }
 
+    /**
+     * Exhaustiveness may use T and !T as a logical partition only if T has
+     * a concrete runtime predicate. Unknown nominal names and unreified
+     * aliases cannot silently become a predicate that always returns false.
+     */
+    private void requireKnownRuntimePatternTarget(Ast.TypeRef ref, Set<String> aliases) {
+        if (ref.isComplement()) {
+            requireKnownRuntimePatternTarget(ref.complementedType(), aliases);
+            return;
+        }
+        if (ref.isUnion()) {
+            for (Ast.TypeRef member : ref.arguments()) {
+                requireKnownRuntimePatternTarget(member, aliases);
+            }
+            return;
+        }
+        String name = ref.name();
+        if (Set.of(
+                "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
+                "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
+                "Symbol", "complex", "complex64", "complex128",
+                "Option", "Result", "Array", "List", "Generator", "Iterator",
+                "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
+                || findClass(name) != null || findInterface(name) != null) {
+            return;
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(name);
+        if (alias != null && alias.genericParameters().isEmpty()) {
+            if (!aliases.add(name)) {
+                throw new IllegalArgumentException("cyclic type alias in runtime pattern '" + name + "'");
+            }
+            try {
+                requireRuntimeReifiableType(alias.target(), "type pattern alias");
+                requireKnownRuntimePatternTarget(alias.target(), aliases);
+            } finally {
+                aliases.remove(name);
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "type pattern '" + name + "' has no known runtime identity; "
+                        + "declare/import a reifiable nominal type or use a supported scalar");
+    }
+
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
+        if (ref.isComplement()) {
+            requireRuntimeReifiableType(ref.complementedType(), operator);
+            return;
+        }
         if (ref.isUnion()) {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
