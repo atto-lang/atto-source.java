@@ -120,6 +120,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.publish()
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_preflight_repository_identity_pin_cannot_change_before_source_publish(self):
+        # Simulate a valid earlier authorization for a different numeric ID.
+        with patch.object(pub, "require_preflight", return_value=321):
+            with self.assertRaisesRegex(pub.Denied, "numeric repository identity"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_missing_archived_or_disabled_status_is_not_treated_as_active(self):
+        for state in ("archived", "disabled"):
+            with self.subTest(state=state):
+                self.route_calls.clear()
+                self.repository_ids = [123] * 10
+                self.visibility = ["private"] * 10
+                self.archived = [None if state == "archived" else False] + [False] * 9
+                self.disabled = [None if state == "disabled" else False] + [False] * 9
+                with self.assertRaisesRegex(pub.Denied, "archived, disabled"):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_private_repo_replacement_during_transfer_aborts_before_next_write(self):
         self.repository_ids = [123, 123, 456] + [123] * 10
         with self.assertRaisesRegex(pub.Denied, "numeric repository identity"):
