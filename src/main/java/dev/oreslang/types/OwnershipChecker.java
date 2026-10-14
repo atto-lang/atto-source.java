@@ -875,6 +875,13 @@ public final class OwnershipChecker {
                 if (!resultType.equals(result.type)) resultType = Ast.TypeRef.inferred();
             }
             // Result moves are checked within each mutually exclusive arm.
+            // In nonblocking mode the result is not yet available: the
+            // continuation owns the eventual T and the caller owns Future<T>.
+            if (resultSelect.select().mode() == Ast.WaitMode.NONBLOCKING) {
+                Ast.TypeRef future = new Ast.TypeRef(
+                        "Future", List.of(resultType), false);
+                return new ValueInfo(future, kindOfType(future), null);
+            }
             return new ValueInfo(resultType,
                     allCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY,
                     null);
