@@ -2114,7 +2114,7 @@ public final class OresEvalRootNode extends RootNode {
                                 for (Ast.SwitchCase arm : switched.cases()) {
                                     boolean matchedCase = false;
                                     for (Ast.Expr constant : arm.constants()) {
-                                        if (Objects.equals(subject, eval(constant, env))) {
+                                        if (valueEquals(subject, eval(constant, env))) {
                                             matchedCase = true;
                                             break;
                                         }
@@ -6020,6 +6020,14 @@ public final class OresEvalRootNode extends RootNode {
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
+                if (literal.value() instanceof dev.oreslang.runtime.OresSymbol symbol
+                        && ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
+                        && !symbol.publicToUntrustedCoreV1()) {
+                    // Runtime backstop: dynamically reached imported/module code,
+                    // not only syntactically local actor source, must obey the
+                    // exact same Symbol namespace-admission policy.
+                    throw new SecurityException("Symbol is not visible to untrusted actor");
+                }
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
                 return literal.value();
             }
@@ -6444,7 +6452,7 @@ public final class OresEvalRootNode extends RootNode {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
-                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
+                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshotForClosure();
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
@@ -8253,8 +8261,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
-            if (name.equals("Symbol") && findClass("Symbol") == null)
-                return value instanceof dev.oreslang.runtime.OresSymbol;
+            if (name.equals("Symbol")) return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
@@ -8940,6 +8947,15 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() {
+            // Deferred callbacks must not smuggle mutable Maps across execution
+            // turns. Actor maps are independently denied, but this also guards
+            // any unchecked host or dynamic entry path.
+            for (Slot slot : slots.values()) {
+                if (slot.value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "cannot snapshot typed Map across deferred execution without ownership proof");
+                }
+            }
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
@@ -8947,6 +8963,24 @@ public final class OresEvalRootNode extends RootNode {
                     null,
                     lexicalModule);
             cp.slots.putAll(slots);
+            return cp;
+        }
+
+        private Env snapshotForClosure() {
+            Env cp = new Env(
+                    parent == null ? null : parent.snapshotForClosure(),
+                    descendantsNonLexical,
+                    accessClass,
+                    null,
+                    lexicalModule);
+            // Only referenced closed-over names should survive a closure,
+            // and typed Maps cannot be captured at all in V1. Omit maps even
+            // when unused; runtime lookup will fail closed on attempted use.
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                if (!(entry.getValue().value instanceof OresKeyedMap<?, ?>)) {
+                    cp.slots.put(entry.getKey(), entry.getValue());
+                }
+            }
             return cp;
         }
         private boolean hasLiveMutexGuards() {

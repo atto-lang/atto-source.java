@@ -1491,6 +1491,13 @@ public final class ActorRuntime implements AutoCloseable {
         Object prepared = isPrivateKind(cell.kind)
                 ? isolateCopy(value)
                 : freezeForTransport(value);
+        // The pre-copy capability check is not authoritative: a mutable
+        // sender-owned container may change while its snapshot is prepared.
+        // Outputs are data-only for EVERY actor kind, not just UNTRUSTED.
+        rejectDataFreezeCapabilities(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
         long bytes = estimateFrozenBytes(
                 prepared,
                 new IdentityHashMap<>(),
@@ -4986,6 +4993,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // Never enqueue a snapshot that has not itself passed the destination
+        // Symbol allowlist, even if a mutable sender graph changed mid-copy.
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
@@ -5762,6 +5774,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>

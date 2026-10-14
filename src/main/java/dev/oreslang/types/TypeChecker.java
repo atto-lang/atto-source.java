@@ -213,21 +213,31 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Map")) {
+                throw new IllegalArgumentException(
+                        "module 'Map' conflicts with the reserved built-in Map type");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Symbol")) throw new IllegalArgumentException(
+                            "Symbol is a reserved built-in value type, not a class name");
                     if (klass.name().equals("Map")) throw new IllegalArgumentException(
                             "Map is a reserved built-in collection type");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    if (iface.name().equals("Symbol")) throw new IllegalArgumentException(
+                            "Symbol is a reserved built-in value type, not a interface name");
                     if (iface.name().equals("Map")) throw new IllegalArgumentException(
                             "Map is a reserved built-in collection type");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    if (alias.name().equals("Symbol")) throw new IllegalArgumentException(
+                            "Symbol is a reserved built-in value type, not a type alias name");
                     if (alias.name().equals("Map")) throw new IllegalArgumentException(
                             "Map is a reserved built-in collection type");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
@@ -993,27 +1003,36 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
-            Type fieldType = classFieldType(klass, field);
-            if (field.initializer() != null && field.type() != null) {
-                Ast.ClassDecl previousClassOwner = currentClassOwner;
-                Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
-                currentClassOwner = klass;
-                lexicalClassOrigin = klass;
-                try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
-                    requireReadonlyCapabilityPreserved(
-                            actual,
-                            fieldType,
-                            "field initializer " + klass.name() + "." + field.name());
-                    requireMutableReferentCompatible(
-                            actual,
-                            field.mutableReferent(),
-                            "field '" + klass.name() + "." + field.name() + "'");
-                    requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
-                } finally {
-                    currentClassOwner = previousClassOwner;
-                    lexicalClassOrigin = previousLexicalClass;
+            // An untrusted actor's initial state is constructed inside its
+            // isolation boundary. The same Symbol-admission policy must apply
+            // to declared and inferred field initializers, not just methods.
+            Ast.ActorKind priorFieldActorKind = currentActorKind;
+            currentActorKind = klass.actorKind();
+            try {
+                Type fieldType = classFieldType(klass, field);
+                if (field.initializer() != null && field.type() != null) {
+                    Ast.ClassDecl previousClassOwner = currentClassOwner;
+                    Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+                    currentClassOwner = klass;
+                    lexicalClassOrigin = klass;
+                    try {
+                        Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                        requireReadonlyCapabilityPreserved(
+                                actual,
+                                fieldType,
+                                "field initializer " + klass.name() + "." + field.name());
+                        requireMutableReferentCompatible(
+                                actual,
+                                field.mutableReferent(),
+                                "field '" + klass.name() + "." + field.name() + "'");
+                        requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+                    } finally {
+                        currentClassOwner = previousClassOwner;
+                        lexicalClassOrigin = previousLexicalClass;
+                    }
                 }
+            } finally {
+                currentActorKind = priorFieldActorKind;
             }
         }
 
@@ -1616,6 +1635,10 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            if (isTypedMapType(actual)) {
+                throw new IllegalArgumentException(
+                        "typed Map return requires an exclusive move/borrow lifetime; not implemented");
+            }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -1683,7 +1706,7 @@ public final class TypeChecker {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
             Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
+            Set<Object> seen = new HashSet<>();
             for (Ast.SwitchCase arm : switched.cases()) {
                 env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
@@ -1693,8 +1716,13 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    String key = constant.toString();
-                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + key);
+                    // AST.toString() is not a semantic key: a literal text
+                    // value "#foo" can print exactly like the Symbol #foo.
+                    // Keep nominal runtime identity in the duplicate set.
+                    Object key = constant instanceof Ast.LiteralExpr literal
+                            ? new SwitchLiteralCaseKey(literal.value().getClass(), literal.value())
+                            : constant.toString();
+                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + constant);
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
@@ -2182,6 +2210,17 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            // Until Map loans/moves can be expressed in function signatures,
+            // an argument transfer could create a second live owner. No
+            // function, host intrinsic or callback can receive a typed Map.
+            for (Ast.Expr argument : call.arguments()) {
+                Ast.Expr value = argument instanceof Ast.SpreadExpr spread
+                        ? spread.expression() : argument;
+                if (isTypedMapType(typeOf(value, env, generics, self))) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot escape through a call argument without move/borrow semantics");
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -3325,7 +3364,7 @@ public final class TypeChecker {
             }
             // Guest Symbols are immutable keys, not fresh reference capabilities.
             // Do not silently reinterpret the historical STABLE constructor.
-            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
+            if (created.type().name().equals("Symbol")) {
                 throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
             }
             if (created.type().name().equals("DynamicStruct")) {
@@ -7905,6 +7944,9 @@ public final class TypeChecker {
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
         for (String name : names) {
+            if (name.equals("Symbol")) {
+                throw new IllegalArgumentException("generic Symbol shadows built-in Symbol in " + owner);
+            }
             if (name.equals("Map")) {
                 throw new IllegalArgumentException("generic 'Map' shadows the built-in Map type in " + owner);
             }
@@ -8065,6 +8107,17 @@ public final class TypeChecker {
             if (binding != null) return binding;
             if (parent == null) return null;
             Binding inherited = parent.lookup(name);
+            if (deferredCaptureBoundary
+                    && inherited != null
+                    && isTypedMapType(inherited.type())) {
+                // A captured Map survives the creating scope. No loan can be
+                // proved to end before the closure executes, so prevent both
+                // readonly and mutable captures until non-lexical lifetimes
+                // and exclusive moves are implemented.
+                throw new IllegalArgumentException(
+                        "cannot capture typed Map '" + name
+                                + "' in deferred code without a borrow lifetime proof");
+            }
             if (deferredCaptureBoundary
                     && inherited != null
                     && inherited.hasUninitializedFields()) {
