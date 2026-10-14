@@ -50,10 +50,33 @@ public record FixedProductCallPlan(List<FixedProductCallPlan.BoundSlot> sourceOr
         // JVM/AOT/native invocation code.
         boolean[] claimedTargets = new boolean[arity];
         boolean[] claimedSources = new boolean[arity];
+        boolean namedStarted = false;
+        Set<String> claimedLabels = new HashSet<>();
         for (int i = 0; i < arity; i++) {
             BoundSlot slot = Objects.requireNonNull(sourceOrder.get(i), "bound slot");
             int source = slot.sourceIndex();
             int target = slot.parameterIndex();
+            // The public record constructor must enforce the same source-slot
+            // grammar as bind(). A total ABI permutation alone is insufficient:
+            // otherwise callers can forge repeated labels or a positional
+            // argument after named binding without going through bind().
+            String label = slot.label();
+            if (label == null) {
+                if (namedStarted) {
+                    throw new IllegalArgumentException(
+                            "positional argument follows named argument or record spread");
+                }
+                if (target != i) {
+                    throw new IllegalArgumentException(
+                            "positional product call slot is not in its leading parameter position");
+                }
+            } else {
+                namedStarted = true;
+                if (label.isBlank() || !claimedLabels.add(label)) {
+                    throw new IllegalArgumentException(
+                            "duplicate or empty named argument in product call plan: " + label);
+                }
+            }
             if (source < 0 || source >= arity || target < 0 || target >= arity
                     || claimedSources[source] || claimedTargets[target]) {
                 throw new IllegalArgumentException("invalid product call plan permutation");
