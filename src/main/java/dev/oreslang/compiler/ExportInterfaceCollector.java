@@ -171,7 +171,11 @@ public final class ExportInterfaceCollector {
 
     private static void field(StringBuilder dst, String item) {
         Objects.requireNonNull(item);
-        dst.append(item.length()).append(':').append(item);
+        // A cross-language wire signature is measured in UTF-8 bytes,
+        // not Java UTF-16 code units (which differ for supplementary chars).
+        // The outer codec performs strict Unicode validation before output.
+        dst.append(item.getBytes(java.nio.charset.StandardCharsets.UTF_8).length)
+                .append(':').append(item);
     }
 
     private static void flags(StringBuilder dst, boolean... values) {
