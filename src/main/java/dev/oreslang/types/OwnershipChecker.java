@@ -2464,15 +2464,22 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.TupleProjectionPattern projection) {
-            List<Ast.TypeRef> elementTypes =
-                    subjectType != null && subjectType.isTupleType()
-                            ? subjectType.arguments() : List.of();
+            Ast.TypeRef tuple = subjectType != null && subjectType.isBorrow()
+                    ? subjectType.borrowedTarget() : subjectType;
+            // TypeChecker resolves source Tuple<T,U> to a positional product.
+            // OwnershipChecker also sees the original parsed TypeRef, which is
+            // not the internal $tuple$ shape; both spellings must agree.
+            List<Ast.TypeRef> elementTypes = tuple != null
+                    && (tuple.isTupleType() || tuple.name().equals("Tuple"))
+                    ? tuple.arguments() : List.of();
+            if (elementTypes.size() != projection.bindings().size()) {
+                throw error("tuple match projection needs a proven exact-arity tuple type");
+            }
             for (int i = 0; i < projection.bindings().size(); i++) {
                 Ast.DestructureBinding binding = projection.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef type = i < elementTypes.size()
-                        ? elementTypes.get(i) : Ast.TypeRef.inferred();
-                defineProjectionAlias(binding.name(), type, source, destination, binding.kind());
+                defineProjectionAlias(binding.name(), elementTypes.get(i),
+                        source, destination, binding.kind());
             }
             return;
         }
@@ -2527,6 +2534,13 @@ public final class OwnershipChecker {
             Scope destination, Ast.BindingKind bindingKind) {
         Ast.TypeRef safe = source == null ? type : overlayReadonlyCapabilities(source.type, type);
         ValueKind kind = kindOfType(safe);
+        if (source == null && kind != ValueKind.COPY) {
+            // A constructor expression/call has no tracked owner VarState.
+            // Until move-from-temporary lowering exists, exposing an owned
+            // projection would allow untracked aliases or double moves.
+            throw error("non-Copy match projection '" + name
+                    + "' requires a tracked source owner; bind the source first");
+        }
         if (bindingKind == Ast.BindingKind.LET && kind != ValueKind.COPY) {
             throw error("let match projection of non-Copy field '" + name
                     + "' requires explicit move/loan lowering; use const or val");
