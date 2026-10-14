@@ -163,7 +163,9 @@ final class SymbolMapGuestSourceTest {
             "pub fnc bad(): void { let m = new Map<Symbol, int>(); m[#ready] = 1; return; }",
             "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let mut alias = m; alias[#ready] = 1; return; }",
             "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let mut alias = m; return; }",
-            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); m = new Map<Symbol, int>(); return; }"
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); m = new Map<Symbol, int>(); return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); const alias = m; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let alias = m; return; }"
         };
         for (String source : invalid) {
             assertThrows(IllegalArgumentException.class,
@@ -171,7 +173,7 @@ final class SymbolMapGuestSourceTest {
         }
     }
 
-    @Test void readOnlyAliasCanReadButCannotBePromotedToWritable() {
+    @Test void readOnlyMapAliasesAreRejectedUntilBorrowLifetimeTrackingExists() {
         String source = """
                 pub fnc bad(): void {
                     val m = new Map<Symbol, int>();
