@@ -758,6 +758,12 @@ public final class Ast {
             List<Stmt> body,
             boolean mutableReferent) {
         public SelectArm {
+            if (operation == null) {
+                throw new IllegalArgumentException("select arm operation is required");
+            }
+            if (body == null) {
+                throw new IllegalArgumentException("select arm body is required");
+            }
             if (operation == ChannelOperation.DEFAULT && mutableReferent) {
                 throw new IllegalArgumentException("default select arm cannot carry mutable binding");
             }
@@ -813,8 +819,20 @@ public final class Ast {
             }
             arms = List.copyOf(arms);
             if (arms.isEmpty()) throw new IllegalArgumentException("select requires at least one arm");
-            long defaults = arms.stream().filter(arm -> arm.operation() == ChannelOperation.DEFAULT).count();
-            if (defaults > 1) throw new IllegalArgumentException("select permits at most one default arm");
+            boolean sawDefault = false;
+            for (SelectArm arm : arms) {
+                if (arm.operation() == ChannelOperation.DEFAULT) {
+                    if (sawDefault) {
+                        throw new IllegalArgumentException("select permits at most one default arm");
+                    }
+                    sawDefault = true;
+                } else if (sawDefault) {
+                    // ASTs can be built by tools and compiler passes, not only
+                    // the parser. Keep the source-order invariant at this
+                    // boundary so lowerings never see an impossible shape.
+                    throw new IllegalArgumentException("select default arm must be last");
+                }
+            }
         }
     }
 
