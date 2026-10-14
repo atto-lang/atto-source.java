@@ -15,7 +15,7 @@ foo<int>()                        // defaults B-E
 foo<int, string>()                // B is string; C-E default
 foo<A=int, D=bool, C=bool>()      // named arguments can appear in any order
 foo<int, D=bool>()                // positional arguments precede named
-foo<int, _, bool>()               // _ means INFER B; it does not use B's default
+foo<int, _, bool>()               // ERROR here: B has no value-argument inference source
 ```
 
 An unadorned declaration `A` is **required unless it can be inferred**.
