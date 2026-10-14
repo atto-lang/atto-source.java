@@ -179,13 +179,14 @@ read can rendezvous with a pending select-write.
 
 ## Static select
 
-**Result-mode vocabulary:** `do select { ... }` and
-`do nb select { ... }` explicitly request no-result, side-effecting dispatch.
-The selected arm runs as a statement, not as a value-producing expression.
-The older `select { ... }` and `nb select { ... }` remain accepted as
-statement forms for source compatibility. A future value-returning static
-select expression will require separate typed expression/arm support rather
-than silently changing the existing statement contract.
+**Result-mode vocabulary:** `do select { ... }` is a blocking
+procedural statement. A selected arm's `return` exits the lexical
+enclosing callable; the value is never discarded. `do nb select { ... }`
+has a detached actor continuation scope (compatibility-only).
+Bare static `select { ... }` and `nb select { ... }` statements are
+now rejected to avoid silent mode selection. Typed result-returning
+`return select` requires separate ARM_RESULT lowering; unsupported
+braced value-select is not reinterpreted as procedural control flow.
 
 `cb select` and `nb cb select` are **not** aliases: the parser rejects
 both with a hint to use `do select` or `do nb select`. The existing
