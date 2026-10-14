@@ -500,7 +500,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
+            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt, ThrowStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -670,6 +670,16 @@ public final class Ast {
         public SwitchStmt {
             cases = List.copyOf(cases);
             defaultBody = List.copyOf(defaultBody);
+        }
+    }
+
+    /**
+     * Statically checked guest throw. Currently admitted only inside a
+     * lexical non-actor try body. This statement cannot carry a host Throwable.
+     */
+    public record ThrowStmt(Expr value) implements Stmt {
+        public ThrowStmt {
+            if (value == null) throw new IllegalArgumentException("throw requires an Error value");
         }
     }
 
