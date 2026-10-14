@@ -602,21 +602,50 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal) {
-        final boolean settled;
+        Object published = terminal;
         if (deferredCancellation) {
             synchronized (cancellationRequest) {
-                settled = state.compareAndSet(PENDING, terminal);
+                if (state.get() != PENDING) return false;
+                // The publisher may have observed no cancellation *before*
+                // cancel() claimed it. Resolve both outcomes at the same
+                // linearization point rather than publishing stale success
+                // or ordinary failure after an accepted cancellation.
+                CancellationException requested = cancellationRequest.get();
+                if (requested != null) {
+                    if (terminal instanceof Success<?>) {
+                        published = new Cancelled(requested);
+                    } else if (terminal instanceof Failure failed
+                            && !dominatesDeferredCancellation(failed.failure())) {
+                        Throwable diagnostic = failed.failure();
+                        if (diagnostic != requested) {
+                            synchronized (requested) {
+                                if (requested.getSuppressed().length < 64) {
+                                    requested.addSuppressed(diagnostic);
+                                }
+                            }
+                        }
+                        published = new Cancelled(requested);
+                    }
+                }
+                if (!state.compareAndSet(PENDING, published)) return false;
             }
-        } else {
-            settled = state.compareAndSet(PENDING, terminal);
+        } else if (!state.compareAndSet(PENDING, published)) {
+            return false;
         }
-        if (!settled) return false;
 
         RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
+            notifyWaiter(waiter, published);
         }
         return true;
+    }
+
+    private static boolean dominatesDeferredCancellation(Throwable failure) {
+        Throwable cause = unwrap(failure);
+        return cause instanceof VirtualMachineError
+                || cause instanceof ThreadDeath
+                || cause instanceof LinkageError
+                || cause instanceof ActorRuntime.UntrustedActorQuotaExceededException;
     }
 
     @SuppressWarnings("unchecked")

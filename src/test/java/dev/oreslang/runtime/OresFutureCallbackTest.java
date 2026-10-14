@@ -12,6 +12,39 @@ final class OresFutureCallbackTest {
 
 
     @Test
+    void acceptedDeferredCancellationWinsLateOrdinarySettlement() throws Exception {
+        OresFuture<Integer> completed = new OresFuture<>(() -> { }, true);
+        assertTrue(completed.cancel(false));
+        assertTrue(completed.completeFromRuntime(42));
+        assertThrows(java.util.concurrent.CancellationException.class,
+                () -> completed.get(5, TimeUnit.SECONDS));
+        assertTrue(completed.isCancelled());
+
+        OresFuture<Integer> failed = new OresFuture<>(() -> { }, true);
+        IllegalStateException cleanupFailure = new IllegalStateException("cleanup failed");
+        assertTrue(failed.cancel(false));
+        assertTrue(failed.failFromRuntime(cleanupFailure));
+        java.util.concurrent.CancellationException cancelled = assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () -> failed.get(5, TimeUnit.SECONDS));
+        assertTrue(failed.isCancelled());
+        assertArrayEquals(new Throwable[] { cleanupFailure }, cancelled.getSuppressed(),
+                "ordinary cleanup failure remains a bounded cancellation diagnostic");
+    }
+
+    @Test
+    void fatalFailureStillDominatesAcceptedDeferredCancellation() throws Exception {
+        OresFuture<Integer> future = new OresFuture<>(() -> { }, true);
+        LinkageError fatal = new LinkageError("fatal VM failure");
+        assertTrue(future.cancel(false));
+        assertTrue(future.failFromRuntime(fatal));
+        var observed = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> future.get(5, TimeUnit.SECONDS));
+        assertSame(fatal, observed.getCause());
+        assertFalse(future.isCancelled());
+    }
+
+    @Test
     void deferredCancelCannotReportSuccessAfterRuntimeAlreadySettled() throws Exception {
         java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
         java.util.concurrent.CountDownLatch proceed = new java.util.concurrent.CountDownLatch(1);
