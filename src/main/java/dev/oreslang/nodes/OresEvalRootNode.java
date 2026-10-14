@@ -6456,6 +6456,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof ImportedEnumNamespace imported) {
+                return imported.owner().member(
+                        new EnumNamespace(imported.declaration()), name, null);
+            }
             if (receiver instanceof EnumNamespace namespace) {
                 Ast.EnumDecl declarationEnum = namespace.declaration();
                 Ast.EnumVariant selected = null;
@@ -7553,7 +7557,16 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     yield new ClassFacade(this, klass);
                 }
-                case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPE, TYPES ->
+                case TYPE -> {
+                    Ast.EnumDecl declarationEnum = findEnum(name);
+                    if (declarationEnum == null || declarationEnum.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException(
+                                "import type '" + name
+                                        + "' is not a public runtime enum constructor namespace");
+                    }
+                    yield new ImportedEnumNamespace(this, declarationEnum);
+                }
+                case ACTOR, INTERFACE, CONTRACT, TRAIT, STRUCT, TYPES ->
                         throw new IllegalArgumentException(
                                 "import " + kind.name().toLowerCase()
                                         + " is a type-only selector and cannot be evaluated as a runtime value");
@@ -8038,6 +8051,14 @@ public final class OresEvalRootNode extends RootNode {
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
         }
 
+        private ImportedEnumNamespace importedEnum(String name) {
+            ImportedBinding binding = namedImports.get(name);
+            if (binding == null || binding.declaration().kind() != Ast.ImportKind.TYPE) return null;
+            Object imported = importedTarget(binding.declaration())
+                    .exportValue(Ast.ImportKind.TYPE, binding.sourceName());
+            return imported instanceof ImportedEnumNamespace linked ? linked : null;
+        }
+
         private boolean validNominalEnum(dev.oreslang.runtime.NominalMessageValue value) {
             if (!codeUnitId.equals(value.sourceUnitId())) return false;
             Ast.EnumDecl declarationEnum = findEnum(value.qualifiedEnumName());
@@ -8096,11 +8117,17 @@ public final class OresEvalRootNode extends RootNode {
                 if (value instanceof dev.oreslang.runtime.NominalMessageValue variant) {
                     int separator = name.lastIndexOf('.');
                     if (separator < 1) return false;
-                    Ast.EnumDecl namedEnum = findEnum(name.substring(0, separator));
+                    String enumName = name.substring(0, separator);
+                    Ast.EnumDecl namedEnum = findEnum(enumName);
+                    ImportedEnumNamespace foreign = namedEnum == null
+                            ? importedEnum(enumName) : null;
+                    Evaluator owner = foreign == null ? this : foreign.owner();
+                    if (foreign != null) namedEnum = foreign.declaration();
                     if (namedEnum == null
-                            || !qualifiedEnumName(namedEnum).equals(variant.qualifiedEnumName())
+                            || !owner.qualifiedEnumName(namedEnum).equals(variant.qualifiedEnumName())
+                            || !owner.codeUnitId.equals(variant.sourceUnitId())
                             || !name.substring(separator + 1).equals(variant.variantName())
-                            || !validNominalEnum(variant)) return false;
+                            || !owner.validNominalEnum(variant)) return false;
                     if (variant.payload() == null) return constructor.arguments().isEmpty();
                     return constructor.arguments().size() == 1
                             && patternMatches(constructor.arguments().getFirst(),
@@ -8307,6 +8334,14 @@ public final class OresEvalRootNode extends RootNode {
                 return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             Ast.EnumDecl declarationEnum = findEnum(name);
+            if (declarationEnum == null) {
+                ImportedEnumNamespace imported = importedEnum(name);
+                if (imported != null) return value instanceof dev.oreslang.runtime.NominalMessageValue enumValue
+                        && imported.owner().codeUnitId.equals(enumValue.sourceUnitId())
+                        && imported.owner().qualifiedEnumName(imported.declaration())
+                                .equals(enumValue.qualifiedEnumName())
+                        && imported.owner().validNominalEnum(enumValue);
+            }
             if (declarationEnum != null) return value instanceof dev.oreslang.runtime.NominalMessageValue enumValue
                     && enumValue.qualifiedEnumName().equals(qualifiedEnumName(declarationEnum))
                     && validNominalEnum(enumValue);
@@ -9196,6 +9231,7 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record EnumNamespace(Ast.EnumDecl declaration) { }
+    private record ImportedEnumNamespace(Evaluator owner, Ast.EnumDecl declaration) { }
 
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
