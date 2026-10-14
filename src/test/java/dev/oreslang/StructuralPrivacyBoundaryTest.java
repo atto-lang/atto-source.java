@@ -107,7 +107,7 @@ final class StructuralPrivacyBoundaryTest {
                 end
 
                 pub fnc main(): void {
-                  const row = infer struct{id: 42};
+                  const row = struct{id: int}{id: 42};
                   match row over
                     on structural PublicShape shaped -> {
                       stdio.println(shaped.id);
@@ -133,7 +133,7 @@ final class StructuralPrivacyBoundaryTest {
                         end
 
                         pub fnc main(): void {
-                          const row = infer struct{id: 42};
+                          const row = struct{id: int}{id: 42};
                           match row over
                             on structural CallableShape shaped -> {
                               stdio.println(99);
