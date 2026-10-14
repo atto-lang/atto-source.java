@@ -70,6 +70,7 @@ final class ActorErrorCatalogTest {
         assertEquals("?", ActorErrorCatalog.boundedDiagnostic("\uD800"));
         assertEquals("a?b?c", ActorErrorCatalog.boundedDiagnostic("a\u001Bb\u202Ec"));
         assertEquals("???", ActorErrorCatalog.boundedDiagnostic("\u0080\u2067\u200B"));
+        assertEquals("???", ActorErrorCatalog.boundedDiagnostic("\t\u2028\u2060"));
         assertEquals("🥑".repeat(256),
                 ActorErrorCatalog.boundedDiagnostic("🥑".repeat(260)),
                 "UTF-8 boundaries must not split supplementary characters");
