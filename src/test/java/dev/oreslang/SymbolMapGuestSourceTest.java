@@ -173,6 +173,21 @@ final class SymbolMapGuestSourceTest {
                 failure.getMessage());
     }
 
+    @Test void localMapInsideClosureCanBeUsedFromNestedScope() {
+        String source = """
+                pub fnc ok(): void {
+                    let callback = () -> {
+                        let mut m = new Map<Symbol, int>();
+                        if true then
+                            m[#ready] = 7;
+                        fi
+                    };
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
     @Test void closureCanStillCaptureOrdinaryNonMapLocals() {
         String source = """
                 pub fnc ok(): void {
