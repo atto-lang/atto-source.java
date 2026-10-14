@@ -98,18 +98,24 @@ final class SwitchConstantProofHardeningTest {
         assertTrue(duplicate.getMessage().contains("duplicate switch case"),
                 duplicate.getMessage());
 
-        // Use a dynamically unknown subject to permit case values of both
-        // nominal kinds; a Symbol and equal-spelling String are not duplicates.
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc main(): void {
-                  switch null
-                    case #ready -> { }
-                    case "ready" -> { }
-                    default -> { }
-                  end
-                  return;
-                }
-                """)));
+        // A String is not a Symbol. The type checker must reject this as a
+        // nominally incompatible case, NOT accidentally mark it duplicate.
+        IllegalArgumentException incompatible = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val Symbol status = #ready;
+                          switch status
+                            case #ready -> { }
+                            case "ready" -> { }
+                            default -> { }
+                          end
+                          return;
+                        }
+                        """)));
+        assertTrue(incompatible.getMessage().contains("incompatible"),
+                incompatible.getMessage());
+        assertFalse(incompatible.getMessage().contains("duplicate switch case"),
+                incompatible.getMessage());
     }
 
     @Test
