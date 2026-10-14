@@ -1432,6 +1432,9 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ThrowStmt thrown) {
                 return expressionContainsPotentialSuspension(thrown.value(), seen);
             }
+            if (stmt instanceof Ast.ActorEffectStmt effect) {
+                return expressionContainsPotentialSuspension(effect.value(), seen);
+            }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 return ret.value() != null
                         && expressionContainsPotentialSuspension(
@@ -4760,7 +4763,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
-            if (failure instanceof GuestThrowSignal) return false;
+            if (failure instanceof GuestThrowSignal
+                    || failure instanceof dev.oreslang.runtime.GuestActorEffectSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
@@ -4793,6 +4797,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean isGuestCatchableFailure(Throwable failure) {
             if (failure instanceof GuestThrowSignal) return true;
+            if (failure instanceof dev.oreslang.runtime.GuestActorEffectSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
@@ -5008,6 +5013,23 @@ public final class OresEvalRootNode extends RootNode {
                 boolean inheritedTailBarrier) {
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
+            }
+            if (stmt instanceof Ast.ActorEffectStmt effect) {
+                if (ActorRuntime.currentActorKind() == null) {
+                    throw new SecurityException("actor effects require an active actor turn");
+                }
+                Object value = eval(effect.value(), env);
+                if (!(value instanceof OresObject error)
+                        || !error.owner.classDerivesFromGuestError(
+                                error.klass, new LinkedHashSet<>())) {
+                    throw new IllegalArgumentException(
+                            "actor effect requires a runtime Error-derived guest value");
+                }
+                // The guest instance dies with its actor heap. The CONTROL
+                // exception retains only the effect kind, never the instance.
+                throw effect.kind() == Ast.ActorEffectKind.RAISE
+                        ? dev.oreslang.runtime.GuestActorEffectSignal.raise()
+                        : dev.oreslang.runtime.GuestActorEffectSignal.panic();
             }
             if (stmt instanceof Ast.ThrowStmt thrown) {
                 Object value = eval(thrown.value(), env);
