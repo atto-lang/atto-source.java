@@ -1908,6 +1908,10 @@ public final class TypeChecker {
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
+        if (expr instanceof Ast.OptionBindExpr) {
+            throw new IllegalArgumentException(
+                    "'as const/let' Option binding is only valid in an if predicate");
+        }
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             String where;
@@ -4766,6 +4770,8 @@ public final class TypeChecker {
             rejectAssignmentInPredicate(test.value());
         } else if (expr instanceof Ast.PatternTestExpr test) {
             rejectAssignmentInPredicate(test.value());
+        } else if (expr instanceof Ast.OptionBindExpr binding) {
+            rejectAssignmentInPredicate(binding.value());
         } else if (expr instanceof Ast.CastExpr cast) {
             rejectAssignmentInPredicate(cast.value());
         } else if (expr instanceof Ast.SpreadExpr spread) {
@@ -4807,6 +4813,10 @@ public final class TypeChecker {
 
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         rejectAssignmentInPredicate(expr);
+        if (expr instanceof Ast.OptionBindExpr binding) {
+            copyOptionPayloadType(binding.value(), env, generics, self);
+            return Primitive.BOOL;
+        }
         if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             requireAssignable(typeOfCondition(binary.left(), env, generics, self), Primitive.BOOL, "logical operand");
             Env rightEnv = new Env(env);
@@ -4814,11 +4824,55 @@ public final class TypeChecker {
             requireAssignable(typeOfCondition(binary.right(), rightEnv, generics, self), Primitive.BOOL, "logical operand");
             return Primitive.BOOL;
         }
+        if (expr instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                && binary.left() instanceof Ast.OptionBindExpr binding) {
+            Type payload = copyOptionPayloadType(binding.value(), env, generics, self);
+            Type comparison = typeOf(binary.right(), env, generics, self);
+            requireEqualityComparable(payload, comparison);
+            return Primitive.BOOL;
+        }
         return typeOf(expr, env, generics, self);
+    }
+
+    /**
+     * Only Copy primitives are admitted in the first implementation stage.
+     * Move-only payload extraction needs explicit carrier consumption/drop
+     * tracking and is deliberately not lowered by this frontend yet.
+     */
+    private Type copyOptionPayloadType(
+            Ast.Expr carrier, Env env, Set<String> generics, Type self) {
+        Type type = deref(typeOf(carrier, env, generics, self));
+        if (!(type instanceof Named named) || !named.name().equals("Option")
+                || named.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "conditional 'as const/let' requires Option<T>, found " + type);
+        }
+        Type payload = named.arguments().getFirst();
+        if (!(payload == Primitive.INT || payload == Primitive.BOOL
+                || payload == Primitive.STRING || payload == Primitive.FLOAT
+                || payload instanceof StringLiteral)) {
+            throw new IllegalArgumentException(
+                    "conditional Option binding of non-Copy or unresolved payload " + payload
+                    + " is not supported until borrow/move lowering is verified");
+        }
+        return payload;
     }
 
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
+        if (condition instanceof Ast.OptionBindExpr binding) {
+            destination.define(binding.binding(),
+                    copyOptionPayloadType(binding.value(), sourceEnv, generics, self),
+                    binding.kind());
+            return;
+        }
+        if (condition instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                && binary.left() instanceof Ast.OptionBindExpr binding) {
+            defineConditionBindings(binding, destination, sourceEnv, generics, self);
+            return;
+        }
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
