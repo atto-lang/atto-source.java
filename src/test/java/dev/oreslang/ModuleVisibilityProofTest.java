@@ -247,4 +247,25 @@ final class ModuleVisibilityProofTest {
                         + "import type Id from './lib';\npub fnc main(): void { return; }");
         assertDoesNotThrow(() -> new IncrementalCompiler().compile(files));
     }
+
+    @Test
+    void rejectsMalformedModuleModifierPlacementRatherThanAccidentallyExporting() {
+        // A formatter or parser must never hoist 'pub' from after 'module'
+        // to before it. The malformed forms remain compiler errors.
+        for (String source : new String[] {
+                "define module pub Internal as end",
+                "define module private Internal as end",
+                "define private module pub Internal as end",
+                "define pub module private Internal as end",
+                "define private pub module Internal as end",
+                "private pub define module Internal as end",
+                "module define pub Internal as end",
+                "pub module Internal as end",
+                "private module Internal as end"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source),
+                    "invalid visibility grammar accepted: " + source);
+        }
+    }
+
 }
