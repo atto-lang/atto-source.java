@@ -31,4 +31,29 @@ final class LinkedProgramRunnerSourceBudgetTest {
         Files.write(source, new byte[BoundedSourceReader.MAX_BYTES + 1]);
         assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(source, Map.of()));
     }
+
+    @Test
+    void importedUnitCannotBypassInputBudget() throws Exception {
+        Path entry = temp.resolve("entry.ores");
+        Path imported = temp.resolve("child.ores");
+        Files.writeString(entry, """
+                import * as imported from "./child.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.write(imported, new byte[BoundedSourceReader.MAX_BYTES + 1]);
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(entry, Map.of()));
+    }
+
+    @Test
+    void importedUnitMustBeValidUtf8() throws Exception {
+        Path entry = temp.resolve("entry-utf8.ores");
+        Path imported = temp.resolve("child-utf8.ores");
+        Files.writeString(entry, """
+                import * as imported from "./child-utf8.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.write(imported, new byte[] {(byte) 0xC0, (byte) 0xAF});
+        assertThrows(MalformedInputException.class, () -> LinkedProgramRunner.validate(entry, Map.of()));
+    }
+
 }
