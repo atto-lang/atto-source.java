@@ -45,10 +45,13 @@ Do not infer stages 2–3 are complete from existence of these files.
 
 ## Current hard blockers (October 14, 2026)
 
-- The Java typechecker resolves class parents from the linked class registry.
-  The canonical guest `Error` base is **not yet registered** here. As a result,
-  the new inherited guest declarations are *staged API source*, not executable
-  `Error` subclasses. Parsing `.ores` text is insufficient evidence.
+- The Java typechecker now recognizes compiler-owned `Error` as a
+  non-generic nominal root, refuses class/type-alias/generic shadowing,
+  and checks subclass ancestry. The runtime's guest `is Error` test uses
+  nominal ancestry instead of treating Java `Throwable` as a guest error.
+  `NativeGuestErrorRootTest` covers source modules and guest constructors,
+  **but these tests have not completed in CI**. No guest throw/raise/panic
+  effect lowering has been enabled yet.
 - Java's `TypedExceptionalEffectAdmissionTest` currently requires
   `throw`, `raise`, `panic` and `recover` to be rejected as unsupported
   typed effects. This needs a deliberate compiler/runtime migration.
