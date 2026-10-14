@@ -158,9 +158,14 @@ final class ActorStopTwoPhaseTest {
                 }
             });
             try {
-                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS)
-                                || !stopper.isAlive(),
-                        "STOP must make progress despite a release fault");
+                var stoppedField = cell.getClass().getDeclaredField("stopped");
+                stoppedField.setAccessible(true);
+                var stopPublished = (AtomicBoolean) stoppedField.get(cell);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (!stopPublished.get() && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+                assertTrue(stopPublished.get(), "STOP must seal the queue before carrier release");
             } finally {
                 releaseTurn.countDown();
                 stopper.join(5_000);
