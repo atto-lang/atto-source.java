@@ -1927,11 +1927,16 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
-                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+                Type originalReceiver = typeOf(indexed.receiver(), env, generics, self);
+                Type receiver = deref(originalReceiver);
                 Type index = typeOf(indexed.index(), env, generics, self);
                 if (receiver instanceof Named map
                         && map.name().equals("$builtin$Map")
                         && map.arguments().size() == 2) {
+                    if (originalReceiver instanceof Borrow borrowed && !borrowed.mutable()) {
+                        throw new IllegalArgumentException(
+                                "cannot mutate typed Map through a read-only borrow");
+                    }
                     requireAssignable(index, map.arguments().getFirst(), "Map key");
                     targetType = map.arguments().get(1);
                 } else {
