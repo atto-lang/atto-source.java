@@ -1701,8 +1701,7 @@ public final class TypeChecker {
             Type valueType = deref(originalValueType);
             // Unknown and broad Any must never bypass the checked Error-only
             // requirement. Class hierarchy ancestry is nominal, not structural.
-            if (valueType == Unknown.INSTANCE
-                    || !assignable(valueType, new Named("Error", List.of()))) {
+            if (!isStaticallyGuestErrorType(valueType)) {
                 throw new IllegalArgumentException(
                         "throw requires a statically proven Error-derived guest value");
             }
@@ -8133,6 +8132,23 @@ public final class TypeChecker {
             throw new IllegalArgumentException("class relationship must resolve to a named type");
         }
         return named;
+    }
+
+    /**
+     * Untrusted Any, Unknown, structural records and nominal lookalikes
+     * cannot claim the capability to unwind. An Error union is permitted
+     * only if every alternative has a checked Error ancestry.
+     */
+    private boolean isStaticallyGuestErrorType(Type candidate) {
+        if (candidate instanceof Union union) {
+            return !union.options().isEmpty()
+                    && union.options().stream().allMatch(this::isStaticallyGuestErrorType);
+        }
+        if (!(candidate instanceof Named named) || !named.arguments().isEmpty()) return false;
+        if (named.name().equals("Error")) return true;
+        Ast.ClassDecl klass = findClass(named.name());
+        return klass != null
+                && classDerivesFromGuestError(klass, new LinkedHashSet<>());
     }
 
     /** Error is a closed, compiler-owned root; never infer exception
