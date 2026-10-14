@@ -57,6 +57,24 @@ public final class OresMain {
         }
     }
 
+
+    // flags-2-env emits ORES_* values; direct JVM launches remain compatible.
+    // No permissions/capabilities are granted merely by an environment value.
+    private static String envOrDefault(String key, String fallback) {
+        String value = System.getenv(key);
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static boolean envFlagEnabled(String key) {
+        String value = System.getenv(key);
+        if (value == null || value.isBlank()) return false;
+        return switch (value.toLowerCase(Locale.ROOT)) {
+            case "true", "1", "yes" -> true;
+            case "false", "0", "no" -> false;
+            default -> throw new UsageException("invalid boolean environment value for " + key);
+        };
+    }
+
     private static int runForExitStatus(String[] args) throws Exception {
         if (args.length == 1 && args[0].equals("--build-info")) {
             System.out.println("{\"build_mode\":\"" + NativeBuildMode.kind().name().toLowerCase(Locale.ROOT)
@@ -69,14 +87,14 @@ public final class OresMain {
         boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
         String debugEnv = System.getenv("ORES_CORE_DEBUG");
         boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
-        boolean strict = false;
-        boolean checkOnly = false;
-        boolean buildAnalysis = false;
+        boolean strict = envFlagEnabled("ORES_STRICT_ISOLATE");
+        boolean checkOnly = envFlagEnabled("ORES_CHECK");
+        boolean buildAnalysis = envFlagEnabled("ORES_BUILD_ANALYSIS");
         List<String> buildDefines = new ArrayList<>();
         Set<String> buildEntryPoints = new LinkedHashSet<>();
-        String mode = NativeBuildMode.defaultExecutionMode();
-        String platform = "server";
-        PermissionCheckMode permissionCheckMode = PermissionCheckMode.RUNTIME;
+        String mode = envOrDefault("ORES_MODE", NativeBuildMode.defaultExecutionMode());
+        String platform = envOrDefault("ORES_PLATFORM", "server");
+        PermissionCheckMode permissionCheckMode = PermissionCheckMode.parse(envOrDefault("ORES_PERMISSION_CHECK", "runtime"));
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
         EnumSet<RuntimePermissions.Permission> touchedPermissions =
                 EnumSet.noneOf(RuntimePermissions.Permission.class);
