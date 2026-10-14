@@ -250,6 +250,30 @@ final class SymbolMapGuestSourceTest {
                 () -> TypeChecker.checkTypes(Parser.parse(source)));
     }
 
+    @Test void moduleAndClassStorageCannotLaunderTypedMapOwnership() {
+        String moduleSource = """
+                define module State as
+                    val Map<Symbol, int> cache = new Map<Symbol, int>();
+                end
+                """;
+        IllegalArgumentException moduleFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(moduleSource)));
+        assertTrue(moduleFailure.getMessage().contains("typed Map module bindings"),
+                moduleFailure.getMessage());
+
+        String classSource = """
+                define class Holder as
+                    val Map<Symbol, int> cache = new Map<Symbol, int>();
+                end
+                """;
+        IllegalArgumentException fieldFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(classSource)));
+        assertTrue(fieldFailure.getMessage().contains("typed Map class/actor fields"),
+                fieldFailure.getMessage());
+    }
+
     @Test void ordinaryConstAndLetBindingsCannotMutateMapReferent() {
         String[] invalid = {
             "pub fnc bad(): void { const m = new Map<Symbol, int>(); m[#ready] = 1; return; }",
