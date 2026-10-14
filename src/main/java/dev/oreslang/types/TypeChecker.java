@@ -7990,7 +7990,10 @@ public final class TypeChecker {
     }
 
     private boolean isRuntimeMapKeyAtom(Ast.TypeRef ref) {
-        return !ref.inferArguments() && ref.arguments().isEmpty()
+        // The key ABI is by-value String/Symbol, never a borrowed type or a
+        // nested union whose textual name happens to be "Symbol"/"String".
+        return !ref.inferArguments() && !ref.isBorrow() && !ref.isUnion()
+                && ref.arguments().isEmpty()
                 && (ref.name().equals("Symbol")
                         || ref.name().equals("String")
                         || ref.name().equals("string"));
