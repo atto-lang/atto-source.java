@@ -41,6 +41,22 @@ final class ActorPreparedMessageOwnershipTest {
     }
 
     @Test
+    void dataOnlyFreezeRejectsCapabilityInsertedDuringSnapshot() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Integer>spawnShared(() -> (value, context) -> {});
+            AtomicBoolean copyObserved = new AtomicBoolean();
+
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(injectAtSnapshotCopy(ref, copyObserved)));
+            assertTrue(copyObserved.get(),
+                    "the hostile map must inject during the actual frozen snapshot");
+            assertTrue(denied.getMessage().contains("data values only"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void sharedMailboxRejectsForeignActorRefInsertedDuringSnapshot() {
         try (ActorRuntime owner = new ActorRuntime();
              ActorRuntime receiver = new ActorRuntime()) {
