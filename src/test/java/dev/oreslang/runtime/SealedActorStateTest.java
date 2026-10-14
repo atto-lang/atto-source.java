@@ -125,6 +125,12 @@ final class SealedActorStateTest {
                                 return null;
                             }));
                     assertEquals(42, fresh.read(0)); // failed transfer is non-consuming
+                    state.critical(false, read -> {
+                        assertThrows(SecurityException.class, () -> fresh.write(0, 8));
+                        assertThrows(SecurityException.class, () -> state.allocateOwnedBytes(1));
+                        return null;
+                    });
+                    assertEquals(42, fresh.read(0));
                     assertThrows(SecurityException.class,
                             () -> state.critical(false, access -> {
                                 access.takeOwnedBytes("blob", fresh);
