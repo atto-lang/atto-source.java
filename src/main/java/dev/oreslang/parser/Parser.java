@@ -3524,7 +3524,13 @@ public final class Parser {
 
     private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical, boolean critical) {
         int outerArmDepth = valueArmDepth;
+        Ast.TypeRef outerCallableReturn = callableReturnType;
+        Ast.TypeRef outerDirectMatch = directReturnMatchType;
         valueArmDepth = 0;
+        // Independent closure return inference must not inherit the caller's
+        // direct-return-match type, including for expression-bodied lambdas.
+        callableReturnType = null;
+        directReturnMatchType = null;
         try {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
@@ -3536,6 +3542,8 @@ public final class Parser {
         return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, critical);
         } finally {
             valueArmDepth = outerArmDepth;
+            callableReturnType = outerCallableReturn;
+            directReturnMatchType = outerDirectMatch;
         }
     }
 
