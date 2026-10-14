@@ -7324,7 +7324,11 @@ public final class ActorRuntime implements AutoCloseable {
                     // Prevent obsolete queued runnables impersonating the
                     // next actor turn after scheduled was cleared and re-claimed.
                     if (scheduledDispatchToken != dispatchTicket || !scheduled.get()) return;
-                    if (stopped.get() || closed.get() || forceKillFenced) return;
+                    // STOP may admit only authenticated lexical cleanup on
+                    // this actor's existing single-flight carrier. Later
+                    // gates inspect the actual CleanupTurn before guest code.
+                    if ((stopped.get() && !hasSourceCleanup())
+                            || closed.get() || forceKillFenced) return;
                     if (carrierActive || carrierOwnerThread != null || activeTurns != 0) {
                         throw new IllegalStateException(
                                 "actor physical carrier already occupied for " + ref.id());
