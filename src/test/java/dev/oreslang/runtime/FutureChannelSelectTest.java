@@ -159,7 +159,7 @@ final class FutureChannelSelectTest {
         assertTrue(channel.tryWrite(91));
         var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
         for (int i = 0; i < 257; i++) cases.add(ChannelRuntime.read(channel));
-        assertThrows(ChannelRuntime.SelectAdmissionException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> new ChannelRuntime.SelectSet(cases));
         assertEquals(91, channel.tryRead().orElseThrow());
     }
