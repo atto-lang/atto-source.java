@@ -115,6 +115,41 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void matchAndPredicateBindingsCannotRebindActorOwnedReferences() {
+        for (String statement : new String[] {
+                "match s.cache over on captured -> { val exposed = captured; } end",
+                "match s.cache over on _ -> { val observed = s.n; } end",
+                "if s.cache is type Map<string, int> captured then "
+                        + "val exposed = captured; fi",
+                "if s.cache matches captured then val exposed = captured; fi"
+        }) {
+            for (String acquire : new String[] {
+                    "self.handle_state(|s| -> {",
+                    "using state.read(|s| -> {"
+            }) {
+                String source = actorWithReferenceState(statement + " return s.n;")
+                        .replace("self.handle_state(|s| -> {", acquire);
+                Ast.Program parsed = Parser.parse(source);
+                var rejected = assertThrows(IllegalArgumentException.class,
+                        () -> ActorStateContract.verify(parsed), acquire + statement);
+                assertTrue(rejected.getMessage().contains("pattern/type binding"),
+                        rejected.getMessage());
+                assertThrows(IllegalArgumentException.class,
+                        () -> TypeChecker.checkTypes(parsed), acquire + statement);
+            }
+        }
+        // Scalar subjects are detached Copy values, so pattern bindings
+        // cannot import mutable actor-owned heap identity.
+        for (String statement : new String[] {
+                "match s.n over on copied -> { val observed = copied; } end",
+                "if s.n matches copied then val observed = copied; fi"
+        }) {
+            assertDoesNotThrow(() -> ActorStateContract.verify(
+                    Parser.parse(actorWithReferenceState(statement + " return s.n;"))),
+                    statement);
+        }
+    }
+
     @Test void actorStateDefaultsMustBeDetachedContextFreeScalars() {
         for (String value : new String[] {
                 "compute()", "external", "1 + 2", "new Wrapper(1)"
