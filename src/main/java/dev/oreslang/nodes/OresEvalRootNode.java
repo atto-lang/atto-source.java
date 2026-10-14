@@ -932,6 +932,10 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
+                if (failure instanceof ReturnSignal returned) {
+                    // A nested procedural return exits the containing callable.
+                    return returning(returned.value);
+                }
                 return new SourceFlow(
                         SourceFlowKind.THROW,
                         null,
@@ -2572,9 +2576,11 @@ public final class OresEvalRootNode extends RootNode {
                     continuation.accept(t, flow.value(), null);
                 } else if (flow.kind() == SourceFlowKind.THROW) {
                     continuation.accept(t, null, flow.failure());
+                } else if (flow.kind() == SourceFlowKind.RETURN) {
+                    // Carry lexical function return through the expression ABI
+                    // without claiming an arm-local value.
+                    continuation.accept(t, null, new ReturnSignal(flow.value()));
                 } else {
-                    // No-value fallthrough and attempted procedural callable
-                    // unwind must never silently manufacture an expression.
                     continuation.accept(t, null,
                             new IllegalStateException(
                                     "value-select arm did not produce an expression result: "
@@ -4836,7 +4842,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
-            if (failure instanceof SelectValueReturnSignal) return false;
+            if (failure instanceof SelectValueReturnSignal
+                    || failure instanceof ReturnSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
@@ -4856,7 +4863,8 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
-            if (failure instanceof SelectValueReturnSignal) return false;
+            if (failure instanceof SelectValueReturnSignal
+                    || failure instanceof ReturnSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
