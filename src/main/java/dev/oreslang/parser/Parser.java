@@ -1983,6 +1983,12 @@ public final class Parser {
         }
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
+        if (!check(ARROW) && !check(LBRACE)) {
+            // Preserve the existing diagnostic for unbraced legacy select
+            // arms. A missing typed arrow immediately before '{' is still
+            // reported as a missing arrow, never silently accepted.
+            throw error(peek(), "select arm requires a braced body '{ ... }'");
+        }
         consume(ARROW, "typed select arm requires '->' before its body");
         return new SelectReadBinding(kind, name, type, mutable);
     }
