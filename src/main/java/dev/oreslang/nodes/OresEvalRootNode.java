@@ -8006,9 +8006,10 @@ public final class OresEvalRootNode extends RootNode {
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
-                if (bindings.putIfAbsent(binding.name(), value) != null) {
+                if (bindings.containsKey(binding.name())) {
                     throw new IllegalStateException("pattern binds '" + binding.name() + "' more than once");
                 }
+                bindings.put(binding.name(), value);
                 return true;
             }
             if (pattern instanceof Ast.LiteralPattern literal) {
@@ -8016,17 +8017,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (pattern instanceof Ast.TypePattern typed) {
                 if (!oresTypeMatches(value, typed.type())) return false;
-                if (typed.binding() != null && bindings.putIfAbsent(typed.binding(), value) != null) {
-                    throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                if (typed.binding() != null) {
+                    if (bindings.containsKey(typed.binding())) {
+                        throw new IllegalStateException("pattern binds '" + typed.binding() + "' more than once");
+                    }
+                    bindings.put(typed.binding(), value);
                 }
                 return true;
             }
             if (pattern instanceof Ast.StructuralPattern structural) {
                 if (!structuralPatternMatches(value, structural.target())) return false;
-                if (structural.binding() != null
-                        && bindings.putIfAbsent(structural.binding(), value) != null) {
-                    throw new IllegalStateException(
-                            "pattern binds '" + structural.binding() + "' more than once");
+                if (structural.binding() != null) {
+                    if (bindings.containsKey(structural.binding())) {
+                        throw new IllegalStateException(
+                                "pattern binds '" + structural.binding() + "' more than once");
+                    }
+                    bindings.put(structural.binding(), value);
                 }
                 return true;
             }
@@ -8863,7 +8869,7 @@ public final class OresEvalRootNode extends RootNode {
                         remainder.put(key, entry.getValue());
                     }
                 }
-                return Map.copyOf(remainder);
+                return snapshotPatternBindings(remainder);
             }
             throw new IllegalArgumentException(
                     "object rest destructuring requires a statically known record value");
