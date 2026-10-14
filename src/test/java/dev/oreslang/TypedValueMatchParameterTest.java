@@ -176,7 +176,7 @@ final class TypedValueMatchParameterTest {
         for (String arms : new String[] {
                 "on 1 -> { return 10; } on 1.0 -> { return 20; }",
                 "on 1.0 -> { return 10; } on 1 -> { return 20; }",
-                "on -1 -> { return 10; } on -1.0 -> { return 20; }"
+                "on 2 -> { return 10; } on 2.0 -> { return 20; }"
         }) {
             String guest = "fnc unreachable(int n): int { return match<int> n over "
                     + arms + " on _ -> { return 0; } end; }";
