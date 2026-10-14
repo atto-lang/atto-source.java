@@ -84,6 +84,16 @@ committed but not yet validated by CI. The eager ordinary call
     cross suspension or escape through a closure, message or return.
 11. Loop back-edges must merge move/borrow/initialized states soundly.
     Backend lowering must preserve these CFG and ownership edges exactly.
+12. Condition producers execute before control enters either the success body or
+    the failure continuation. Moves performed while evaluating a producer
+    therefore remain consumed on **both** edges, including `None` and a
+    failed right-hand comparison. A subsequent `elif` starts from the
+    preceding guard's failure-edge ownership state, never the pre-`if` state.
+    An `else` body inherits all preceding guard evaluation effects.
+    Until path-sensitive short-circuit ownership joins are available, a
+    potential move in an `&&` operand is conservatively considered moved
+    on the failure edge, too. It is forbidden to revive a consumed owner
+    merely because the optional binding failed.
 
 An existing type-test/pattern refinement is an **alias**, not a new owner.
 For `left && right`, the borrow checker must resolve right-hand refinements
