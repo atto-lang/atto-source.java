@@ -79,9 +79,17 @@ public final class OresScheduler implements AutoCloseable {
             this.cleanupAuthorized = cleanupAuthorized;
         }
 
+        /**
+         * Stable provenance check independent of cancellation timing.
+         * STOP must preserve a queued source turn even if the Future's
+         * cancellation hook has not yet made its cleanup permit effective.
+         */
+        boolean ownedBy(OresScheduler expected) {
+            return expected != null && owner == expected;
+        }
+
         public boolean authorizedBy(OresScheduler expected) {
-            return expected != null && owner == expected
-                    && cleanupAuthorized.getAsBoolean();
+            return ownedBy(expected) && cleanupAuthorized.getAsBoolean();
         }
 
         @Override public void run() { action.run(); }
