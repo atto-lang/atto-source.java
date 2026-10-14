@@ -1983,6 +1983,12 @@ public final class Parser {
         }
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
+        if (!check(ARROW) && !check(LBRACE)) {
+            // A malformed unbraced arm must keep the actionable braces
+            // diagnostic; missing '->' before a braced typed arm is
+            // separately rejected by the mandatory consume below.
+            throw error(peek(), "select arm requires a braced body '{ ... }'");
+        }
         consume(ARROW, "typed select arm requires '->' before its body");
         return new SelectReadBinding(kind, name, type, mutable);
     }
