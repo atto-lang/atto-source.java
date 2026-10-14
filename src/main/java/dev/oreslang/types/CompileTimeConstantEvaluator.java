@@ -52,10 +52,14 @@ public final class CompileTimeConstantEvaluator {
         if (expression instanceof Ast.UnaryExpr unary) {
             Object operand = evaluate(unary.operand(), budget, depth + 1);
             return switch (unary.operator()) {
-                case "+" -> operand instanceof Double d ? finiteFloat(d) : requireInt(operand);
-                case "-" -> operand instanceof Double d
-                        ? finiteFloat(-d)
-                        : checked(() -> Math.negateExact(requireInt(operand)));
+                case "+" -> {
+                    if (operand instanceof Double d) yield finiteFloat(d);
+                    yield requireInt(operand);
+                }
+                case "-" -> {
+                    if (operand instanceof Double d) yield finiteFloat(-d);
+                    yield checked(() -> Math.negateExact(requireInt(operand)));
+                }
                 case "~" -> ~requireInt(operand);
                 case "!" -> !requireBool(operand);
                 default -> throw reject("unsupported unary operator " + unary.operator());
