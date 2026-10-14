@@ -200,6 +200,21 @@ final class SymbolMapGuestSourceTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
     }
 
+    @Test void nestedContainersCannotLaunderMapOwnership() {
+        String[] sources = {
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let xs = [m]; return; }",
+            "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let pair = (m, 1); return; }",
+            "pub fnc bad(): void { let xs = [new Map<Symbol, int>()]; return; }"
+        };
+        for (String source : sources) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+            assertTrue(failure.getMessage().contains("aliased or embedded"),
+                    failure.getMessage());
+        }
+    }
+
     @Test void functionArgumentsCannotSmuggleUnmovedMaps() {
         String source = """
                 pub fnc accept(Map<Symbol, int> value): void { return; }
