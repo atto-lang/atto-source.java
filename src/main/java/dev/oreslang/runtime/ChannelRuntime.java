@@ -185,15 +185,28 @@ public final class ChannelRuntime {
         /** Runtime-only drain of committed mailbox values, including after close. */
         boolean drainOne(java.util.function.Consumer<? super T> consumer) {
             Objects.requireNonNull(consumer, "consumer");
+            ArrayList<Runnable> completions = new ArrayList<>();
             T value;
             COORDINATOR.lock();
             try {
                 if (buffer.isEmpty()) return false;
                 value = buffer.removeFirst();
+                // Draining creates capacity for pending writers. Commit the
+                // preferred eligible operation while holding the coordinator,
+                // but never notify users/producers inside this critical section.
+                pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
-            consumer.accept(value);
+            try {
+                // FIFO: the older buffered message must reach its consumer
+                // before a newly unblocked writer's completion is published.
+                consumer.accept(value);
+            } finally {
+                // Even if the consumer throws, admitted writers must not
+                // remain stranded and their select credits must be refunded.
+                runCompletions(completions);
+            }
             return true;
         }
 
