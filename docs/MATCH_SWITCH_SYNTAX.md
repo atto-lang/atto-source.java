@@ -107,13 +107,14 @@ Unknown/duplicate parameters fail parsing.
 Two distinct contracts must **not** be conflated:
 
 - `match<ret=T>` is **value-producing**. A `return value` inside its
-  selected arm must end that arm and provide the match result, not return
-  from the enclosing function. Its arms must exhaustively produce a
-  `T`; using it as a statement should eventually warn about unused
-  match results. **This lowering is NOT implemented in the current
-  Java/GraalVM production source. The parser and AST accept the syntax,
-  but the type checker rejects it with an explicit fail-closed error
-  rather than silently using non-local function returns.**
+  selected arm completes the nearest typed `ARM_RESULT` boundary and
+  does **not** return from the enclosing callable. This draft implements
+  a restricted scalar slice with lexical ownership, cleanup and
+  suspended SourceTask continuations; it is not general cross-backend
+  conformance. Unverified cases fail closed. A direct `return match x
+  over ... end` with no explicit `<ret=T>` now uses the containing
+  callable's declared result type. Local assignments still require
+  `<ret=T>` to avoid inheriting an unrelated callable type.
 - `do match<ret=T>` is a **procedural** match with a contract on
   non-local `return` statements. It produces no match expression result:
   every reachable arm must explicitly return a value assignable to `T`.
@@ -123,15 +124,14 @@ Two distinct contracts must **not** be conflated:
   warning recommending the named spelling. An ordinary expression
   computed inside a do arm and not returned is discarded.
 
-Without a typed return contract, `do match` retains the historical
-statement-level dispatch behavior. Do not infer that unannotated plain
-`match` has already been converted into a value-producing expression
-on all execution backends.
-
-`return do match`, typed `return match`, exhaustive inference,
-`await`/suspended continuation handling, and cross-backend LLVM/WASM
-lowering must be validated before declaring general expression-match
-support.
+Without a typed return contract, `do match` is procedural.
+Bare statement `match` and `switch` are rejected; use explicit `do`
+or a result-bearing expression. `return do match` is invalid.
+Value-producing `return switch` and braced `return select` remain
+separate typed-ARM_RESULT integration gates, not synonyms for
+procedural `do switch` and `do select`.
+`await`/suspended continuation and cleanup correctness requires
+exact-branch CI and JVM/native verification before release.
 
 ## Formatter
 
