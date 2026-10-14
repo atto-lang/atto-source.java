@@ -1246,6 +1246,19 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // Independently of overload resolution, no call surface may turn a
+        // borrowed non-Copy aggregate into owned spread arguments. This must
+        // also cover unresolved/host/function-value fallbacks, which do not
+        // enter checkArguments().
+        for (Ast.Expr argument : call.arguments()) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow() && !isCopyType(type.borrowedTarget())) {
+                    throw error("cannot spread non-Copy elements from a borrowed tuple; "
+                            + "pass owned values explicitly");
+                }
+            }
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -1747,8 +1760,7 @@ public final class OwnershipChecker {
                         // must never manufacture owned parameters by projecting
                         // move-only values out of a borrowed tuple. Field-level
                         // transfer provenance is not implemented yet.
-                        if (referent.isTupleType()
-                                && referent.arguments().stream().anyMatch(element -> !isCopyType(element))) {
+                        if (!isCopyType(referent)) {
                             throw error(callable + " cannot spread non-Copy elements from a borrowed tuple; "
                                     + "pass owned values explicitly");
                         }
