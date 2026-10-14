@@ -8830,14 +8830,23 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) {
                 OwnedField ownedField = object.owner.findField(
                         object.klass, name, new LinkedHashSet<>());
-                if (ownedField != null) {
-                    object.owner.requireClassMemberVisible(
-                            ownedField.field().visibility(),
-                            ownedField.owner(),
-                            env == null ? null : env.accessClass(),
-                            "field",
-                            ownedField.field().name());
+                if (ownedField == null || !object.fields.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "object destructure missing field " + name);
                 }
+                object.owner.requireClassMemberVisible(
+                        ownedField.field().visibility(),
+                        ownedField.owner(),
+                        env == null ? null : env.accessClass(),
+                        "field",
+                        ownedField.field().name());
+                Object field = object.fields.get(name);
+                if (field == UNINITIALIZED_FIELD) {
+                    throw new IllegalArgumentException(
+                            "field '" + object.klass.name() + "." + name
+                                    + "' is read before constructor initialization");
+                }
+                return field;
             }
             return destructureMember(value, name);
         }
@@ -8852,15 +8861,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return member;
             }
-            if (value instanceof OresObject object) {
-                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
-                Object field = object.fields.get(name);
-                if (field == UNINITIALIZED_FIELD) {
-                    throw new IllegalArgumentException(
-                            "field '" + object.klass.name() + "." + name
-                                    + "' is read before constructor initialization");
-                }
-                return field;
+            // This overload has no lexical access authority. Only pure
+            // record/map projection is permitted; classes require the Env
+            // overload above (or an explicit public structural projection).
+            if (value instanceof OresObject) {
+                throw new IllegalArgumentException(
+                        "object destructuring requires a visibility-checked access context");
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
