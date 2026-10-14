@@ -315,6 +315,35 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void independentOwnershipPassRejectsForgedNamedBindingLayouts() {
+        String prefix = """
+                fnc calculate(int base, int multiplier, int offset): int {
+                    return base * multiplier + offset;
+                }
+                """;
+        // The ownership checker must independently enforce the exact selected
+        // signature; relying only on a previous TypeChecker pass leaves
+        // individually invoked or transformed ASTs able to skip loan checks.
+        for (String call : new String[] {
+                "calculate(10, ...(base: 2, multiplier: 4))",
+                "calculate(10, ...(missing: 2, multiplier: 4))",
+                "calculate(...(base: 10, multiplier: 4), 2)",
+                "calculate(...(base: 10, offset: 2), ...(offset: 3))"
+        }) {
+            String code = prefix + "pub routine main(): void { stdio.stdout.write("
+                    + call + "); return; }";
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OwnershipChecker.check(Parser.parse(code)), call);
+            assertTrue(failure.getMessage().contains("duplicate binding")
+                            || failure.getMessage().contains("unknown named argument")
+                            || failure.getMessage().contains("positional argument follows"),
+                    "unexpected ownership rejection for " + call + ": "
+                            + failure.getMessage());
+        }
+    }
+
+    @Test
     void recordPackCannotBypassBorrowedOrStructuralParameterAdmission() {
         String code = """
                 fnc receive(&int value, int other): int { return other; }
