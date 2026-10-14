@@ -73,14 +73,14 @@ jobs:
       - name: Value ARM_RESULT, blocking select, and single-delivery regressions
         run: >
           mvn -B -ntp
-          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest,ActorContinuationTeardownTest,ActorSuspensionTicketAtomicityTest,TypedValueMatchCleanupPrecedenceTest,SourceActorEndCleanupExecutionTest,SourceTypedMatchTerminalFlowTest,ArmResultCleanupFailureTest,OresSchedulerTest
+          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest,ActorContinuationTeardownTest,ActorSuspensionTicketAtomicityTest,TypedValueMatchCleanupPrecedenceTest,SourceActorEndCleanupExecutionTest,SourceTypedMatchTerminalFlowTest,ArmResultCleanupFailureTest,OresSchedulerTest,DeferredCancellationLinearizationTest
           -DfailIfNoTests=true
           test
       - name: Repeat targeted tests using native carrier scheduling
         run: >
           mvn -B -ntp
           -Dores.runtime.carriers=native
-          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest,ActorContinuationTeardownTest,ActorSuspensionTicketAtomicityTest,TypedValueMatchCleanupPrecedenceTest,SourceActorEndCleanupExecutionTest,SourceTypedMatchTerminalFlowTest,ArmResultCleanupFailureTest,OresSchedulerTest
+          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest,ActorContinuationTeardownTest,ActorSuspensionTicketAtomicityTest,TypedValueMatchCleanupPrecedenceTest,SourceActorEndCleanupExecutionTest,SourceTypedMatchTerminalFlowTest,ArmResultCleanupFailureTest,OresSchedulerTest,DeferredCancellationLinearizationTest
           -DfailIfNoTests=true
           test
       - name: Full JVM integration verification
