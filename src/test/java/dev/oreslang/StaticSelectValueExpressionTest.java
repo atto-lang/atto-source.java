@@ -212,6 +212,52 @@ final class StaticSelectValueExpressionTest {
     }
 
     @Test
+    void unconditionalFinallyReturnSatisfiesValueArmOnBothTryAndCatchPaths() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  const int answer = select over
+                    default -> {
+                      try {
+                        stdio.stdout.write("try:");
+                      } catch (err) {
+                        stdio.stdout.write("catch:");
+                      } finally {
+                        return 7;
+                      }
+                    }
+                  end;
+                  stdio.stdout.write(answer);
+                  return;
+                }
+                """;
+        assertEquals("try:7", run(code));
+    }
+
+    @Test
+    void conditionalFinallyReturnDoesNotEstablishValueArmExhaustiveness() {
+        String code = """
+                fnc bad(bool choose): int {
+                  const int answer = select over
+                    default -> {
+                      try {
+                        stdio.stdout.write("try");
+                      } catch (err) {
+                        stdio.stdout.write("catch");
+                      } finally {
+                        if choose then
+                          return 7;
+                        fi
+                      }
+                    }
+                  end;
+                  return answer;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+    }
+
+    @Test
     void valueExpressionRejectsMissingReturnAndTypeErrors() {
         String[] invalid = {
             "select over default -> { 7; } end",
