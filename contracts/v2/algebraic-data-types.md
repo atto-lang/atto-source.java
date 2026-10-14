@@ -201,7 +201,12 @@ arms before running the uniquely selected body. In contrast, ordered
 Each suspendable guard resumes at most once. A duplicate or late callback
 must not reevaluate a later arm, run another branch body, or deliver a second
 completion. Once a match finishes or fails, its pending continuation work
-must be discarded. A failing guard terminates matching rather than silently
+must be discarded. The Java continuation trampoline must enforce a finite
+pending-callback budget (4096 entries), fail closed on saturation, and
+serialize queue drain ownership with cancellation/termination under one
+synchronization discipline. Cancellation suppresses pending callbacks but
+cannot interrupt an already running guest action: the owning actor scheduler
+must reject task resumption after its terminal/cancelled state. A failing guard terminates matching rather than silently
 falling through; fatal host JVM `Error` conditions must propagate rather
 than being converted into recoverable guest match failures.
 Because the guard proof uses
