@@ -178,6 +178,42 @@ final class SymbolPropertyKeyCodecTest {
                 () -> SymbolPropertyKeyCodec.requireDistinct(tooMany));
     }
 
+    @Test void hostileListReportedSizeCannotTriggerUnboundedCopy() {
+        List<byte[]> huge = new java.util.AbstractList<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public byte[] get(int index) {
+                throw new AssertionError("oversized list must not be copied");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeys(huge));
+    }
+
+    @Test void dishonestListIteratorCannotBypassKeyCountQuota() {
+        byte[] key = SymbolPropertyKeyCodec.encode("k");
+        List<byte[]> liar = new java.util.AbstractList<>() {
+            @Override public int size() { return 0; }
+            @Override public byte[] get(int index) {
+                throw new AssertionError("bulk admission must use bounded iteration");
+            }
+            @Override public java.util.Iterator<byte[]> iterator() {
+                return new java.util.Iterator<>() {
+                    private int emitted;
+                    @Override public boolean hasNext() {
+                        return emitted <= SymbolPropertyKeyCodec.MAX_KEYS_PER_OBJECT;
+                    }
+                    @Override public byte[] next() {
+                        if (!hasNext()) throw new java.util.NoSuchElementException();
+                        emitted++;
+                        return key;
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                SymbolPropertyKeyCodec.decodeDistinctKeys(liar));
+    }
+
     @Test void validatedKeyCollectionIsImmutableAndDoesNotAliasWireArrays() {
         byte[] wire = SymbolPropertyKeyCodec.encode(OresSymbol.process("ready"));
         List<Object> decoded = SymbolPropertyKeyCodec.decodeDistinctKeys(List.of(wire));
