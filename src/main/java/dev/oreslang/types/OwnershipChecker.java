@@ -2371,11 +2371,19 @@ public final class OwnershipChecker {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.PatternTestExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.OptionBindExpr e) {
+            scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.CastExpr e) {
             scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.BinaryExpr e) {
             scanExpr(e.left(), locals, outer, recursiveBinding, captures, false);
-            scanExpr(e.right(), locals, outer, recursiveBinding, captures, false);
+            if (e.operator().equals("&&")) {
+                Set<String> rhsLocals = new HashSet<>(locals);
+                collectConditionBindingNames(e.left(), rhsLocals);
+                scanExpr(e.right(), rhsLocals, outer, recursiveBinding, captures, false);
+            } else {
+                scanExpr(e.right(), locals, outer, recursiveBinding, captures, false);
+            }
         } else if (expr instanceof Ast.TrapExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.UnaryExpr e) scanExpr(e.operand(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ConditionalExpr e) {
@@ -2681,6 +2689,21 @@ public final class OwnershipChecker {
     }
 
     private void collectConditionBindingNames(Ast.Expr condition, Set<String> names) {
+        if (condition instanceof Ast.OptionBindExpr binding) {
+            names.add(binding.binding());
+            return;
+        }
+        if (condition instanceof Ast.TypeTestExpr test
+                && test.value() instanceof Ast.OptionBindExpr binding) {
+            names.add(binding.binding());
+            return;
+        }
+        if (condition instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("eq") || binary.operator().equals("neq"))
+                && binary.left() instanceof Ast.OptionBindExpr binding) {
+            names.add(binding.binding());
+            return;
+        }
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) names.add(test.binding());
         else if (condition instanceof Ast.PatternTestExpr test) collectPatternBindingNames(test.pattern(), names);
         else if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
