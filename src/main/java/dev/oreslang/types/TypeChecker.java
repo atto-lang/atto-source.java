@@ -48,6 +48,7 @@ public final class TypeChecker {
     private final Map<String, Ast.EnumDecl> enums = new HashMap<>();
     private final IdentityHashMap<Ast.EnumDecl, String> enumOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.EnumDecl, String> linkedEnumSourceIds = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.EnumDecl, String> linkedEnumLocalNames = new IdentityHashMap<>();
     private final Set<String> ambiguousEnums = new HashSet<>();
     // Foreign aliases are visible only while expanding a public field in
     // their declaring class, never as names available to importer source.
@@ -200,6 +201,7 @@ public final class TypeChecker {
             checker.enums.put(local, linked.declaration());
             checker.enumOwners.put(linked.declaration(), linked.moduleName());
             checker.linkedEnumSourceIds.put(linked.declaration(), linked.sourceUnitId());
+            checker.linkedEnumLocalNames.put(linked.declaration(), local);
             checker.enums.put(checker.qualifiedEnumName(linked.declaration()), linked.declaration());
         }
         checker.validate(program);
@@ -5382,7 +5384,8 @@ public final class TypeChecker {
             Ast.EnumDecl declarationEnum = enums.get(named.name());
             for (Ast.EnumVariant variant : declarationEnum.variants()) {
                 List<Ast.Pattern> variants = new ArrayList<>();
-                String patternName = declarationEnum.name() + "." + variant.name();
+                String patternName = linkedEnumLocalNames.getOrDefault(
+                        declarationEnum, declarationEnum.name()) + "." + variant.name();
                 for (Ast.Pattern pattern : patterns) {
                     if (!(pattern instanceof Ast.ConstructorPattern constructor)
                             || !constructor.constructor().equals(patternName)) continue;
