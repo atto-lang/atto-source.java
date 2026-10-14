@@ -41,6 +41,62 @@ final class ActorPreparedMessageOwnershipTest {
         };
     }
 
+    /**
+     * Every nested list stays below the per-container bound. Only their
+     * combined, late-mutated snapshot exceeds the global graph node budget.
+     */
+    private static Map<String, Object> nestedGrowthDuringCopy(
+            String copierName, AtomicBoolean expanded) {
+        return new AbstractMap<>() {
+            @Override public int size() { return 2; }
+
+            @Override public Set<Entry<String, Object>> entrySet() {
+                boolean copying = StackWalker.getInstance(
+                        StackWalker.Option.RETAIN_CLASS_REFERENCE).walk(frames ->
+                        frames.anyMatch(frame ->
+                                frame.getClassName().equals(ActorRuntime.class.getName())
+                                && frame.getMethodName().equals(copierName)
+                                && frame.getMethodType().parameterCount() == 3));
+                if (!copying) {
+                    return Set.of(
+                            Map.entry("left", "safe"),
+                            Map.entry("right", "safe"));
+                }
+                expanded.set(true);
+                var many = java.util.Collections.nCopies(60_000, "value");
+                return Set.of(
+                        Map.<String, Object>entry("left", many),
+                        Map.<String, Object>entry("right", many));
+            }
+        };
+    }
+
+    @Test
+    void frozenCopyEnforcesAggregateGraphQuotaAcrossNestedLists() {
+        AtomicBoolean expanded = new AtomicBoolean();
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(nestedGrowthDuringCopy("freeze", expanded)));
+        assertTrue(expanded.get(), "source must grow only inside deep copy");
+        assertTrue(denied.getMessage().contains("maximum node count"),
+                denied.getMessage());
+    }
+
+    @Test
+    void privateCopyEnforcesAggregateGraphQuotaAcrossNestedLists() {
+        AtomicBoolean expanded = new AtomicBoolean();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var sink = runtime.<Object>spawnPrivate(
+                    ignored -> (message, context) -> {});
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> sink.send(nestedGrowthDuringCopy("isolateCopy", expanded)));
+            assertTrue(expanded.get(), "source must grow only inside private copy");
+            assertTrue(denied.getMessage().contains("maximum node count"),
+                    denied.getMessage());
+        }
+    }
+
     @Test
     void frozenCopyRejectsHostileMapThatExpandsOnlyDuringSnapshot() {
         AtomicBoolean expanded = new AtomicBoolean();
