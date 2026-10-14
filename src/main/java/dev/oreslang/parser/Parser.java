@@ -1674,6 +1674,9 @@ public final class Parser {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
+        // The value-producing static select expression is not lowered yet.
+        // Preserve historical statement sources until expression migration
+        // provides an executable replacement; do-select stays procedural.
         if (looksLikeStaticSelectStatement()) return parseStaticSelectStatement();
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
@@ -1788,13 +1791,13 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
-        // Explicit procedural forms share exactly the legacy statement AST.
-        // The leading 'do' disambiguates them from value-producing match/switch.
-        if (check(DO) && (checkNext(MATCH) || checkNext(SWITCH))) {
-            advance();
+        // The leading 'do' marks procedural dispatch. Keep legacy bare
+        // statements working until value-producing expressions are lowered.
+        // Static do-select is routed above via looksLikeStaticSelectStatement.
+        if (match(DO)) {
             if (match(MATCH)) return parseMatch();
-            consume(SWITCH, "expected 'switch' after 'do'");
-            return parseSwitch();
+            if (match(SWITCH)) return parseSwitch();
+            throw error(previous(), "'do' requires match, switch, or a braced select");
         }
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
