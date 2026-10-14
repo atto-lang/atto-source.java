@@ -32,10 +32,9 @@ final class ExplicitDispatchStatementSyntaxTest {
     }
 
     @Test
-    void returnMatchRemainsUnimplementedAndCannotMasqueradeAsImplicitActorReply() {
-        // A future expression match must have its own type/result semantics.
-        // A parser-only procedural match must not fake a value-producing result.
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    void returnMatchHasIndependentValueAstAndCannotMasqueradeAsActorReply() {
+        // Expression arms return a match value, not from an actor receiver.
+        assertDoesNotThrow(() -> Parser.parse("""
                 fnc compute(int x): int {
                     return match x over {
                         on _ { return x; }
