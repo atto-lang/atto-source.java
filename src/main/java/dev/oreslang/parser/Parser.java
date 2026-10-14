@@ -3139,8 +3139,21 @@ public final class Parser {
     private List<Ast.TypeRef> parseCallTypeArguments() {
         consume(LT, "expected '<' before call type arguments");
         List<Ast.TypeRef> arguments = new ArrayList<>();
+        boolean seenNamed = false;
         if (!check(GT)) {
-            do arguments.add(parseTypeRef()); while (match(COMMA));
+            do {
+                if (check(IDENT) && checkNext(EQUAL)) {
+                    String name = advance().lexeme();
+                    consume(EQUAL, "expected '=' after named generic argument");
+                    arguments.add(Ast.TypeRef.namedParameter(name, parseTypeRef()));
+                    seenNamed = true;
+                } else {
+                    if (seenNamed) {
+                        throw error(peek(), "positional generic arguments must precede named arguments");
+                    }
+                    arguments.add(parseTypeRef());
+                }
+            } while (match(COMMA));
         }
         consume(GT, "expected '>' after call type arguments");
         return List.copyOf(arguments);
@@ -3159,7 +3172,10 @@ public final class Parser {
                 depth--;
                 if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
                 if (depth < 0) return false;
-            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON || type == EOF) {
+            } else if (type == SEMICOLON || type == QUESTION || type == COLON || type == EOF
+                    || (type == EQUAL && (depth == 0 || i == 0
+                            || tokens.get(i - 1).type() != IDENT))) {
+                // '=' is allowed only after a generic parameter name inside <...>.
                 return false;
             }
         }
