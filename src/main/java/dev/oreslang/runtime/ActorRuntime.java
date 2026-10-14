@@ -6049,8 +6049,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                requireGraphNodeCapacity(0L, list.size());
-                List<Object> frozen = new ArrayList<>(list.size());
+                int reportedSize = list.size();
+                requireGraphNodeCapacity(0L, reportedSize);
+                List<Object> frozen = new ArrayList<>(reportedSize);
                 for (Object item : list) {
                     if (frozen.size() >= MAX_MESSAGE_GRAPH_NODES) {
                         throw new IllegalArgumentException("actor frozen copy exceeds node budget");
@@ -6130,8 +6131,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                requireGraphNodeCapacity(0L, list.size());
-                List<Object> copy = new ArrayList<>(list.size());
+                int reportedSize = list.size();
+                requireGraphNodeCapacity(0L, reportedSize);
+                List<Object> copy = new ArrayList<>(reportedSize);
                 for (Object item : list) {
                     if (copy.size() >= MAX_MESSAGE_GRAPH_NODES) {
                         throw new IllegalArgumentException("private actor copy exceeds node budget");
