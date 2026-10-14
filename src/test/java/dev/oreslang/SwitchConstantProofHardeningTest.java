@@ -82,6 +82,39 @@ final class SwitchConstantProofHardeningTest {
     }
 
     @Test
+    void distinctLargeIntegersRemainDistinctDespiteDoubleRounding() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc main(): void {
+                  val int value = 9007199254740992;
+                  switch value
+                    case 9007199254740992 -> { }
+                    case 9007199254740993 -> { }
+                    default -> { }
+                  end
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void negativeAndPositiveZeroFloatCasesOverlap() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc main(): void {
+                          val float value = 0.0;
+                          switch value
+                            case 0.0 -> { }
+                            case -0.0 -> { }
+                            default -> { }
+                          end
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("duplicate switch case"),
+                failure.getMessage());
+    }
+
+    @Test
     void resumableSwitchUsesOreslangNumericEqualityNotJavaBoxEquality() throws Exception {
         String source = """
                 pub fnc main(): void {
