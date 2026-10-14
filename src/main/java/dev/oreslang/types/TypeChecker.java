@@ -3280,6 +3280,10 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("Map")) {
+                if (currentActorKind != Ast.ActorKind.NONE) {
+                    throw new SecurityException(
+                            "typed Map allocation inside actors requires ownership and memory accounting");
+                }
                 if (!created.arguments().isEmpty()) {
                     throw new IllegalArgumentException("new Map<K,V>() takes no constructor arguments");
                 }
