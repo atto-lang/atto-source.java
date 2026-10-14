@@ -2217,7 +2217,7 @@ public final class TypeChecker {
                 rejectUnimportedModuleNamespace(namespace.name());
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
-                        "function " + namespace.name() + "." + qualifiedCall.member());
+                        "function " + namespace.name() + "." + qualifiedCall.member(), true);
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
                         arity);
@@ -2239,7 +2239,7 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label, true);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
