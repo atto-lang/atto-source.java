@@ -466,6 +466,54 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void internalBufferedDrainUnblocksPendingWriterWithoutStealingLosingFuture()
+            throws Exception {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(channel.tryWrite(10));
+        var producer = new OresFuture<Integer>();
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.write(channel, 20),
+                ChannelRuntime.await(producer))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertFalse(selected.isDone());
+        assertEquals(1, channel.pendingRegistrations());
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+
+        assertTrue(channel.drainOne(value -> {
+            assertEquals(10, value);
+            // Completion callbacks are not run inside the mailbox consumer.
+            assertFalse(selected.isDone());
+        }));
+        var winner = selected.get(5, TimeUnit.SECONDS);
+        assertEquals(0, winner.index());
+        assertEquals(ChannelRuntime.SelectOperation.WRITE, winner.operation());
+        assertEquals(0, channel.pendingRegistrations());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isDone());
+        assertEquals(20, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void throwingInternalDrainConsumerStillCompletesAlreadyAdmittedWriter()
+            throws Exception {
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        assertTrue(channel.tryWrite(41));
+        var admitted = channel.writeAsync(42);
+        assertFalse(admitted.isDone());
+
+        var failure = new IllegalStateException("mailbox consumer failure");
+        var caught = assertThrows(IllegalStateException.class,
+                () -> channel.drainOne(value -> {
+                    assertEquals(41, value);
+                    throw failure;
+                }));
+        assertEquals(failure, caught);
+        assertEquals(null, admitted.get(5, TimeUnit.SECONDS));
+        assertEquals(0, channel.pendingRegistrations());
+        assertEquals(42, channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void immediateProbeOnPendingFutureRegistersNoWaiter() {
         var future = new OresFuture<Integer>();
         var set = ChannelRuntime.SelectSet.of(ChannelRuntime.await(future));
