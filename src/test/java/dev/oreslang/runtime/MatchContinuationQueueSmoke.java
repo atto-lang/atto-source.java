@@ -21,7 +21,9 @@ public final class MatchContinuationQueueSmoke {
         smokeFatalError();
         smokeAbortSuppressesQueuedWork();
         smokeRaceBetweenCompletionAndWork();
-        System.out.println("MatchContinuationQueue smoke: 6 checks passed");
+        smokeBoundedBacklog();
+        smokeSerialConcurrentProducers();
+        System.out.println("MatchContinuationQueue smoke: 8 checks passed");
     }
 
     private static void require(boolean condition, String message) {
@@ -93,6 +95,46 @@ public final class MatchContinuationQueueSmoke {
             queue.abort();
         });
         require(queue.terminated() && stale.get() == 0, "cancelled queued work");
+    }
+
+    private static void smokeBoundedBacklog() {
+        MatchContinuationQueue queue = new MatchContinuationQueue();
+        AtomicInteger executed = new AtomicInteger();
+        try {
+            queue.enqueue(() -> {
+                for (int i = 0; i <= MatchContinuationQueue.MAX_PENDING; i++) {
+                    queue.enqueue(executed::incrementAndGet);
+                }
+            });
+            throw new AssertionError("unbounded pending callback growth");
+        } catch (IllegalStateException expected) {
+            require(expected.getMessage().contains("exceeds"), "unexpected capacity error");
+        }
+        require(queue.terminated() && executed.get() == 0,
+                "queue failed to drop its over-budget callback backlog");
+    }
+
+    private static void smokeSerialConcurrentProducers() throws Exception {
+        MatchContinuationQueue queue = new MatchContinuationQueue();
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger maxActive = new AtomicInteger();
+        AtomicInteger seen = new AtomicInteger();
+        try (ExecutorService executor = Executors.newFixedThreadPool(8)) {
+            java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+            for (int i = 0; i < 512; i++) {
+                futures.add(executor.submit(() -> queue.enqueue(() -> {
+                    int entered = active.incrementAndGet();
+                    maxActive.accumulateAndGet(entered, Math::max);
+                    Thread.yield();
+                    seen.incrementAndGet();
+                    active.decrementAndGet();
+                })));
+            }
+            for (var future : futures) future.get(5, TimeUnit.SECONDS);
+        }
+        require(seen.get() == 512, "lost callbacks under parallel producer pressure");
+        require(maxActive.get() == 1, "parallel drainers executed guest callbacks");
+        require(!queue.terminated(), "normal parallel producers terminated queue");
     }
 
     private static void smokeRaceBetweenCompletionAndWork() throws Exception {
