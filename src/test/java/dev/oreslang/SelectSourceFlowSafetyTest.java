@@ -90,6 +90,32 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
+    void proceduralArmBreakRunsFinallyOnceBeforeExitingOuterLoop() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  loop {
+                    do select {
+                      default: {
+                        try {
+                          stdio.stdout.write("branch:");
+                          break;
+                        } catch (err) {
+                          stdio.stdout.write("unexpected:");
+                        } finally {
+                          stdio.stdout.write("cleanup:");
+                        }
+                      }
+                    }
+                  }
+                  stdio.stdout.write("done");
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("branch:cleanup:done", run(source));
+    }
+
+    @Test
     void channelCloseIsVisibleToSourceAndPreservesCommittedBufferedValue() throws Exception {
         String source = """
                 pub fnc main(): void {
