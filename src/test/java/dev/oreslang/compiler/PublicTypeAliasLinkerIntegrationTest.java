@@ -117,4 +117,15 @@ final class PublicTypeAliasLinkerIntegrationTest {
                                 fnc bad(): void { Pair(); return; }
                                 """)));
     }
+
+    @Test
+    void standaloneCheckerCannotTreatUnlinkedAliasAsOpaqueNamedType() {
+        for (String importKind : new String[]{"type", "types"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker.checkTypes(
+                            dev.oreslang.parser.Parser.parse(
+                                    "import " + importKind + " Pair from \"./library.ores\";"
+                                            + "fnc bad(Pair<string,int> p): void { return; }")));
+        }
+    }
 }
