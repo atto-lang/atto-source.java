@@ -6639,8 +6639,8 @@ public final class ActorRuntime implements AutoCloseable {
                 releaseMailboxSlot(false);
                 envelope.close();
             })) { /* Reclaim ordinary user mail, not cleanup CONTROL. */ }
-            sourceReceiveSuspended = false;
-            activeMail = null;
+            // The serial receive remains logically held until its source
+            // cleanup Future settles; only ordinary queued user mail is dropped.
         }
 
         private void expireSourceCleanup() {
@@ -7412,16 +7412,34 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<OresFuture<?>> lexicalCleanup;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
                     ref.terminationCause.compareAndSet(null, cause);
                 }
+                // Repeated stop is idempotent: a second STOP may not drain the
+                // protected cleanup CONTROL lane or release the source lease.
+                if (stopped.get()) return;
                 stopped.set(true);
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
+
+                lexicalCleanup = List.copyOf(sourceCleanupTasks);
+                sourceCancellationPending = !lexicalCleanup.isEmpty()
+                        && !forceKillFenced && !closed.get();
+                if (!sourceCancellationPending) {
+                    continuationMailbox.close(cause);
+                    drainMailboxReservations();
+                } else {
+                    // Preserve only scheduler-owned cleanup-capable envelopes.
+                    // Other queued CONTROL work is revoked before cancellation
+                    // can enqueue its terminal resume.
+                    pruneStoppedContinuationQueueLocked();
+                    drainUserMailboxReservations();
+                }
+                for (var waiter : pendingSourceReceiveWaiters) waiter.detach();
+                pendingSourceReceiveWaiters.clear();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -7429,9 +7447,24 @@ public final class ActorRuntime implements AutoCloseable {
                 lifecycleLock.notifyAll();
             }
 
-            // Cancellation removes channel/select waiter registrations before
-            // any future channel activity can revive work for this dead actor.
-            for (OresFuture<?> future : pending) future.cancel(false);
+            try {
+                for (OresFuture<?> future : pending) future.cancel(false);
+                for (OresFuture<?> future : lexicalCleanup) future.cancel(false);
+            } finally {
+                boolean cleanupActive;
+                synchronized (lifecycleLock) {
+                    sourceCancellationPending = false;
+                    cleanupActive = hasSourceCleanup();
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+                if (cleanupActive) {
+                    schedule();
+                    CompletableFuture.delayedExecutor(
+                            ACTOR_CLEANUP_GRACE_MILLIS, TimeUnit.MILLISECONDS)
+                            .execute(this::expireSourceCleanup);
+                }
+            }
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
