@@ -234,6 +234,27 @@ final class ConditionalOptionBindingTest {
     }
 
     @Test
+    void shorthandComparisonAndAndGuardHaveDistinctShadowingScopesAtRuntime() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val int value = 3;
+                  val Option<int> maybe = Some(15);
+                  if (maybe as const value) eq value then
+                    stdio.println("unexpected-inner");
+                  else
+                    stdio.println("outer");
+                  fi
+                  if maybe as const value && value eq 15 then
+                    stdio.println("inner");
+                  fi
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals(List.of("outer", "inner"), run(program));
+    }
+
+    @Test
     void scopeMutabilityAndCarrierTypeFailClosed() {
         rejects("""
                 fnc bad(Option<int> maybe): void {
