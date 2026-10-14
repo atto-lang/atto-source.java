@@ -3587,22 +3587,31 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr argument = expressions.get(index);
+            Ast.Expr evaluated = argument instanceof Ast.SpreadExpr spread
+                    ? spread.expression() : argument;
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    evaluated,
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, List.of(), failure);
-                        } else {
-                            values.add(value);
+                            return;
+                        }
+                        try {
+                            if (argument instanceof Ast.SpreadExpr) {
+                                // A spread aggregate is evaluated exactly
+                                // once. Expand its finite elements only after
+                                // the awaitable operand has completed.
+                                values.addAll(expandArgumentSequence(value, "argument spread"));
+                            } else {
+                                values.add(value);
+                            }
                             evalSuspendableArgumentAt(
-                                    t,
-                                    expressions,
-                                    env,
-                                    values,
-                                    index + 1,
-                                    continuation);
+                                    t, expressions, env, values, index + 1, continuation);
+                        } catch (RuntimeException | Error expansionFailure) {
+                            continuation.accept(t, List.of(), expansionFailure);
                         }
                     });
         }
