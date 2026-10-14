@@ -2240,6 +2240,23 @@ public final class TypeChecker {
                                     "enum " + declarationEnum.name() + "." + variant.name()
                                             + " payload must have exactly the declared fields");
                         }
+                        // The stage-one enum ABI stores scalar fields as their concrete
+                        // runtime carriers. Ordinary numeric widening (int -> float)
+                        // does not materialize a converted field inside a record;
+                        // accepting it here would compile successfully but fail in
+                        // the runtime validator. Require reifiable, exact scalars.
+                        for (Map.Entry<String, Type> field : expectedRecord.members().entrySet()) {
+                            Type observed = actualRecord.members().get(field.getKey());
+                            Type required = field.getValue();
+                            if (!required.equals(observed)
+                                    && !(required == Primitive.STRING
+                                            && observed instanceof StringLiteral)) {
+                                throw new IllegalArgumentException(
+                                        "enum payload field '" + field.getKey()
+                                                + "' requires exact scalar type " + required
+                                                + " (implicit widening is unsupported)");
+                            }
+                        }
                         requireReadonlyCapabilityPreserved(actual, expected, "enum payload");
                         requireAssignable(actual, expected, "enum payload");
                     }

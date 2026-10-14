@@ -149,4 +149,27 @@ final class NominalMessageEnumTest {
                         """)));
     }
 
+    @Test
+    void enumPayloadFieldTypesMustMatchRuntimeCarriers() {
+        String declaration = "define enum Samples as Reading struct { reading: float } 1; end";
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                declaration + """
+                        fnc bad(): Samples {
+                          return Samples.Reading(infer struct { reading: 1 });
+                        }
+                        """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                declaration + """
+                        fnc good(): Samples {
+                          return Samples.Reading(infer struct { reading: 1.5 });
+                        }
+                        """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "define enum Texts as Text struct { text: string } 1; end" + """
+                        fnc good(): Texts {
+                          return Texts.Text(infer struct { text: "ok" });
+                        }
+                        """)));
+    }
+
 }
