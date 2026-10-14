@@ -18,7 +18,7 @@ final class TransparentAliasImportVisibilityTest {
     @Test
     void publicAliasesCanBeImportedByTypeAndTypes() {
         Ast.Program library = Parser.parse("""
-                define module products
+                define module products as
                     define pub type Entry<K, V> = record{key: K, value: V};
                     define pub type alias Pair<K, V> as Entry<K, V>;
                 end
@@ -35,7 +35,7 @@ final class TransparentAliasImportVisibilityTest {
     void privateAliasCannotBeImportedEvenWithTypesWildcard() {
         Ast.Program library = Parser.parse("""
                 type Secret = int;
-                define module products
+                define module products as
                     type Hidden = [int, string];
                     define pub type alias Public as Hidden;
                 end
@@ -59,7 +59,7 @@ final class TransparentAliasImportVisibilityTest {
     @Test
     void publicAliasDoesNotAcquireAnyRuntimeRepresentation() {
         Ast.Program program = Parser.parse("""
-                define module products
+                define module products as
                     define pub type alias Pair<A, B> as Tuple[A, B];
                 end
                 """);
