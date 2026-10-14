@@ -63,6 +63,35 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void cancellationRevokesCallbackProducerExactlyOnceAndDropsLateCompletion() {
+        AtomicReference<OresFuture.Callback<Integer>> callback = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger revocations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFuture.fromCallback(
+                callback::set, revocations::incrementAndGet);
+
+        assertTrue(future.cancel(false));
+        assertEquals(1, revocations.get());
+        assertFalse(future.cancel(false));
+        assertEquals(1, revocations.get());
+        assertDoesNotThrow(() -> callback.get().resolve(42));
+        assertTrue(future.isCancelled());
+        assertThrows(OresFuture.AlreadySettledException.class,
+                () -> callback.get().resolve(43));
+    }
+
+    @Test
+    void completedCallbackProducerCannotBeRevokedAfterSuccess() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger revocations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        OresFuture<Integer> future = OresFuture.fromCallback(
+                cb -> cb.resolve(11), revocations::incrementAndGet);
+        assertEquals(11, future.get(5, TimeUnit.SECONDS));
+        assertFalse(future.cancel(false));
+        assertEquals(0, revocations.get());
+    }
+
+    @Test
     void registrarThrowRejectsFutureWhenCallbackHasNotSettled() {
         OresFuture<Integer> future = OresFuture.fromCallback(callback -> {
             throw new IllegalStateException("registration failed");
