@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.concurrent.Semaphore;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.RejectedExecutionException;
@@ -21,6 +22,16 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class OresTimers implements AutoCloseable {
     private static final int MAX_ACTIVE_PER_OWNER = 4096;
+    private static final int MAX_INTERVALS_PER_OWNER = 4096;
+    // Per-context limits alone are insufficient when an untrusted application
+    // creates thousands of timer owners against the shared host clock.
+    static final int MAX_GLOBAL_ACTIVE_TIMERS = 16384;
+    private static final Semaphore GLOBAL_SLOTS =
+            new Semaphore(MAX_GLOBAL_ACTIVE_TIMERS);
+
+    static int availableGlobalTimerSlots() {
+        return GLOBAL_SLOTS.availablePermits();
+    }
     private static final ScheduledThreadPoolExecutor CLOCK = createClock();
 
     private static ScheduledThreadPoolExecutor createClock() {
@@ -35,7 +46,8 @@ public final class OresTimers implements AutoCloseable {
 
     private final Object admission = new Object();
     private final Set<OresFuture<Void>> active = new HashSet<>();
-    private boolean closed;
+    private final Set<Interval> intervals = new HashSet<>();
+    private volatile boolean closed;
 
     /**
      * Complete after the duration measured on a monotonic clock.
@@ -51,25 +63,32 @@ public final class OresTimers implements AutoCloseable {
         synchronized (admission) {
             if (closed) throw new RejectedExecutionException("timer owner closed");
             if (active.size() >= MAX_ACTIVE_PER_OWNER) {
-                throw new RejectedExecutionException("timer admission is full");
+                throw new RejectedExecutionException("timer owner admission is full");
             }
-            active.add(future);
+            if (!GLOBAL_SLOTS.tryAcquire()) {
+                throw new RejectedExecutionException("global timer admission is full");
+            }
+            // Register cleanup BEFORE arming the timer. A zero-delay
+            // expiration is allowed to run before schedule() returns.
             try {
+                active.add(future);
+                future.whenCompleteRuntime((ignored, failure) -> {
+                    // Never retain completed/cancelled timers or their slots.
+                    synchronized (admission) {
+                        active.remove(future);
+                    }
+                    GLOBAL_SLOTS.release();
+                });
                 scheduled.set(CLOCK.schedule(
                         () -> future.completeFromRuntime(null),
                         delayNanos, TimeUnit.NANOSECONDS));
             } catch (RuntimeException | Error failure) {
-                active.remove(future);
+                // No Future escapes before this block exits. Settle it to
+                // run the same exact-once cleanup on failed admission.
+                future.failFromRuntime(failure);
                 throw failure;
             }
         }
-        // Host-only cleanup. A completed or cancelled timer never retains
-        // a slot in the owning context's timer admission set.
-        future.whenCompleteRuntime((ignored, error) -> {
-            synchronized (admission) {
-                active.remove(future);
-            }
-        });
         return future;
     }
 
@@ -84,7 +103,12 @@ public final class OresTimers implements AutoCloseable {
         }
         synchronized (admission) {
             if (closed) throw new RejectedExecutionException("timer owner closed");
-            return new Interval(periodNanos);
+            if (intervals.size() >= MAX_INTERVALS_PER_OWNER) {
+                throw new RejectedExecutionException("interval owner admission is full");
+            }
+            Interval interval = new Interval(periodNanos);
+            intervals.add(interval);
+            return interval;
         }
     }
 
@@ -103,12 +127,21 @@ public final class OresTimers implements AutoCloseable {
          * intervals neither pile up missed ticks nor execute guest callbacks.
          */
         public synchronized OresFuture<Long> next() {
-            if (cancelled) return OresFuture.failed(
-                    new CancellationException("interval cancelled"));
+            if (cancelled || closed) return OresFuture.failed(
+                    new CancellationException("interval owner closed or cancelled"));
             if (pending != null) {
                 throw new IllegalStateException("interval already has an awaiting consumer");
             }
-            OresFuture<Void> wake = afterNanos(periodNanos);
+            final OresFuture<Void> wake;
+            try {
+                wake = afterNanos(periodNanos);
+            } catch (RejectedExecutionException rejected) {
+                // Owner close racing with next() is a cancellation, not a
+                // surprise synchronous exception from the interval API.
+                if (closed) return OresFuture.failed(
+                        new CancellationException("interval owner closed"));
+                throw rejected;
+            }
             OresFuture<Long> result = new OresFuture<>(() -> wake.cancel(false));
             pending = result;
             result.whenCompleteRuntime((value, error) -> {
@@ -125,7 +158,13 @@ public final class OresTimers implements AutoCloseable {
                     } else if (failure != null) {
                         result.failFromRuntime(OresFuture.unwrap(failure));
                     } else {
-                        result.completeFromRuntime(++delivered);
+                        long nextIndex = delivered + 1;
+                        if (nextIndex <= 0) {
+                            result.failFromRuntime(new ArithmeticException(
+                                    "interval tick counter overflow"));
+                        } else if (result.completeFromRuntime(nextIndex)) {
+                            delivered = nextIndex;
+                        }
                     }
                 }
             });
@@ -137,6 +176,9 @@ public final class OresTimers implements AutoCloseable {
             if (cancelled) return false;
             cancelled = true;
             if (pending != null) pending.cancel(false);
+            synchronized (admission) {
+                intervals.remove(this);
+            }
             return true;
         }
 
@@ -153,12 +195,22 @@ public final class OresTimers implements AutoCloseable {
     @Override
     public void close() {
         final ArrayList<OresFuture<Void>> toCancel;
+        final ArrayList<Interval> intervalsToClose;
         synchronized (admission) {
             if (closed) return;
             closed = true;
             toCancel = new ArrayList<>(active);
+            intervalsToClose = new ArrayList<>(intervals);
         }
+        // No admission lock may be held while cancellation notifies waiters.
+        for (Interval interval : intervalsToClose) interval.cancel();
         for (OresFuture<Void> timer : toCancel) timer.cancel(false);
+    }
+
+    int activeIntervalCount() {
+        synchronized (admission) {
+            return intervals.size();
+        }
     }
 
     int activeTimerCount() {
