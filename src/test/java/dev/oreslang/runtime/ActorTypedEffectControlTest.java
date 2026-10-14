@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -72,6 +74,37 @@ final class ActorTypedEffectControlTest {
             assertTrue(cancelled.cancel());
             assertTrue(cancelled.awaitTermination(3, TimeUnit.SECONDS));
             assertTrue(actors.pollActorFailureNotice().isEmpty());
+        }
+    }
+
+    @Test void structuredChildFailureIdentifiesItsOwningSupervisor() throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                childContext -> (mail, c) -> {
+                                    throw GuestActorEffectSignal.raise();
+                                });
+                        child.set(next);
+                        next.send("fail");
+                        childCreated.countDown();
+                    });
+            parent.send("create");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            ActorRuntime.ActorHandle<String> handle = child.get();
+            assertNotNull(handle);
+            assertTrue(handle.ref().awaitTermination(3, TimeUnit.SECONDS));
+            ActorRuntime.ActorFailureNotice notice =
+                    actors.pollActorFailureNotice().orElseThrow();
+            assertEquals(handle.id(), notice.actorId());
+            assertEquals(parent.id(), notice.supervisorId());
+            assertEquals(parent.id().value().toString(),
+                    notice.envelope().supervisorId());
+            assertTrue(actors.pollActorFailureNotice().isEmpty());
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
         }
     }
 
