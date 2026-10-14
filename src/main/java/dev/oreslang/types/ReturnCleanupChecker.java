@@ -341,6 +341,15 @@ public final class ReturnCleanupChecker {
             expression(channel.channel(), scope, inDefer, state);
             expression(channel.value(), scope, inDefer, state);
             statements(channel.callbackBody(), scope, false, inDefer, false, state);
+        } else if (expr instanceof Ast.StaticSelectExpr selected) {
+            for (Ast.SelectArm arm : selected.select().arms()) {
+                expression(arm.channel(), scope, inDefer, state);
+                expression(arm.value(), scope, inDefer, state);
+                Scope armScope = new Scope(scope);
+                if (arm.bindingName() != null) armScope.define(arm.bindingName());
+                // A result-arm return feeds the expression, not the callable.
+                statements(arm.body(), armScope, false, inDefer, false, state);
+            }
         } else if (expr instanceof Ast.DynamicSelectExpr select) {
             expression(select.cases(), scope, inDefer, state);
         } else if (expr instanceof Ast.ListExpr list) {
