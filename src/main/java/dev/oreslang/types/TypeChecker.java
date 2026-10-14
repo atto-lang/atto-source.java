@@ -3406,6 +3406,55 @@ public final class TypeChecker {
                 case IMMEDIATE -> new Named("Option", List.of(element));
             };
         }
+        if (expr instanceof Ast.MatchExpr valueMatch) {
+            Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            Type result = null;
+            List<Ast.MatchArm> proofArms = new ArrayList<>();
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            try {
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    env.restoreInitialization(before);
+                    Env armEnv = new Env(env);
+                    checkPattern(arm.pattern(), subject, armEnv, generics, self);
+                    if (arm.guard() != null) {
+                        requireAssignable(
+                                typeOfCondition(arm.guard(), armEnv, generics, self),
+                                Primitive.BOOL,
+                                "value match guard");
+                    }
+                    Type actual = typeOf(arm.value(), armEnv, generics, self);
+                    if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "value match arms must return a statically known non-void value");
+                    }
+                    if (result == null) {
+                        result = actual;
+                    } else {
+                        // Keep the first implementation deliberately
+                        // invariant: no implicit numeric or ownership
+                        // capability widening between expression arms.
+                        requireReadonlyCapabilityPreserved(actual, result,
+                                "value match arm");
+                        requireAssignable(actual, result, "value match arm");
+                        requireAssignable(result, actual, "value match arm");
+                    }
+                    proofArms.add(new Ast.MatchArm(
+                            arm.pattern(), arm.guard(),
+                            List.of(new Ast.ReturnStmt(arm.value()))));
+                }
+                // Reuse the canonical finite-domain reachability and
+                // exhaustive-pattern checker. These arm returns are checked
+                // against MatchExpr's result, not the enclosing function.
+                checkMatch(
+                        new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
+                        subject, env, generics, result, self);
+                return result;
+            } finally {
+                // Only the selected arm executes at runtime. Type-checking
+                // all branches cannot establish outer definite-init facts.
+                env.restoreInitialization(before);
+            }
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
