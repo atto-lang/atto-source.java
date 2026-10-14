@@ -3408,7 +3408,13 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MatchExpr valueMatch) {
             Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
-            Type result = null;
+            Type declaredResult = valueMatch.resultType() == null ? null
+                    : deref(resolve(valueMatch.resultType(), generics, self));
+            if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "value match result parameter must be a known, non-void value type");
+            }
+            Type result = declaredResult;
             List<Ast.MatchArm> proofArms = new ArrayList<>();
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             try {
@@ -3422,19 +3428,24 @@ public final class TypeChecker {
                                 Primitive.BOOL,
                                 "value match guard");
                     }
-                    Type actual = typeOf(arm.value(), armEnv, generics, self);
+                    Type actual = declaredResult == null
+                            ? typeOf(arm.value(), armEnv, generics, self)
+                            : typeOfAgainstExpected(arm.value(), declaredResult, armEnv, generics, self);
                     if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
                         throw new IllegalArgumentException(
                                 "value match arms must return a statically known non-void value");
                     }
-                    if (result == null) {
+                    if (declaredResult != null) {
+                        // An explicit result type constrains each arm, but
+                        // cannot erase readonly/ownership capabilities.
+                        requireReadonlyCapabilityPreserved(actual, declaredResult, "value match arm");
+                        requireAssignable(actual, declaredResult, "value match arm");
+                    } else if (result == null) {
                         result = actual;
                     } else {
-                        // Keep the first implementation deliberately
-                        // invariant: no implicit numeric or ownership
-                        // capability widening between expression arms.
-                        requireReadonlyCapabilityPreserved(actual, result,
-                                "value match arm");
+                        // Preserve the existing invariant inference contract
+                        // when no result parameter was supplied.
+                        requireReadonlyCapabilityPreserved(actual, result, "value match arm");
                         requireAssignable(actual, result, "value match arm");
                         requireAssignable(result, actual, "value match arm");
                     }
