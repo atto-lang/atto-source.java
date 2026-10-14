@@ -54,3 +54,20 @@ The source org CI has so far failed before runner steps were allocated.
 An existing private alternate-org mirror was discovered, but its source
 tree was stale and the connector blocked part of a cross-org workflow
 copy. **No exact-source mirror or passing verification is claimed.**
+
+## Subsequent security audit (2026-10-14)
+
+- Generic defaults must reference only a prior generic parameter or an actual
+  compiler-recognized builtin, class, interface or type alias. An arbitrary
+  unresolved nominal name (including nested names in Array/Option) cannot be
+  treated as a concrete default. This restricts stage-one defaults more than
+  Oreslang's otherwise permissive ordinary nominal-type resolution.
+- Reject invented compiler-only `$...` type descriptors in AST-generated
+  function defaults. Existing, well-formed synthetic record/tuple/borrow/
+  union/sequence descriptors still undergo recursive validation.
+- Default validation executes at declaration admission, not lazily at first
+  use; caller-supplied explicit overrides do not hide invalid defaults.
+- Added tests for malformed and nested unresolved defaults, default ordering,
+  and generated-AST synthetic-name injection.
+- No actual Maven, GraalVM, or LLVM tests have executed for these commits;
+  source-organization fast-ci continues failing with no runner steps.
