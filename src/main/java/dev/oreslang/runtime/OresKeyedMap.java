@@ -186,6 +186,12 @@ public final class OresKeyedMap<K, V> {
         }
         List<Map.Entry<K, V>> prepared = new ArrayList<>(sourceSize);
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
+            // A hostile Map implementation may underreport size(). Check
+            // actual enumerated entries too, before any destination writes.
+            if (prepared.size() >= MAX_ENTRIES) {
+                throw new IllegalArgumentException(
+                        "typed Map batch exceeds maximum enumerated entry count");
+            }
             K key = Objects.requireNonNull(entry, "map entry").getKey();
             V value = entry.getValue();
             checkKey(key);
