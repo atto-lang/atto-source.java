@@ -4473,6 +4473,10 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr target,
                 Object value,
                 Env env) {
+            if (Env.containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
+                throw new SecurityException(
+                        "typed Map cannot escape via assignment without verified ownership transfer");
+            }
             if (target instanceof Ast.NameExpr name) {
                 env.assign(name.name(), value);
                 return value;
@@ -6123,6 +6127,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AssignExpr assignment) {
                 Object value = eval(assignment.value(), env);
+                if (Env.containsEmbeddedTypedMap(value, new IdentityHashMap<>(), 0)) {
+                    throw new SecurityException(
+                            "typed Map cannot escape via assignment without verified ownership transfer");
+                }
                 if (assignment.target() instanceof Ast.NameExpr target) {
                     env.assign(target.name(), value);
                     return value;
