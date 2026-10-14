@@ -429,6 +429,7 @@ public final class OresScheduler implements AutoCloseable {
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
+        private final AtomicBoolean cancellationInjected = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
         private final AtomicReference<TerminalOutcome<T>> terminalOutcome =
@@ -487,7 +488,8 @@ public final class OresScheduler implements AutoCloseable {
                 // and receives a terminal failure instead.
                 java.util.concurrent.CancellationException cancellation =
                         completion.deferredCancellationCause();
-                if (cancellation != null) {
+                if (cancellation != null
+                        && cancellationInjected.compareAndSet(false, true)) {
                     if (resume.initial()) {
                         failTerminal(cancellation);
                         return;
@@ -551,7 +553,9 @@ public final class OresScheduler implements AutoCloseable {
         private void armCooperate() {
             java.util.concurrent.CancellationException cancellation =
                     completion.deferredCancellationCause();
-            Resume resume = Resume.completed(null, cancellation);
+            Resume resume = Resume.completed(null,
+                    cancellation != null && !cancellationInjected.get()
+                            ? cancellation : null);
             if (!pendingResume.compareAndSet(null, resume)) {
                 failTerminal(new IllegalStateException(
                         "cooperate attempted to publish more than one resume"));
@@ -570,7 +574,7 @@ public final class OresScheduler implements AutoCloseable {
             }
             java.util.concurrent.CancellationException cancellation =
                     completion.deferredCancellationCause();
-            if (cancellation != null) {
+            if (cancellation != null && !cancellationInjected.get()) {
                 // The result of the abandoned producer no longer matters.
                 // afterCarrierTurn owns the subsequent cleanup dispatch.
                 pendingResume.set(Resume.completed(null, cancellation));
@@ -625,13 +629,15 @@ public final class OresScheduler implements AutoCloseable {
 
         private void deliverAwaitCompletion(Object value, Throwable failure) {
             if (phase.get() == TERMINAL
-                    || completion.deferredCancellationCause() != null) return;
+                    || (completion.deferredCancellationCause() != null
+                        && !cancellationInjected.get())) return;
 
             Resume resume = Resume.completed(
                     value,
                     failure == null ? null : OresFuture.unwrap(failure));
             if (!pendingResume.compareAndSet(null, resume)) {
-                if (completion.deferredCancellationCause() != null) return;
+                if (completion.deferredCancellationCause() != null
+                        && !cancellationInjected.get()) return;
                 failTerminal(new IllegalStateException(
                         "await delivered more than one resume to the same task"));
                 return;
