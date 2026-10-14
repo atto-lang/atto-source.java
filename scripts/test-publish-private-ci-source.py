@@ -28,7 +28,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
-        self.preflight = patch.object(pub, "require_preflight")
+        self.repository_ids = [123] * 100
+        self.archived = [False] * 100
+        self.disabled = [False] * 100
+        self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
 
@@ -36,7 +39,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+                        private=True, default_branch="main",
+                        id=self.repository_ids.pop(0),
+                        archived=self.archived.pop(0),
+                        disabled=self.disabled.pop(0))
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -103,6 +109,48 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
+
+
+    def test_missing_invalid_and_replaced_numeric_identity_fail_closed(self):
+        for invalid in (None, 0, -1, True, "123"):
+            with self.subTest(invalid=invalid):
+                self.route_calls.clear()
+                self.repository_ids = [invalid] + [123] * 10
+                with self.assertRaisesRegex(pub.Denied, "numeric repository identity"):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_private_repo_replacement_during_transfer_aborts_before_next_write(self):
+        self.repository_ids = [123, 123, 456] + [123] * 10
+        with self.assertRaisesRegex(pub.Denied, "numeric repository identity"):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_initial_archived_or_disabled_private_destination_fails_closed(self):
+        for state in ("archived", "disabled"):
+            with self.subTest(state=state):
+                self.route_calls.clear()
+                self.visibility = ["private"] * 10
+                self.repository_ids = [123] * 10
+                self.archived = [state == "archived"] + [False] * 9
+                self.disabled = [state == "disabled"] + [False] * 9
+                with self.assertRaisesRegex(pub.Denied, "archived, disabled"):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_repository_archive_or_disable_during_transfer_aborts(self):
+        for state in ("archived", "disabled"):
+            with self.subTest(state=state):
+                self.route_calls.clear()
+                self.visibility = ["private"] * 10
+                self.repository_ids = [123] * 10
+                self.archived = [False, False, state == "archived"] + [False] * 7
+                self.disabled = [False, False, state == "disabled"] + [False] * 7
+                with self.assertRaisesRegex(pub.Denied, "archived, disabled"):
+                    self.publish()
+                self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                                 ["repos/trusted/ci/git/blobs"])
 
     def test_mid_transfer_policy_revocation_aborts_without_new_branch(self):
         original = self.fake_api
