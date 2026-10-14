@@ -201,15 +201,21 @@ final class StaticSelectValueExpressionTest {
     }
 
     @Test
-    void nonblockingEndDelimitedValueSelectIsNotSilentlyAStatement() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                actor fnc wrong(): void {
-                  const int selected = nb select over
+    void nonblockingEndDelimitedValueSelectHasFutureResultType() {
+        Ast.Program typed = TypeChecker.check(Parser.parse("""
+                actor fnc choose(): void {
+                  val Future<int> selected = nb select over
                     default -> { return 1; }
                   end;
                   return;
                 }
                 """));
+        Ast.FunctionDecl function = (Ast.FunctionDecl)
+                typed.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt binding = (Ast.BindingStmt) function.body().getFirst();
+        Ast.StaticSelectExpr valueSelect = assertInstanceOf(
+                Ast.StaticSelectExpr.class, binding.initializer());
+        assertEquals(Ast.WaitMode.NONBLOCKING, valueSelect.select().mode());
     }
 
     @Test
