@@ -64,7 +64,9 @@ class NativeHttpTest {
             assertFalse(output.contains("ACCEPTED"), output);
             assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
             assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
-            assertTrue(output.contains("1\n7\n0\n"), output);
+            // Capture teardown may omit the trailing newline even when all
+            // counters were emitted. Check the final values, not flush timing.
+            assertTrue(output.stripTrailing().endsWith("1\n7\n0"), output);
         }
     }
 
