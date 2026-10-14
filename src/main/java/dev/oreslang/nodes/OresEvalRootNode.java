@@ -4399,7 +4399,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.TypeRef key = type.arguments().getFirst();
             OresKeyedMap.ValueDomain valueDomain = mapValueDomain(type.arguments().get(1));
             if (!key.isUnion()) {
-                if (key.arguments().isEmpty() && !key.inferArguments()) {
+                if (!key.isBorrow() && key.arguments().isEmpty() && !key.inferArguments()) {
                     if (key.name().equals("Symbol")) return OresKeyedMap.symbolKeys(valueDomain);
                     if (key.name().equals("String") || key.name().equals("string")) {
                         return OresKeyedMap.stringKeys(valueDomain);
@@ -4410,12 +4410,14 @@ public final class OresEvalRootNode extends RootNode {
             if (key.arguments().size() == 2) {
                 Ast.TypeRef a = key.arguments().get(0);
                 Ast.TypeRef b = key.arguments().get(1);
-                boolean aSymbol = a.name().equals("Symbol") && a.arguments().isEmpty() && !a.inferArguments();
-                boolean bSymbol = b.name().equals("Symbol") && b.arguments().isEmpty() && !b.inferArguments();
-                boolean aString = (a.name().equals("String") || a.name().equals("string"))
+                boolean aValue = !a.isBorrow() && !a.isUnion()
                         && a.arguments().isEmpty() && !a.inferArguments();
-                boolean bString = (b.name().equals("String") || b.name().equals("string"))
+                boolean bValue = !b.isBorrow() && !b.isUnion()
                         && b.arguments().isEmpty() && !b.inferArguments();
+                boolean aSymbol = aValue && a.name().equals("Symbol");
+                boolean bSymbol = bValue && b.name().equals("Symbol");
+                boolean aString = aValue && (a.name().equals("String") || a.name().equals("string"));
+                boolean bString = bValue && (b.name().equals("String") || b.name().equals("string"));
                 if ((aSymbol && bString) || (bSymbol && aString)) {
                     return OresKeyedMap.stringOrSymbolKeys(valueDomain);
                 }
