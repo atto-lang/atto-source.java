@@ -329,4 +329,45 @@ final class PublicTypeAliasLinkerIntegrationTest {
         // A failed incremental build must not publish any partially updated cache.
         assertTrue(compiler.compile(files).rebuiltUnits().isEmpty());
     }
+
+    @Test
+    void typeFamilyImportAndTwoHopRenamingPreserveProvenance() {
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "leaf.ores", CHAIN_LEAF,
+                "middle.ores", """
+                        import types Leaf as PrivateLocal from "./leaf.ores";
+                        define module middle as
+                            define pub type alias Export<K,V> as PrivateLocal<K,V>;
+                        end
+                        """,
+                "app.ores", """
+                        import type Export as LocalEntry from "./middle.ores";
+                        fnc read(LocalEntry<string,int> value): int { return value.value; }
+                        """)));
+    }
+
+    @Test
+    void reusedCompilationRejectsTransitivePrivateTypeChange() {
+        var compiler = new IncrementalCompiler();
+        String middle = """
+                import type Leaf from "./leaf.ores";
+                define module middle as
+                    define pub type alias Export<K,V> as Leaf<K,V>;
+                end
+                """;
+        String app = """
+                import type Export from "./middle.ores";
+                fnc extract(Export<string,int> value): int { return value.value; }
+                """;
+        var sources = Map.of("leaf.ores", CHAIN_LEAF, "middle.ores", middle, "app.ores", app);
+        assertEquals(3, compiler.compile(sources).rebuiltUnits().size());
+        assertTrue(compiler.compile(sources).rebuiltUnits().isEmpty());
+        // Public declarations are unchanged; private storage changes must
+        // still invalidate all dependent compilation-unit proofs.
+        String changed = CHAIN_LEAF.replace("value: V", "payload: V");
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "leaf.ores", changed, "middle.ores", middle, "app.ores", app)));
+        assertTrue(compiler.compile(sources).rebuiltUnits().isEmpty(),
+                "a failed build must retain the previous complete cache snapshot");
+    }
 }
