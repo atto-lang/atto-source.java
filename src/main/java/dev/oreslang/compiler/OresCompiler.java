@@ -38,6 +38,16 @@ public final class OresCompiler {
     }
 
     /**
+     * Experimental public interface emission. Static analysis and ownership
+     * admission are mandatory before extracting metadata. This does not execute
+     * guest code, persist a cache, or authorize a decoded external interface.
+     */
+    public static ExportInterfaceCodec.InterfaceFile emitPublicInterface(
+            String source, ExportInterfaceCodec.Header header) {
+        return ExportInterfaceCollector.collect(parseAndTypeCheck(source), header);
+    }
+
+    /**
      * Parse and type-check the complete source first, then perform closed-world
      * build optimization. Type errors in code that later becomes unreachable
      * are still reported; tree shaking is an optimization, not conditional
