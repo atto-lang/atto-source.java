@@ -2922,12 +2922,14 @@ public final class Parser {
                 continue;
             }
             if (!suppressRefinementOperators && match(AS)) {
-                // These are guarded Option bindings, not ordinary casts. Do
-                // not accept them until ownership, scope, and runtime lowering
-                // are implemented together.
+                // A conditional Option binding is a predicate plus a
+                // success-edge local, never an assignment or ordinary cast.
                 if (check(CONST) || check(LET)) {
-                    throw error(peek(),
-                            "conditional 'as const/let' binding is not yet supported by the borrow checker");
+                    Ast.BindingKind kind = advance().type() == CONST
+                            ? Ast.BindingKind.CONST : Ast.BindingKind.LET;
+                    String name = consume(IDENT, "expected binding name after 'as const/let'").lexeme();
+                    expr = new Ast.OptionBindExpr(expr, kind, name);
+                    continue;
                 }
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
