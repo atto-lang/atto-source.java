@@ -1676,7 +1676,8 @@ public final class TypeChecker {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
             Map<Env.Binding, Set<String>> beforeCases = env.initializationSnapshot();
             List<Map<Env.Binding, Set<String>>> exits = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
+            Set<String> seenAggregateShapes = new HashSet<>();
+            List<Object> seenScalarValues = new ArrayList<>();
             for (Ast.SwitchCase arm : switched.cases()) {
                 env.restoreInitialization(beforeCases);
                 if (arm.constants().isEmpty()) throw new IllegalArgumentException("switch case requires at least one constant");
@@ -1686,8 +1687,24 @@ public final class TypeChecker {
                     if (!assignable(actual, subject) && !assignable(subject, actual)) {
                         throw new IllegalArgumentException("switch case type " + actual + " is incompatible with " + subject);
                     }
-                    String key = constant.toString();
-                    if (!seen.add(key)) throw new IllegalArgumentException("duplicate switch case: " + key);
+                    if (constant instanceof Ast.ListExpr
+                            || constant instanceof Ast.TupleExpr
+                            || constant instanceof Ast.ObjectExpr) {
+                        // Preserve legacy aggregate-key handling pending typed
+                        // immutable aggregate values shared with the runtime.
+                        String shape = constant.toString();
+                        if (!seenAggregateShapes.add(shape)) {
+                            throw new IllegalArgumentException("duplicate switch case: " + shape);
+                        }
+                    } else {
+                        Object value = CompileTimeConstantEvaluator.evaluate(constant);
+                        for (Object prior : seenScalarValues) {
+                            if (switchScalarValuesEqual(prior, value)) {
+                                throw new IllegalArgumentException("duplicate switch case: " + constant);
+                            }
+                        }
+                        seenScalarValues.add(value);
+                    }
                 }
                 checkBlock(arm.body(), env, generics, expectedReturn, self);
                 exits.add(env.initializationSnapshot());
@@ -7840,6 +7857,20 @@ public final class TypeChecker {
         Set<String> result = new HashSet<>();
         for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
         return result;
+    }
+
+    /**
+     * Mirrors Oreslang's scalar valueEquals dispatch for switch overlap:
+     * exact integer equality, numeric widening for mixed int/float, and
+     * nominal Symbol equality distinct from String equality. Do not use
+     * AST.toString(), which misses e.g. (1 + 2) versus 3.
+     */
+    private static boolean switchScalarValuesEqual(Object left, Object right) {
+        if (left instanceof Long a && right instanceof Long b) return a.longValue() == b.longValue();
+        if (left instanceof Number a && right instanceof Number b) {
+            return a.doubleValue() == b.doubleValue();
+        }
+        return java.util.Objects.equals(left, right);
     }
 
     private boolean constant(Ast.Expr expr) {
