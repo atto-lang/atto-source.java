@@ -203,6 +203,88 @@ final class OresKeyedMapTest {
                 "a failed batch must not modify previously stored entries");
     }
 
+    @Test void requiredLookupDoesNotReturnNullForMissingTypedKey() {
+        OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys(
+                OresKeyedMap.ValueDomain.INT);
+        OresSymbol key = OresSymbol.process("ready");
+        assertNull(map.get(key), "optional host lookup retains null for absence");
+        assertThrows(IllegalArgumentException.class, () -> map.getRequired(key));
+        map.put(key, 8);
+        assertEquals(8, map.getRequired(OresSymbol.process("ready")));
+        map.remove(key);
+        assertThrows(IllegalArgumentException.class, () -> map.getRequired(key));
+    }
+
+    @Test void requiredLookupRemainsTotalDuringConcurrentRemovals() throws Exception {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.INT);
+        map.put("status", 1);
+        var workers = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var writer = workers.submit(() -> {
+                for (int i = 0; i < 5_000; i++) {
+                    map.remove("status");
+                    map.put("status", 1);
+                }
+            });
+            var reader = workers.submit(() -> {
+                for (int i = 0; i < 5_000; i++) {
+                    try {
+                        Integer value = map.getRequired("status");
+                        assertEquals(1, value, "present key must never return null");
+                    } catch (IllegalArgumentException missing) {
+                        assertTrue(missing.getMessage().contains("unknown typed Map key"));
+                    }
+                }
+            });
+            writer.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            reader.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
+    @Test void hostileMapSizeCannotAllocateUnboundedBatch() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 2);
+        java.util.Map<String, Integer> huge = new java.util.AbstractMap<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                throw new AssertionError("oversized map must not be traversed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(huge));
+        assertEquals(Map.of("original", 2), map.shallowSnapshot());
+    }
+
+    @Test void dishonestSmallReportedSizeCannotBypassBatchQuota() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("original", 2);
+        java.util.Map<String, Integer> dishonest = new java.util.AbstractMap<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Set<Entry<String, Integer>> entrySet() {
+                return new java.util.AbstractSet<>() {
+                    @Override public int size() { return 0; }
+                    @Override public java.util.Iterator<Entry<String, Integer>> iterator() {
+                        return new java.util.Iterator<>() {
+                            private int index;
+                            @Override public boolean hasNext() {
+                                return index <= OresKeyedMap.MAX_ENTRIES;
+                            }
+                            @Override public Entry<String, Integer> next() {
+                                if (!hasNext()) throw new java.util.NoSuchElementException();
+                                return Map.entry("batch-" + index++, 3);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(dishonest));
+        assertEquals(Map.of("original", 2), map.shallowSnapshot(),
+                "quota failure must be transactional");
+    }
+
     @Test void exportedViewsCannotMutateTheInternalMapping() {
         OresKeyedMap<OresSymbol, Integer> map = OresKeyedMap.symbolKeys();
         map.put(OresSymbol.process("a"), 1);
