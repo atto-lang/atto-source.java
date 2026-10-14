@@ -4993,8 +4993,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
-        // Never enqueue a snapshot that has not itself passed the destination
-        // Symbol allowlist, even if a mutable sender graph changed mid-copy.
+        // SOURCE validation is advisory: mutable host containers may change
+        // while a message is being detached. Recheck every security-sensitive
+        // property on the actual, frozen/copy-owned payload before enqueue.
+        // This prevents a foreign ActorRef or Shared handle from being swapped
+        // in between the first validation pass and isolateCopy/freeze.
+        validateMessageGraph(prepared);
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
         }
