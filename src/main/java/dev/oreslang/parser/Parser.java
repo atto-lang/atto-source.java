@@ -1792,14 +1792,14 @@ public final class Parser {
         }
         if (match(IF)) return parseIf();
         if (match(DO)) {
-            if (match(MATCH)) return parseMatch();
+            if (match(MATCH)) return parseMatch(true);
             if (match(SWITCH)) return parseSwitch();
             throw error(previous(), "'do' requires match, switch, or a braced select");
         }
         // Preserve legacy statements during the explicit-do migration.
         // A parser-only prohibition would break working programs before
         // the corresponding value expressions and formatter are available.
-        if (match(MATCH)) return parseMatch();
+        if (match(MATCH)) return parseMatch(false);
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (check(LOOP) && (checkNext(LBRACE) || checkNext(DO))) {
@@ -1887,17 +1887,50 @@ public final class Parser {
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
                 boolean mutableReferent = false;
+                Ast.TypeRef bindingType = null;
+                Ast.DestructureKind destructureKind = null;
+                List<Ast.DestructureBinding> destructureBindings = List.of();
 
                 if (match(READCH)) {
                     operation = Ast.ChannelOperation.READ;
                     channel = parseExpression();
                     consume(COLON, "readch select arm requires ':'");
-                    if (isBindingKind(peek().type())) {
-                        bindingKind = parseBindingKind();
+                    if ((!check(LBRACE) || looksLikeSelectRecordProjection())
+                            && !check(ARROW) && !check(SEMICOLON)) {
+                        bindingKind = isBindingKind(peek().type())
+                                ? parseBindingKind() : Ast.BindingKind.CONST;
                         mutableReferent = parseReferentMutability(bindingKind);
-                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
-                        match(SEMICOLON);
+                        if (check(LBRACKET) || check(LBRACE)) {
+                            destructureKind = check(LBRACKET)
+                                    ? Ast.DestructureKind.SEQUENCE
+                                    : Ast.DestructureKind.OBJECT;
+                            destructureBindings = parseSelectDestructureBindings(
+                                    destructureKind, bindingKind, mutableReferent);
+                        } else if (check(IDENT)
+                                && (checkNext(LBRACE) || checkNext(ARROW)
+                                        || checkNext(SEMICOLON))) {
+                            bindingName = advance().lexeme();
+                        } else if (check(IDENT) && checkNext(COLON)) {
+                            bindingName = advance().lexeme();
+                            consume(COLON, "expected ':' after select binding name");
+                            bindingType = parseTypeRef();
+                            if (match(MUT)) {
+                                if (mutableReferent) throw error(previous(),
+                                        "duplicate mut modifier on select binding");
+                                mutableReferent = true;
+                            }
+                        } else {
+                            bindingType = parseTypeRef();
+                            if (match(MUT)) {
+                                if (mutableReferent) throw error(previous(),
+                                        "duplicate mut modifier on select binding");
+                                mutableReferent = true;
+                            }
+                            bindingName = consume(IDENT,
+                                    "typed select binding requires a name").lexeme();
+                        }
                     }
+                    match(SEMICOLON);
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
                     channel = parseExpression();
@@ -1926,8 +1959,17 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // New typed and destructured read bindings require an
+                // explicit boundary: otherwise '{...}' can be mistaken for
+                // either a record pattern or the following statement body.
+                // The old simple-name/no-binding braced form remains legal.
+                if ((bindingType != null || destructureKind != null) && !check(ARROW)) {
+                    throw error(peek(),
+                            "typed/destructured select read arms require '->' before the body");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires '-> { ... }' or legacy '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -1937,12 +1979,16 @@ public final class Parser {
                         bindingKind,
                         bindingName,
                         body,
-                        mutableReferent));
+                        mutableReferent,
+                        bindingType,
+                        destructureKind,
+                        destructureBindings));
                 continue;
             }
 
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
+                match(ARROW);
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
@@ -1962,6 +2008,70 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    /**
+     * The select winner owns the channel result; these declarations are
+     * arm-local projections of that result, not additional readch operations.
+     * Prefix tuple projection and per-field type checking share the ordinary
+     * destructuring rules.
+     */
+    /**
+     * Unadorned braces after readch are the legacy arm body. Only
+     * '{fields} ->' is a binding pattern without an explicit const/let/val
+     * introducer. This balanced-token lookahead never consumes a channel
+     * operation or invokes expression parsing speculatively.
+     */
+    private boolean looksLikeSelectRecordProjection() {
+        if (!check(LBRACE)) return false;
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type token = tokens.get(i).type();
+            if (token == LBRACE) depth++;
+            else if (token == RBRACE) {
+                depth--;
+                if (depth == 0) {
+                    return i + 1 < tokens.size()
+                            && tokens.get(i + 1).type() == ARROW;
+                }
+            } else if (token == EOF) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    private List<Ast.DestructureBinding> parseSelectDestructureBindings(
+            Ast.DestructureKind kind, Ast.BindingKind inheritedKind,
+            boolean inheritedMutableReferent) {
+        Token.Type close = kind == Ast.DestructureKind.SEQUENCE ? RBRACKET : RBRACE;
+        consume(kind == Ast.DestructureKind.SEQUENCE ? LBRACKET : LBRACE,
+                "expected '[' or '{' to start select destructure");
+        if (check(close)) throw error(peek(), "select destructure cannot be empty");
+        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        Ast.BindingKind currentKind = inheritedKind;
+        boolean currentMutableReferent = inheritedMutableReferent;
+        do {
+            if (isBindingKind(peek().type())) {
+                currentKind = parseBindingKind();
+                currentMutableReferent = parseReferentMutability(currentKind);
+            }
+            boolean rest = match(ELLIPSIS);
+            if (isDiscardToken(peek())) {
+                if (rest || kind == Ast.DestructureKind.OBJECT) {
+                    throw error(peek(), "select object/rest destructure cannot discard '_'");
+                }
+                advance();
+                bindings.add(Ast.DestructureBinding.discard());
+            } else {
+                bindings.add(parseTypedDestructureBinding(
+                        currentKind, currentMutableReferent, rest));
+            }
+            if (rest && check(COMMA)) throw error(peek(),
+                    "select rest destructure must be final");
+        } while (match(COMMA));
+        consume(close, "unterminated select destructure");
+        return List.copyOf(bindings);
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
@@ -2265,12 +2375,12 @@ public final class Parser {
                 advance();
                 bindings.add(Ast.DestructureBinding.discard());
             } else {
-                String name = consume(IDENT, "expected binding name in for-of destructure pattern").lexeme();
-                if (!names.add(name)) {
-                    throw error(previous(), "duplicate binding '" + name + "' in for-of destructure pattern");
+                Ast.DestructureBinding binding = parseTypedDestructureBinding(
+                        currentKind, currentMutableReferent, rest);
+                if (!names.add(binding.name())) {
+                    throw error(previous(), "duplicate binding '" + binding.name() + "' in for-of destructure pattern");
                 }
-                bindings.add(new Ast.DestructureBinding(
-                        currentKind, name, rest, currentMutableReferent));
+                bindings.add(binding);
             }
             if (rest && check(COMMA)) {
                 throw error(peek(), "rest destructure binding must be the final binding");
@@ -2434,6 +2544,56 @@ public final class Parser {
         }
     }
 
+    /**
+     * A destructured binding can infer its type, annotate it after the name,
+     * or declare it type-first: name, name: Type, or Type name.
+     * The existing binding kind and 'mut' propagation is unaffected.
+     */
+    private Ast.DestructureBinding parseTypedDestructureBinding(
+            Ast.BindingKind kind, boolean mutableReferent, boolean rest) {
+        int mark = current;
+        Ast.TypeRef declaredType = null;
+        String name = null;
+        if (check(IDENT) && checkNext(COLON)) {
+            name = advance().lexeme();
+            consume(COLON, "expected ':' after destructured binding name");
+            declaredType = parseTypeRef();
+            if (match(MUT)) {
+                if (mutableReferent) {
+                    throw error(previous(), "duplicate mut modifier on destructure binding '" + name + "'");
+                }
+                mutableReferent = true;
+            }
+        } else {
+            Ast.TypeRef candidate = null;
+            try {
+                candidate = parseTypeRef();
+            } catch (IllegalArgumentException ignored) {
+                // Could be the existing untyped identifier spelling.
+            }
+            if (candidate != null) {
+                // 'const mut Type name' and 'const Type mut name' are
+                // equivalent. Type-adjacent mut is local to this item.
+                boolean typeAdjacentMut = match(MUT);
+                if (check(IDENT)) {
+                    declaredType = candidate;
+                    name = advance().lexeme();
+                    if (typeAdjacentMut) {
+                        if (mutableReferent) {
+                            throw error(previous(), "duplicate mut modifier on destructure binding '" + name + "'");
+                        }
+                        mutableReferent = true;
+                    }
+                }
+            }
+            if (name == null) {
+                current = mark;
+                name = consume(IDENT, "expected destructure binding name or typed binding").lexeme();
+            }
+        }
+        return new Ast.DestructureBinding(kind, name, rest, mutableReferent, declaredType);
+    }
+
     private Ast.DestructureStmt parseDestructure(
             Ast.DestructureKind kind,
             Ast.BindingKind inheritedKind,
@@ -2475,9 +2635,7 @@ public final class Parser {
             if (currentKind == null) {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
-            String name = consume(IDENT, "expected binding name in destructure").lexeme();
-            bindings.add(new Ast.DestructureBinding(
-                    currentKind, name, rest, currentMutableReferent));
+            bindings.add(parseTypedDestructureBinding(currentKind, currentMutableReferent, rest));
             if (rest && check(COMMA)) {
                 throw error(peek(), "rest destructure binding must be the final binding");
             }
@@ -2631,7 +2789,7 @@ public final class Parser {
         return expr;
     }
 
-    private Ast.MatchStmt parseMatch() {
+    private Ast.MatchStmt parseMatch(boolean explicitDo) {
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2690,7 +2848,7 @@ public final class Parser {
         // Canonical match is source-ordered. Legacy bare match retains the
         // old exclusivity/proof semantics unless explicitly written
         // `match first ...`.
-        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms);
+        return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, explicitDo);
     }
 
     private Ast.Pattern parsePattern() {
@@ -2757,6 +2915,10 @@ public final class Parser {
             }
             // Upper-case bare names are zero-arity constructors; lower-case names bind.
             if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
+                if (match(AS)) {
+                    return new Ast.ConstructorPattern(
+                            name, List.of(parseMatchProjection()));
+                }
                 return new Ast.ConstructorPattern(name, List.of());
             }
             return new Ast.BindingPattern(name);
@@ -2766,6 +2928,52 @@ public final class Parser {
             throw error(peek(), "list patterns are not supported; use tuples for fixed structural matching");
         }
         throw error(peek(), "expected match pattern");
+    }
+
+    /**
+     * Constructor payload projection: on Some as {v, name} -> { ... }
+     * This is not a structural type inference or method lookup. Every
+     * projected key must be a statically declared field of the payload.
+     */
+    private Ast.Pattern parseMatchProjection() {
+        // Whole-pattern kind is a default. Explicit per-item kinds inherit for
+        // subsequent unqualified items, matching ordinary Oreslang destructuring.
+        Ast.BindingKind currentKind = isBindingKind(peek().type())
+                ? parseBindingKind() : Ast.BindingKind.VAL;
+        if (match(LBRACE)) {
+            if (check(RBRACE)) throw error(peek(), "match record projection must bind at least one field");
+            List<String> fields = new ArrayList<>();
+            List<Ast.BindingKind> kinds = new ArrayList<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            do {
+                if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+                Token field = consume(IDENT, "match record projection requires a declared field name");
+                if (field.lexeme().equals("_") || !seen.add(field.lexeme())) {
+                    throw error(field, "duplicate or invalid match record field '" + field.lexeme() + "'");
+                }
+                fields.add(field.lexeme());
+                kinds.add(currentKind);
+            } while (match(COMMA) && !check(RBRACE));
+            consume(RBRACE, "expected '}' after match record projection");
+            return new Ast.RecordPattern(fields, kinds);
+        }
+        if (match(LPAREN)) {
+            List<Ast.DestructureBinding> slots = new ArrayList<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            do {
+                if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+                Token binding = consume(IDENT, "tuple projection requires positional bindings");
+                String name = binding.lexeme();
+                if (!name.equals("_") && !seen.add(name)) {
+                    throw error(binding, "duplicate tuple projection binding '" + name + "'");
+                }
+                slots.add(name.equals("_") ? Ast.DestructureBinding.discard()
+                        : new Ast.DestructureBinding(currentKind, name, false, false));
+            } while (match(COMMA) && !check(RPAREN));
+            consume(RPAREN, "expected ')' after tuple match projection");
+            return new Ast.TupleProjectionPattern(slots);
+        }
+        throw error(peek(), "match constructor 'as' requires a named '{...}' record or positional '(...)' tuple projection");
     }
 
     private Ast.SwitchStmt parseSwitch() {
