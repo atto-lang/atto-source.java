@@ -27,27 +27,56 @@ public final class OresKeyedMap<K, V> {
         STRING, SYMBOL, STRING_OR_SYMBOL
     }
 
+    /**
+     * V1 guest runtime reifies value types instead of assuming the typechecker
+     * protects dynamic/foreign callers. ANY is explicitly dynamic only.
+     */
+    public enum ValueDomain {
+        ANY, INT, STRING, SYMBOL, BOOL
+    }
+
+    private final ValueDomain valueDomain;
     private final KeyDomain domain;
     private final LinkedHashMap<K, V> entries = new LinkedHashMap<>();
 
-    private OresKeyedMap(KeyDomain domain) {
+    private OresKeyedMap(KeyDomain domain, ValueDomain valueDomain) {
         this.domain = Objects.requireNonNull(domain, "key domain");
+        this.valueDomain = Objects.requireNonNull(valueDomain, "value domain");
     }
 
+    /** Host-only constructor defaults to explicit dynamic values. */
     public static <V> OresKeyedMap<String, V> stringKeys() {
-        return new OresKeyedMap<>(KeyDomain.STRING);
+        return stringKeys(ValueDomain.ANY);
     }
 
+    public static <V> OresKeyedMap<String, V> stringKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.STRING, values);
+    }
+
+    /** Host-only constructor defaults to explicit dynamic values. */
     public static <V> OresKeyedMap<OresSymbol, V> symbolKeys() {
-        return new OresKeyedMap<>(KeyDomain.SYMBOL);
+        return symbolKeys(ValueDomain.ANY);
     }
 
+    public static <V> OresKeyedMap<OresSymbol, V> symbolKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.SYMBOL, values);
+    }
+
+    /** Host-only constructor defaults to explicit dynamic values. */
     public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys() {
-        return new OresKeyedMap<>(KeyDomain.STRING_OR_SYMBOL);
+        return stringOrSymbolKeys(ValueDomain.ANY);
+    }
+
+    public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys(ValueDomain values) {
+        return new OresKeyedMap<>(KeyDomain.STRING_OR_SYMBOL, values);
     }
 
     public KeyDomain keyDomain() {
         return domain;
+    }
+
+    public ValueDomain valueDomain() {
+        return valueDomain;
     }
 
     public int size() {
@@ -80,9 +109,26 @@ public final class OresKeyedMap<K, V> {
         return entries.get(key);
     }
 
+    private void checkValue(Object value) {
+        Objects.requireNonNull(value, "map value");
+        boolean valid = switch (valueDomain) {
+            case ANY -> true;
+            case INT -> value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof java.math.BigInteger;
+            case STRING -> value instanceof String;
+            case SYMBOL -> value instanceof OresSymbol;
+            case BOOL -> value instanceof Boolean;
+        };
+        if (!valid) {
+            throw new IllegalArgumentException(
+                    "value is incompatible with Map value domain " + valueDomain);
+        }
+    }
+
     public V put(K key, V value) {
         checkKey(key);
-        Objects.requireNonNull(value, "map value");
+        checkValue(value);
         return entries.put(key, value);
     }
 
@@ -99,7 +145,7 @@ public final class OresKeyedMap<K, V> {
             K key = Objects.requireNonNull(entry, "map entry").getKey();
             V value = entry.getValue();
             checkKey(key);
-            Objects.requireNonNull(value, "map value");
+            checkValue(value);
             prepared.add(Map.entry(key, value));
         }
         for (Map.Entry<K, V> entry : prepared) {
