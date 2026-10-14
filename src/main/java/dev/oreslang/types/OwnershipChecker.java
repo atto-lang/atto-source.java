@@ -984,6 +984,30 @@ public final class OwnershipChecker {
             }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
         }
+        if (expr instanceof Ast.MatchExpr matched) {
+            ValueInfo subject = checkExpr(matched.subject(), scope, false);
+            VarState source = matched.subject() instanceof Ast.NameExpr name
+                    ? scope.lookup(name.name()) : null;
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            ValueInfo result = null;
+            for (Ast.MatchValueArm arm : matched.arms()) {
+                restoreState(base);
+                Scope local = new Scope(scope);
+                definePatternAliases(arm.pattern(), subject.type, source, local);
+                if (arm.guard() != null) checkExpr(arm.guard(), local, false);
+                ValueInfo value = checkExpr(arm.value(), local, consuming);
+                local.close();
+                exits.add(stateSnapshot(scope));
+                if (result == null) result = value;
+                else result = new ValueInfo(
+                        joinConditionalType(result.type, value.type),
+                        result.kind == ValueKind.COPY && value.kind == ValueKind.COPY
+                                ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+            }
+            mergeBranchState(base, exits);
+            return result;
+        }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             checkExpr(conditional.condition(), scope, false);
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
