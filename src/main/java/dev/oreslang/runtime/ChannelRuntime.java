@@ -354,7 +354,7 @@ public final class ChannelRuntime {
                         "select requires at least one case");
             }
             if (cases.size() > MAX_SELECT_CASES) {
-                throw new IllegalArgumentException(
+                throw new SelectAdmissionException(
                         "select case count exceeds maximum " + MAX_SELECT_CASES);
             }
             this.cases = List.copyOf(cases);
