@@ -6793,6 +6793,30 @@ public final class TypeChecker {
             throw new IllegalArgumentException(label
                     + " has a forward or self-referential generic default '" + ref.name() + "'");
         }
+        // General resolve() deliberately permits open nominal names for other
+        // source contexts. Generic defaults are an ABI promise and must not
+        // turn a misspelling into an apparently concrete, unsafe specialization.
+        // Keep this admission list explicit until the linked type registry
+        // exposes a single authoritative "is declared type" predicate.
+        if (!ref.name().startsWith("$")
+                && !declared.contains(ref.name())
+                && !Set.of(
+                        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                        "int", "uint", "bigint", "f32", "f64", "float",
+                        "decimal", "complex64", "complex128", "complex",
+                        "bool", "Bool", "string", "String", "void", "null",
+                        "Symbol", "Array", "List", "Vector", "Slice",
+                        "Tuple", "FixedArray", "FixedList",
+                        "ActorId", "ActorKind", "ActorMail", "ActorOutput",
+                        "ActorOutputStream", "Option", "Result", "Mutex",
+                        "SharedMutex", "Channel", "Future", "Fnc", "Function")
+                        .contains(ref.name())
+                && findClass(ref.name()) == null
+                && findInterface(ref.name()) == null
+                && findTypeAlias(ref.name()) == null) {
+            throw new IllegalArgumentException(label
+                    + " references an unresolved default type '" + ref.name() + "'");
+        }
         for (Ast.TypeRef argument : ref.arguments()) {
             validateGenericDefaultReferences(argument, declared, previous, label);
         }
