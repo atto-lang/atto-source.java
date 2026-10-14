@@ -1325,8 +1325,7 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
             ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
-            if (payload.kind == ValueKind.IMM_BORROW || payload.kind == ValueKind.MUT_BORROW
-                    || (payload.type != null && payload.type.isBorrow())) {
+            if (isBorrowValue(payload) || containsBorrowType(payload.type)) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
             }
@@ -1532,6 +1531,9 @@ public final class OwnershipChecker {
                                         if (containsMutexGuardType(value.type)) {
                                             throw error("MutexGuard cannot be stored inside protected List state");
                                         }
+                                        if (isBorrowValue(value) || containsBorrowType(value.type)) {
+                                            throw error("borrowed references cannot be stored inside protected List state");
+                                        }
                                         return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                                     }
                                 }
@@ -1541,6 +1543,9 @@ public final class OwnershipChecker {
                                         ValueInfo value = checkExpr(call.arguments().get(1), scope, true);
                                         if (containsMutexGuardType(value.type)) {
                                             throw error("MutexGuard cannot be stored inside protected List state");
+                                        }
+                                        if (isBorrowValue(value) || containsBorrowType(value.type)) {
+                                            throw error("borrowed references cannot be stored inside protected List state");
                                         }
                                         return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                                     }
@@ -1803,6 +1808,9 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(aggregate.type)) {
                         throw error(callable + " spread cannot consume a guard-bearing tuple");
                     }
+                    if (isBorrowValue(aggregate) || containsBorrowType(aggregate.type)) {
+                        throw error(callable + " spread cannot erase borrowed elements into owned parameters");
+                    }
                     parameterIndex += width;
                     continue;
                 }
@@ -1897,6 +1905,10 @@ public final class OwnershipChecker {
         }
         if (param.structural() && !param.type().isBorrow()) {
             ValueInfo argument = checkExpr(arg, scope, false);
+            if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+                throw error(callable + " argument " + position
+                        + " cannot consume a borrowed value through a structural owned parameter");
+            }
             if (containsMutexGuardType(argument.type)
                     || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
                 throw error(callable + " argument " + position
@@ -1937,6 +1949,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (isBorrowValue(argument) || containsBorrowType(argument.type)) {
+            throw error(callable + " argument " + position
+                    + " cannot consume a borrowed value through an owned parameter; use a borrow-typed parameter");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
