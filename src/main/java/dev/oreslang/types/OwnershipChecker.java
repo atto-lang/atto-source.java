@@ -47,6 +47,10 @@ public final class OwnershipChecker {
     private boolean currentAsyncGenerator;
     /** Every active try records outer roots transferred anywhere inside its body. */
     private final List<Set<VarState>> tryMoveObservers = new ArrayList<>();
+    // Guard producers are ownership-checked once. Re-evaluating them while
+    // introducing a success-edge alias can consume a move-only argument twice.
+    private final IdentityHashMap<Ast.OptionBindExpr, Ast.TypeRef> checkedOptionPayloads =
+            new IdentityHashMap<>();
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -2468,7 +2472,8 @@ public final class OwnershipChecker {
      */
     private void checkGuardExpr(Ast.Expr expr, Scope scope) {
         if (expr instanceof Ast.OptionBindExpr binding) {
-            copyOptionPayloadType(binding.value(), scope);
+            Ast.TypeRef payload = copyOptionPayloadType(binding.value(), scope);
+            checkedOptionPayloads.put(binding, payload);
             return;
         }
         if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
@@ -2522,7 +2527,10 @@ public final class OwnershipChecker {
 
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
         if (condition instanceof Ast.OptionBindExpr binding) {
-            Ast.TypeRef payload = copyOptionPayloadType(binding.value(), source);
+            Ast.TypeRef payload = checkedOptionPayloads.get(binding);
+            if (payload == null) {
+                throw error("optional guard binding has no validated success-edge payload");
+            }
             destination.define(binding.binding(), new VarState(
                     payload, false, binding.kind() == Ast.BindingKind.LET,
                     ValueKind.COPY, Origin.LOCAL));
