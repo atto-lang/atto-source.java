@@ -19,16 +19,24 @@ final class TypedExceptionalEffectAdmissionTest {
     }
 
     @Test
-    void unsupportedEffectsRejectBeforeSourceExecution() {
-        for (String effect : List.of("raise", "panic", "recover")) {
+    void raiseAndPanicParseButRejectNonActorAndScalarGuestValues() {
+        for (String effect : List.of("raise", "panic")) {
             String source = "pub fnc main(): int { " + effect + " 1; return 0; }";
+            assertDoesNotThrow(() -> Parser.parse(source));
             IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(source), effect);
-            assertTrue(failure.getMessage().contains("typed exceptional effect '" + effect + "'"),
-                    failure::getMessage);
-            assertTrue(failure.getMessage().contains("not yet enabled"),
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(source));
+            assertTrue(failure.getMessage().contains("actor execution domain"),
                     failure::getMessage);
         }
+    }
+
+    @Test
+    void recoverRemainsGatedPendingActorHookLowering() {
+        String source = "pub fnc main(): int { recover 1; return 0; }";
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(failure.getMessage().contains("not yet enabled"));
     }
 
     @Test
