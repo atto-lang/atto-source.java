@@ -10,7 +10,8 @@ is still not an external export. The synthetic file-root may export its own
 
 | Operation | Visibility contract |
 | --- | --- |
-| Lexical class field access / object destructuring | Private fields are available only to the declaring class's lexical authority; subclasses do not inherit that authority. |
+| Lexical class field access / object destructuring | Private fields are available only to the declaring class's lexical authority; subclasses do not inherit that authority. Both synchronous and resumable assignments must recheck private write access; a reference alone grants no privilege. |
+| First-class class/module facades | Passing a private class/module descriptor through `Any`, collections, or a callable cannot authorize static/class or module member access in a foreign code unit. Resolve source ownership and effective exported visibility at the runtime access boundary. |
 | Structural typing and pattern matching | Use public, inherited-public field/method shape. Private fields do not establish width-subtyping or pattern success, even if names and runtime types match. |
 | Structural record return validation | When a class instance is checked as a public record result, inspect only public fields; a private slot must not satisfy the record. |
 | Unscoped/dynamic object destructuring | No anonymous authority. Fail closed without a validated lexical access context or explicit public structural projection. |
