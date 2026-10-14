@@ -42,9 +42,11 @@ and OwnershipChecker execution over the linked dependency component.
 
 1. Resolves every local import against all staged declarations. Rejects
    duplicate/ambiguous, missing and private imported symbols.
-2. Refuses external packages, wildcard imports, and advanced import kinds
-   without a complete verified contract. Exported class/interface/type
-   signatures are not yet a substitute for typed linker admission.
+2. Admits named, local public function imports only. Refuses
+   external packages, wildcard imports, and CLASS / INTERFACE / TYPE /
+   MODULE / actor / trait / contract imports without a complete verified
+   semantic contract. Exported class/interface/type names and signatures
+   are not substitutes for resolved nominal type identities.
 3. Reuses `InterfaceSccPlanner` and `ImportGraph` for SCC-atomic,
    dependency-first fingerprints and exact import-selector target binding.
 
