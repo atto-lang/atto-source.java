@@ -1581,8 +1581,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: legacy do nb select return; exits only the detached arm"
+                        : "W-SELECT-RETURN: legacy do nb select return value is arm-local and discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1749,9 +1749,9 @@ public final class TypeChecker {
                         armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
+                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Legacy detached do-nb-select arms cannot return from an
+                    // already-continued enclosing callable.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
