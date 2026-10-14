@@ -188,8 +188,8 @@ source = "numeric-mixed-exact.ores"
 kind = "run"
 java = "required"
 llvm = "pending"
-description = "Large integer differs from rounded binary64; exact mixed source numeric matching"
-expected_stdout = "2\n1\n"
+description = "Large integer differs from rounded binary64 in both matching and finite ordering"
+expected_stdout = "2\n1\ntrue\nfalse\n"
 
 [[case]]
 id = "reject.numeric.mixed.overlap"
