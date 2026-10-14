@@ -86,7 +86,7 @@ final class SwitchConstantProofHardeningTest {
         IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         pub fnc main(): void {
-                          val Any status = #ready;
+                          val Symbol status = #ready;
                           switch status
                             case #ready -> { }
                             case #'ready' -> { }
@@ -98,10 +98,11 @@ final class SwitchConstantProofHardeningTest {
         assertTrue(duplicate.getMessage().contains("duplicate switch case"),
                 duplicate.getMessage());
 
+        // Use a dynamically unknown subject to permit case values of both
+        // nominal kinds; a Symbol and equal-spelling String are not duplicates.
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc main(): void {
-                  val Any status = #ready;
-                  switch status
+                  switch null
                     case #ready -> { }
                     case "ready" -> { }
                     default -> { }
