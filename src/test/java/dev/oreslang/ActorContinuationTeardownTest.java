@@ -156,6 +156,34 @@ final class ActorContinuationTeardownTest {
     }
 
     @Test
+    void stopCancelsQueuedCleanupAwareTasksWithoutEnteringGuestCode() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicInteger guestEntries = new AtomicInteger();
+            CountDownLatch registered = new CountDownLatch(1);
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                // These initial turns cannot run before this actor turn ends.
+                for (int i = 0; i < 64; i++) {
+                    context.runtime().startActorTask(
+                            (OresScheduler.CleanupAwareTask<Void>) resume -> {
+                                guestEntries.incrementAndGet();
+                                return OresScheduler.done(null);
+                            });
+                }
+                registered.countDown();
+                context.self().stop();
+            });
+
+            actor.send(1);
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, guestEntries.get(),
+                    "STOP must not run source guest frames that never started");
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
     void gracefulStopCancelsQueuedSourceTasksWithoutRunningThem() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
