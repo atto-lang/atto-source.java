@@ -66,6 +66,55 @@ final class WithStateCapabilityContractTest {
                 failure.getMessage());
     }
 
+    @Test void asyncIteratorCannotSuspendAnActiveSealedStateLoan() {
+        for (String loop : new String[] {
+                "for await val item of stream { val observed = item; }",
+                "for await val [first, second] of stream { val observed = first; }"
+        }) {
+            for (String acquire : new String[] {
+                    "self.handle_state(|s| -> { ",
+                    "using state.read(|s| -> { "
+            }) {
+                Ast.Program parsed = Parser.parse(actor("with state.read",
+                        acquire + loop + " return s.v; })"));
+                var failure = assertThrows(IllegalArgumentException.class,
+                        () -> ActorStateContract.verify(parsed), acquire + loop);
+                assertTrue(failure.getMessage().contains("async iteration"),
+                        failure.getMessage());
+                assertThrows(IllegalArgumentException.class,
+                        () -> TypeChecker.checkTypes(parsed), acquire + loop);
+            }
+        }
+        // Ordinary synchronous scalar iteration still fits inside a loan.
+        assertDoesNotThrow(() -> ActorStateContract.verify(Parser.parse(actor(
+                "with state.read",
+                "self.handle_state(|s| -> { "
+                        + "for val item of [1, 2] { val observed = item; } "
+                        + "return s.v; })"))));
+    }
+
+    @Test void iteratorBindingCannotAliasReferenceValuedActorState() {
+        for (String loop : new String[] {
+                "for val item of s.cache { val observed = item; }",
+                "for val [key, value] of s.cache { val observed = key; }"
+        }) {
+            for (String acquire : new String[] {
+                    "self.handle_state(|s| -> {",
+                    "using state.read(|s| -> {"
+            }) {
+                String source = actorWithReferenceState(loop + " return s.n;")
+                        .replace("self.handle_state(|s| -> {", acquire);
+                Ast.Program parsed = Parser.parse(source);
+                var failure = assertThrows(IllegalArgumentException.class,
+                        () -> ActorStateContract.verify(parsed), acquire + loop);
+                assertTrue(failure.getMessage().contains("for-of iterator"),
+                        failure.getMessage());
+                assertThrows(IllegalArgumentException.class,
+                        () -> TypeChecker.checkTypes(parsed), acquire + loop);
+            }
+        }
+    }
+
     @Test void actorStateDefaultsMustBeDetachedContextFreeScalars() {
         for (String value : new String[] {
                 "compute()", "external", "1 + 2", "new Wrapper(1)"
