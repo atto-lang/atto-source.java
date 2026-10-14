@@ -218,6 +218,49 @@ final class IncrementalParseCacheTest {
     }
 
     @Test
+    void publicParameterRenameInvalidatesNamedCallClients() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "api.ores", "pub fnc compute(int oldName): int { return oldName; }",
+                "client.ores", """
+                        import fnc {compute} from './api.ores';
+                        pub fnc main(): void { return; }
+                        """);
+        compiler.compile(initial);
+        Map<String, String> changed = new LinkedHashMap<>(initial);
+        changed.put("api.ores",
+                "pub fnc compute(int newName): int { return newName; }");
+        var after = compiler.compile(changed);
+        assertTrue(after.rebuilt("api.ores"));
+        assertTrue(after.rebuilt("client.ores"),
+                "named argument labels are exported API, not implementation details");
+    }
+
+    @Test
+    void retargetingAnImportAlsoInvalidatesTransitiveConsumers() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> input = Map.of(
+                "a.ores", "pub fnc pick(): int { return 1; }",
+                "b.ores", "pub fnc pick(): int { return 2; }",
+                "middle.ores", """
+                        import fnc {pick} from "dynamic/target";
+                        pub fnc relay(): void { return; }
+                        """,
+                "downstream.ores", """
+                        import fnc {relay} from './middle.ores';
+                        pub fnc main(): void { return; }
+                        """);
+        compiler.compile(input, Map.of("middle.ores",
+                Map.of("dynamic/target", "a.ores")));
+        var changed = compiler.compile(input, Map.of("middle.ores",
+                Map.of("dynamic/target", "b.ores")));
+        assertTrue(changed.reparsedUnits().isEmpty());
+        assertTrue(changed.rebuilt("middle.ores"));
+        assertTrue(changed.rebuilt("downstream.ores"),
+                "potentially re-exported imports must invalidate transitive clients");
+    }
+
+    @Test
     void callerCannotModifyReparseTelemetry() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var result = compiler.compile(sources());
