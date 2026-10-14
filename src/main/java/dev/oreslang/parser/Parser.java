@@ -2713,6 +2713,26 @@ public final class Parser {
         return new Ast.MatchStmt(subject, canonicalOver || legacyFirst, arms, procedural);
     }
 
+    /**
+     * A value match cannot be implemented by reinterpreting a procedural
+     * return. Each arm yields exactly one expression; the return belongs to
+     * MatchExpr rather than the enclosing callable's control flow.
+     */
+    private Ast.MatchExpr parseValueMatch() {
+        Ast.MatchStmt parsed = parseMatch(true);
+        List<Ast.MatchValueArm> valueArms = new ArrayList<>();
+        for (Ast.MatchArm arm : parsed.arms()) {
+            if (arm.body().size() != 1
+                    || !(arm.body().getFirst() instanceof Ast.ReturnStmt returned)
+                    || returned.value() == null) {
+                throw error(previous(),
+                        "value match arms require exactly one 'return expression;' and no other statements");
+            }
+            valueArms.add(new Ast.MatchValueArm(arm.pattern(), arm.guard(), returned.value()));
+        }
+        return new Ast.MatchExpr(parsed.subject(), valueArms);
+    }
+
     private Ast.Pattern parsePattern() {
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
             Ast.TypeRef target = parseTypeRef();
@@ -3311,6 +3331,7 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
+        if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
         if (match(IMAG)) {
