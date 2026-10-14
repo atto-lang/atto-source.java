@@ -161,6 +161,31 @@ final class TypedDispatchReturnIsolationTest {
     }
 
     @Test
+    void proceduralSelectInsideTypedMatchIsRejectedUntilNonlocalFlowIsLowered() {
+        String source = """
+                fnc nested(): int {
+                    return match<ret=int> true over {
+                        on true {
+                            do select {
+                                default: { return 9; }
+                            }
+                            return 42;
+                        }
+                        default { return 0; }
+                    };
+                }
+                """;
+        // Parsing knows that a procedural select returns from the CALLABLE,
+        // not from the containing value arm. But the typed expression's
+        // suspended SourceValueCont cannot yet transport FUNCTION_RETURN.
+        assertDoesNotThrow(() -> Parser.parse(source));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheckWithDiagnostics(source));
+        assertTrue(error.getMessage().contains("typed value match arm"),
+                error::toString);
+    }
+
+    @Test
     void unsupportedReturnSwitchAndBracedSelectFailClosedRatherThanReturningFromFunction() {
         for (String source : new String[] {
                 """
