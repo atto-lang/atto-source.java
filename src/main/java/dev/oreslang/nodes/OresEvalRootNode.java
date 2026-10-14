@@ -4189,25 +4189,23 @@ public final class OresEvalRootNode extends RootNode {
                 Invocation invocation,
                 boolean declaredFuture,
                 SourceValueCont continuation) {
+            final Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            // Completion is an external consumer callback, not part of invoke().
+            // Its exception must never re-enter the same consumer as a second
+            // delivery, including when an already-complete Future resumes inline.
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                task.suspend(
+                        future,
+                        (t, value, failure) ->
+                                continuation.accept(t, value, failure));
+            } else {
+                continuation.accept(task, result, null);
             }
         }
 
