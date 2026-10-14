@@ -183,7 +183,7 @@ final class FunctionGenericDefaultsStage1Test {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc identity<T=int>(T value): T { return value; }
-                  fnc none<T=int>(): T { return 7; }
+                  fnc none<T=int>(): int { return 7; }
                   fnc check(): void {
                     val int i = identity(7);
                     val bool b = identity(true);
