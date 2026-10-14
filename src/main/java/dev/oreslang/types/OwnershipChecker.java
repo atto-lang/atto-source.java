@@ -1216,7 +1216,7 @@ public final class OwnershipChecker {
             for (Ast.Expr item : list.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
-                if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
+                if (isBorrowValue(info) || containsBorrowType(info.type)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
                 elementType = elementType == null
                         ? info.type
                         : joinConditionalType(elementType, info.type);
@@ -1293,7 +1293,7 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
-            if (owned.type != null && owned.type.isBorrow()) {
+            if (containsBorrowType(owned.type)) {
                 throw error(factory.name()
                         + ".new requires an owned value; borrowed values cannot become mutex state");
             }
