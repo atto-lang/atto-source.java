@@ -195,4 +195,138 @@ final class PublicTypeAliasLinkerIntegrationTest {
                         fnc unwrap(Outer<string> value): string { return value[0][0]; }
                         """)));
     }
+
+    private static final String CHAIN_LEAF = """
+            define module leaf as
+                type Hidden<K,V> = record{key: K, value: V};
+                define pub type alias Leaf<K,V> as Hidden<K,V>;
+            end
+            """;
+    private static final String CHAIN_MIDDLE = """
+            import type Leaf as LocalLeaf from "./leaf.ores";
+            define module middle as
+                define pub type alias Public<K,V> as LocalLeaf<K,V>;
+            end
+            """;
+    private static final String CHAIN_APP = """
+            import type Public from "./middle.ores";
+            fnc read(Public<string,int> entry): int { return entry.value; }
+            """;
+
+    @Test
+    void threeFilePublicAliasChainPreservesGenericRecordFields() {
+        var compiled = new IncrementalCompiler().compile(Map.of(
+                "leaf.ores", CHAIN_LEAF, "middle.ores", CHAIN_MIDDLE,
+                "app.ores", CHAIN_APP));
+        assertTrue(compiled.units().containsKey("app.ores"));
+        assertTrue(compiled.initializationOrder().indexOf("leaf.ores")
+                < compiled.initializationOrder().indexOf("middle.ores"));
+    }
+
+    @Test
+    void importedAliasRenamingDoesNotLeakOriginalNameInMiddleFile() {
+        assertThrows(IllegalArgumentException.class, () -> new IncrementalCompiler().compile(
+                Map.of("leaf.ores", CHAIN_LEAF, "middle.ores", """
+                        import type Leaf as LocalLeaf from "./leaf.ores";
+                        define module middle as
+                            define pub type alias Public<K,V> as Leaf<K,V>;
+                        end
+                        """, "app.ores", CHAIN_APP)));
+    }
+
+    @Test
+    void multiHopAliasDoesNotAllowWrongMemberTypesOrWritableAccess() {
+        for (String app : new String[]{
+                """
+                import type Public from "./middle.ores";
+                fnc bad(Public<string,int> value): string { return value.value; }
+                """,
+                """
+                import type Public from "./middle.ores";
+                fnc bad(Public<string,int> value): int { return value.notAField; }
+                """,
+                """
+                import type Public from "./middle.ores";
+                fnc bad(Public<string,int> value): void {
+                    value.value = 9;
+                    return;
+                }
+                """
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> new IncrementalCompiler().compile(
+                    Map.of("leaf.ores", CHAIN_LEAF, "middle.ores", CHAIN_MIDDLE,
+                            "app.ores", app)));
+        }
+    }
+
+    @Test
+    void crossFileAliasCycleFailsEvenWhenImportGraphCyclesAreLegal() {
+        var files = Map.of(
+                "a.ores", """
+                        import type BType from "./b.ores";
+                        define module a as
+                            define pub type alias AType as BType;
+                        end
+                        """,
+                "b.ores", """
+                        import type AType from "./a.ores";
+                        define module b as
+                            define pub type alias BType as AType;
+                        end
+                        """,
+                "app.ores", """
+                        import type AType from "./a.ores";
+                        fnc use(AType value): void { return; }
+                        """);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+        assertTrue(e.getMessage().contains("cycle"), e.getMessage());
+    }
+
+    @Test
+    void privateAliasNameCannotBeImportedThroughIntermediateFile() {
+        assertThrows(IllegalArgumentException.class, () -> new IncrementalCompiler().compile(Map.of(
+                "leaf.ores", CHAIN_LEAF,
+                "middle.ores", """
+                        import type Hidden from "./leaf.ores";
+                        define module middle as
+                            define pub type alias Public<K,V> as Hidden<K,V>;
+                        end
+                        """,
+                "app.ores", CHAIN_APP)));
+    }
+
+    @Test
+    void genericArityIsEnforcedAtEachIntermediateHop() {
+        assertThrows(IllegalArgumentException.class, () -> new IncrementalCompiler().compile(Map.of(
+                "leaf.ores", CHAIN_LEAF,
+                "middle.ores", """
+                        import type Leaf from "./leaf.ores";
+                        define module middle as
+                            define pub type alias Public<K,V> as Leaf<K>;
+                        end
+                        """,
+                "app.ores", CHAIN_APP)));
+    }
+
+    @Test
+    void privateLeafShapeChangeInvalidatesTransitiveImporter() {
+        var compiler = new IncrementalCompiler();
+        Map<String, String> files = Map.of("leaf.ores", CHAIN_LEAF,
+                "middle.ores", CHAIN_MIDDLE, "app.ores", CHAIN_APP);
+        var first = compiler.compile(files);
+        assertEquals(3, first.rebuiltUnits().size());
+        var second = compiler.compile(files);
+        assertTrue(second.rebuiltUnits().isEmpty(), second.rebuiltUnits().toString());
+
+        // A changed non-public alias affects the public transitive layout:
+        // a previous reference to 'value' must not retain the old type.
+        String modifiedLeaf = CHAIN_LEAF.replace("value: V", "payload: V");
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> compiler.compile(Map.of("leaf.ores", modifiedLeaf,
+                        "middle.ores", CHAIN_MIDDLE, "app.ores", CHAIN_APP)));
+        assertNotNull(mismatch.getMessage());
+        // A failed incremental build must not publish any partially updated cache.
+        assertTrue(compiler.compile(files).rebuiltUnits().isEmpty());
+    }
 }
