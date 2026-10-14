@@ -357,6 +357,115 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void closingChannelAndSettlingFutureRaceWithoutCancellingLosingSource()
+            throws Exception {
+        for (int round = 0; round < 64; round++) {
+            var channel = new ChannelRuntime.Channel<Integer>(0);
+            var producer = new OresFuture<Integer>();
+            var closeCause = new IllegalStateException("channel shutdown");
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.read(channel), ChannelRuntime.await(producer))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            var gate = new CountDownLatch(1);
+            var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread closer = Thread.startVirtualThread(() -> {
+                try {
+                    awaitStart(gate);
+                    channel.close(closeCause);
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
+            });
+            Thread settler = Thread.startVirtualThread(() -> {
+                try {
+                    awaitStart(gate);
+                    assertTrue(producer.completeFromRuntime(202));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
+            });
+            gate.countDown();
+            closer.join(5_000);
+            settler.join(5_000);
+            assertFalse(closer.isAlive(), "channel close stalled in round " + round);
+            assertFalse(settler.isAlive(), "Future settlement stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("close/settle race failed in round " + round,
+                        workerFailure.get());
+            }
+            try {
+                var winner = selected.get(5, TimeUnit.SECONDS);
+                assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
+                assertEquals(1, winner.index());
+                assertEquals(202, winner.value());
+            } catch (java.util.concurrent.ExecutionException failed) {
+                assertTrue(failed.getCause()
+                        instanceof ChannelRuntime.ChannelClosedException);
+                assertEquals(closeCause, failed.getCause().getCause());
+            }
+            assertTrue(channel.isClosed());
+            assertEquals(0, channel.pendingRegistrations());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(202, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void settlementDuringManyFutureListenerAttachmentsLeavesNoWaiters()
+            throws Exception {
+        for (int round = 0; round < 32; round++) {
+            var producer = new OresFuture<Integer>();
+            var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+            for (int i = 0; i < 128; i++) {
+                cases.add(ChannelRuntime.await(producer));
+            }
+            var gate = new CountDownLatch(1);
+            var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread settler = Thread.startVirtualThread(() -> {
+                try {
+                    awaitStart(gate);
+                    assertTrue(producer.completeFromRuntime(17));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
+            });
+            gate.countDown();
+            var selected = new ChannelRuntime.SelectSet(cases)
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            settler.join(5_000);
+            assertFalse(settler.isAlive(), "settlement stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("attachment race failed in round " + round,
+                        workerFailure.get());
+            }
+            var winner = selected.get(5, TimeUnit.SECONDS);
+            assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
+            assertEquals(0, winner.index());
+            assertEquals(17, winner.value());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
+    void failedClosedArmAdvancesFairCursorPastPermanentFailure() {
+        var closed = new ChannelRuntime.Channel<Integer>(0);
+        closed.close();
+        var pending = new OresFuture<Integer>();
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(closed), ChannelRuntime.await(pending));
+        var failed = assertThrows(CompletionException.class,
+                () -> set.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join());
+        assertTrue(failed.getCause() instanceof ChannelRuntime.ChannelClosedException);
+
+        assertTrue(pending.completeFromRuntime(23));
+        var winner = set.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+        assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
+        assertEquals(1, winner.index());
+        assertEquals(23, winner.value());
+        assertEquals(0, pending.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void immediateProbeOnPendingFutureRegistersNoWaiter() {
         var future = new OresFuture<Integer>();
         var set = ChannelRuntime.SelectSet.of(ChannelRuntime.await(future));
