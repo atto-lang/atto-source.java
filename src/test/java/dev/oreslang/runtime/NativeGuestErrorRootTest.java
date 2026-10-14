@@ -75,6 +75,60 @@ final class NativeGuestErrorRootTest {
         assertEquals(17, result.exitStatus());
     }
 
+    @Test void guestErrorThrowIsCaughtAsOriginalOreslangValue() throws Exception {
+        Path path = temp.resolve("guest-local-throw.ores");
+        Files.writeString(path, """
+                define class MyError extends Error as
+                    pub val int code;
+                end
+                pub routine main(): int {
+                    try {
+                        throw new MyError(7);
+                    } catch (e) {
+                        if e is Error then
+                            return 17;
+                        fi
+                        return 4;
+                    }
+                    return 3;
+                }
+                """);
+        var result = LinkedProgramRunner.runWithExitStatus(
+                path, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(17, result.exitStatus());
+    }
+
+    @Test void throwMustBeStaticallyDerivedFromErrorAndLexicallyCaught() {
+        IllegalArgumentException scalar = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): int {
+                            try { throw 1; } catch (e) { return 2; }
+                            return 0;
+                        }
+                        """));
+        assertTrue(scalar.getMessage().contains("Error-derived"));
+
+        IllegalArgumentException escape = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class MyError extends Error as
+                            pub val int code;
+                        end
+                        pub fnc main(): int {
+                            throw new MyError(1);
+                        }
+                        """));
+        assertTrue(escape.getMessage().contains("lexical try/catch"));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub fnc main(): int {
+                            try { throw 7; } catch (e) { return 2; }
+                            return 0;
+                        }
+                        """));
+    }
+
     @Test void aliasesAndGenericsCannotShadowCompilerOwnedError() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
@@ -104,7 +158,7 @@ final class NativeGuestErrorRootTest {
     }
 
     @Test void exceptionalEffectsRemainGatedUntilSupervisorLoweringIsVerified() {
-        for (String effect : new String[]{"throw", "raise", "panic"}) {
+        for (String effect : new String[]{"raise", "panic", "recover"}) {
             IllegalArgumentException unsupported = assertThrows(
                     IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(
