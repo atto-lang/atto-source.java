@@ -67,7 +67,7 @@ public final class TwoPhaseInterfaceLinker {
         }
         Map<String, Ast.Program> copy = new LinkedHashMap<>();
         Map<String, ExportInterfaceCodec.InterfaceFile> exports = new LinkedHashMap<>();
-        int totalImports = 0;
+        long totalImports = 0;
         for (Map.Entry<String, Ast.Program> unit : checkedPrograms.entrySet()) {
             String unitId = Objects.requireNonNull(unit.getKey());
             if (!unitId.equals(ImportGraph.normalizeUnitId(unitId))) {
@@ -113,15 +113,16 @@ public final class TwoPhaseInterfaceLinker {
                     throw new IllegalArgumentException(
                             "wildcard imports need a verified resolved import-closure descriptor");
                 }
-                ExportInterfaceCodec.Kind kind = switch (use.kind()) {
-                    case FUNCTION -> ExportInterfaceCodec.Kind.FUNCTION;
-                    case CLASS -> ExportInterfaceCodec.Kind.CLASS;
-                    case INTERFACE -> ExportInterfaceCodec.Kind.INTERFACE;
-                    case TYPE -> ExportInterfaceCodec.Kind.TYPE;
-                    case MODULE -> ExportInterfaceCodec.Kind.MODULE;
-                    default -> throw new IllegalArgumentException(
-                            "advanced import kind requires richer typed-interface contract");
-                };
+                // Only function imports are admitted by this provisional
+                // declaration linker. Class, interface, type alias and module
+                // imports require resolved nominal identities, visibility
+                // proofs, checked alias normalization and layout metadata.
+                // Accepting a matching lexical export name is not enough.
+                if (use.kind() != Ast.ImportKind.FUNCTION) {
+                    throw new IllegalArgumentException(
+                            "type-bearing or advanced imports require a checked typed linker");
+                }
+                ExportInterfaceCodec.Kind kind = ExportInterfaceCodec.Kind.FUNCTION;
                 String target = ImportGraph.resolveImportUnitId(importer, use,
                         available, resolvedOverrides);
                 if (target == null) {
