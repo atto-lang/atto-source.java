@@ -1504,8 +1504,8 @@ public final class TypeChecker {
             }
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: detached do nb select return; exits only the callback"
+                        : "W-SELECT-RETURN: detached do nb select return value is local and discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1665,9 +1665,9 @@ public final class TypeChecker {
                                 arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
+                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Detached nonblocking callbacks cannot return from their
+                    // already-continued lexical caller.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true, false);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
