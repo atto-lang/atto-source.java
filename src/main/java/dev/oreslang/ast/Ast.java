@@ -837,6 +837,14 @@ public final class Ast {
             if (hasSimpleBinding && hasPattern) {
                 throw new IllegalArgumentException("select arm cannot use both a name and destructure pattern");
             }
+            // Metadata for a binding that does not exist must never survive AST
+            // construction. Host-generated or future-lowered select arms must
+            // obey the same admission invariant as parsed source arms.
+            if (!hasSimpleBinding && !hasPattern
+                    && (bindingKind != null || mutableReferent)) {
+                throw new IllegalArgumentException(
+                        "select arm without a binding cannot carry binding permissions");
+            }
             if (bindingType != null && !hasSimpleBinding) {
                 throw new IllegalArgumentException("select binding type requires a named binding");
             }
