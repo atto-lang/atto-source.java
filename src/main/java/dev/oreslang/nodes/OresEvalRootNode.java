@@ -764,7 +764,20 @@ public final class OresEvalRootNode extends RootNode {
             Invocation current = initial;
             int tailHops = 0;
             while (true) {
+                // Dynamic/host invocation paths must not bypass the compiler's
+                // temporary affine Map restriction. Only explicitly designed
+                // move/borrow signatures may transfer a mutable Map later.
+                for (Object argument : current.arguments()) {
+                    if (argument instanceof OresKeyedMap<?, ?>) {
+                        throw new SecurityException(
+                                "typed Map call arguments require verified ownership transfer");
+                    }
+                }
                 Object result = current.owner().executeRaw(current);
+                if (result instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "typed Map return requires verified exclusive move semantics");
+                }
                 if (!(result instanceof TailCall tail)) return result;
                 current = tail.invocation();
                 tailHops++;
@@ -872,6 +885,10 @@ public final class OresEvalRootNode extends RootNode {
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
                 Object value = args.get(i);
+                if (value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "typed Map parameter requires verified borrow/move semantics");
+                }
                 tuple.add(value);
                 env.define(
                         param.name(),
