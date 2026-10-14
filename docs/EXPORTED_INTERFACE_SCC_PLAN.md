@@ -57,6 +57,25 @@ while preserving the same dependency set still invalidates the plan.
 External imported symbol selectors are also part of the fingerprint, even
 when the external provider hash is unchanged.
 
+### Audit hardening (2026-10-14)
+
+The integrated entry point now rejects noncanonical source-unit paths
+(e.g. `dir/../module.ores`), unused/unknown import-resolution overrides,
+missing public interfaces, namespace mismatches between an admitted program
+and its envelope, and total source imports above 4,096 **before** entering
+the import linker. The import budget counter uses a widened integer to
+prevent overflow. This stops several stale-cache and resource-exhaustion
+failure modes before dependency graph processing.
+
+**ABI-only fingerprints are not object-code cache keys.** Implementation-only
+changes can safely preserve importer *interface* fingerprints, but optimized
+object code may have inlined dependency bodies or depended on const
+evaluation, macros, annotations, or interprocedural optimization. A
+production optimized-code cache must additionally fingerprint every such
+implementation-sensitive input and compiler configuration, or fail closed
+by rebuilding all affected importers. The current planner does not track
+those inputs and MUST NOT authorize optimized object-code cache reuse.
+
 ## Formal correctness obligations
 
 The following properties are testable and must remain invariants:
@@ -81,7 +100,11 @@ The private CI runner compiles the exact planner, actual Oreslang
 `ImportGraph.java`, `ImportRules.java` and `Ast.java` using JDK 21.
 Targeted tests cover SCC order, cyclic invalidation, independent-unit
 stability, exact internal/import selector retargeting, pinned external
-symbols and corrupt/unknown dependency rejection.
+symbols, corrupt/unknown dependency rejection, canonical source-ID
+validation, selector override coverage, namespace consistency, and bounded
+import admission. A seeded 64-graph property test also verifies that ABI
+changes invalidate exactly the reverse reachable import closure in acyclic
+graphs while preserving unrelated compilation interfaces.
 
 `TypeChecker.checkTypesAndSnapshotPublicNominals` and
 `CheckedPublicTypeIdentity` have repository JUnit regression tests, but
