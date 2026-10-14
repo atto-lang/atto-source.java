@@ -89,6 +89,7 @@ public final class SealedActorState {
         }
         public void write(int index, int unsignedByte) {
             check();
+            requireOwnedRegionMutationAuthority();
             if (unsignedByte < 0 || unsignedByte > 255)
                 throw new IllegalArgumentException("owned byte value must be 0..255");
             bytes[Objects.checkIndex(index, bytes.length)] = (byte) unsignedByte;
@@ -107,7 +108,7 @@ public final class SealedActorState {
      * and LLVM codegen share a documented ABI.
      */
     public OwnedBytes allocateOwnedBytes(int size) {
-        requireOwner();
+        requireOwnedRegionMutationAuthority();
         if (size < 0 || size > MAX_OWNED_FIELD_BYTES)
             throw new IllegalArgumentException("invalid actor-owned byte region size");
         if (pendingOwned.size() >= MAX_PENDING_OWNED
@@ -126,6 +127,14 @@ public final class SealedActorState {
         if (!owner.equals(ActorRuntime.currentActorId().orElse(null))) {
             throw new SecurityException("actor state requires the owning actor's admitted turn");
         }
+    }
+
+    private void requireOwnedRegionMutationAuthority() {
+        requireOwner();
+        // The capsule must not become a back door to mutate actor-owned
+        // memory during a nested or top-level read-only state grant.
+        if (current != null && !current.writable)
+            throw new SecurityException("critical read cannot allocate or mutate owned state");
     }
 
     private static int stringBytes(Object value) {
