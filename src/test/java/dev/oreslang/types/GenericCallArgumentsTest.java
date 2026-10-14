@@ -76,4 +76,37 @@ final class GenericCallArgumentsTest {
         assertEquals(nested, bound.explicitTypes().get("A"));
         assertTrue(bound.inferenceHoles().isEmpty());
     }
+
+    @Test
+    void allFiveFactorialNamedArgumentPermutationsHaveIdenticalBindings() {
+        List<String> names = List.of("A", "B", "C", "D", "E");
+        List<Ast.TypeRef> values = List.of(
+                named("A", "int"), named("B", "string"), named("C", "bool"),
+                named("D", "float"), named("E", "Symbol"));
+        int[] count = {0};
+        assertEveryPermutation(names, values, 0, count);
+        assertEquals(120, count[0]);
+    }
+
+    private static void assertEveryPermutation(
+            List<String> names, List<Ast.TypeRef> values, int index, int[] count) {
+        if (index == values.size()) {
+            GenericCallArguments.Bound bound =
+                    GenericCallArguments.bind(names, values, "five-parameter function");
+            for (int i = 0; i < names.size(); i++) {
+                assertEquals(type(List.of("int", "string", "bool", "float", "Symbol").get(i)),
+                        bound.explicitTypes().get(names.get(i)));
+            }
+            assertTrue(bound.inferenceHoles().isEmpty());
+            count[0]++;
+            return;
+        }
+        for (int i = index; i < values.size(); i++) {
+            java.util.ArrayList<Ast.TypeRef> shuffled = new java.util.ArrayList<>(values);
+            Ast.TypeRef tmp = shuffled.get(index);
+            shuffled.set(index, shuffled.get(i));
+            shuffled.set(i, tmp);
+            assertEveryPermutation(names, shuffled, index + 1, count);
+        }
+    }
 }
