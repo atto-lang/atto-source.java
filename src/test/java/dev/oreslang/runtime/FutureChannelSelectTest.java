@@ -411,6 +411,62 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void repeatedFutureArmsRegisterOnlyOneNotificationAndPreservePriority() {
+        var producer = new OresFuture<Integer>();
+        var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < 128; i++) {
+            cases.add(ChannelRuntime.await(producer));
+        }
+        var selected = new ChannelRuntime.SelectSet(cases)
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertEquals(1, producer.pendingRuntimeWaiterCount(),
+                "duplicate await arms must share one Future wakeup");
+        assertTrue(producer.completeFromRuntime(17));
+        var winner = selected.join();
+        assertEquals(0, winner.index());
+        assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
+        assertEquals(17, winner.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void repeatedFutureArmsCancelWithoutCancellingOrRetainingProducer() {
+        var producer = new OresFuture<Integer>();
+        var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < 128; i++) {
+            cases.add(ChannelRuntime.await(producer));
+        }
+        var selected = new ChannelRuntime.SelectSet(cases)
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(selected.cancel(false));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isDone());
+        assertTrue(producer.completeFromRuntime(23));
+    }
+
+    @Test
+    void distinctFutureArmsRetainIndependentWakeups() {
+        var first = new OresFuture<Integer>();
+        var second = new OresFuture<Integer>();
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(first),
+                ChannelRuntime.await(first),
+                ChannelRuntime.await(second),
+                ChannelRuntime.await(second))
+                .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertEquals(1, first.pendingRuntimeWaiterCount());
+        assertEquals(1, second.pendingRuntimeWaiterCount());
+        assertTrue(second.completeFromRuntime(23));
+        var winner = selected.join();
+        assertEquals(2, winner.index());
+        assertEquals(23, winner.value());
+        assertEquals(0, first.pendingRuntimeWaiterCount());
+        assertEquals(0, second.pendingRuntimeWaiterCount());
+        assertFalse(first.isDone());
+    }
+
+    @Test
     void settlementDuringManyFutureListenerAttachmentsLeavesNoWaiters()
             throws Exception {
         for (int round = 0; round < 32; round++) {

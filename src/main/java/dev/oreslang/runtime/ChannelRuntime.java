@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -701,6 +702,11 @@ public final class ChannelRuntime {
         }
 
         private void attachFutureWaiters() {
+            // Every Future completes once. Several select arms can await the
+            // same producer, but they need only one notification to rerun
+            // arbitration, which still considers every arm in policy order.
+            // Avoid independent callback races and redundant wakeups.
+            IdentityHashMap<OresFuture<?>, Boolean> observed = new IdentityHashMap<>();
             List<CaseRegistration> pending;
             COORDINATOR.lock();
             try {
@@ -711,6 +717,7 @@ public final class ChannelRuntime {
             }
             for (CaseRegistration registration : pending) {
                 if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
+                if (observed.put(candidate.future(), Boolean.TRUE) != null) continue;
                 // Registration can settle while we are attaching an earlier
                 // Future listener. Do not execute guest-controlled callback
                 // registration for operations that have already lost.
