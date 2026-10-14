@@ -5550,10 +5550,14 @@ public final class ActorRuntime implements AutoCloseable {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
                 || value instanceof OresMutex.Guard<?>) {
+            // Group join authority is as sensitive as ActorRef: handing it to
+            // an untrusted actor would permit joining a privileged group.
+            // Reject nested capabilities before isolateCopy preserves them.
             throw new SecurityException(
                     "untrusted actors accept data-only messages; live capabilities are forbidden");
         }
