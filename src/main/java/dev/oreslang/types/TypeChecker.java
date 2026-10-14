@@ -68,6 +68,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    /** TYPE/TYPES imports are not structural witnesses until the trusted linker supplies them. */
+    private final Set<String> unlinkedImportedTypes = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -228,6 +230,10 @@ public final class TypeChecker {
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                }
+                if (imported.kind() == Ast.ImportKind.TYPE
+                        || imported.kind() == Ast.ImportKind.TYPES) {
+                    unlinkedImportedTypes.add(name);
                 }
                 // Cross-file imports are opaque to this per-unit typechecker.
                 // Runtime-bearing imports enter the value namespace. Oreslang
@@ -7350,6 +7356,11 @@ public final class TypeChecker {
             } finally {
                 resolvingAliases.remove(alias);
             }
+        }
+
+        if (unlinkedImportedTypes.contains(ref.name())) {
+            throw new IllegalArgumentException("imported type '" + ref.name()
+                    + "' has no verified linked signature; a bare import cannot prove its structure");
         }
 
         return switch (ref.name()) {
