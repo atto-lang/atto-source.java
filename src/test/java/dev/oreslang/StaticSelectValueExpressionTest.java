@@ -269,6 +269,34 @@ final class StaticSelectValueExpressionTest {
                 .warnings().isEmpty());
     }
 
+
+    @Test
+    void readyValueSelectDoesNotReplayContinuationAfterLaterFailure() throws Exception {
+        String code = """
+                pub fnc main(): void {
+                  val Channel<int> closed = Channel.new<int>(0);
+                  closed.close();
+                  try {
+                    const int selected = select over
+                      default -> {
+                        stdio.stdout.write("selected:");
+                        return 4;
+                      }
+                    end;
+                    stdio.stdout.write(selected);
+                    stdio.stdout.write(":after:");
+                    readch closed;
+                  } catch (err) {
+                    stdio.stdout.write("caught:");
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                  return;
+                }
+                """;
+        assertEquals("selected:4:after:caught:finally:", run(code));
+    }
+
     private static String run(String code) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, code, "select-value.ores")

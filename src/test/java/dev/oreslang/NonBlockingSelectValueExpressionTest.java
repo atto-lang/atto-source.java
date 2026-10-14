@@ -147,6 +147,33 @@ final class NonBlockingSelectValueExpressionTest {
                         """)));
     }
 
+
+    @Test
+    void readyDefaultArmCannotRunAfterActorStopBeforeDeferredDispatch() throws Exception {
+        String source = """
+                define actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    val Future<int> pending = nb select over
+                      default -> {
+                        stdio.stdout.write("unexpected-arm:");
+                        return 12;
+                      }
+                    end;
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = await spawn Worker();
+                  worker.send("go");
+                  await worker.get_done();
+                  stdio.stdout.write("stopped");
+                  return;
+                }
+                """;
+        assertEquals("stopped", run(source));
+    }
+
     private static String run(String text) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, text, "nb-select-values.ores")

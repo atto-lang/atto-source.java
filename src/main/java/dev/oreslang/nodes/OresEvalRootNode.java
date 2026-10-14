@@ -2549,12 +2549,6 @@ public final class OresEvalRootNode extends RootNode {
 
 
         /**
-         * Blocking value-select is a source expression: the selection suspends
-         * the heap-owned source task, never a scheduler carrier. The winning
-         * arm resumes in that task; its lexical result return completes only
-         * the expression's continuation.
-         */
-        /**
          * Runtime selection chooses one winner; the winner's arm is executed
          * by a separate heap-owned actor task, never on the producer thread.
          * A result Future settles only after that arm and its defer/finally
@@ -2574,15 +2568,18 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectStmt select = expression.select();
             ChannelRuntime.SelectSet cases = buildStaticSelectSet(select, env);
-            OresFuture<ChannelRuntime.SelectResult> winner =
-                    cases.selectAsync(runtimeSelectPolicy(select.policy()));
+            // Snapshot and validate the owning actor before registration.
+            // If either step fails, no channel selection can be left armed.
             ActorRuntime.ContinuationTarget target =
                     context.actors().captureCurrentContinuationTarget();
             Env captured = env.snapshot();
+            OresFuture<ChannelRuntime.SelectResult> winner =
+                    cases.selectAsync(runtimeSelectPolicy(select.policy()));
             java.util.concurrent.atomic.AtomicReference<OresFuture<Object>> activeTask =
                     new java.util.concurrent.atomic.AtomicReference<>();
 
-            OresFuture<Object> result = OresFuture.fromCallback(completion ->
+            OresFuture<Object> result = OresFuture.fromCallback(completion -> {
+                try {
                     context.actors().enqueueOnCompletion(winner, target, (selected, failure) -> {
                         if (completion.isDone()) return;
                         if (failure != null) {
@@ -2615,21 +2612,36 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
 
-                            context.actors().enqueueOnCompletion(body, target, (value, armFailure) -> {
+                            try {
+                                context.actors().enqueueOnCompletion(body, target, (value, armFailure) -> {
+                                    activeTask.compareAndSet(body, null);
+                                    if (completion.isDone()) return;
+                                    if (armFailure == null) {
+                                        completion.resolve(value);
+                                    } else if (body.isCancelled()) {
+                                        completion.cancel();
+                                    } else {
+                                        completion.reject(OresFuture.unwrap(armFailure));
+                                    }
+                                });
+                            } catch (RuntimeException | Error registrationFailure) {
+                                // Failure to observe this task must not leave
+                                // actor-owned guest work running unobserved.
                                 activeTask.compareAndSet(body, null);
-                                if (completion.isDone()) return;
-                                if (armFailure == null) {
-                                    completion.resolve(value);
-                                } else if (body.isCancelled()) {
-                                    completion.cancel();
-                                } else {
-                                    completion.reject(OresFuture.unwrap(armFailure));
-                                }
-                            });
+                                body.cancel(false);
+                                throw registrationFailure;
+                            }
                         } catch (RuntimeException | Error armFailure) {
                             if (!completion.isDone()) completion.reject(armFailure);
                         }
-                    }), () -> {
+                    });
+                } catch (RuntimeException | Error registrationFailure) {
+                    // A failed completion registration must never orphan an
+                    // armed channel select. Preserve the registrar failure.
+                    winner.cancel(false);
+                    throw registrationFailure;
+                }
+            }, () -> {
                         // Runtime revocation only: no guest callbacks on the
                         // cancellation caller's physical thread.
                         winner.cancel(false);
@@ -2673,12 +2685,17 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (future.isDone()) {
+                final ChannelRuntime.SelectResult chosen;
                 try {
-                    runSelectedValueArmSuspendable(
-                            task, select, future.join(), env, continuation);
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, null, failure);
+                    chosen = future.join();
+                } catch (RuntimeException | Error selectionFailure) {
+                    continuation.accept(task, null, selectionFailure);
+                    return;
                 }
+                // A downstream continuation may throw. Never catch its
+                // exception and invoke that same continuation a second time.
+                runSelectedValueArmSuspendable(
+                        task, select, chosen, env, continuation);
                 return;
             }
             task.suspend(future, (t, value, failure) -> {
