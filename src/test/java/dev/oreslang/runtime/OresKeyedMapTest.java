@@ -108,6 +108,34 @@ final class OresKeyedMapTest {
                 ActorRuntime.freeze(List.of(Map.of("embedded", map))));
     }
 
+    @Test void concurrentWritesCannotLoseKeysOrCorruptIteration() throws Exception {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        java.util.concurrent.ExecutorService workers =
+                java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            List<java.util.concurrent.Callable<Void>> jobs = new java.util.ArrayList<>();
+            for (int worker = 0; worker < 8; worker++) {
+                final int identity = worker;
+                jobs.add(() -> {
+                    for (int index = 0; index < 250; index++) {
+                        String key = "worker" + identity + "-" + index;
+                        map.put(key, index);
+                        assertEquals(index, map.get(key));
+                    }
+                    return null;
+                });
+            }
+            for (var future : workers.invokeAll(jobs)) {
+                future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            }
+            assertEquals(2_000, map.size());
+            assertEquals(2_000, map.entrySnapshot().size());
+        } finally {
+            workers.shutdownNow();
+        }
+    }
+
     @Test void mapRejectsOversizedAndMalformedUtf8Keys() {
         OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
         map.put("x".repeat(OresKeyedMap.MAX_TEXT_KEY_BYTES), 1);
