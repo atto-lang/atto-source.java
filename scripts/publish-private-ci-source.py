@@ -59,13 +59,22 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
-def checked_repo(repository):
+def checked_repo(repository, expected_id=None):
+    """Verify the live private destination and pin its numeric ID for this transfer."""
     result = gh_api("repos/" + repository)
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True):
         raise Denied("destination identity or private visibility changed")
+    # A renamed/deleted/recreated repository can reuse a name. Reject an ID
+    # change between any two GitHub writes, even when visibility is private.
+    repository_id = result.get("id")
+    if (type(repository_id) is not int or repository_id <= 0
+            or (expected_id is not None and repository_id != expected_id)):
+        raise Denied("destination numeric repository identity unavailable or changed")
+    if result.get("archived") is not False or result.get("disabled") is not False:
+        raise Denied("destination is archived, disabled, or its status is unknown")
     return result
 
 
@@ -80,7 +89,7 @@ def require_preflight(repository, root):
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
         raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
+    return checked_repo(repository)["id"]
 
 
 def checked_policy_fingerprint(root, repository):
@@ -250,7 +259,7 @@ def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
-    require_preflight(repository, trusted_root)
+    approved_destination_id = require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -259,7 +268,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
-    base = checked_repo(repository)
+    base = checked_repo(repository, expected_id=approved_destination_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -270,7 +279,7 @@ def publish(repository, source, branch, trusted_root):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        checked_repo(repository, expected_id=approved_destination_id)
 
     elements = []
     for rel, data, mode in files:
