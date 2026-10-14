@@ -6458,6 +6458,10 @@ public final class OresEvalRootNode extends RootNode {
                                 "invalid payload for " + declarationEnum.name() + "." + name);
                         if (!(supplied instanceof Map<?, ?> fields)) throw new IllegalArgumentException(
                                 "enum payload must be a closed record");
+                        if (!fields.keySet().equals(variant.payload().recordMembers().keySet())) {
+                            throw new IllegalArgumentException(
+                                    "enum payload must have exactly the declared fields");
+                        }
                         LinkedHashMap<String, Object> snapshot = new LinkedHashMap<>();
                         for (Map.Entry<?, ?> entry : fields.entrySet()) {
                             if (!(entry.getKey() instanceof String key)) throw new IllegalArgumentException(
@@ -8013,6 +8017,20 @@ public final class OresEvalRootNode extends RootNode {
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
         }
 
+        private boolean validNominalEnum(EnumValue value) {
+            Ast.EnumDecl declarationEnum = findEnum(value.qualifiedEnumName());
+            if (declarationEnum == null || !declarationEnum.name().equals(value.enumName())) return false;
+            for (Ast.EnumVariant declared : declarationEnum.variants()) {
+                if (!declared.name().equals(value.variantName())) continue;
+                if (declared.tag() != value.tag()) return false;
+                if (declared.payload() == null) return value.payload() == null;
+                return value.payload() instanceof ReadonlyRecordValue fields
+                        && fields.keySet().equals(declared.payload().recordMembers().keySet())
+                        && oresTypeMatches(fields, declared.payload());
+            }
+            return false;
+        }
+
         private boolean patternMatches(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
@@ -8055,9 +8073,7 @@ public final class OresEvalRootNode extends RootNode {
                 String name = constructor.constructor();
                 if (value instanceof EnumValue variant) {
                     String expected = variant.enumName() + "." + variant.variantName();
-                    if (!name.equals(expected)
-                            || !variant.qualifiedEnumName().equals(qualifiedEnumName(
-                                    findEnum(variant.qualifiedEnumName())))) return false;
+                    if (!name.equals(expected) || !validNominalEnum(variant)) return false;
                     if (variant.payload() == null) return constructor.arguments().isEmpty();
                     return constructor.arguments().size() == 1
                             && patternMatches(constructor.arguments().getFirst(), variant.payload(), bindings);
@@ -8264,7 +8280,8 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             Ast.EnumDecl declarationEnum = findEnum(name);
             if (declarationEnum != null) return value instanceof EnumValue enumValue
-                    && enumValue.qualifiedEnumName().equals(qualifiedEnumName(declarationEnum));
+                    && enumValue.qualifiedEnumName().equals(qualifiedEnumName(declarationEnum))
+                    && validNominalEnum(enumValue);
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;

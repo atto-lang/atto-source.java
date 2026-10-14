@@ -305,9 +305,20 @@ public final class TypeChecker {
                         for (Ast.EnumVariant variant : declarationEnum.variants()) {
                             if (variant.payload() != null) {
                                 Type payload = resolve(variant.payload(), Set.of(), null);
-                                if (!(payload instanceof Record)) throw new IllegalArgumentException(
+                                if (!(payload instanceof Record record)) throw new IllegalArgumentException(
                                         "enum " + declarationEnum.name() + "." + variant.name()
                                                 + " requires a closed structural payload");
+                                // Stage one is restricted to immutable scalar fields.
+                                // Nested ownership, recursive messages and actor transport
+                                // need a separate, proven lifetime/serialization boundary.
+                                for (Type fieldType : record.members().values()) {
+                                    if (fieldType != Primitive.INT && fieldType != Primitive.FLOAT
+                                            && fieldType != Primitive.BOOL && fieldType != Primitive.STRING) {
+                                        throw new IllegalArgumentException(
+                                                "enum " + declarationEnum.name() + "." + variant.name()
+                                                        + " payload fields must be int, float, bool or string");
+                                    }
+                                }
                             }
                         }
                     }

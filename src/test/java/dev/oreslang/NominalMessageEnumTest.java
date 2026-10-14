@@ -106,6 +106,14 @@ final class NominalMessageEnumTest {
                           };
                         }
                         """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                "define enum Unsafe as Borrowed struct { children: List<int> } 1; end")));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(
+                DECLARATION + """
+                        fnc bad(): Messages {
+                          return Messages.Reset(infer struct { reset: 1, extra: 2 });
+                        }
+                        """)));
     }
 
 }
