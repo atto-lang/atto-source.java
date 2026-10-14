@@ -169,6 +169,55 @@ final class IncrementalParseCacheTest {
     }
 
     @Test
+    void swappingResolvedImportTargetsWithTheSameDependencySetRebuildsConsumer() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> input = Map.of(
+                "a.ores", """
+                        pub fnc left(): int { return 1; }
+                        pub fnc right(): int { return 2; }
+                        """,
+                "b.ores", """
+                        pub fnc left(): int { return 3; }
+                        pub fnc right(): int { return 4; }
+                        """,
+                "consumer.ores", """
+                        import fnc {left} from "api/left";
+                        import fnc {right} from "api/right";
+                        pub fnc main(): void { return; }
+                        """);
+        var first = compiler.compile(input, Map.of("consumer.ores",
+                Map.of("api/left", "a.ores", "api/right", "b.ores")));
+        assertEquals(Set.of("a.ores", "b.ores"), first.units().get("consumer.ores").dependencies());
+
+        var swapped = compiler.compile(input, Map.of("consumer.ores",
+                Map.of("api/left", "b.ores", "api/right", "a.ores")));
+        assertTrue(swapped.reparsedUnits().isEmpty(),
+                "retargeting a resolver does not change source syntax");
+        assertTrue(swapped.rebuilt("consumer.ores"),
+                "the same dependency SET must not conceal a changed import binding");
+        assertTrue(swapped.reused("a.ores"));
+        assertTrue(swapped.reused("b.ores"));
+
+        var stable = compiler.compile(input, Map.of("consumer.ores",
+                Map.of("api/left", "b.ores", "api/right", "a.ores")));
+        assertTrue(stable.rebuiltUnits().isEmpty());
+    }
+
+    @Test
+    void anUnversionedExternalImportDoesNotReuseStaleCheckedState() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> source = Map.of("consumer.ores", """
+                import * as ext from "external/package";
+                pub fnc main(): void { return; }
+                """);
+        compiler.compile(source);
+        var second = compiler.compile(source);
+        assertTrue(second.reparsedUnits().isEmpty());
+        assertTrue(second.rebuilt("consumer.ores"),
+                "external package contracts need a versioned fingerprint before reuse");
+    }
+
+    @Test
     void callerCannotModifyReparseTelemetry() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var result = compiler.compile(sources());
