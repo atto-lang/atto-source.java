@@ -28,8 +28,7 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.full_name, (.id|to
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=
-\t' read -r actual_name repository_id visibility private_flag archived disabled <<< "$metadata"
+IFS=$'\t' read -r actual_name repository_id visibility private_flag archived disabled <<< "$metadata"
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$repository_id" =~ ^[1-9][0-9]*$ ]] || fail 'destination numeric repository identity unavailable'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
