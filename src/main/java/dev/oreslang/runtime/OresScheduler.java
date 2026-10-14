@@ -793,7 +793,17 @@ public final class OresScheduler implements AutoCloseable {
         }
 
         private void cancelFromSchedulerClose() {
-            completion.cancel(false);
+            boolean requested = completion.cancel(false);
+            if (!requested
+                    && task instanceof CleanupAwareTask<?>
+                    && phase.get() != TERMINAL) {
+                // Scheduler shutdown has revoked the carrier/actor lane. No
+                // cleanup continuation may be invoked on the closing thread,
+                // but an already-requested cancellation must not leave a
+                // parked task Future permanently pending.
+                failTerminal(new RejectedExecutionException(
+                        "scheduler closed before source cleanup completed"));
+            }
         }
     }
 
