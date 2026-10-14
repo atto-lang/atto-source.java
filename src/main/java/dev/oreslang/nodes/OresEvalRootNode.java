@@ -4373,6 +4373,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object newGuestMap(Ast.TypeRef type) {
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "typed Map allocation inside actors requires ownership and memory accounting");
+            }
             if (type.inferArguments() || type.arguments().size() != 2) {
                 throw new IllegalArgumentException("Map<K,V> requires two explicit type arguments");
             }
