@@ -6465,7 +6465,20 @@ public final class ActorRuntime implements AutoCloseable {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
         }
-        for (ActorCell<?> cell : snapshot) cell.stop();
+        // A transport-release callback can fail during an individual STOP.
+        // The runtime owns *all* actor shutdown obligations: one actor's
+        // cleanup fault must not abandon sibling STOP or dispatcher shutdown.
+        Throwable shutdownFailure = null;
+        for (ActorCell<?> cell : snapshot) {
+            try {
+                cell.stop();
+            } catch (Throwable failure) {
+                if (shutdownFailure == null) shutdownFailure = failure;
+                else if (failure != shutdownFailure && shutdownFailure.getSuppressed().length < 16) {
+                    shutdownFailure.addSuppressed(failure);
+                }
+            }
+        }
 
         if (firstClose) {
             // Stop executor carriers so queued work is rejected/removed and
@@ -6548,6 +6561,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actors.clear();
         actorCount.set(0);
+        // Report an actor cleanup fault only after the runtime completed its
+        // own global shutdown and all actor terminal barriers settled.
+        if (shutdownFailure instanceof Error error) throw error;
+        if (shutdownFailure instanceof RuntimeException failure) throw failure;
+        if (shutdownFailure != null) {
+            throw new IllegalStateException("ActorRuntime shutdown cleanup failed", shutdownFailure);
+        }
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
