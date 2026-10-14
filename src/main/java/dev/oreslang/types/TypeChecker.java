@@ -6744,13 +6744,40 @@ public final class TypeChecker {
             Type callerSelf,
             String label) {
         if (typeArguments.isEmpty()) return Map.of();
-        if (typeArguments.size() != genericNames.size()) {
-            throw new IllegalArgumentException(label + " expects " + genericNames.size()
+        if (typeArguments.size() > genericNames.size()) {
+            throw new IllegalArgumentException(label + " expects at most " + genericNames.size()
                     + " explicit type argument(s), got " + typeArguments.size());
         }
         Map<String, Type> bindings = new HashMap<>();
-        for (int i = 0; i < genericNames.size(); i++) {
-            bindings.put(genericNames.get(i), resolve(typeArguments.get(i), callerGenerics, callerSelf));
+        Set<String> supplied = new HashSet<>();
+        boolean seenNamed = false;
+        int positionalIndex = 0;
+        for (Ast.TypeRef argument : typeArguments) {
+            String name;
+            Ast.TypeRef value;
+            if (argument.isNamedParameter()) {
+                seenNamed = true;
+                name = argument.namedParameterName();
+                value = argument.namedParameterValue();
+                if (!genericNames.contains(name)) {
+                    throw new IllegalArgumentException(label + " has no generic parameter named '" + name + "'");
+                }
+            } else {
+                if (seenNamed) {
+                    throw new IllegalArgumentException(label
+                            + ": positional generic arguments must precede named arguments");
+                }
+                name = genericNames.get(positionalIndex++);
+                value = argument;
+            }
+            if (!supplied.add(name)) {
+                throw new IllegalArgumentException(label + ": duplicate generic argument '" + name + "'");
+            }
+            // A hole is a request for inference, not a concrete type binding.
+            if (value.name().equals("_") && value.arguments().isEmpty() && !value.inferArguments()) {
+                continue;
+            }
+            bindings.put(name, resolve(value, callerGenerics, callerSelf));
         }
         return bindings;
     }
@@ -6833,6 +6860,11 @@ public final class TypeChecker {
         }
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
+        if (!unbound.isEmpty()) {
+            throw new IllegalArgumentException("cannot infer generic parameter(s) "
+                    + unbound.stream().sorted().toList() + " for " + label
+                    + "; specify them explicitly or make them inferable from value arguments");
+        }
 
         for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
