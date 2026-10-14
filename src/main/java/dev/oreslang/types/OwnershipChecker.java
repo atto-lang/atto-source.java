@@ -426,23 +426,34 @@ public final class OwnershipChecker {
         if (stmt instanceof Ast.IfStmt conditional) {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            // Every elif and else runs only after the preceding guard(s) were
+            // evaluated and failed. A guard producer can move an outer owner
+            // even when its Option is None; resetting to the pre-if snapshot
+            // would incorrectly revive that moved owner on the failure edge.
+            Map<VarState, StateSnapshot> remaining = base;
 
             for (Ast.IfBranch branch : conditional.branches()) {
-                restoreState(base);
+                restoreState(remaining);
                 checkGuardExpr(branch.condition(), scope);
+                // Guard evaluation happens on both the success and failure
+                // edges. The checker already joins short-circuit && effects
+                // conservatively, so these ownership effects must propagate
+                // to later guards and to else regardless of the bound value.
+                Map<VarState, StateSnapshot> afterGuard = stateSnapshot(scope);
                 Scope branchScope = new Scope(scope);
                 defineConditionAliases(branch.condition(), branchScope, scope);
                 checkBlock(branch.body(), branchScope, returnType);
                 branchScope.close();
                 exits.add(stateSnapshot(scope));
+                remaining = afterGuard;
             }
 
-            restoreState(base);
+            restoreState(remaining);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
                 exits.add(stateSnapshot(scope));
             } else {
-                exits.add(base); // condition may be false with no else
+                exits.add(remaining); // even a failed guard may have moved an owner
             }
 
             mergeBranchState(base, exits);
