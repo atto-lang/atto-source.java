@@ -1,7 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -11,6 +9,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -98,9 +97,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Still remove the registration from the producer queue: claiming
             // callback delivery and reclaiming queue retention are separate
             // obligations. This is idempotent if the producer already polled it.
-            synchronized (owner.waiterAdmissionLock) {
-                owner.waiters.remove(this);
-            }
+            owner.waiters.remove(this);
             return detached;
         }
     }
@@ -118,23 +115,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
-    /**
-     * Ordered waiter membership. All structural mutations are guarded by
-     * waiterAdmissionLock, including detach and terminal drain. A set gives
-     * exactly-once membership and O(1) removal, avoiding linear queue scans
-     * when hundreds of select arms lose on the same producer Future.
-     */
-    private final LinkedHashSet<RuntimeWaiterRegistration<T>> waiters = new LinkedHashSet<>();
-    /**
-     * Serializes the short registration decision with the producer's queue
-     * drain. Terminal-state publication itself remains lock-free. No user or
-     * runtime completion callback is ever invoked while holding this monitor.
-     *
-     * A waiter must either be admitted before the terminal drain, or observe
-     * the terminal state and be notified inline; it must never straddle the
-     * drain as an unclaimed, permanently retained queue node.
-     */
-    private final Object waiterAdmissionLock = new Object();
+    private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
     public OresFuture() {
         this(() -> true, () -> { });
@@ -450,57 +431,26 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Objects.requireNonNull(callback, "callback");
         RuntimeWaiterRegistration<T> waiter =
                 new RuntimeWaiterRegistration<>(this, callback);
-        Object observed;
-        boolean queued;
-        synchronized (waiterAdmissionLock) {
-            observed = state.get();
-            queued = observed == PENDING
-                    || (observed instanceof Cancelled
-                            && !cancelRevocationComplete.get());
-            if (queued) {
-                // If terminal CAS races after this observation, the producer
-                // must enter the same lock before polling waiters. Pending
-                // cancellation cannot notify before its revocation barrier.
-                waiters.add(waiter);
-            }
-        }
-        if (!queued) {
-            // No producer queue node is needed for an already-ready Future.
-            notifyWaiter(waiter, observed);
-            return waiter;
-        }
+        waiters.add(waiter);
 
-        // A producer may have settled between the pending-state observation
-        // and returning this registration. Re-check after publication: either
-        // take ownership of a still-queued waiter and notify it, or leave it
-        // to the producer's drain. This second half of the handshake protects
-        // against missed terminal wakeups without running callbacks under the
-        // admission lock or before cancellation revocation completes.
-        Object afterAdmission = runtimeSelectReadyStateOrNull();
-        if (afterAdmission != null) {
-            boolean reclaimed;
-            synchronized (waiterAdmissionLock) {
-                reclaimed = waiters.remove(waiter);
-            }
-            if (reclaimed) notifyWaiter(waiter, afterAdmission);
+        Object observed = state.get();
+        if (observed != PENDING
+                && (!(observed instanceof Cancelled)
+                        || cancelRevocationComplete.get())) {
+            // Cancellation state is visible immediately at CAS, but ordinary
+            // runtime subscribers must not run until internal revocation.
+            // If revocation is still underway, leave this registration in
+            // the queue: the cancelling thread will drain it afterwards.
+            // Otherwise remove/claim atomically against the settlement drain
+            // so the callback runs no more than once.
+            waiters.remove(waiter);
+            notifyWaiter(waiter, observed);
         }
         return waiter;
     }
 
     int pendingRuntimeWaiterCount() {
-        synchronized (waiterAdmissionLock) {
-            return waiters.size();
-        }
-    }
-
-    int claimedRuntimeWaiterCountForDiagnostics() {
-        synchronized (waiterAdmissionLock) {
-            int claimedCount = 0;
-            for (RuntimeWaiterRegistration<T> waiter : waiters) {
-                if (waiter.claimed.get()) claimedCount++;
-            }
-            return claimedCount;
-        }
+        return waiters.size();
     }
 
     @Override
@@ -676,16 +626,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             } else {
                 afterStateClaimed.run();
             }
-            while (true) {
-                RuntimeWaiterRegistration<T> waiter;
-                synchronized (waiterAdmissionLock) {
-                    Iterator<RuntimeWaiterRegistration<T>> next = waiters.iterator();
-                    if (!next.hasNext()) break;
-                    waiter = next.next();
-                    next.remove();
-                }
-                // Never execute a callback under the admission monitor:
-                // callbacks may register more Futures or select other arms.
+            RuntimeWaiterRegistration<T> waiter;
+            while ((waiter = waiters.poll()) != null) {
                 notifyWaiter(waiter, terminal);
             }
             return true;
