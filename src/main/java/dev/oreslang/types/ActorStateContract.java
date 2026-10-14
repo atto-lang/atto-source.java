@@ -95,6 +95,12 @@ public final class ActorStateContract {
                                 "actor state reference default requires verified "
                                 + "actor-owned allocation or ownership transfer");
                     }
+                    if (!isDetachedLiteralDefault(def.value())) {
+                        throw new IllegalArgumentException(
+                                "actor state default must be a detached scalar literal; "
+                                + "calls, external bindings and evaluated allocations "
+                                + "require verified actor-owned initialization lowering");
+                    }
                 }
             }
         }
@@ -228,6 +234,16 @@ public final class ActorStateContract {
                 escaping = assign.value();
             } else if (node instanceof Ast.CallExpr call) {
                 escaping = call.arguments();
+            } else if (node instanceof Ast.NewExpr created) {
+                // A constructor may retain its input in externally reachable
+                // storage even when its returned object is discarded.
+                escaping = created.arguments();
+            } else if (node instanceof Ast.RuntimeCallExpr runtime
+                    && !Set.of("borrow", "borrow_mut", "borrowMut", "take",
+                            "share", "copy").contains(runtime.operation())) {
+                // Unknown runtime intrinsics do not have a trusted effect or
+                // lifetime summary for references to actor-owned fields.
+                escaping = runtime.arguments();
             }
             if (escaping != null && projectsReferenceState(escaping, activeAccess, keys)) {
                 throw new IllegalArgumentException(
@@ -309,6 +325,36 @@ public final class ActorStateContract {
                 }
             }
         }
+    }
+
+    /**
+     * Actor defaults currently enter the scalar-only sealed storage at actor
+     * construction. Only context-free, immutable scalar literals have a
+     * checked lowering; even a well-typed function call may allocate, observe
+     * a foreign heap or run arbitrary code before actor ownership is bound.
+     */
+    private static boolean isDetachedLiteralDefault(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value instanceof String || value instanceof Boolean
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal
+                    || value instanceof Character;
+        }
+        if (expression instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("-") || unary.operator().equals("+"))
+                && unary.operand() instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+        return false;
     }
 
     private static boolean isDirectStateMember(Object node, String access) {
