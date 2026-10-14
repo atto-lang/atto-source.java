@@ -77,6 +77,26 @@ final class IncrementalParseCacheTest {
     }
 
     @Test
+    void failedTypecheckAndMissingDependencyDoNotCommitCacheState() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = sources();
+        compiler.compile(initial);
+
+        Map<String, String> typeError = new LinkedHashMap<>(initial);
+        typeError.put("math.ores",
+                "pub fnc answer(): int { return \"invalid\"; }");
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(typeError));
+        assertThrows(IllegalArgumentException.class, () ->
+                compiler.compile(Map.of("app.ores", initial.get("app.ores"))));
+
+        var recovered = compiler.compile(initial);
+        assertTrue(recovered.reparsedUnits().isEmpty(),
+                "failed semantic/import checks must not mutate parsed cache");
+        assertTrue(recovered.rebuiltUnits().isEmpty(),
+                "failed semantic/import checks must not mutate checked cache");
+    }
+
+    @Test
     void clearingOrBuildingEmptySnapshotDiscardsCachedUnits() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         compiler.compile(sources());
