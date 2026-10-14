@@ -4824,6 +4824,20 @@ public final class TypeChecker {
             requireAssignable(typeOfCondition(binary.right(), rightEnv, generics, self), Primitive.BOOL, "logical operand");
             return Primitive.BOOL;
         }
+        if (expr instanceof Ast.TypeTestExpr test
+                && test.value() instanceof Ast.OptionBindExpr binding) {
+            Type payload = copyOptionPayloadType(binding.value(), env, generics, self);
+            Type target = deref(resolve(test.targetType(), generics, self));
+            if (!typesMayOverlap(payload, target)) {
+                throw new IllegalArgumentException(
+                        "impossible optional type test: " + payload + " cannot be " + target);
+            }
+            if (test.binding() != null) {
+                throw new IllegalArgumentException(
+                        "optional binding type test cannot introduce a second named alias");
+            }
+            return Primitive.BOOL;
+        }
         if (expr instanceof Ast.BinaryExpr binary
                 && (binary.operator().equals("eq") || binary.operator().equals("neq"))
                 && binary.left() instanceof Ast.OptionBindExpr binding) {
@@ -4864,6 +4878,18 @@ public final class TypeChecker {
         if (condition instanceof Ast.OptionBindExpr binding) {
             destination.define(binding.binding(),
                     copyOptionPayloadType(binding.value(), sourceEnv, generics, self),
+                    binding.kind());
+            return;
+        }
+        if (condition instanceof Ast.TypeTestExpr test
+                && test.value() instanceof Ast.OptionBindExpr binding) {
+            Type payload = copyOptionPayloadType(binding.value(), sourceEnv, generics, self);
+            Type target = deref(resolve(test.targetType(), generics, self));
+            if (!typesMayOverlap(payload, target)) {
+                throw new IllegalArgumentException(
+                        "impossible optional type refinement: " + payload + " cannot be " + target);
+            }
+            destination.define(binding.binding(), overlayReadonlyCapabilities(payload, target),
                     binding.kind());
             return;
         }
