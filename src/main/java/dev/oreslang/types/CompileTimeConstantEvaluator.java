@@ -91,6 +91,12 @@ public final class CompileTimeConstantEvaluator {
                 case "&&" -> requireBool(left) && requireBool(right);
                 case "||" -> requireBool(left) || requireBool(right);
                 case "^^" -> requireBool(left) ^ requireBool(right);
+                case "&" -> requireInt(left) & requireInt(right);
+                case "|" -> requireInt(left) | requireInt(right);
+                case "^" -> requireInt(left) ^ requireInt(right);
+                case "<<" -> requireInt(left) << shiftDistance(right);
+                case ">>" -> requireInt(left) >> shiftDistance(right);
+                case ">>>" -> requireInt(left) >>> shiftDistance(right);
                 case "eq", "==" -> identicalScalar(left, right);
                 case "neq", "!=" -> !identicalScalar(left, right);
                 case "<" -> requireInt(left) < requireInt(right);
@@ -125,6 +131,16 @@ public final class CompileTimeConstantEvaluator {
     private static long requireInt(Object value) {
         if (value instanceof Long n) return n;
         throw reject("operator requires two compile-time integers");
+    }
+
+    private static int shiftDistance(Object value) {
+        long distance = requireInt(value);
+        // Matches the Oreslang runtime's guarded native shift domain.
+        // Java's raw shift masks distance modulo 64, which is NOT admitted.
+        if (distance < 0 || distance > 63) {
+            throw reject("shift distance must be between 0 and 63");
+        }
+        return (int) distance;
     }
 
     private static boolean requireBool(Object value) {
