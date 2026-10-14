@@ -1667,10 +1667,18 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        // Keep these distinct from ordinary calls/identifiers. Exception
-        // effect checking, typed recovery and actor CONTROL delivery have
-        // not yet been lowered in the Java/Graal production compiler.
-        if (check(THROW) || check(RAISE) || check(PANIC) || check(RECOVER)) {
+        // Local guest throw has a separate AST form. Its Error-only type and
+        // lexical catch scope are checked by TypeChecker before execution.
+        // Raise, panic and recover remain gated until CONTROL delivery exists.
+        if (match(THROW)) {
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(previous(), "throw requires a guest Error value");
+            }
+            Ast.Expr value = parseExpression();
+            consumeExpressionStatementTerminator(value, "throw statement should end with ';'");
+            return new Ast.ThrowStmt(value);
+        }
+        if (check(RAISE) || check(PANIC) || check(RECOVER)) {
             throw error(peek(), "typed exceptional effect '" + peek().lexeme()
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
