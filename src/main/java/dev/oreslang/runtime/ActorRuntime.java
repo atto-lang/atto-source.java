@@ -182,6 +182,28 @@ public final class ActorRuntime implements AutoCloseable {
             long elapsedNanos,
             long sinceCheckpointNanos) { }
 
+    /**
+     * CONTROL-only immutable actor failure notice. Never contains guest Error,
+     * Throwable, diagnostic messages or actor-owned state. Parent identity is
+     * supplied by the runtime rather than source code.
+     */
+    public record ActorFailureNotice(
+            ActorId actorId, ActorId supervisorId,
+            GuestActorEffectSignal.Kind effect,
+            ActorErrorCatalog.Envelope envelope) {
+        public ActorFailureNotice {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(effect, "effect");
+            Objects.requireNonNull(envelope, "envelope");
+            if (!envelope.actorId().equals(actorId.value().toString())
+                    || !envelope.supervisorId().equals(
+                            supervisorId == null ? "" : supervisorId.value().toString())
+                    || envelope.kind() != ActorErrorCatalog.Kind.ACTOR_SUPERVISION) {
+                throw new IllegalArgumentException("actor CONTROL envelope identity mismatch");
+            }
+        }
+    }
+
     public static final class UntrustedActorQuotaExceededException extends SecurityException {
         public enum Resource { FUEL, WALL_TIME, CPU_TIME }
         private final Resource resource;
@@ -461,6 +483,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
     private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
             new ArrayBlockingQueue<>(1024);
+    private final ArrayBlockingQueue<ActorFailureNotice> actorFailureNotices =
+            new ArrayBlockingQueue<>(1024);
+    private final AtomicLong actorFailureNoticesDropped = new AtomicLong();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -566,6 +591,23 @@ public final class ActorRuntime implements AutoCloseable {
     public Optional<WatchdogNotice> pollWatchdogNotice() {
         requireSupervisorContext("drain actor watchdog notices");
         return Optional.ofNullable(watchdogNotices.poll());
+    }
+
+    /** Host/supervisor-only CONTROL poll; actor code has no access to this queue. */
+    public Optional<ActorFailureNotice> pollActorFailureNotice() {
+        requireSupervisorContext("drain actor failure CONTROL notices");
+        return Optional.ofNullable(actorFailureNotices.poll());
+    }
+
+    public long actorFailureNoticesDropped() {
+        requireSupervisorContext("inspect dropped actor failure CONTROL notices");
+        return actorFailureNoticesDropped.get();
+    }
+
+    private void publishActorFailureNotice(ActorFailureNotice notice) {
+        if (!actorFailureNotices.offer(notice)) {
+            actorFailureNoticesDropped.incrementAndGet();
+        }
     }
 
     /** Indicates a request, not a safe or completed suspension. */
@@ -7555,10 +7597,23 @@ public final class ActorRuntime implements AutoCloseable {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
+            ActorFailureNotice controlNotice = null;
             synchronized (lifecycleLock) {
                 if (finalized) return;
-                if (recordCause && cause != null) {
-                    ref.terminationCause.compareAndSet(null, cause);
+                if (recordCause && cause != null
+                        && ref.terminationCause.compareAndSet(null, cause)
+                        && cause instanceof GuestActorEffectSignal signal) {
+                    ActorId supervisorId = parent == null ? null : parent.ref.id();
+                    ActorErrorCatalog.Envelope envelope = new ActorErrorCatalog.Envelope(
+                            ActorErrorCatalog.Kind.ACTOR_SUPERVISION,
+                            // Fixed protocol labels only. No user text or host exception.
+                            signal.kind() == GuestActorEffectSignal.Kind.RAISE
+                                    ? "actor raised a typed Error"
+                                    : "actor panicked with a typed Error",
+                            ref.id().value().toString(),
+                            supervisorId == null ? "" : supervisorId.value().toString());
+                    controlNotice = new ActorFailureNotice(
+                            ref.id(), supervisorId, signal.kind(), envelope);
                 }
                 stopped.set(true);
                 sealing = true;
@@ -7577,6 +7632,10 @@ public final class ActorRuntime implements AutoCloseable {
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+
+            // Nonblocking, bounded CONTROL delivery outside actor/lifecycle locks.
+            // Exactly the first accepted typed effect can publish a notice.
+            if (controlNotice != null) publishActorFailureNotice(controlNotice);
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.
