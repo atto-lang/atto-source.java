@@ -218,6 +218,10 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.name().equals("Error")) {
+                        throw new IllegalArgumentException(
+                                "Error is the sealed compiler-owned root of guest errors");
+                    }
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
@@ -932,6 +936,18 @@ public final class TypeChecker {
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
+            if (parent.name().equals("Error")) {
+                if (parent.inferArguments() || !parent.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "built-in Error root takes no type arguments");
+                }
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name()
+                                    + "' cannot extend Error; actor failures must be value-only");
+                }
+                continue;
+            }
             if (parent.name().equals("Object") || parent.name().equals("List")) {
                 if (parent.inferArguments() || !parent.arguments().isEmpty()) {
                     throw new IllegalArgumentException("built-in inheritance marker '" + parent.name() + "' does not take type arguments");
@@ -6558,7 +6574,8 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
-        if (parentRef.name().equals("Object") || parentRef.name().equals("List")) return null;
+        if (parentRef.name().equals("Object") || parentRef.name().equals("List")
+                || parentRef.name().equals("Error")) return null;
         if (parentRef.name().equals("obj") || parentRef.name().equals("arr")) throw new IllegalArgumentException("inline obj/arr values cannot be subclassed; extend Object or List instead");
         Ast.ClassDecl parent = findClass(parentRef.name());
         if (parent == null) throw new IllegalArgumentException("unknown parent class '" + parentRef.name() + "' for " + child.name());
@@ -7578,6 +7595,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Error" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Error does not accept type arguments");
+                }
+                yield new Named("Error", List.of());
+            }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
@@ -7814,6 +7837,12 @@ public final class TypeChecker {
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            if (expectedNamed.name().equals("Error")
+                    && expectedNamed.arguments().isEmpty()) {
+                Ast.ClassDecl actualClass = findClass(actualNamed.name());
+                return actualClass != null
+                        && classDerivesFromGuestError(actualClass, new LinkedHashSet<>());
+            }
             Ast.InterfaceDecl actualInterface = findInterface(actualNamed.name());
             Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
             if ((actualInterface != null && actualInterface.moduleContract())
@@ -7854,6 +7883,23 @@ public final class TypeChecker {
             throw new IllegalArgumentException("class relationship must resolve to a named type");
         }
         return named;
+    }
+
+    /** Error is a closed, compiler-owned root; never infer exception
+     * ancestry from type names, structure, or Java host classes. */
+    private boolean classDerivesFromGuestError(
+            Ast.ClassDecl candidate, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(candidate) || candidate.actorKind() != Ast.ActorKind.NONE) {
+            return false;
+        }
+        for (Ast.TypeRef parentRef : candidate.parents()) {
+            if (parentRef.name().equals("Error")) {
+                return !parentRef.inferArguments() && parentRef.arguments().isEmpty();
+            }
+            Ast.ClassDecl parent = resolveClassParent(parentRef, candidate);
+            if (parent != null && classDerivesFromGuestError(parent, seen)) return true;
+        }
+        return false;
     }
 
     private boolean classTypeExtends(Named actualType, Named expectedType, Set<Named> seen) {
