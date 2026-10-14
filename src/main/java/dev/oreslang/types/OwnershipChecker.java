@@ -532,9 +532,18 @@ public final class OwnershipChecker {
                     elementTypes.add(Ast.TypeRef.inferred());
                     continue;
                 }
-                ValueInfo channel = checkExpr(arm.channel(), scope, false);
-                Ast.TypeRef element = channelElementType(channel.type);
-                elementTypes.add(element);
+                ValueInfo source = checkExpr(arm.channel(), scope, false);
+                Ast.TypeRef element;
+                if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                    if (!source.type.name().equals("Future")
+                            || source.type.arguments().size() != 1) {
+                        throw error("select await requires Future<T> inside this actor domain");
+                    }
+                    element = source.type.arguments().getFirst();
+                } else {
+                    element = channelElementType(source.type);
+                }
+                elementTypes.add(arm.bindingType() == null ? element : arm.bindingType());
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
                     // Blocking/immediate select can conditionally move only the winning
                     // send. Nonblocking select returns before settlement, so its
@@ -579,7 +588,8 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
-                } else if (arm.operation() == Ast.ChannelOperation.READ
+                } else if ((arm.operation() == Ast.ChannelOperation.READ
+                        || arm.operation() == Ast.ChannelOperation.AWAIT)
                         && arm.bindingName() != null) {
                     Ast.TypeRef element = elementTypes.get(i);
                     armScope.define(
