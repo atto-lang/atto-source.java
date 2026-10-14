@@ -1741,7 +1741,19 @@ public final class OwnershipChecker {
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
-                    if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
+                    if (spreadType.isBorrow()) {
+                        Ast.TypeRef referent = spreadType.borrowedTarget();
+                        // Spreading a loan may Copy scalar elements, but it
+                        // must never manufacture owned parameters by projecting
+                        // move-only values out of a borrowed tuple. Field-level
+                        // transfer provenance is not implemented yet.
+                        if (referent.isTupleType()
+                                && referent.arguments().stream().anyMatch(element -> !isCopyType(element))) {
+                            throw error(callable + " cannot spread non-Copy elements from a borrowed tuple; "
+                                    + "pass owned values explicitly");
+                        }
+                        spreadType = referent;
+                    }
                     if (!spreadType.isTupleType()) {
                         throw error(callable
                                 + " spread requires a statically known tuple; runtime-length collections "
