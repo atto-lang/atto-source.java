@@ -43,12 +43,12 @@ AST node, a distinct presence predicate and a success-edge-only binding.
   or `None` (including `Some(false)`, `Some(0)`). `Result<T,E>`, nullable
   foreign values, and bare `Any` remain unsupported without explicit contracts.
 
-A proposed shorthand is `if (option as let value) eq 15 then ... fi`; this is
+The Java draft shorthand `if (option as let value) eq 15 then ... fi` is
 a *guarded comparison construct*, not an expression that unconditionally
 evaluates to `T`. A failed extraction yields false and never executes `eq`.
 `if (option as let value) is type int then ... fi` is likewise a guarded
-type test, not reference identity `is`. Reject these forms until their
-lowering proves that exact behavior. The eager ordinary call
+type test, not reference identity `is`. These Copy-only lowering paths are
+committed but not yet validated by CI. The eager ordinary call
 `Eq(option as let value, 15)` must **not** acquire special binding semantics.
 
 ## Ownership admission
@@ -88,6 +88,22 @@ lowering proves that exact behavior. The eager ordinary call
 An existing type-test/pattern refinement is an **alias**, not a new owner.
 For `left && right`, the borrow checker must resolve right-hand refinements
 in the left-success scope, preserving the ownership root across aliases.
+
+The ownership checker must record a validated Copy payload type **during its
+single guard-producer analysis**, then reuse that fact when creating the
+success-edge local. Calling the producer's ownership analyzer again at alias
+declaration time can register a second move of a consumed argument. The
+recorded fact is keyed by the binding AST node and may never be inferred from
+an unrelated name or an unverified expression.
+
+Runtime conditional binding names must be unique across all successful
+`&&` operands, including when two payload values compare equal or share
+object identity. Both synchronous and suspendable evaluators reject duplicates.
+
+Return/defer cleanup verification must distinguish the conditional binding
+from any shadowed outer variable with the same spelling. Otherwise a returned
+branch-local Copy value can be mistaken for an outer mutable binding whose
+deferred reassignment should remain independent.
 
 ## Required verification before enabling
 
