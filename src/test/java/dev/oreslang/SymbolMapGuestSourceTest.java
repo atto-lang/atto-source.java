@@ -95,7 +95,9 @@ final class SymbolMapGuestSourceTest {
             "pub fnc bad(): void { let m = new Map<Symbol>(); return; }",
             "pub fnc bad(): void { let m = new Map<Symbol, void>(); return; }",
             "pub fnc bad(): void { let m = new Map<Symbol, int>(1); return; }",
-            "pub fnc bad(): void { let m = new Map<Symbol | int, int>(); return; }"
+            "pub fnc bad(): void { let m = new Map<Symbol | int, int>(); return; }",
+            "pub fnc bad(): void { let m = new Map<Symbol, float>(); return; }",
+            "pub fnc bad(): void { let m = new Map<Symbol, Array<int>>(); return; }"
         };
         for (String source : sources) {
             assertThrows(IllegalArgumentException.class,
@@ -108,6 +110,32 @@ final class SymbolMapGuestSourceTest {
             "pub fnc bad(): void { let m = new Map<Symbol, int>(); let v = m.ready; return; }",
             "pub fnc bad(): void { let m = new Map<Symbol, int>(); m.ready = 4; return; }",
             "pub fnc bad(): void { let m = new Map<String, int>(); m.get(\"ready\"); return; }"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+        }
+    }
+
+    @Test void guestStringMapValueTypeChecksAreEnforced() throws Exception {
+        String guest = """
+                pub routine main(): void {
+                    let m = new Map<String, String>();
+                    m["status"] = "ready";
+                    if m["status"] eq "ready" then
+                        stdio.stdout.write("ok");
+                    fi
+                    return;
+                }
+                """;
+        assertEquals("ok", execute(guest));
+    }
+
+    @Test void wrongScalarValueOrKeyIsRejectedAtCompileTime() {
+        String[] invalid = {
+            "pub fnc bad(): void { let m = new Map<Symbol, bool>(); m[#ready] = 1; return; }",
+            "pub fnc bad(): void { let m = new Map<String, Symbol>(); m[\"state\"] = \"ready\"; return; }",
+            "pub fnc bad(): void { let m = new Map<Symbol, int>(); m[5] = 6; return; }"
         };
         for (String source : invalid) {
             assertThrows(IllegalArgumentException.class,
