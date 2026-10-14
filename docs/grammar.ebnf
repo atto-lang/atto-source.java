@@ -112,7 +112,10 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
+type_decl       = [ "define" ] visibility "type"
+                  ( IDENT [ generic_params ] "=" type_ref
+                  | "alias" IDENT [ generic_params ] "as" type_ref )
+                  stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
 annotation_args = annotation_arg { "," annotation_arg } ;
@@ -484,6 +487,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      cannot shadow or escape it. The type-name alias is erased at runtime.
      The user-facing type T = struct{...} spelling and typed match<Input,Output>
      remain separate design work; consult the named-inferred-types proposal.
+   - Transparent type aliases: `type Pair = Entry;` and
+     `define type alias Pair as Entry;` are equivalent, and generic
+     `define pub type alias Pair<K,V> as Entry<K,V>;` expands generics
+     without creating a nominal runtime tag or separate wire identity.
+     Only public alias declarations are exported, and their target types
+     must remain visible and safe after expansion. Entry is the canonical
+     named record contract in std/core, distinct from positional Tuple.
    - DynamicStruct<T> and obj{...} are not language value forms. Open-ended
      keyed collections must use a dedicated collection abstraction rather than
      changing an anonymous struct's shape at runtime.
