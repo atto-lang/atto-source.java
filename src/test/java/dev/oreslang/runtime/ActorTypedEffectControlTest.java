@@ -139,6 +139,26 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void controlNoticeRejectsSourceSuppliedDiagnosticsAndMismatchedEffects() {
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnShared(
+                    () -> (message, context) -> { });
+            String id = actor.id().value().toString();
+            var forged = new ActorErrorCatalog.Envelope(
+                    ActorErrorCatalog.Kind.ACTOR_SUPERVISION,
+                    "secret from guest heap", id, "");
+            assertThrows(IllegalArgumentException.class,
+                    () -> new ActorRuntime.ActorFailureNotice(
+                            actor.id(), null, GuestActorEffectSignal.Kind.RAISE, forged));
+            var wrongKindLabel = new ActorErrorCatalog.Envelope(
+                    ActorErrorCatalog.Kind.ACTOR_SUPERVISION,
+                    "actor raised a typed Error", id, "");
+            assertThrows(IllegalArgumentException.class,
+                    () -> new ActorRuntime.ActorFailureNotice(
+                            actor.id(), null, GuestActorEffectSignal.Kind.PANIC, wrongKindLabel));
+        }
+    }
+
     @Test void guestActorSignalsHaveNoMutablePayloadOrHostCause() {
         for (GuestActorEffectSignal signal : new GuestActorEffectSignal[] {
                 GuestActorEffectSignal.raise(), GuestActorEffectSignal.panic()
@@ -147,6 +167,11 @@ final class ActorTypedEffectControlTest {
             assertEquals(0, signal.getSuppressed().length);
             assertEquals(0, signal.getStackTrace().length);
             assertFalse(signal.getMessage().contains("secret"));
+            assertSame(signal.kind() == GuestActorEffectSignal.Kind.RAISE
+                            ? GuestActorEffectSignal.raise()
+                            : GuestActorEffectSignal.panic(),
+                    signal, "terminal signals must reuse immutable host objects");
         }
+        assertNotSame(GuestActorEffectSignal.raise(), GuestActorEffectSignal.panic());
     }
 }
