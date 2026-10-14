@@ -17,12 +17,12 @@ final class RecordFieldMoveOwnershipTest {
             """;
 
     @Test
-    void rejectsUntrackedMoveOfOwnedRecordField() {
+    void rejectsExplicitTakeOfOwnedRecordField() {
         rejectsUntrackedRecordMove(CELL + """
                 pub routine main(): void {
                     const r = (owned: new Cell());
-                    const first = consume(r.owned);
-                    const second = consume(r.owned);
+                    const first = consume(rt take r.owned);
+                    const second = consume(rt take r.owned);
                     stdio.stdout.write(first + second);
                     return;
                 }
@@ -30,25 +30,37 @@ final class RecordFieldMoveOwnershipTest {
     }
 
     @Test
-    void rejectsUntrackedMoveThroughNestedRecordField() {
+    void rejectsExplicitTakeThroughNestedRecordField() {
         rejectsUntrackedRecordMove(CELL + """
                 pub routine main(): void {
                     const r = (nested: (owned: new Cell()));
-                    stdio.stdout.write(consume(r.nested.owned));
+                    stdio.stdout.write(consume(rt take r.nested.owned));
                     return;
                 }
                 """);
     }
 
     @Test
-    void rejectsUntrackedMoveThroughIndexedRecordField() {
+    void rejectsExplicitTakeThroughIndexedRecordField() {
         rejectsUntrackedRecordMove(CELL + """
                 pub routine main(): void {
                     const r = (items: [new Cell()]);
-                    stdio.stdout.write(consume(r.items[0]));
+                    stdio.stdout.write(consume(rt take r.items[0]));
                     return;
                 }
                 """);
+    }
+
+    @Test
+    void permitsOrdinaryAliasingReadsAndCopyScalarProjections() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(CELL + """
+                pub routine main(): void {
+                    const r = (owned: new Cell());
+                    stdio.stdout.write(consume(r.owned));
+                    stdio.stdout.write(consume(r.owned));
+                    return;
+                }
+                """)));
     }
 
     @Test
@@ -81,7 +93,7 @@ final class RecordFieldMoveOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(parsed));
         var failure = assertThrows(IllegalArgumentException.class,
                 () -> OwnershipChecker.check(parsed));
-        assertTrue(failure.getMessage().contains("cannot move non-Copy"),
+        assertTrue(failure.getMessage().contains("rt take from a record field/index"),
                 failure.getMessage());
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(program)));
