@@ -1,0 +1,113 @@
+import module actorruntime from "std/actorruntime";
+
+// Executable guest-language conformance for the Oreslang policy slice.
+// No java: import, JVM reflection or host-written test callback.
+pub routine main(): void {
+  // Ordinary user mail is sealed as soon as STOP or revocation wins.
+  if !actorruntime.accept_user_message(false, false, false); do
+    rt fail("live actor must admit user messages");
+  fi
+  if actorruntime.accept_user_message(true, false, false); do
+    rt fail("STOP admitted ordinary user mail");
+  fi
+  if actorruntime.accept_user_message(false, false, true); do
+    rt fail("force revoke admitted user mail");
+  fi
+  if actorruntime.accept_user_message(false, true, false); do
+    rt fail("finalized actor admitted user mail");
+  fi
+
+  // STOP retains pre-queued turns only when the VM attests provenance.
+  if !actorruntime.retain_source_turn(
+    true, false, false, false, true, true, true, true
+  ); do
+    rt fail("authenticated source turn was dropped by STOP");
+  fi
+  if actorruntime.retain_source_turn(
+    true, false, false, false, false, true, true, true
+  ); do
+    rt fail("foreign actor continuation was retained");
+  fi
+  if actorruntime.retain_source_turn(
+    true, false, false, false, true, false, true, true
+  ); do
+    rt fail("stale incarnation continuation was retained");
+  fi
+  if actorruntime.retain_source_turn(
+    true, false, false, false, true, true, false, true
+  ); do
+    rt fail("forged scheduler continuation was retained");
+  fi
+  if actorruntime.retain_source_turn(
+    true, false, true, false, true, true, true, true
+  ); do
+    rt fail("force-revoked cleanup lane remained live");
+  fi
+
+  // Cancellation request authorizes terminal delivery, NOT guest effects.
+  if actorruntime.admit_terminal_delivery(true, false, true); do
+    rt fail("uncancelled queued turn passed STOP delivery gate");
+  fi
+  if !actorruntime.admit_terminal_delivery(true, true, true); do
+    rt fail("cancelled source turn could not deliver terminal signal");
+  fi
+  if actorruntime.allow_cleanup_effects(true, false, true); do
+    rt fail("cancellation request granted premature cleanup effects");
+  fi
+  if actorruntime.allow_cleanup_effects(true, true, false); do
+    rt fail("non-owner carrier gained post-STOP cleanup effects");
+  fi
+  if !actorruntime.allow_cleanup_effects(true, true, true); do
+    rt fail("injected cleanup was denied on the owning turn");
+  fi
+
+  // DONE must await child, carrier, source cleanup and final cleanup barriers.
+  if !actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, false, 0, true
+  ); do
+    rt fail("settled actor could not retire its owned state");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 1, false, false, 0, false, 0, true
+  ); do
+    rt fail("state retired during a live actor turn");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, true, 0, false, 0, true
+  ); do
+    rt fail("state retired before physical carrier exit");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 1, false, 0, true
+  ); do
+    rt fail("state retired with child actor still alive");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, true, 0, true
+  ); do
+    rt fail("state retired before cancellation delivery");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, false, 1, true
+  ); do
+    rt fail("state retired with pending source cleanup");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, false, 0, false
+  ); do
+    rt fail("state retired before actor final cleanup");
+  fi
+
+  if actorruntime.can_publish_done(true, false, true); do
+    rt fail("DONE published before output stream closure");
+  fi
+  if actorruntime.can_publish_done(true, true, false); do
+    rt fail("DONE published before supervisor terminal record");
+  fi
+  if !actorruntime.can_publish_done(true, true, true); do
+    rt fail("fully finalized actor did not publish DONE");
+  fi
+
+  stdio.stdout.println("ACTORRUNTIME_NATIVE_CONTRACT_OK");
+  return;
+}
