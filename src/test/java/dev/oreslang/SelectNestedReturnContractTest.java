@@ -9,34 +9,38 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectNestedReturnContractTest {
     @Test
-    void evaluatesDiscardedReturnOnlyOnce() throws Exception {
+    void evaluatesProceduralReturnExactlyOnceAndExitsCallable() throws Exception {
         String source = """
                 pub fnc produce(): int {
                   stdio.stdout.write("evaluated:");
                   return 9;
                 }
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       return produce();
                     }
                   }
-                  stdio.stdout.write("continued");
+                  return -1;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("evaluated:continued", run(source));
+        assertWarnings(source, 0);
+        assertEquals("evaluated:9", run(source));
     }
 
     @Test
-    void nestedSelectionsOnlyExitTheirOwnArm() throws Exception {
+    void nestedProceduralSelectReturnExitsContainingCallable() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       do select {
@@ -49,32 +53,31 @@ final class SelectNestedReturnContractTest {
                       return 2;
                     }
                   }
-                  stdio.stdout.write("done");
-                  return;
-                }
-                """;
-        assertWarnings(source, 2);
-        assertEquals("inner:outer:done", run(source));
-    }
-
-    @Test
-    void discardReturnCannotHijackEnclosingFunctionResult() throws Exception {
-        String source = """
-                pub fnc compute(): int {
-                  do select {
-                    default: {
-                      return "discarded";
-                    }
-                  }
-                  return 42;
+                  return 3;
                 }
                 pub fnc main(): void {
                   stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("42", run(source));
+        assertWarnings(source, 0);
+        assertEquals("inner:1", run(source));
+    }
+
+    @Test
+    void proceduralSelectReturnRequiresCallableResultType() {
+        String source = """
+                pub fnc compute(): int {
+                  do select {
+                    default: {
+                      return "invalid";
+                    }
+                  }
+                  return 42;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
