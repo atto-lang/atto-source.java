@@ -1079,9 +1079,18 @@ public final class Parser {
     }
 
     private Ast.TypeAliasDecl parseTypeAlias(Ast.Visibility visibility) {
+        // The contextual marker must be followed by a name. In particular,
+        // legacy declarations such as `type alias = int;` continue to use
+        // "alias" as their actual identifier rather than a new reserved word.
+        boolean namedAlias = check(IDENT) && peek().lexeme().equals("alias") && checkNext(IDENT);
+        if (namedAlias) advance();
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
-        consume(EQUAL, "expected '=' in type alias");
+        if (namedAlias) {
+            consume(AS, "expected 'as' after named type alias");
+        } else {
+            consume(EQUAL, "expected '=' in type alias");
+        }
         Ast.TypeRef target = parseTypeRef();
         consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, visibility, generics, target);
