@@ -2324,6 +2324,16 @@ public final class OresEvalRootNode extends RootNode {
                     // nonmatching arms (including the 4096-arm upper bound).
                     for (int i = nextIndex; i < matched.arms().size(); i++) {
                         if (completed.get()) return;
+                        // A long match scan is execution, even when every arm
+                        // fails before evaluating a guard. Account for this
+                        // work so 4096-arm dispatch cannot evade the actor
+                        // safepoint/fuel budget. Untrusted actors poll EVERY
+                        // arm; trusted execution polls once per 32 arms.
+                        if (ActorRuntime.currentActorKind()
+                                == ActorRuntime.ActorKind.UNTRUSTED
+                                || (i & 31) == 0) {
+                            context.schedulerSafepoint();
+                        }
                         Ast.MatchArm arm = matched.arms().get(i);
                         boolean catchAll = arm.guard() == null
                                 && (arm.pattern() instanceof Ast.WildcardPattern
