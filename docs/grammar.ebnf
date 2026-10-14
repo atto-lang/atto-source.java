@@ -121,7 +121,10 @@ interface_member= { annotation } [ "structural" ] "fnc" IDENT [ generic_params ]
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
+type_decl       = [ "define" ] visibility "type"
+                  ( IDENT [ generic_params ] "=" type_ref
+                  | "alias" IDENT [ generic_params ] "as" type_ref )
+                  stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ annotation_args ] ">" | "(" [ annotation_args ] ")" ] ;
 annotation_args = annotation_arg { "," annotation_arg } ;
@@ -486,6 +489,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Anonymous structs always have a closed compile-time-known field set.
      infer struct{...} is canonical; whitespace before the initializer is optional.
      Computed/backtick struct keys are rejected.
+   - Type aliases are transparent and erased: type Pair = Entry and
+     define type alias Pair as Entry denote the same alias declaration.
+     Generic aliases substitute types recursively, without introducing a
+     nominal runtime tag, constructor or extra actor wire representation.
+     "alias" remains a contextual marker; a legacy type named alias is legal.
+     Entry/Pair are not implicit built-in primitives just because these names
+     appear in an alias; the target must be declared/imported by the program.
    - Local const T value = infer<T> struct{...} binds a compiler-only inferred
      type name T (a closed struct type, NOT structural{...}); const T value =
      infer<T> tuple (...) does the same for a finite positional tuple.
