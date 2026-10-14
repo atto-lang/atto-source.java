@@ -131,7 +131,7 @@ final class WithStateCapabilityContractTest {
     }
 
     @Test void actorStateCannotBeMovedOrSharedOutOfALiveLoan() {
-        for (String op : new String[] { "take", "share", "borrow" }) {
+        for (String op : new String[] { "take", "share", "borrow", "copy" }) {
             String viaIntrinsic = actor("with state.read",
                     "self.handle_state(|s| -> { rt " + op + " s.v; return s.v; })");
             Ast.Program parsedIntrinsic = Parser.parse(viaIntrinsic);
