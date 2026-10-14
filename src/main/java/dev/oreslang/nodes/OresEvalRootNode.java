@@ -4074,17 +4074,20 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Invocation invocation;
+                                boolean declaredFuture;
                                 try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            continuation);
+                                    invocation = functionInvocation(direct, values);
+                                    declaredFuture = invocationDeclaresAsync(invocation);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                // Preparation can fail under this catch, but a
+                                // downstream continuation must never be run
+                                // inside it or a throw would replay delivery.
+                                completeSourceInvocation(
+                                        t, invocation, declaredFuture, continuation);
                             });
                     return;
                 }
@@ -4109,24 +4112,22 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        Invocation invocation;
+                                        boolean declaredFuture;
                                         try {
-                                            Invocation invocation =
-                                                    prepareInvocationEvaluated(
-                                                            call,
-                                                            receiver,
-                                                            values,
-                                                            env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    continuation);
+                                            invocation = prepareInvocationEvaluated(
+                                                    call, receiver, values, env);
+                                            declaredFuture = invocationDeclaresAsync(
+                                                    invocation);
                                         } catch (RuntimeException | Error failure3) {
                                             continuation.accept(t2, null, failure3);
+                                            return;
                                         }
+                                        // This covers both instance/static method
+                                        // and namespace calls; no caller catch
+                                        // may re-invoke a failed continuation.
+                                        completeSourceInvocation(
+                                                t2, invocation, declaredFuture, continuation);
                                     });
                         });
                 return;
