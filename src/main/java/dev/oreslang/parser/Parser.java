@@ -2719,6 +2719,20 @@ public final class Parser {
      * MatchExpr rather than the enclosing callable's control flow.
      */
     private Ast.MatchExpr parseValueMatch() {
+        // A single result type is an expression constraint, not the subject type.
+        // Preserve the historical <ret=T> spelling while preferring <T>.
+        Ast.TypeRef declaredResult = null;
+        if (match(LT)) {
+            if (check(IDENT) && checkNext(EQUAL)) {
+                String name = advance().lexeme();
+                consume(EQUAL, "expected '=' in named match result parameter");
+                if (!name.equals("ret")) {
+                    throw error(previous(), "match supports only the named result parameter 'ret'");
+                }
+            }
+            declaredResult = parseTypeRef();
+            consume(GT, "match result parameter requires exactly one type argument and closing '>'");
+        }
         Ast.MatchStmt parsed = parseMatch(true);
         List<Ast.MatchValueArm> valueArms = new ArrayList<>();
         for (Ast.MatchArm arm : parsed.arms()) {
@@ -2730,7 +2744,7 @@ public final class Parser {
             }
             valueArms.add(new Ast.MatchValueArm(arm.pattern(), arm.guard(), returned.value()));
         }
-        return new Ast.MatchExpr(parsed.subject(), valueArms);
+        return new Ast.MatchExpr(parsed.subject(), valueArms, declaredResult);
     }
 
     private Ast.Pattern parsePattern() {
