@@ -45,6 +45,36 @@ final class CompileTimeConstantEvaluatorTest {
     }
 
     @Test
+    void permitsSignedFiniteFloatLiteralsButRejectsNonFiniteValues() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Numbers as
+                  final const float offset: -1.5
+                  final const float other: +2.25
+                end
+                """)));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Numbers as
+                          final const float invalid: 1e309
+                        end
+                        """)));
+        assertTrue(rejected.getMessage().contains("final const"), rejected.getMessage());
+    }
+
+    @Test
+    void rejectsCallsEvenWhenCalleeExistsAndIsPureLooking() {
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc calculate(): int { return 42; }
+                        define class Numbers as
+                          final const int answer: calculate()
+                        end
+                        """)));
+        assertTrue(rejected.getMessage().contains("final const"), rejected.getMessage());
+        assertTrue(rejected.getMessage().contains("runtime/unsupported expression"), rejected.getMessage());
+    }
+
+    @Test
     void rejectsOverflowZeroDivisionAndRuntimeCalls() {
         for (String initializer : new String[] {
                 "9223372036854775807 + 1",
