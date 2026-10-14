@@ -783,6 +783,14 @@ final class OresSchedulerQuiescenceTest {
                 && System.nanoTime() < slotReleaseDeadline) {
             Thread.sleep(1);
         }
+        // The callback signals retirement before the TaskRunner's finally
+        // block has necessarily released the wall-deadline permit. Observe
+        // the real release boundary, while retaining a bounded leak failure.
+        long permitsDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (OresScheduler.availableWallDeadlineAdmissions() != before
+                && System.nanoTime() < permitsDeadline) {
+            Thread.sleep(1);
+        }
         assertEquals(before, OresScheduler.availableWallDeadlineAdmissions(),
                 "all deadline reservations must be released across races");
     }
