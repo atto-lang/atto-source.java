@@ -1,0 +1,62 @@
+name: Typed dispatch and actor continuation gate
+
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/ast/**"
+      - "src/main/java/dev/oreslang/parser/**"
+      - "src/main/java/dev/oreslang/types/**"
+      - "src/main/java/dev/oreslang/nodes/**"
+      - "src/main/java/dev/oreslang/runtime/**"
+      - "src/test/java/dev/oreslang/**"
+      - ".github/workflows/typed-dispatch-actor-gate.yml"
+  push:
+    branches:
+      - integration/serial-ticket-typed-match-audit-20261011
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typed-dispatch-jvm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout exact candidate merged tree
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Record and verify checkout revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          printf 'event=%s run=%s attempt=%s head=%s base=%s\n' \
+            "$GITHUB_EVENT_NAME" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            "${{ github.event.pull_request.head.sha }}" \
+            "${{ github.event.pull_request.base.sha }}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Set up GraalVM JDK 25
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile production and test code
+        run: mvn -B -ntp -DskipTests test
+      - name: Value ARM_RESULT, blocking select, and single-delivery regressions
+        run: >
+          mvn -B -ntp
+          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest
+          -DfailIfNoTests=true
+          test
+      - name: Repeat targeted tests using native carrier scheduling
+        run: >
+          mvn -B -ntp
+          -Dores.runtime.carriers=native
+          -Dtest=TypedDispatchReturnIsolationTest,SerialTypedValueMatchActorExecutionTest,SourceContinuationSingleDeliveryTest,DoSelectReturnScopeTest
+          -DfailIfNoTests=true
+          test
