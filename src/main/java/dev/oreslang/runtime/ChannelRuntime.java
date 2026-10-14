@@ -41,6 +41,8 @@ public final class ChannelRuntime {
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     /** Global cap on pending selections, independent of per-channel arm limits. */
     private static final int MAX_PENDING_SELECTS = 4_096;
+    /** Global retained descriptor count. Only accessed under COORDINATOR. */
+    private static int activeArmRegistrations;
     private static long nextTicket;
 
     public enum SelectPolicy {
@@ -652,13 +654,13 @@ public final class ChannelRuntime {
                                     "channel pending registration budget exhausted")));
                 }
 
-                if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                if (!decided && !immediateOnly && activeArmRegistrations > MAX_PENDING_SELECTS) {
                     // Ready operations have already been given a chance to commit.
                     decided = true;
                     unregisterLocked(this);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
-                                    "pending select registration quota exceeded")));
+                                    "pending select arm registration quota exceeded")));
                 }
 
                 if (!decided && immediateOnly) {
