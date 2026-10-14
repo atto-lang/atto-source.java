@@ -24,7 +24,7 @@ final class ArrowArmBoundaryTest {
                 }
                 """);
         var match = (Ast.MatchStmt) fn.body().getFirst();
-        assertTrue(match.explicitDo());
+        assertTrue(match.procedural());
         var arm = match.arms().getFirst();
         assertInstanceOf(Ast.ConstructorPattern.class, arm.pattern());
         var constructor = (Ast.ConstructorPattern) arm.pattern();
