@@ -20,7 +20,9 @@ slot rebindability.
 Reject direct and nested awaits, selects, channel operations, assignments,
 runtime intrinsics (`rt fail`, `rt take`, `rt borrow`, `rt copy`,
 `rt share`, `rt cooperate`, `spawn`), and AST node types not explicitly
-proven effect-free.
+proven effect-free. Indexing is rejected even when its operands are pure,
+because bounds failure could unwind an incompletely constructed object and
+partial-construction resource cleanup remains unproven.
 
 The synchronous scalar-helper exception requires a statically resolved
 zero-argument, non-generic, non-async, non-suspending, non-generator,
