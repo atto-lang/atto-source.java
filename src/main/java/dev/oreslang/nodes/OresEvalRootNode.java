@@ -4357,16 +4357,32 @@ public final class OresEvalRootNode extends RootNode {
         // Runtime key-domain check mirrors TypeChecker's deliberately narrow
         // first-stage Map<K,V> set of reifiable key types. Nonreifiable
         // generic/alias keys fail closed until type descriptors are available.
+        private OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef value) {
+            if (value.isUnion() || value.isBorrow() || value.inferArguments()
+                    || !value.arguments().isEmpty()) {
+                throw new IllegalArgumentException("unsupported runtime Map value type");
+            }
+            return switch (value.name()) {
+                case "int", "i8", "i16", "i32", "i64", "u8", "u16",
+                        "u32", "u64", "uint", "bigint" -> OresKeyedMap.ValueDomain.INT;
+                case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
+                case "String", "string" -> OresKeyedMap.ValueDomain.STRING;
+                case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                default -> throw new IllegalArgumentException("unsupported runtime Map value type");
+            };
+        }
+
         private Object newGuestMap(Ast.TypeRef type) {
             if (type.inferArguments() || type.arguments().size() != 2) {
                 throw new IllegalArgumentException("Map<K,V> requires two explicit type arguments");
             }
             Ast.TypeRef key = type.arguments().getFirst();
+            OresKeyedMap.ValueDomain valueDomain = mapValueDomain(type.arguments().get(1));
             if (!key.isUnion()) {
                 if (key.arguments().isEmpty() && !key.inferArguments()) {
-                    if (key.name().equals("Symbol")) return OresKeyedMap.symbolKeys();
+                    if (key.name().equals("Symbol")) return OresKeyedMap.symbolKeys(valueDomain);
                     if (key.name().equals("String") || key.name().equals("string")) {
-                        return OresKeyedMap.stringKeys();
+                        return OresKeyedMap.stringKeys(valueDomain);
                     }
                 }
                 throw new IllegalArgumentException("unsupported runtime Map key domain");
@@ -4381,7 +4397,7 @@ public final class OresEvalRootNode extends RootNode {
                 boolean bString = (b.name().equals("String") || b.name().equals("string"))
                         && b.arguments().isEmpty() && !b.inferArguments();
                 if ((aSymbol && bString) || (bSymbol && aString)) {
-                    return OresKeyedMap.stringOrSymbolKeys();
+                    return OresKeyedMap.stringOrSymbolKeys(valueDomain);
                 }
             }
             throw new IllegalArgumentException("unsupported runtime Map key union");
@@ -6303,7 +6319,7 @@ public final class OresEvalRootNode extends RootNode {
                 int i = Math.toIntExact(number.longValue());
                 if (receiver instanceof List<?> list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable: " + receiver);
+                throw new IllegalArgumentException("value is not indexable");
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Map")) {
