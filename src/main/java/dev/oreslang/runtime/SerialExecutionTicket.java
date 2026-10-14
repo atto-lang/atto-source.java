@@ -91,6 +91,58 @@ final class SerialExecutionTicket {
         }
     }
 
+    /**
+     * Narrow post-STOP reservation. The actor runtime has already authenticated
+     * a CleanupTurn from this task's scheduler and granted a cleanup window.
+     * A stale task/incarnation may not consume CONTROL capacity. Unlike normal
+     * admission, actorAlive may be false during a legitimate lexical unwind.
+     */
+    ControlReservation reserveCleanupControlSlotFor(
+            Object candidateActorId,
+            Object candidateIncarnation,
+            BooleanSupplier cleanupAuthorized,
+            BooleanSupplier reserveSlot) {
+        Objects.requireNonNull(cleanupAuthorized, "cleanupAuthorized");
+        Objects.requireNonNull(reserveSlot, "reserveSlot");
+        synchronized (this) {
+            if (!issuedFor(candidateActorId, candidateIncarnation)
+                    || retired.get()
+                    || !cleanupAuthorized.getAsBoolean()
+                    || (handlerLease != null
+                        && handlerLease.state() == SerialActorAdmission.State.FINISHED)) {
+                return ControlReservation.REVOKED;
+            }
+            return reserveSlot.getAsBoolean()
+                    ? ControlReservation.RESERVED : ControlReservation.FULL;
+        }
+    }
+
+    /**
+     * Carrier-time check independent of actorAlive, which STOP deliberately
+     * revoked. A CleanupTurn must supply externally verified scheduler authority.
+     * Serial handler ownership and the original task incarnation still apply.
+     */
+    void requireCleanupRunnable(
+            Object executingActorId,
+            Object executingIncarnation,
+            SerialActorAdmission.Lease activeReceive,
+            boolean cleanupAuthorized) {
+        if (retired.get()) throw new RetiredTaskException();
+        if (!cleanupAuthorized
+                || !issuedFor(executingActorId, executingIncarnation)) {
+            throw new SecurityException("unauthorized or foreign actor cleanup ticket");
+        }
+        if (handlerLease != null
+                && handlerLease.state() == SerialActorAdmission.State.FINISHED) {
+            throw new RetiredTaskException();
+        }
+        if (handlerLease != activeReceive) {
+            throw new SecurityException("cleanup ticket cannot borrow another receive lease");
+        }
+        if (handlerLease != null) handlerLease.requireActive();
+        else if (admission != null) admission.requireIdleActorScopedCallback();
+    }
+
     /** Revoke this task's authority independently of its enclosing actor handler. */
     void retire() {
         synchronized (this) { retired.set(true); }
