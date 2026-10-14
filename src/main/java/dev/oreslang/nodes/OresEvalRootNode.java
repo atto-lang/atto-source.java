@@ -4332,6 +4332,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (receiver instanceof ModuleFacade module) {
+                requireModuleFacadeVisibleToCaller(module);
                 return module.owner().prepareModuleInvocation(
                         module.module(),
                         member.member(),
@@ -5773,6 +5774,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (receiver instanceof ModuleFacade module) {
+                    requireModuleFacadeVisibleToCaller(module);
                     return module.owner().prepareModuleInvocation(
                             module.module(), methodCall.member(), args);
                 }
@@ -6968,7 +6970,10 @@ public final class OresEvalRootNode extends RootNode {
                                 + " must be called so arity can select the scalar or list overload");
             }
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
-            if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
+            if (receiver instanceof ModuleFacade namespace) {
+                requireModuleFacadeVisibleToCaller(namespace);
+                return namespace.owner().moduleMember(namespace.module(), name);
+            }
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
@@ -7653,6 +7658,18 @@ public final class OresEvalRootNode extends RootNode {
         private static String normalizeUnitId(String id) {
             if (id == null || id.isBlank()) throw new IllegalArgumentException("code unit id cannot be blank");
             return Path.of(id).normalize().toString().replace('\\', '/');
+        }
+
+        private void requireModuleFacadeVisibleToCaller(ModuleFacade facade) {
+            // A local module facade can be used as a receiver within its own
+            // compilation unit. Passing that facade through Any, a collection
+            // or a public function must not grant a second unit the ability to
+            // read a pub-looking member of a private named module.
+            if (facade.owner() != this && !VisibilityPolicy.exportsModule(facade.module())) {
+                throw new IllegalArgumentException(
+                        "private module '" + facade.module().name()
+                                + "' cannot be accessed outside its source unit");
+            }
         }
 
         private Object moduleMember(Ast.ModuleDecl module, String name) {
@@ -9233,8 +9250,14 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
-    private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
-    private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
+    private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) {
+        // AST records contain complete function/field declarations. Implicit
+        // display must never serialize that internal source metadata.
+        @Override public String toString() { return "<module>"; }
+    }
+    private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) {
+        @Override public String toString() { return "<class>"; }
+    }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record HostObjectFacade(Object value) {
         @Override public String toString() { return String.valueOf(value); }
