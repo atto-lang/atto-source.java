@@ -279,18 +279,38 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void splitInlineNamedRecordPacksMayBindParametersOutOfOrder() throws Exception {
+        String code = """
+                fnc calculate(int base, int multiplier, int offset): int {
+                    return base * multiplier + offset;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(calculate(
+                            ...(offset: 2, multiplier: 4),
+                            ...(base: 10)));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(code));
+    }
+
+    @Test
     void recordPackRejectsDuplicateAcrossSpreadsOrPositionalPrefix() {
-        String prefix = "fnc calculate(int base, int multiplier, int offset): int { return base * multiplier + offset; }\\n";
+        String prefix = "fnc calculate(int base, int multiplier, int offset): int { return base * multiplier + offset; }\n";
         for (String call : new String[] {
                 "calculate(10, ...(base: 2, multiplier: 4))",
                 "calculate(...(base: 10, offset: 2), ...(offset: 3))",
                 "calculate(...(offset: 2, multiplier: 4), 10)",
-                "calculate(...(offset: 2, multiplier: 4), ...(base: 10))"
+                "calculate(...(base: 10, multiplier: 4), ...(multiplier: 5))"
         }) {
             String code = prefix + "pub routine main(): void { stdio.stdout.write("
                     + call + "); return; }";
-            assertThrows(IllegalArgumentException.class,
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(code)), call);
+            assertTrue(failure.getMessage().contains("duplicate binding")
+                            || failure.getMessage().contains("positional argument follows"),
+                    "unexpected rejection for " + call + ": " + failure.getMessage());
         }
     }
 
