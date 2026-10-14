@@ -209,21 +209,29 @@ public final class SymbolPropertyKeyCodec {
         if (encodedKeys.size() > MAX_KEYS_PER_OBJECT) {
             throw new IllegalArgumentException("too many tagged keys");
         }
-        // Snapshot list membership; individual frames are snapshotted by decode().
-        // Return only decoded immutable identities to the eventual map builder.
-        List<byte[]> frames = List.copyOf(encodedKeys);
-        if (frames.size() > MAX_KEYS_PER_OBJECT) {
-            throw new IllegalArgumentException("too many tagged keys");
-        }
-        Set<Object> distinct = new HashSet<>();
-        java.util.ArrayList<Object> decoded = new java.util.ArrayList<>(frames.size());
+        // Detach ALL frames before decoding or checking duplicate identities.
+        // Otherwise a caller may mutate later frames while earlier ones are
+        // being decoded, producing a key set from several source revisions.
+        // Concurrent mutation DURING a byte[] clone is still not an atomic
+        // snapshot: actor/network ingress must enforce buffer ownership.
+        List<byte[]> sourceFrames = List.copyOf(encodedKeys);
         long total = 0L;
-        for (byte[] encoded : frames) {
-            Objects.requireNonNull(encoded, "tagged key entry");
-            total += encoded.length;
+        java.util.ArrayList<byte[]> frames = new java.util.ArrayList<>(sourceFrames.size());
+        for (byte[] source : sourceFrames) {
+            int size = source.length;
+            if (size < HEADER_LENGTH || size > HEADER_LENGTH + MAX_TEXT_KEY_BYTES) {
+                throw new IllegalArgumentException("invalid tagged key frame size");
+            }
+            total += size;
             if (total > MAX_KEY_SET_WIRE_BYTES) {
                 throw new IllegalArgumentException("tagged key collection exceeds byte budget");
             }
+            frames.add(source.clone());
+        }
+
+        Set<Object> distinct = new HashSet<>();
+        java.util.ArrayList<Object> decoded = new java.util.ArrayList<>(frames.size());
+        for (byte[] encoded : frames) {
             Object key = decodeKey.apply(encoded);
             if (!distinct.add(key)) {
                 throw new IllegalArgumentException(
