@@ -980,9 +980,10 @@ public final class Ast {
     /** Blocking, value-producing static select. Share the same atomic arm contract as SelectStmt. */
     public record StaticSelectExpr(SelectStmt select) implements Expr {
         public StaticSelectExpr {
-            if (select == null || select.mode() != WaitMode.BLOCKING
+            if (select == null || select.mode() == WaitMode.IMMEDIATE
                     || select.explicitDo()) {
-                throw new IllegalArgumentException("value select requires a blocking non-procedural selection");
+                throw new IllegalArgumentException(
+                        "value select requires a blocking or nonblocking non-procedural selection");
             }
             for (SelectArm arm : select.arms()) {
                 if (arm.body().isEmpty()) {
