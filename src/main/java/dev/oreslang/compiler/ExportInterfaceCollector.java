@@ -21,6 +21,14 @@ public final class ExportInterfaceCollector {
         String namespace = checked.namespace() == null ? "" : checked.namespace();
         if (!namespace.equals(header.namespace()))
             throw new IllegalArgumentException("interface namespace does not match checked source");
+        if (!checked.imports().isEmpty()) {
+            // Imported aliases, public type references and re-exports depend
+            // on resolver inputs not represented by the current v1 envelope.
+            // Refuse to certify this file until its resolved import bindings
+            // and provider interface digests are committed to the export.
+            throw new IllegalArgumentException(
+                    "v1 interface requires resolved dependency identities; imports are unsupported");
+        }
         List<ExportInterfaceCodec.Entry> entries = new ArrayList<>();
         for (Ast.ModuleDecl module : checked.modules()) {
             int beforeModule = entries.size();
