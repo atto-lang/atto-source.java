@@ -17,8 +17,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Expiration settles an OresFuture; it NEVER executes guest code. An
  * OresScheduler await resumes on the original scheduler's next dispatch.
- * The timer service is scoped to its owning VM/context; close revokes all
- * outstanding timers before guest-owned resources may be reclaimed.</p>
+ * Owners must explicitly close this helper until OresVM lifecycle wiring
+ * exists. Close revokes registrations but is NOT a barrier for already-running
+ * clock callbacks or guest-frame quiescence. Actor heap reclamation requires a
+ * separate scheduler/continuation retirement acknowledgement.</p>
  */
 public final class OresTimers implements AutoCloseable {
     private static final int MAX_ACTIVE_PER_OWNER = 4096;
