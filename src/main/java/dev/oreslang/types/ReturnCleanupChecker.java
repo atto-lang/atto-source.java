@@ -129,6 +129,12 @@ public final class ReturnCleanupChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) scope.define(binding.name());
                 }
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                if (inFinally) {
+                    throw new IllegalArgumentException(
+                            "throw is not allowed inside finally; cleanup cannot replace pending failure");
+                }
+                expression(thrown.value(), scope, inDefer, state);
             } else if (stmt instanceof Ast.ReturnStmt ret) {
                 if (inFinally) {
                     throw new IllegalArgumentException(
