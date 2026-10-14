@@ -7289,6 +7289,11 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (ref.isNamedParameter()) {
+            throw new IllegalArgumentException(
+                    "named generic type arguments in type position are not supported yet; "
+                            + "use positional type arguments");
+        }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
         if (ref.isBoolLiteral()) return new Types.BoolLiteral(ref.boolLiteralValue());
@@ -7324,7 +7329,13 @@ public final class TypeChecker {
             }
             return new Record(members, ref.isReadonlyRecordType());
         }
-        if (generics.contains(ref.name())) return new Generic(ref.name());
+        if (generics.contains(ref.name())) {
+            if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException(
+                        "generic type variable '" + ref.name() + "' cannot be parameterized");
+            }
+            return new Generic(ref.name());
+        }
         Type scopedType = currentTypeScope == null ? null : currentTypeScope.lookupInferredType(ref.name());
         if (scopedType != null) {
             if (!ref.arguments().isEmpty() || ref.inferArguments()) {
