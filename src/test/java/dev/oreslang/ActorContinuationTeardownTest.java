@@ -430,9 +430,13 @@ final class ActorContinuationTeardownTest {
                 taskFuture.set(task);
             });
             actor.send(1);
-            assertTrue(running.await(5, TimeUnit.SECONDS));
-            assertTrue(actor.cancel());
-            release.countDown();
+            try {
+                assertTrue(running.await(5, TimeUnit.SECONDS));
+                assertTrue(actor.cancel());
+            } finally {
+                // Never pin a worker carrier if the stop assertion fails.
+                release.countDown();
+            }
 
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
             assertEquals(0, earlyPrivilege.get(),
