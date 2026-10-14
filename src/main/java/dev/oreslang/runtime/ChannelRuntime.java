@@ -41,6 +41,10 @@ public final class ChannelRuntime {
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     /** Bound total pending arbitration registrations, including Future-only selects. */
     private static final int MAX_PENDING_SELECTS = 4_096;
+    /** Bound total pending channel/Future arm registrations as well as selections. */
+    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 16_384;
+    /** Owned exclusively by COORDINATOR, including transient readiness probes. */
+    private static int activeArmRegistrations;
     private static long nextTicket;
 
     public enum SelectPolicy {
@@ -656,6 +660,14 @@ public final class ChannelRuntime {
                     decided = true;
                     unregisterLocked(this);
                 }
+                if (!decided && !immediateOnly
+                        && activeArmRegistrations > MAX_PENDING_SELECT_ARM_REGISTRATIONS) {
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "pending select arm registration quota exceeded")));
+                }
                 if (!decided && ACTIVE.size() > MAX_PENDING_SELECTS) {
                     // Try all immediately committable channel/Future cases
                     // before rejecting registration. A full pending budget must
@@ -756,6 +768,7 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
             selection.registrations.add(registration);
+            activeArmRegistrations++;
             if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
                 channelOf(selectCase).registrations.add(registration);
             }
@@ -766,6 +779,10 @@ public final class ChannelRuntime {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
+        if (activeArmRegistrations < selection.registrations.size()) {
+            throw new IllegalStateException("select arm registration accounting underflow");
+        }
+        activeArmRegistrations -= selection.registrations.size();
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
             if (registration.selectCase instanceof ReadCase<?>
@@ -799,7 +816,7 @@ public final class ChannelRuntime {
                 if (chosen == null) continue;
 
                 if (chosen.selectCase instanceof FutureCase<?> awaiting) {
-                    Object settled = awaiting.future().runtimeTerminalStateOrNull();
+                    Object settled = awaiting.future().runtimeSelectReadyStateOrNull();
                     if (settled == null) continue;
                     Throwable failure = OresFuture.runtimeTerminalFailure(settled);
                     if (failure != null) {
@@ -901,7 +918,7 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (registration.selectCase instanceof FutureCase<?> awaiting) {
-                if (awaiting.future().runtimeTerminalStateOrNull() != null) {
+                if (awaiting.future().runtimeSelectReadyStateOrNull() != null) {
                     return registration;
                 }
                 continue;
@@ -950,7 +967,7 @@ public final class ChannelRuntime {
 
     private static boolean basicReadyLocked(CaseRegistration registration) {
         if (registration.selectCase instanceof FutureCase<?> awaiting) {
-            return awaiting.future().runtimeTerminalStateOrNull() != null;
+            return awaiting.future().runtimeSelectReadyStateOrNull() != null;
         }
         Channel<?> channel = registration.channel();
 
