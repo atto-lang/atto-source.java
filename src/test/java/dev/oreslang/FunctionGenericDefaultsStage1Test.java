@@ -194,4 +194,21 @@ final class FunctionGenericDefaultsStage1Test {
                 end
                 """)));
     }
+
+    @Test
+    void compilerGeneratedGenericDefaultsCannotSmuggleSyntheticTypes() {
+        Ast.FunctionDecl generated = new Ast.FunctionDecl(
+                "generated", Ast.CallableKind.FNC, Ast.Visibility.PUBLIC,
+                false, false, false, false, false, false,
+                Ast.ActorKind.NONE, List.of("T"), List.of(),
+                Ast.TypeRef.simple("void"), List.of(), List.of(),
+                List.of(new Ast.GenericParameter(
+                        "T", Ast.TypeRef.simple("$invented$unsafe"))));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("app", List.of(generated))));
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(program));
+        assertTrue(invalid.getMessage().contains("invalid synthetic type"),
+                invalid.getMessage());
+    }
 }
