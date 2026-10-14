@@ -86,6 +86,52 @@ The `for const [T a, U b] of iterable` form uses the same per-element type
 checks on the iterable element. This does **not** authorize the separate
 `for const T item of iterable` surface, which remains reserved.
 
+## Constructor payload projection binding kinds (draft Java/GraalVM implementation)
+
+The slim arrow always delimits the arm body. A record payload uses **declared
+field names**; a tuple uses **positional slots with exact match arity**:
+
+```ores
+// Current built-in tagged sum. User-defined Foo variants require enum lowering.
+do match maybeRecord over
+    on Some as const {v} -> { return v; }
+    on None -> { return 0; }
+end
+
+do match maybeRecord over
+    on Some as {const v, let b} -> { b = b + 1; return v + b; }
+    on None -> { return 0; }
+end
+
+do match maybeTuple over
+    on Some as (const left, let right) -> { right = right + 1; return left + right; }
+    on None -> { return 0; }
+end
+```
+
+An outer `const`/`val`/`let` seeds the current binding kind. Explicit
+inner kinds override and, like ordinary destructuring, propagate to later
+unqualified slots. `{vx, bx}` is invalid for a record with fields `v` and
+`b`; `(vx, bx)` is only valid when the declared payload is a two-position
+tuple, **not** as an alternate way of reading a record. Record alias syntax
+such as `v as vx` is not supported by this patch. A bare `_` positional
+slot discards its value, while record fields cannot use `_`.
+
+Projection binding kinds govern rebinding local names; they do not mutate the
+source record, grant `mut`, or duplicate ownership. The Java ownership
+checker permits local `let` rebinding for Copy projections, and deliberately
+rejects `let` projections of non-Copy values until explicit move/loan
+lowering can demonstrate safety. Positional tuple projections must match the
+full arity, unlike ordinary prefix tuple destructuring. Pair/Entry layouts
+are **not** implicitly interchangeable with Tuple; introducing typed
+Pair/Entry projection requires declared layout and ownership parity first.
+
+**Verification status:** these changes are committed on Java PR #815 and have
+new parser/type/ownership/runtime regression sources, but latest-head JDK 25,
+AOT and LLVM source-level parity have not been verified. Do not merge as green
+without actual exact-tree test evidence. Existing tests for built-in
+`Some`/`None` do not prove arbitrary user-defined `Foo` constructors.
+
 ## Tagged sums and typed pattern bindings
 
 On today's Java frontend, `Some/None` and `Ok/Err` support constructor
