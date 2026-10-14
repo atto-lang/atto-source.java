@@ -1,6 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /**
@@ -81,8 +80,9 @@ public final class ActorErrorCatalog {
             int codePoint = input.codePointAt(i);
             int length = Character.charCount(codePoint);
             if (codePoint >= 0xD800 && codePoint <= 0xDFFF) codePoint = '?';
-            int size = new String(Character.toChars(codePoint))
-                    .getBytes(StandardCharsets.UTF_8).length;
+            int size = codePoint <= 0x7F ? 1
+                    : codePoint <= 0x7FF ? 2
+                    : codePoint <= 0xFFFF ? 3 : 4;
             if (bytes + size > 1024) break;
             out.appendCodePoint(codePoint);
             bytes += size;
