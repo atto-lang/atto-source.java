@@ -232,11 +232,12 @@ public final class ActorStateContract {
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
                 && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
                     || op.operation().equals("borrowMut") || op.operation().equals("take")
-                    || op.operation().equals("share"))
+                    || op.operation().equals("share")
+                    || op.operation().equals("copy"))
                 && referencesAccess(op.arguments(), activeAccess)) {
-            // A borrowed state projection cannot be moved out of the map or
-            // published as Shared<T>. A primitive copy is permitted, but
-            // ownership-changing operations need a proven snapshot lowering.
+            // State-backed borrow/move/share/copy are not detached snapshots
+            // without typed ownership proof for the entire value graph.
+            // Reject even rt copy until both backends prove safe lowering.
             throw new IllegalArgumentException(
                     "actor state-backed borrow/take/share cannot escape its lexical loan");
         }
