@@ -648,15 +648,6 @@ public final class ChannelRuntime {
                     decided = true;
                     unregisterLocked(this);
                 }
-                if (!decided && !immediateOnly && exceedsPendingBudgetLocked(this)) {
-                    // Preserve per-channel admission limits independently of
-                    // the global cap; a ready arm was already allowed to commit.
-                    decided = true;
-                    unregisterLocked(this);
-                    completions.add(() -> future.failFromRuntime(
-                            new ChannelBackpressureException(
-                                    "channel pending registration budget exhausted")));
-                }
                 if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
                     // Try all immediately committable channel/Future cases
                     // before rejecting registration. A full pending budget must
