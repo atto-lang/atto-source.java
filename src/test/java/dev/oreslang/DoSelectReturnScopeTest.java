@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -9,11 +11,60 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class DoSelectReturnScopeTest {
     @Test
-    void blockingDoSelectReturnIsArmLocalAndItsValueIsDiscarded() throws Exception {
+    void blockingDoSelectReturnValueExitsContainingCallable() throws Exception {
+        String program = """
+                pub fnc answer(): int {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 7;
+                  do select {
+                    case readch incoming: val number {
+                      return number * 2;
+                    }
+                  }
+                  return 0;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(answer());
+                  return;
+                }
+                """;
+
+        OresCompiler.AnalysisResult result =
+                OresCompiler.parseAndTypeCheckWithDiagnostics(program);
+        assertEquals(0, result.warnings().size(), result.warnings().toString());
+        assertEquals("14", run(program));
+    }
+
+    @Test
+    void blockingDoSelectBareReturnExitsContainingCallable() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 1;
+                  do select {
+                    case readch incoming: val number {
+                      return;
+                    }
+                  }
+                  stdio.stdout.write("unreachable");
+                  return;
+                }
+                """;
+
+        OresCompiler.AnalysisResult result =
+                OresCompiler.parseAndTypeCheckWithDiagnostics(program);
+        assertEquals(0, result.warnings().size(), result.warnings().toString());
+        assertEquals("", run(program));
+    }
+
+    @Test
+    void blockingDoSelectFallthroughContinuesAfterArm() throws Exception {
         String program = """
                 pub fnc main(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -22,7 +73,6 @@ final class DoSelectReturnScopeTest {
                     case readch incoming: val number {
                       stdio.stdout.write("selected:");
                       stdio.stdout.write(number);
-                      return number * 2;
                     }
                   }
                   stdio.stdout.write(":continued");
@@ -30,15 +80,28 @@ final class DoSelectReturnScopeTest {
                 }
                 """;
 
-        OresCompiler.AnalysisResult result =
-                OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size(), result.warnings().toString());
-        assertTrue(result.warnings().getFirst().contains("W-SELECT-RETURN"));
         assertEquals("selected:7:continued", run(program));
     }
 
     @Test
-    void nonblockingDoSelectReturnValueIsWarnedInsteadOfBecomingCallableReturn() {
+    void blockingDoSelectReturnMustMatchContainingCallableType() {
+        String program = """
+                fnc invalid(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  do select {
+                    case readch incoming: val number {
+                      return number * 3;
+                    }
+                  }
+                  return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
+    void legacyDetachedDoNbSelectStillWarnsAboutDiscardedReturn() {
         String program = """
                 actor fnc consume(): void {
                   val Channel<int> incoming = Channel.new<int>(1);
@@ -54,27 +117,6 @@ final class DoSelectReturnScopeTest {
                 OresCompiler.parseAndTypeCheckWithDiagnostics(program);
         assertEquals(1, result.warnings().size(), result.warnings().toString());
         assertTrue(result.warnings().getFirst().contains("W-SELECT-RETURN"));
-    }
-
-    @Test
-    void bareReturnInDoSelectIsWarnedAndDoesNotEscapeCallable() throws Exception {
-        String program = """
-                pub fnc main(): void {
-                  val Channel<int> incoming = Channel.new<int>(1);
-                  writech incoming, 1;
-                  do select {
-                    case readch incoming: val number {
-                      return;
-                    }
-                  }
-                  stdio.stdout.write("still-here");
-                  return;
-                }
-                """;
-        OresCompiler.AnalysisResult result =
-                OresCompiler.parseAndTypeCheckWithDiagnostics(program);
-        assertEquals(1, result.warnings().size());
-        assertEquals("still-here", run(program));
     }
 
     private static String run(String program) throws Exception {
