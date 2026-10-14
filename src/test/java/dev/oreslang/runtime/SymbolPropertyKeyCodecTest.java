@@ -121,6 +121,67 @@ final class SymbolPropertyKeyCodecTest {
                         SymbolPropertyKeyCodec.encode("tenant-a/private")));
     }
 
+    @Test void manifestRejectsIdentityBackedDuplicateLogicalScopesAndSymbols() {
+        var scopeA = new SymbolPropertyKeyCodec.AdmissionScope("tenant", "actor", "v1");
+        var scopeB = new SymbolPropertyKeyCodec.AdmissionScope("tenant", "actor", "v1");
+        assertNotSame(scopeA, scopeB);
+        var scoped = new java.util.IdentityHashMap<
+                SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>();
+        scoped.put(scopeA, Set.of(OresSymbol.process("one")));
+        scoped.put(scopeB, Set.of(OresSymbol.process("two")));
+        IllegalArgumentException duplicateScope = assertThrows(
+                IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(scoped));
+        assertTrue(duplicateScope.getMessage().contains("duplicate logical export scope"));
+
+        Set<OresSymbol> identities = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<OresSymbol, Boolean>());
+        identities.add(OresSymbol.process("café"));
+        identities.add(OresSymbol.process("cafe\u0301"));
+        assertEquals(2, identities.size());
+        IllegalArgumentException duplicateSymbol = assertThrows(
+                IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scopeA, identities)));
+        assertTrue(duplicateSymbol.getMessage().contains("duplicate logical Symbol"));
+    }
+
+    @Test void manifestRejectsHostileCardinalityAndBoundsBeforeSetCopy() {
+        var scope = new SymbolPropertyKeyCodec.AdmissionScope("tenant", "actor", "v1");
+        Set<OresSymbol> giant = new java.util.AbstractSet<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public java.util.Iterator<OresSymbol> iterator() {
+                throw new AssertionError("oversized export set must not be traversed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scope, giant)));
+
+        Set<OresSymbol> dishonest = new java.util.AbstractSet<>() {
+            @Override public int size() { return 0; }
+            @Override public java.util.Iterator<OresSymbol> iterator() {
+                return Set.of(OresSymbol.process("late")).iterator();
+            }
+        };
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(
+                        java.util.Map.of(scope, dishonest)));
+        assertTrue(mismatch.getMessage().contains("size changed"));
+
+        var hugeScopeMap = new java.util.AbstractMap<
+                SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public Set<Entry<
+                    SymbolPropertyKeyCodec.AdmissionScope, Set<OresSymbol>>> entrySet() {
+                throw new AssertionError("oversized scope Map must not be traversed");
+            }
+        };
+        assertThrows(IllegalArgumentException.class,
+                () -> new SymbolPropertyKeyCodec.ExportManifest(hugeScopeMap));
+    }
+
     @Test void scopedUntrustedAdmissionCannotLaunderStableSymbols() {
         String stableName = "550e8400-e29b-41d4-a716-446655440000";
         OresSymbol stable = OresSymbol.stable(stableName);
