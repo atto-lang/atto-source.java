@@ -81,22 +81,40 @@ public final class InterfaceSccPlanner {
         ImportGraph.validateLinkedImports(admittedPrograms, resolvedOverrides);
         Map<String, Set<String>> edges = ImportGraph.resolveDependencies(
                 admittedPrograms, admittedPrograms.keySet(), resolvedOverrides);
+        Map<String, Map<String, String>> completeBindings = new LinkedHashMap<>();
         for (Map.Entry<String, dev.oreslang.ast.Ast.Program> entry : admittedPrograms.entrySet()) {
             String unit = entry.getKey();
             Map<String, String> pins = externalImportPins.get(unit);
             if (pins == null) throw new IllegalArgumentException("null external pins");
             Set<String> required = new HashSet<>();
+            Map<String, String> fingerprints = new LinkedHashMap<>(pins);
             for (dev.oreslang.ast.Ast.ImportDecl use : entry.getValue().imports()) {
                 String target = ImportGraph.resolveImportUnitId(unit, use,
                         admittedPrograms.keySet(), resolvedOverrides);
-                if (target == null) required.add(use.path());
+                if (target == null) {
+                    required.add(use.path());
+                } else {
+                    // A dependency *set* loses import-path retargeting when the
+                    // same targets remain present. Commit each actual import
+                    // selector -> resolved provider binding to the group hash.
+                    // This reserved virtual dependency is NOT a provider and
+                    // never participates in link-time import admission.
+                    String selector = importSelectorDigest(use);
+                    String virtualId = "@ores-resolved-import/" + selector;
+                    String digest = hashImportTarget(target);
+                    if (fingerprints.putIfAbsent(virtualId, digest) != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate or conflicting resolved import selector");
+                    }
+                }
             }
             if (!required.equals(pins.keySet())) {
                 throw new IllegalArgumentException(
                         "external import fingerprints must match every unresolved import path");
             }
+            completeBindings.put(unit, Map.copyOf(fingerprints));
         }
-        return compute(edges, publicExports, externalImportPins);
+        return compute(edges, publicExports, completeBindings);
     }
 
     /**
@@ -208,6 +226,31 @@ public final class InterfaceSccPlanner {
         if (groupOf.size() != localEdges.size())
             throw new IllegalStateException("incomplete SCC decomposition");
         return new Plan(output, memberHashes, groupOf);
+    }
+
+    private static String importSelectorDigest(dev.oreslang.ast.Ast.ImportDecl use) {
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            DataOutputStream data = new DataOutputStream(bytes);
+            put(data, use.kind().name());
+            data.writeBoolean(use.wildcard());
+            put(data, use.namespace() == null ? "" : use.namespace());
+            put(data, use.path());
+            List<String> names = new ArrayList<>(use.names());
+            names.sort(InterfaceSccPlanner::compareUtf8);
+            data.writeInt(names.size());
+            for (String name : names) put(data, name);
+            data.flush();
+            return sha256(bytes.toByteArray());
+        } catch (IOException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    private static String hashImportTarget(String provider) {
+        // Domain-separate a target identity from actual provider ABI hashes.
+        byte[] identity = utf8("ores-internal-target-v1:" + provider);
+        return sha256(identity);
     }
 
     private static void validateUnit(String value) {
