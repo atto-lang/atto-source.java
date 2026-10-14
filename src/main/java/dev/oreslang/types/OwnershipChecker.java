@@ -293,6 +293,8 @@ public final class OwnershipChecker {
     }
 
     private boolean discardingSelectReturn;
+    /** Innermost value-select collector; never shared across nested selections. */
+    private List<ValueInfo> selectResultValues;
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
         if (stmt instanceof Ast.BindingStmt binding) {
@@ -355,6 +357,17 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (ret.target() == Ast.ReturnTarget.SELECT_VALUE) {
+                if (selectResultValues == null || ret.value() == null) {
+                    throw error("value-select return is outside a value-producing select arm");
+                }
+                ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (isBorrowValue(returned) || containsMutexGuardType(returned.type)) {
+                    throw error("value-select results cannot carry escaping borrows or MutexGuard");
+                }
+                selectResultValues.add(returned);
+                return;
+            }
             if (discardingSelectReturn) {
                 // The returned expression is evaluated as a side effect only.
                 // It never escapes the selected arm or its actor's heap.
@@ -581,7 +594,8 @@ public final class OwnershipChecker {
                     }
                 } else if (arm.operation() == Ast.ChannelOperation.READ
                         && arm.bindingName() != null) {
-                    Ast.TypeRef element = elementTypes.get(i);
+                    Ast.TypeRef element = arm.declaredBindingType() == null
+                            ? elementTypes.get(i) : arm.declaredBindingType();
                     armScope.define(
                             arm.bindingName(),
                             new VarState(
@@ -841,6 +855,29 @@ public final class OwnershipChecker {
                 state.borrowLease = false;
             }
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
+        }
+        if (expr instanceof Ast.StaticSelectExpr resultSelect) {
+            List<ValueInfo> prior = selectResultValues;
+            List<ValueInfo> results = new ArrayList<>();
+            selectResultValues = results;
+            try {
+                checkStatement(resultSelect.select(), scope, Ast.TypeRef.simple("void"));
+            } finally {
+                selectResultValues = prior;
+            }
+            if (results.isEmpty()) {
+                throw error("value-select arm must explicitly return a value");
+            }
+            Ast.TypeRef resultType = results.getFirst().type;
+            boolean allCopy = true;
+            for (ValueInfo result : results) {
+                if (result.kind != ValueKind.COPY) allCopy = false;
+                if (!resultType.equals(result.type)) resultType = Ast.TypeRef.inferred();
+            }
+            // Result moves are checked within each mutually exclusive arm.
+            return new ValueInfo(resultType,
+                    allCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.TrapExpr trapped) {
             ValueInfo value = checkExpr(trapped.expression(), scope, true);
