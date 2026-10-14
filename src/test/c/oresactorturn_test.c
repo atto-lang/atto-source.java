@@ -7,6 +7,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #define CHECK(x) do { if (!(x)) { \
     fprintf(stderr, "actor turn proof failed at line %d: %s\\n", __LINE__, #x); \
@@ -288,6 +291,66 @@ static void test_carrier_identity_churn(void) {
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
 }
 
+/* An exited carrier's outstanding lease must NOT become releasable by a
+ * replacement OS thread, even when pthread_t storage is recycled. Run in a
+ * child because the production API deliberately has no unsafe abandonment
+ * shortcut: after the original carrier exits its outstanding lease cannot be
+ * retired; the host must instead keep ownership/cleanup within a live carrier.
+ * _exit avoids treating that deliberately stranded child VM as an ASan leak.
+ */
+struct orphan_args {
+    ores_turn_vm *vm;
+    ores_actor_cap *actor;
+    ores_turn_lease *lease;
+    ores_turn_status claim, release;
+};
+static void *orphan_claim(void *opaque) {
+    struct orphan_args *a = opaque;
+    a->claim = ores_turn_claim_user(a->vm, a->actor, &a->lease);
+    return NULL;
+}
+static void *orphan_reclaim_attempt(void *opaque) {
+    struct orphan_args *a = opaque;
+    a->release = ores_turn_release(a->vm, a->lease);
+    return NULL;
+}
+static void test_exited_carrier_cannot_be_impersonated(void) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        ores_turn_vm *vm = ores_turn_vm_new(8);
+        if (!vm) _exit(10);
+        ores_actor_cap *actor = NULL;
+        if (ores_turn_register(vm, 901, 1, 1, &actor) != ORES_TURN_OK)
+            _exit(11);
+        struct orphan_args a = {vm, actor, NULL, ORES_TURN_INVALID,
+                                ORES_TURN_INVALID};
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, orphan_claim, &a) != 0)
+            _exit(12);
+        if (pthread_join(thread, NULL) != 0 || a.claim != ORES_TURN_OK)
+            _exit(13);
+        if (ores_turn_stop(vm, actor) != ORES_TURN_OK
+                || ores_turn_retire(vm, actor) != ORES_TURN_BUSY)
+            _exit(14);
+        for (unsigned int i = 0; i < 256; ++i) {
+            a.release = ORES_TURN_INVALID;
+            if (pthread_create(&thread, NULL, orphan_reclaim_attempt, &a) != 0)
+                _exit(15);
+            if (pthread_join(thread, NULL) != 0
+                    || a.release != ORES_TURN_WRONG_CARRIER)
+                _exit(16);
+        }
+        if (ores_turn_retire(vm, actor) != ORES_TURN_BUSY
+                || ores_turn_vm_destroy(vm) != ORES_TURN_BUSY)
+            _exit(17);
+        _exit(0); /* Deliberately stranded lease exists only in this child. */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 static void test_foreign_guesses_and_invalid_inputs(void) {
     CHECK(ores_turn_vm_new(0) == NULL);
     CHECK(ores_turn_vm_new(1000001) == NULL);
@@ -327,6 +390,7 @@ int main(void) {
     test_revoke_vs_cleanup_stress();
     test_foreign_guesses_and_invalid_inputs();
     test_carrier_identity_churn();
+    test_exited_carrier_cannot_be_impersonated();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
