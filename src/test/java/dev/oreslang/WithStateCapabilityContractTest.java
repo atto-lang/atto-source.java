@@ -50,6 +50,23 @@ final class WithStateCapabilityContractTest {
         }
     }
 
+    @Test void fullTypeCheckerRejectsReferenceEscapeThroughBothStateForms() {
+        for (String callback : new String[] {
+                "self.handle_state(|s| -> { return s.cache; })",
+                "using state.read(|s| -> { return s.cache; })"
+        }) {
+            String source = actorWithReferenceState("return s.cache;")
+                    .replace("probe(): int", "probe(): Map<string, int>")
+                    .replace("self.handle_state(|s| -> {\n      return s.cache;\n    })", callback);
+            // Use the real typechecker entrypoint, not a direct-only AST
+            // contract call, to ensure the mandatory pass is wired in.
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), callback);
+            assertTrue(failure.getMessage().contains("reference projection"),
+                    failure.getMessage());
+        }
+    }
+
     @Test void mutableExternalReferenceCannotEnterActorStateThroughWriteLoan() {
         for (String statement : new String[] {
                 "s.cache = external;",
