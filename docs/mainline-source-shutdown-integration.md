@@ -34,3 +34,11 @@ This branch is intentionally based on Java `main` at `97e28489ece594d6e664932106
 - LLVM parity is a separate verification target.
 
 This document records deliberate incremental integration, not a claim that PR #823 is ready to merge.
+
+## Authenticated actor STOP cleanup integration candidate
+
+- A scheduler-created `CleanupTurn` carries an immutable owning `OresScheduler` reference, a monotonic guest-source-entered bit and task-local deferred-cancellation authorization. Guest code cannot mint the envelope.
+- Actor lifecycle STOP seals new task admission, atomically classifies queued CONTROL mail and retains only same-scheduler entered lexical frames. New user messages and ordinary continuations are rejected.
+- Active cleanup tasks hold the actor state/finalization barrier until deferred Future settlement and physical actor turn exit, with bounded 2-second deadline revocation on a host timer (no off-lane guest execution).
+- Late await producer settlement and fatal `CompletionException(LinkageError)` precedence are covered by actor-owned runtime tests.
+- This is a **mainline integration candidate**, not a merged behavior contract until exact-tree JVM and native tests pass. PR #922 serial execution ticket/actor-incarnation proof and force-isolate parity remain distinct acceptance gates.
