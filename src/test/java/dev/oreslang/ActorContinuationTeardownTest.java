@@ -324,4 +324,66 @@ final class ActorContinuationTeardownTest {
         }
     }
 
+    @Test
+    void stopPrunesQueuedOrdinaryControlBeforeResumingLexicalCleanup() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicReference<OresFuture.Callback<Integer>> abandoned = new AtomicReference<>();
+            OresFuture<Integer> pending = OresFuture.fromCallback(abandoned::set);
+            CountDownLatch firstAwait = new CountDownLatch(1);
+            CountDownLatch cleanupCompleted = new CountDownLatch(1);
+            AtomicInteger ordinaryTaskRuns = new AtomicInteger();
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicReference<OresFuture<Void>> cleanupFuture = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if (message.equals("start")) {
+                    cleanupFuture.set(context.runtime().startActorTask(
+                            new OresScheduler.CleanupAwareTask<Void>() {
+                                private boolean awaiting;
+
+                                @Override
+                                public OresScheduler.Step<Void> resume(OresScheduler.Resume resume) {
+                                    assertTrue(ActorRuntime.inActorExecution());
+                                    if (!awaiting) {
+                                        awaiting = true;
+                                        firstAwait.countDown();
+                                        return OresScheduler.await(pending);
+                                    }
+                                    assertInstanceOf(
+                                            java.util.concurrent.CancellationException.class,
+                                            resume.failure());
+                                    cleanupRuns.incrementAndGet();
+                                    cleanupCompleted.countDown();
+                                    return OresScheduler.done(null);
+                                }
+                            }));
+                    return;
+                }
+                // All ordinary continuations are queued behind this user-mail
+                // turn. STOP must reclaim them without losing an already-
+                // entered cleanup-aware task's resumed terminal continuation.
+                for (int i = 0; i < 256; i++) {
+                    context.runtime().startActorTask(resume -> {
+                        ordinaryTaskRuns.incrementAndGet();
+                        return OresScheduler.done(null);
+                    });
+                }
+                context.self().stop();
+            });
+
+            actor.send("start");
+            assertTrue(firstAwait.await(5, TimeUnit.SECONDS));
+            actor.send("fill");
+            assertTrue(cleanupCompleted.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, ordinaryTaskRuns.get());
+            assertEquals(1, cleanupRuns.get());
+            assertTrue(actor.failure().isEmpty());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> cleanupFuture.get().get(5, TimeUnit.SECONDS));
+            abandoned.get().resolve(12);
+            assertEquals(1, cleanupRuns.get(), "late producer settlement cannot replay cleanup");
+        }
+    }
+
 }
