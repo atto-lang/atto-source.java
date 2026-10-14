@@ -233,6 +233,10 @@ public final class SymbolPropertyKeyCodec {
             }
             frames.add(source.clone());
         }
+        if (frames.size() != reportedCount) {
+            throw new IllegalArgumentException(
+                    "tagged key collection size changed during snapshot");
+        }
 
         Set<Object> distinct = new HashSet<>();
         java.util.ArrayList<Object> decoded = new java.util.ArrayList<>(frames.size());

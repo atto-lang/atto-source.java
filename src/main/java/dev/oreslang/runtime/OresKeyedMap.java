@@ -236,6 +236,9 @@ public final class OresKeyedMap<K, V> {
             }
             prepared.add(Map.entry(key, value));
         }
+        if (prepared.size() != reportedSize) {
+            throw new IllegalArgumentException("host Map size changed during batch snapshot");
+        }
         Set<K> additions = new HashSet<>();
         long additionalKeyWireBytes = 0L;
         for (Map.Entry<K, V> entry : prepared) {
