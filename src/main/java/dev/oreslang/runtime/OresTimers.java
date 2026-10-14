@@ -132,10 +132,17 @@ public final class OresTimers implements AutoCloseable {
             return result;
         }
 
-        @Override
-        public synchronized void close() {
+        /** Return true only for the first successful interval cancellation. */
+        public synchronized boolean cancel() {
+            if (cancelled) return false;
             cancelled = true;
             if (pending != null) pending.cancel(false);
+            return true;
+        }
+
+        @Override
+        public void close() {
+            cancel();
         }
 
         public synchronized long delivered() {
