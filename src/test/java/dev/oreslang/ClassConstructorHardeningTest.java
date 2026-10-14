@@ -129,6 +129,25 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void positionalMutableFieldsDoNotReplaceFollowingFinalConstants() throws Exception {
+        String source = """
+                define class Mixed as
+                  pub int mutableValue: 1
+                  pub final const int fixedValue: 7
+                end
+                pub routine main(): void {
+                  val mixed = new Mixed(9);
+                  stdio.stdout.write(mixed.mutableValue);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(mixed.fixedValue);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        assertEquals("9|7", run(source));
+    }
+
+    @Test
     void parserRejectsJavaStyleDuplicateNestedAndTypedConstructors() {
         IllegalArgumentException javaStyle = assertThrows(
                 IllegalArgumentException.class,
