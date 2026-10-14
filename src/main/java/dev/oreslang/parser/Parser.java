@@ -2748,6 +2748,13 @@ public final class Parser {
     }
 
     private Ast.Pattern parsePattern() {
+        if (match(BANG)) {
+            // A negative type pattern is a complement of the runtime-reifiable
+            // type test, not a cast to the excluded type.
+            Ast.TypeRef negative = Ast.TypeRef.complement(parseTypeAtom());
+            String binding = match(AS) ? consume(IDENT, "expected name after 'as'").lexeme() : null;
+            return new Ast.TypePattern(negative, binding);
+        }
         if (match(STRUCTURAL) || matchContextualIdentifier("structural")) {
             Ast.TypeRef target = parseTypeRef();
             String binding = check(IDENT) && !peek().lexeme().equals("_")
@@ -2758,7 +2765,9 @@ public final class Parser {
 
         if (match(IS)) {
             Ast.TypeRef target = parseTypeRef();
-            String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
+            String binding = match(AS)
+                    ? consume(IDENT, "expected name after type pattern 'as'").lexeme()
+                    : check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
             return new Ast.TypePattern(target, binding);
         }
 
@@ -2789,6 +2798,10 @@ public final class Parser {
             int patternStart = current;
             try {
                 Ast.TypeRef target = parseTypeRef();
+                if (match(AS)) {
+                    return new Ast.TypePattern(
+                            target, consume(IDENT, "expected binding name after 'as'").lexeme());
+                }
                 if (check(IDENT) && !peek().lexeme().equals("_")) {
                     String binding = advance().lexeme();
                     return new Ast.TypePattern(target, binding);
