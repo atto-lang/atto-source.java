@@ -146,4 +146,53 @@ final class PublicTypeAliasLinkerIntegrationTest {
                         Map.of("app.ores", consumer, "library.ores", parsed), Map.of()));
         assertTrue(error.getMessage().contains("expansion exceeds"), error.getMessage());
     }
+
+    @Test
+    void nestedFiniteGenericAliasInstantiationsAreNotCycles() {
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "library.ores", """
+                        define module products as
+                            type Box<T> = Tuple[T];
+                            define pub type alias Nested as Box<Box<int>>;
+                        end
+                        """,
+                "app.ores", """
+                        import type Nested from "./library.ores";
+                        fnc unwrap(Nested value): int { return value[0][0]; }
+                        """)));
+    }
+
+    @Test
+    void exportedGenericCannotAccidentallyBindFreePrivateAliasParameter() {
+        var library = dev.oreslang.parser.Parser.parse("""
+                define module products as
+                    type Broken = T;
+                    define pub type alias Export<T> as Broken;
+                end
+                """);
+        var importer = dev.oreslang.parser.Parser.parse("""
+                import type Export from "./library.ores";
+                fnc run(Export<int> value): void { return; }
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> PublicTypeAliasLinker.link("app.ores", importer,
+                        Map.of("app.ores", importer, "library.ores", library), Map.of()));
+        assertTrue(error.getMessage().contains("lacks a verified nominal/public ABI"),
+                error.getMessage());
+    }
+
+    @Test
+    void innerAliasGenericsShadowOuterAliasesWithoutCapture() {
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "library.ores", """
+                        define module products as
+                            type Inner<T> = Tuple[T];
+                            define pub type alias Outer<T> as Inner<Inner<T>>;
+                        end
+                        """,
+                "app.ores", """
+                        import type Outer from "./library.ores";
+                        fnc unwrap(Outer<string> value): string { return value[0][0]; }
+                        """)));
+    }
 }
