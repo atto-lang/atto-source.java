@@ -123,4 +123,41 @@ final class TwoPhaseInterfaceLinkerTest {
         }
     }
 
+    @Test void duplicateImportedNamesOrAliasesFailInsteadOfSilentlyRebinding() {
+        var original = cycle();
+        var repeated = new LinkedHashMap<>(original);
+        repeated.put("a.ores", source("work", Ast.Visibility.PUBLIC,
+                use("./b.ores", "work"), use("./b.ores", "work")));
+        assertThrows(IllegalArgumentException.class, () ->
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                                repeated, environments()), Map.of(), noExternal()));
+
+        var namedTwice = new Ast.ImportDecl(Ast.ImportKind.FUNCTION,
+                List.of("work", "work"), false, null, "./b.ores");
+        var duplicatedWithinOne = new LinkedHashMap<>(original);
+        duplicatedWithinOne.put("a.ores", source("work", Ast.Visibility.PUBLIC, namedTwice));
+        assertThrows(IllegalArgumentException.class, () ->
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                                duplicatedWithinOne, environments()),
+                        Map.of(), noExternal()));
+
+        var alias = new Ast.ImportDecl(Ast.ImportKind.FUNCTION,
+                List.of("work"), false, "renamed", "./b.ores");
+        var shadowAlias = new LinkedHashMap<>(original);
+        shadowAlias.put("a.ores", source("work", Ast.Visibility.PUBLIC, alias, alias));
+        assertThrows(IllegalArgumentException.class, () ->
+                TwoPhaseInterfaceLinker.resolveLinkedImports(
+                        TwoPhaseInterfaceLinker.collectCheckedDeclarations(
+                                shadowAlias, environments()), Map.of(), noExternal()));
+    }
+
+    @Test void stagedLinkedResultCannotBeFabricatedWithPublicConstructor() {
+        assertFalse(TwoPhaseInterfaceLinker.Linked.class.isRecord());
+        for (var ctor : TwoPhaseInterfaceLinker.Linked.class.getDeclaredConstructors()) {
+            assertTrue(java.lang.reflect.Modifier.isPrivate(ctor.getModifiers()));
+        }
+    }
+
 }
