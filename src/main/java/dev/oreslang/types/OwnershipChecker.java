@@ -161,9 +161,12 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.FieldDecl field : klass.fields()) {
             Ast.TypeRef fieldType = ownershipFieldType(field);
-            if (fieldType != null && fieldType.isBorrow()) {
+            // A field of Option<borrow T>, Array<borrow T>, etc. retains a
+            // loan just as surely as a direct borrow field does. No container
+            // lifetime parameters are available yet, so reject recursively.
+            if (containsBorrowType(fieldType)) {
                 throw error("field '" + klass.name() + "." + field.name()
-                        + "' cannot store a borrowed reference; class/actor fields must own, copy, share, or proxy their state");
+                        + "' cannot store a borrowed reference (including nested type arguments); class/actor fields must own, copy, share, or proxy their state");
             }
         }
 
