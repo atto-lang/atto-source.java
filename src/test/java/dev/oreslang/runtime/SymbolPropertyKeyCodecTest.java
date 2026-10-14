@@ -188,6 +188,29 @@ final class SymbolPropertyKeyCodecTest {
         assertThrows(UnsupportedOperationException.class, () -> decoded.add("evil"));
     }
 
+    @Test void bulkDecodeDetachesLaterFramesBeforeFirstDecodeCallback() throws Exception {
+        byte[] first = SymbolPropertyKeyCodec.encode("first");
+        byte[] later = SymbolPropertyKeyCodec.encode("second");
+        java.util.function.Function<byte[], Object> adversarialDecoder = wire -> {
+            if (Arrays.equals(wire, first)) {
+                // Mutation after the first decode callback starts must not
+                // affect later entries in this same decoded key collection.
+                later[later.length - 1] = (byte) 'X';
+            }
+            return SymbolPropertyKeyCodec.decode(wire);
+        };
+        java.lang.reflect.Method bulk = SymbolPropertyKeyCodec.class
+                .getDeclaredMethod("decodeDistinctKeysChecked", List.class,
+                        java.util.function.Function.class);
+        bulk.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<Object> keys = (List<Object>) bulk.invoke(
+                null, List.of(first, later), adversarialDecoder);
+        assertEquals(List.of("first", "second"), keys);
+        assertEquals('X', (char) later[later.length - 1],
+                "the test must actually mutate the caller-owned wire frame");
+    }
+
     @Test void boundedKeyCollectionRejectsExcessiveAggregateBytes() {
         List<byte[]> entries = new ArrayList<>();
         for (int i = 0; i < 70; i++) {
