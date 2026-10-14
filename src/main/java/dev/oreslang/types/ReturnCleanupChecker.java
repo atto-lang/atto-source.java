@@ -165,7 +165,9 @@ public final class ReturnCleanupChecker {
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     expression(branch.condition(), scope, inDefer, state);
-                    statements(branch.body(), scope, inFinally, inDefer, trackReturns, state);
+                    Scope successScope = new Scope(scope);
+                    defineConditionBindings(branch.condition(), successScope);
+                    statements(branch.body(), successScope, inFinally, inDefer, trackReturns, state);
                 }
                 statements(conditional.elseBody(), scope, inFinally, inDefer, trackReturns, state);
             } else if (stmt instanceof Ast.MatchStmt matched) {
@@ -242,6 +244,33 @@ public final class ReturnCleanupChecker {
             statements(body, scope, inFinally, inDefer, trackReturns, state);
         } finally {
             if (inFinally) state.loopsInsideFinally--;
+        }
+    }
+
+    /**
+     * Model condition-bound locals as distinct lexical identities. Otherwise a
+     * returned `as const/let value` can be confused with an outer `value`
+     * when analyzing deferred rebinding of the outer variable.
+     */
+    private static void defineConditionBindings(Ast.Expr condition, Scope scope) {
+        if (condition instanceof Ast.OptionBindExpr binding) {
+            scope.define(binding.binding());
+        } else if (condition instanceof Ast.TypeTestExpr test) {
+            if (test.value() instanceof Ast.OptionBindExpr binding) {
+                scope.define(binding.binding());
+            } else if (test.binding() != null) {
+                scope.define(test.binding());
+            }
+        } else if (condition instanceof Ast.PatternTestExpr test) {
+            bindPattern(test.pattern(), scope);
+        } else if (condition instanceof Ast.BinaryExpr binary) {
+            if (binary.operator().equals("&&")) {
+                defineConditionBindings(binary.left(), scope);
+                defineConditionBindings(binary.right(), scope);
+            } else if ((binary.operator().equals("eq") || binary.operator().equals("neq"))
+                    && binary.left() instanceof Ast.OptionBindExpr binding) {
+                scope.define(binding.binding());
+            }
         }
     }
 
