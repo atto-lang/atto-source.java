@@ -1747,6 +1747,15 @@ public final class Parser {
             return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
         }
         if (match(RETURN)) {
+            if (check(DO)) {
+                throw error(peek(), "'return do ...' is invalid; choose value dispatch "
+                        + "'return match/switch/select' or procedural 'do match/switch/select'");
+            }
+            if (check(SWITCH) || looksLikeStaticSelectStatement()) {
+                throw error(peek(), "return switch and braced return select require typed "
+                        + "ARM_RESULT expression lowering; never reinterpret them "
+                        + "as procedural FUNCTION_RETURN");
+            }
             // Infer a missing <ret=T> only from an immediately returned
             // match and only in a real callable, never an ARM_RESULT arm.
             // This reuses the existing typed value-match AST and result owner;
