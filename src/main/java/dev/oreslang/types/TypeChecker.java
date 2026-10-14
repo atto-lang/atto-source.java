@@ -982,9 +982,13 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MemberExpr member)
             return fieldInitializerMaySuspend(member.receiver());
-        if (expr instanceof Ast.IndexExpr indexed)
-            return fieldInitializerMaySuspend(indexed.receiver())
-                    || fieldInitializerMaySuspend(indexed.index());
+        if (expr instanceof Ast.IndexExpr) {
+            // Even pure operands do not establish a safe indexing operation.
+            // Bounds failure (and any future index dispatch) may unwind after
+            // earlier fields have acquired resources. Partial-construction
+            // failure cleanup is not proven, so reject indexing by default.
+            return true;
+        }
         if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
         if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
         if (expr instanceof Ast.CastExpr cast) return fieldInitializerMaySuspend(cast.value());
