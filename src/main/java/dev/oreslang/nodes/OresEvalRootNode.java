@@ -6444,7 +6444,7 @@ public final class OresEvalRootNode extends RootNode {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
-                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
+                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshotForClosure();
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
@@ -8940,6 +8940,15 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() {
+            // Deferred callbacks must not smuggle mutable Maps across execution
+            // turns. Actor maps are independently denied, but this also guards
+            // any unchecked host or dynamic entry path.
+            for (Slot slot : slots.values()) {
+                if (slot.value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "cannot snapshot typed Map across deferred execution without ownership proof");
+                }
+            }
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
@@ -8947,6 +8956,24 @@ public final class OresEvalRootNode extends RootNode {
                     null,
                     lexicalModule);
             cp.slots.putAll(slots);
+            return cp;
+        }
+
+        private Env snapshotForClosure() {
+            Env cp = new Env(
+                    parent == null ? null : parent.snapshotForClosure(),
+                    descendantsNonLexical,
+                    accessClass,
+                    null,
+                    lexicalModule);
+            // Only referenced closed-over names should survive a closure,
+            // and typed Maps cannot be captured at all in V1. Omit maps even
+            // when unused; runtime lookup will fail closed on attempted use.
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                if (!(entry.getValue().value instanceof OresKeyedMap<?, ?>)) {
+                    cp.slots.put(entry.getKey(), entry.getValue());
+                }
+            }
             return cp;
         }
         private boolean hasLiveMutexGuards() {
