@@ -42,12 +42,22 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
-    /** Preserve each distinct cleanup failure without self-suppression. */
+    /** Retain a bounded sample of distinct cleanup failures, even for untrusted actors. */
+    private static final int MAX_CLEANUP_SUPPRESSED = 64;
+
     static void preserveCleanupFailure(Throwable primary, Throwable cleanup) {
         if (primary == null || cleanup == null || primary == cleanup) return;
-        for (Throwable existing : primary.getSuppressed())
-            if (existing == cleanup) return;
-        primary.addSuppressed(cleanup);
+        // An actor can fail many defers; bound memory and synchronize the
+        // check/add pair to keep duplicate suppression idempotent on carriers.
+        synchronized (primary) {
+            Throwable[] existing = primary.getSuppressed();
+            for (Throwable prior : existing) {
+                if (prior == cleanup) return;
+            }
+            if (existing.length < MAX_CLEANUP_SUPPRESSED) {
+                primary.addSuppressed(cleanup);
+            }
+        }
     }
 
     public static final String LINK_ONLY_COMMAND = "__ores_internal_link_only__";
