@@ -1812,16 +1812,11 @@ public final class TypeChecker {
                     // Compatibility: detached legacy nb select arms cannot return a value.
                     checkCallableBlock(arm.body(), armEnv, generics, Primitive.VOID, self);
                 } else {
-                    // A selected arm is a loop-control barrier even though
-                    // a blocking procedural return targets the callable.
-                    // A break/continue must not jump into an enclosing loop.
-                    int savedLoopDepth = loopDepth;
-                    loopDepth = 0;
-                    try {
-                        checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
-                    } finally {
-                        loopDepth = savedLoopDepth;
-                    }
+                    // Blocking procedural select is part of its enclosing
+                    // callable and lexical loop, even after SourceTask
+                    // suspension. Only a detached nb-select arm creates a
+                    // separate control-flow scope.
+                    checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
                     exits.add(env.initializationSnapshot());
                 }
             }
