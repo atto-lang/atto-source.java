@@ -4211,6 +4211,32 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            if (receiver instanceof ModuleFacade module
+                                    && call.arguments().stream().anyMatch(
+                                            arg -> arg instanceof Ast.SpreadExpr)) {
+                                evalSuspendableDirectArguments(
+                                        t, call.arguments(), env,
+                                        (t2, evaluated, argumentFailure) -> {
+                                            if (argumentFailure != null) {
+                                                continuation.accept(t2, null, argumentFailure);
+                                                return;
+                                            }
+                                            try {
+                                                Invocation invocation = module.owner()
+                                                        .prepareModuleInvocation(
+                                                                module.module(),
+                                                                member.member(),
+                                                                evaluated);
+                                                completeSourceInvocation(
+                                                        t2, invocation,
+                                                        invocationDeclaresAsync(invocation),
+                                                        env, continuation);
+                                            } catch (RuntimeException | Error e) {
+                                                continuation.accept(t2, null, e);
+                                            }
+                                        });
+                                return;
+                            }
                             evalSuspendableArguments(
                                     t,
                                     call.arguments(),
@@ -5778,6 +5804,14 @@ public final class OresEvalRootNode extends RootNode {
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
+                // A module namespace names a statically resolved source
+                // function. Flatten record packs once while retaining labels;
+                // other member receivers keep their existing invocation path.
+                if (receiver instanceof ModuleFacade module) {
+                    DirectArguments args = evaluateDirectArguments(call.arguments(), env);
+                    return module.owner().prepareModuleInvocation(
+                            module.module(), methodCall.member(), args);
+                }
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
@@ -7780,6 +7814,32 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        private Invocation prepareModuleInvocation(
+                Ast.ModuleDecl module, String name, DirectArguments evaluated) {
+            Ast.FunctionDecl match = null;
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name)
+                        && fn.parameters().size() == evaluated.values().size()
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    if (match != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate callable slot '" + module.name() + "." + name
+                                        + "' at arity " + evaluated.values().size());
+                    }
+                    match = fn;
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException("module '" + module.name()
+                        + "' does not export callable '" + name
+                        + "' at expanded arity " + evaluated.values().size());
+            }
+            // Permutation occurs only after the selected ABI signature is
+            // known. Neither field labels nor types influence overload choice.
+            return functionInvocation(match, evaluated.inAbiOrder(match));
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
