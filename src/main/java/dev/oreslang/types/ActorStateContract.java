@@ -193,6 +193,34 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
         }
+        // Both iterator forms can suspend between iterations. A live sealed
+        // state loan cannot survive that scheduler boundary, regardless of
+        // whether the loop body contains an explicit await expression.
+        if (activeAccess != null
+                && ((node instanceof Ast.ForOfStmt loop && loop.asyncIteration())
+                    || (node instanceof Ast.ForOfDestructureStmt loop
+                        && loop.asyncIteration()))) {
+            throw new IllegalArgumentException(
+                    "actor state loan cannot cross async iteration or suspension");
+        }
+        // A for-of binding can reify an iterator over an actor-owned object
+        // and expose its elements under a fresh local name. Subsequent escape
+        // checks cannot recover that provenance from the bound name, so do
+        // not admit a reference-valued state projection as the iterable until
+        // iterator/lifetime ownership has been verified.
+        if (activeAccess != null && keys != null) {
+            Ast.Expr iterable = null;
+            if (node instanceof Ast.ForOfStmt loop) {
+                iterable = loop.iterable();
+            } else if (node instanceof Ast.ForOfDestructureStmt loop) {
+                iterable = loop.iterable();
+            }
+            if (iterable != null && projectsReferenceState(iterable, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "actor state reference projection cannot enter for-of iterator "
+                        + "without verified ownership and lifetime lowering");
+            }
+        }
         // Nested member/index accesses and calls can mutate or materialize
         // references to an object reachable through s.key. No typed graph
         // ownership or method-effect summaries exist for these projections
