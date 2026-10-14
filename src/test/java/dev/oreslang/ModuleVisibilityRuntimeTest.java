@@ -121,7 +121,7 @@ final class ModuleVisibilityRuntimeTest {
         // If module references are rejected as first-class values at the
         // typechecker, that is secure too. If they are admitted through Any,
         // the runtime foreign-module facade check must reject the call.
-        PolyglotException failure = assertThrows(PolyglotException.class, () -> run(main));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(main));
         String message = String.valueOf(failure.getMessage());
         assertTrue(message.contains("private module")
                         || message.contains("module") && message.contains("value")
@@ -151,7 +151,7 @@ final class ModuleVisibilityRuntimeTest {
             assertEquals("<module>", output);
             assertFalse(output.contains("SECRET_IMPL_SENTINEL"));
             assertFalse(output.contains("ModuleDecl"));
-        } catch (PolyglotException denied) {
+        } catch (RuntimeException denied) {
             // Future compilers may statically forbid returning a module as
             // an ordinary value. That is an equally safe outcome.
             assertTrue(String.valueOf(denied.getMessage()).contains("module"),
