@@ -158,6 +158,21 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
         }
+        // A critical WRITE grant proves exclusion, not that the right-hand
+        // side belongs to this actor's heap. Assigning a host/other-actor Map,
+        // class instance or arbitrary reference into state creates a mutable
+        // cross-actor alias. Until a typed move/fresh-allocation proof exists,
+        // reject replacement of reference-valued state fields entirely.
+        if (activeAccess != null && keys != null
+                && node instanceof Ast.AssignExpr assignment
+                && isDirectStateMember(assignment.target(), activeAccess)) {
+            Ast.MemberExpr member = (Ast.MemberExpr) assignment.target();
+            if (!isDetachedScalar(keys.get(member.member()))) {
+                throw new IllegalArgumentException(
+                        "actor state reference field replacement requires "
+                        + "verified actor-owned allocation or ownership transfer");
+            }
+        }
         // A direct s.key read of an immutable scalar is a detached value,
         // but a reference-valued projection aliases actor-owned heap storage.
         // Until the compiler proves detached snapshots/linear transfers in
