@@ -139,6 +139,39 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void controlNoticeIsWithheldUntilActorExitHookCompletes() throws Exception {
+        CountDownLatch enteredTeardown = new CountDownLatch(1);
+        CountDownLatch releaseTeardown = new CountDownLatch(1);
+        try (ActorRuntime actors = new ActorRuntime()) {
+            actors.setActorExitHook(domain -> {
+                enteredTeardown.countDown();
+                try {
+                    if (!releaseTeardown.await(3, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test teardown barrier expired");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            ActorRuntime.ActorRef<String> actor = actors.spawnShared(
+                    () -> (message, context) -> {
+                        throw GuestActorEffectSignal.raise();
+                    });
+            try {
+                actor.send("failure");
+                assertTrue(enteredTeardown.await(3, TimeUnit.SECONDS),
+                        "actor must reach physical teardown");
+                assertTrue(actors.pollActorFailureNotice().isEmpty(),
+                        "supervisor must not see failure before isolate cleanup");
+            } finally {
+                releaseTeardown.countDown();
+            }
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(actor.id(),
+                    actors.pollActorFailureNotice().orElseThrow().actorId());
+        }
+    }
+
     @Test void controlNoticeRejectsSourceSuppliedDiagnosticsAndMismatchedEffects() {
         try (ActorRuntime actors = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> actor = actors.spawnShared(
