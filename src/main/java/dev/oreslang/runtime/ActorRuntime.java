@@ -1503,7 +1503,18 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if ((cell.stopped.get() && !cell.endRequested)
+                // STOP rejects ordinary emits, but a scheduler-owned
+                // lexical cleanup still has the actor's single-flight lease
+                // and may publish its final bounded output before DONE.
+                boolean authenticatedCleanupOutput =
+                        cell.stopped.get()
+                        && !cell.sourceCleanupRevoked
+                        && !cell.forceKillFenced
+                        && OresScheduler.current() == cell.sourceScheduler
+                        && OresScheduler.currentTaskInCleanup();
+                if ((cell.stopped.get()
+                        && !cell.endRequested
+                        && !authenticatedCleanupOutput)
                         || cell.finalized) {
                     throw terminated(cell.ref);
                 }

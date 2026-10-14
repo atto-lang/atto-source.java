@@ -346,6 +346,17 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /**
+     * Trusted runtime proof that the currently executing scheduler task
+     * is actively unwinding an accepted deferred cancellation. A copied
+     * Runnable or unrelated scheduler task cannot manufacture this permit.
+     */
+    public static boolean currentTaskInCleanup() {
+        Object domain = CURRENT_TASK_DOMAIN.get();
+        return domain instanceof TaskRunner<?> runner
+                && runner.cleanupAuthorized();
+    }
+
+    /**
      * Identifier for the current scheduler dispatch turn, or {@code 0} outside
      * an OresScheduler dispatch. A continuation resumed after {@code await}
      * always observes a different dispatch id, even when the scheduler chooses
