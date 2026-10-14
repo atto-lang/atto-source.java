@@ -588,6 +588,9 @@ public final class ChannelRuntime {
         private final int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
+        // Direct, lock-owned lookup prevents quadratic scans over 256 arms
+        // during repeated global admission/progress arbitration.
+        private final CaseRegistration[] registeredByIndex;
         /** Detached on any winner/cancellation; never cancels a shared producer Future. */
         private final ArrayList<OresFuture.RuntimeWaiterRegistration<?>> futureWaiters =
                 new ArrayList<>();
@@ -600,6 +603,7 @@ public final class ChannelRuntime {
             this.set = set;
             this.policy = policy;
             this.order = set.initialOrder(policy);
+            this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
             int foundDefault = -1;
             for (int i = 0; i < set.cases.size(); i++) {
@@ -779,6 +783,7 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
             selection.registrations.add(registration);
+            selection.registeredByIndex[index] = registration;
             activeArmRegistrations++;
             if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
                 channelOf(selectCase).registrations.add(registration);
@@ -796,6 +801,7 @@ public final class ChannelRuntime {
         activeArmRegistrations -= selection.registrations.size();
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
+            selection.registeredByIndex[registration.index] = null;
             if (registration.selectCase instanceof ReadCase<?>
                     || registration.selectCase instanceof WriteCase<?>) {
                 registration.channel().registrations.remove(registration);
@@ -1061,10 +1067,7 @@ public final class ChannelRuntime {
     private static CaseRegistration findRegistration(
             SelectRegistration selection,
             int index) {
-        for (CaseRegistration registration : selection.registrations) {
-            if (registration.index == index) return registration;
-        }
-        return null;
+        return selection.registeredByIndex[index];
     }
 
     private static void commitPairLocked(
