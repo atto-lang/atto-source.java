@@ -13,7 +13,7 @@ final class FunctionGenericDefaultsStage1Test {
     @Test
     void parserPreservesOrderedGenericDefaultMetadata() {
         Ast.Program parsed = Parser.parse("""
-                fnc select<A, B=int, C=B, D=Array<C>, E=string>(A input): int {
+                fnc choose<A, B=int, C=B, D=Array<C>, E=string>(A input): int {
                   return 7;
                 }
                 """);
@@ -32,16 +32,16 @@ final class FunctionGenericDefaultsStage1Test {
     void omissionNamedOverridesAndDependentDefaultsTypecheck() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
-                  fnc select<A, B=int, C=B, D=Array<C>, E=string>(A input): int {
+                  fnc choose<A, B=int, C=B, D=Array<C>, E=string>(A input): int {
                     return 7;
                   }
 
                   fnc use(): void {
-                    val int first = select<int>(7);
-                    val int second = select<int, string>(7);
-                    val int third = select<A=int, D=Array<string>>(7);
-                    val int fourth = select<E=bool, A=int>(7);
-                    val int fifth = select<>(7);
+                    val int first = choose<int>(7);
+                    val int second = choose<int, string>(7);
+                    val int third = choose<A=int, D=Array<string>>(7);
+                    val int fourth = choose<E=bool, A=int>(7);
+                    val int fifth = choose<>(7);
                     return;
                   }
                 end
