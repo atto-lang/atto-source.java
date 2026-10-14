@@ -35,6 +35,11 @@ final class ActorErrorCatalogTest {
         assertThrows(IllegalArgumentException.class, () -> new ActorErrorCatalog.Envelope(
                 ActorErrorCatalog.Kind.ACTOR_STOPPED, "message", "a".repeat(129), ""));
         assertEquals("?", ActorErrorCatalog.boundedDiagnostic("\uD800"));
+        assertEquals("a?b?c", ActorErrorCatalog.boundedDiagnostic("a\\u001Bb\\u202Ec"));
+        assertEquals("???", ActorErrorCatalog.boundedDiagnostic("\\u0080\\u2067\\u200B"));
+        assertEquals("🥑".repeat(256),
+                ActorErrorCatalog.boundedDiagnostic("🥑".repeat(260)),
+                "UTF-8 boundaries must not split supplementary characters");
     }
 
     @Test void sourceFirstActorErrorsArePackagedWithoutHostInterop() throws Exception {
