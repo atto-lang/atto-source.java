@@ -86,6 +86,15 @@ public final class ActorStateContract {
                     if (!keys.containsKey(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                     }
+                    // A default initializer runs outside a proved actor-owned
+                    // loan. It cannot import an arbitrary heap reference into
+                    // the actor's sealed storage. Reference defaults need an
+                    // explicit verified fresh-allocation/move lowering.
+                    if (!isDetachedScalar(keys.get(def.name()))) {
+                        throw new IllegalArgumentException(
+                                "actor state reference default requires verified "
+                                + "actor-owned allocation or ownership transfer");
+                    }
                 }
             }
         }
@@ -157,6 +166,27 @@ public final class ActorStateContract {
                         && op.operation().equals("cooperate")))) {
             throw new IllegalArgumentException(
                     "actor state loan cannot cross await, select, or suspension");
+        }
+        // Nested member/index accesses and calls can mutate or materialize
+        // references to an object reachable through s.key. No typed graph
+        // ownership or method-effect summaries exist for these projections
+        // yet. Unlike direct scalar reads/writes, all nested reference
+        // operations must fail closed, including through a parenthesized
+        // receiver or a call that returns a nested reference.
+        if (activeAccess != null && keys != null) {
+            Object receiver = null;
+            if (node instanceof Ast.MemberExpr member) {
+                receiver = member.receiver();
+            } else if (node instanceof Ast.IndexExpr index) {
+                receiver = index.receiver();
+            } else if (node instanceof Ast.CallExpr call) {
+                receiver = call.callee();
+            }
+            if (receiver != null && projectsReferenceState(receiver, activeAccess, keys)) {
+                throw new IllegalArgumentException(
+                        "nested actor state reference access requires verified "
+                        + "ownership and method effects");
+            }
         }
         // A critical WRITE grant proves exclusion, not that the right-hand
         // side belongs to this actor's heap. Assigning a host/other-actor Map,
@@ -254,7 +284,7 @@ public final class ActorStateContract {
             // without typed ownership proof for the entire value graph.
             // Reject even rt copy until both backends prove safe lowering.
             throw new IllegalArgumentException(
-                    "actor state-backed borrow/take/share cannot escape its lexical loan");
+                    "actor state-backed borrow/take/share/copy cannot escape its lexical loan");
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
