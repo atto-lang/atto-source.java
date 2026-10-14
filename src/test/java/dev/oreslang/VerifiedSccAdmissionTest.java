@@ -104,4 +104,41 @@ final class VerifiedSccAdmissionTest {
         assertEquals(first.interfacePlan().unitFingerprint(),
                 second.interfacePlan().unitFingerprint());
     }
+    @Test void realCheckerRejectsWrongArgumentTypeAtImportedFunctionBoundary() {
+        var provider = new Ast.FunctionDecl("right", Ast.Visibility.PUBLIC, false,
+                List.of(), List.of(new Ast.Param(Ast.TypeRef.simple("int"), "value")),
+                Ast.TypeRef.simple("int"), List.of(),
+                List.of(new Ast.ReturnStmt(new Ast.NameExpr("value"))));
+        var providerImports = new Ast.ImportDecl(Ast.ImportKind.FUNCTION,
+                List.of("left"), false, null, "./a.ores");
+        var providerSource = new Ast.Program(null, List.of(providerImports),
+                List.of(new Ast.ModuleDecl("api", List.of(provider))));
+        var badCall = new Ast.CallExpr(new Ast.NameExpr("right"),
+                List.of(new Ast.LiteralExpr("wrong-argument-type")));
+        var consumerFn = function("left", Ast.TypeRef.simple("int"),
+                List.of(new Ast.ReturnStmt(badCall)));
+        var consumerImports = new Ast.ImportDecl(Ast.ImportKind.FUNCTION,
+                List.of("right"), false, null, "./b.ores");
+        var consumerSource = new Ast.Program(null, List.of(consumerImports),
+                List.of(new Ast.ModuleDecl("api", List.of(consumerFn))));
+        assertThrows(IllegalArgumentException.class,
+                () -> VerifiedSccAdmission.verifySingleScc(
+                        Map.of("a.ores", consumerSource, "b.ores", providerSource),
+                        headers(), Map.of()));
+    }
+
+    @Test void unsupportedEffectfulFunctionCannotReceiveCrossFileCertificate() {
+        var source = cyclicPair();
+        var changed = new LinkedHashMap<>(source);
+        var effects = new Ast.FunctionDecl("right", Ast.CallableKind.FNC,
+                Ast.Visibility.PUBLIC, true, false, false, false, false, false,
+                Ast.ActorKind.NONE, List.of(), List.of(),
+                Ast.TypeRef.simple("int"), List.of(), List.of());
+        var existing = changed.get("b.ores");
+        changed.put("b.ores", new Ast.Program(existing.namespace(),
+                existing.imports(), List.of(new Ast.ModuleDecl("api", List.of(effects)))));
+        assertThrows(IllegalArgumentException.class,
+                () -> VerifiedSccAdmission.verifyGraph(changed, headers(), Map.of()));
+    }
+
 }
