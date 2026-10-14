@@ -93,6 +93,17 @@ public final class InterfaceSccPlanner {
                         admittedPrograms.keySet(), resolvedOverrides);
                 if (target == null) {
                     required.add(use.path());
+                    // The provider digest alone cannot distinguish importing
+                    // 'foo' from importing 'bar' at the same package path.
+                    // Commit the external selector separately from its pin.
+                    String pin = pins.get(use.path());
+                    if (pin == null) {
+                        throw new IllegalArgumentException("missing external provider interface digest");
+                    }
+                    String selectorId = "@ores-external-import/" + importSelectorDigest(use);
+                    if (fingerprints.putIfAbsent(selectorId, pin) != null) {
+                        throw new IllegalArgumentException("duplicate external import selector");
+                    }
                 } else {
                     // A dependency *set* loses import-path retargeting when the
                     // same targets remain present. Commit each actual import
