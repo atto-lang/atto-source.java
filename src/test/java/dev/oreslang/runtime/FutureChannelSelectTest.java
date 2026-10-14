@@ -442,11 +442,7 @@ final class FutureChannelSelectTest {
             assertEquals(ChannelRuntime.SelectOperation.FUTURE, winner.operation());
             assertEquals(0, winner.index());
             assertEquals(17, winner.value());
-            int retained = producer.pendingRuntimeWaiterCount();
-            assertEquals(0, retained,
-                    "round=" + round + " producerDone=" + producer.isDone()
-                            + " claimedQueueNodes="
-                            + producer.claimedRuntimeWaiterCountForDiagnostics());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
         }
     }
 
