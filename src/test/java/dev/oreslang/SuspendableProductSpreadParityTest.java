@@ -392,6 +392,38 @@ final class SuspendableProductSpreadParityTest {
         }
     }
 
+    @Test
+    void mutableLocalCannotForgePermanentClosedRecordPackProvenance() {
+        String code = """
+                fnc add(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    let args = (b: 23, a: 19);
+                    stdio.stdout.write(add(...args));
+                    return;
+                }
+                """;
+        // LET bindings may be reassigned after a closure has been checked.
+        // Only immutable literal-origin bindings have stable closed labels.
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
+        assertTrue(error.getMessage().contains("explicitly closed")
+                        || error.getMessage().contains("record spread"),
+                error.getMessage());
+    }
+
+    @Test
+    void immutableValRetainsRecordPackProvenance() throws Exception {
+        String code = """
+                fnc add(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    val args = (b: 23, a: 19);
+                    stdio.stdout.write(add(...args));
+                    return;
+                }
+                """;
+        assertEquals("42", checkedExecution(code));
+    }
+
     private static String checkedExecution(String code) throws Exception {
         var parsed = Parser.parse(code);
         var typed = TypeChecker.check(parsed);

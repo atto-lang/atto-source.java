@@ -1731,10 +1731,15 @@ public final class TypeChecker {
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
-            // Only explicit record literals produce callable record packs.
-            // A readonly inferred struct is deliberately NOT an argument pack.
+            // Closed argument-pack provenance belongs only to immutable
+            // bindings originally initialized from an explicit record literal.
+            // A LET can be rebound (including after a deferred closure was
+            // checked) and could then carry a structurally assignable but
+            // wider/different runtime record. Do not grant stable slot labels
+            // to such a mutable binding until flow-sensitive invalidation exists.
             if (declaredAhead == null && binding.initializer() instanceof Ast.ObjectExpr record
-                    && record.recordLiteral() && !binding.mutableReferent()) {
+                    && record.recordLiteral() && !binding.mutableReferent()
+                    && binding.kind() != Ast.BindingKind.LET) {
                 env.markRecordPack(binding.name());
             }
             return;
