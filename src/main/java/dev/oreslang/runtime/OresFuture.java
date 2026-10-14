@@ -640,7 +640,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         return true;
     }
 
-    private static boolean dominatesDeferredCancellation(Throwable failure) {
+    // Shared by the Future arbitration and scheduler terminal publication.
+    // Always unwrap completion wrappers before comparing fatal priorities.
+    static boolean dominatesDeferredCancellation(Throwable failure) {
         Throwable cause = unwrap(failure);
         return cause instanceof VirtualMachineError
                 || cause instanceof ThreadDeath

@@ -231,6 +231,44 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void wrappedFatalCleanupFailureOutranksAcceptedCancellation()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            AtomicInteger resumes = new AtomicInteger();
+            LinkageError fatal = new LinkageError("linkage failure during cleanup");
+            java.util.concurrent.CompletionException wrapped =
+                    new java.util.concurrent.CompletionException(fatal);
+            OresFuture<Integer> task = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        if (resumes.getAndIncrement() == 0) {
+                            suspended.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                        assertInstanceOf(
+                                java.util.concurrent.CancellationException.class,
+                                resume.failure());
+                        throw wrapped;
+                    });
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            var failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertSame(wrapped, failure.getCause(),
+                    "fatal failure must not be replaced by accepted cancellation");
+            assertSame(fatal, OresFuture.unwrap(failure));
+            assertFalse(task.isCancelled());
+            assertEquals(2, resumes.get());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            producer.completeFromRuntime(4);
+            assertEquals(2, resumes.get(),
+                    "late producer completion cannot revive fatal cleanup");
+        }
+    }
+
+    @Test
     void closingSchedulerWithAlreadyCancelledPendingCleanupCannotHangFuture()
             throws Exception {
         OresScheduler scheduler = new OresScheduler(1);

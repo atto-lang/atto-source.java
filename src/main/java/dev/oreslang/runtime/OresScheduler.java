@@ -773,11 +773,8 @@ public final class OresScheduler implements AutoCloseable {
                     completion.deferredCancellationCause();
             if (requested != null
                     && !(outcome instanceof TerminalFailure<?> failure
-                         && (failure.failure() instanceof VirtualMachineError
-                             || failure.failure() instanceof ThreadDeath
-                             || failure.failure() instanceof LinkageError
-                             || failure.failure() instanceof
-                                    ActorRuntime.UntrustedActorQuotaExceededException))) {
+                         && OresFuture.dominatesDeferredCancellation(
+                                 failure.failure()))) {
                 if (outcome instanceof TerminalFailure<?> failed
                         && failed.failure() != requested) {
                     // Keep bounded evidence of failed cleanup without
