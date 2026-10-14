@@ -468,7 +468,8 @@ public final class Parser {
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
         annotations = structural.annotations();
         String name = consumeCallableName("expected callable name");
-        List<String> generics = parseGenericParameters();
+        List<Ast.GenericParameter> specs = parseGenericParameterSpecs();
+        List<String> generics = specs.stream().map(Ast.GenericParameter::name).toList();
 
         if (match(EQUAL)) {
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
@@ -480,7 +481,7 @@ public final class Parser {
                     : parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body);
+                    generics, params, returnType, annotations, body, specs);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -490,7 +491,7 @@ public final class Parser {
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body);
+                returnType, annotations, body, specs);
     }
 
     private Ast.ClassDecl parseClass(
@@ -1319,6 +1320,22 @@ public final class Parser {
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
+    }
+
+    private List<Ast.GenericParameter> parseGenericParameterSpecs() {
+        if (!match(LT)) return List.of();
+        List<Ast.GenericParameter> specs = new ArrayList<>();
+        java.util.Set<String> declared = new java.util.HashSet<>();
+        do {
+            String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if (name.equals("_") || !declared.add(name)) {
+                throw error(previous(), "invalid or duplicate generic parameter '" + name + "'");
+            }
+            Ast.TypeRef defaultType = match(EQUAL) ? parseTypeRef() : null;
+            specs.add(new Ast.GenericParameter(name, defaultType));
+        } while (match(COMMA));
+        consume(GT, "expected '>' after generic parameters");
+        return List.copyOf(specs);
     }
 
     private List<String> parseGenericParameters() {
