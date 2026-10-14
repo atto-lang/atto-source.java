@@ -1546,7 +1546,7 @@ public final class TypeChecker {
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
-                    defineDestructureBinding(env, destructure.bindings().get(i), elementTypes.get(i));
+                    defineDestructureBinding(env, destructure.bindings().get(i), elementTypes.get(i), generics, self);
                 }
             } else {
                 Set<String> selectedMembers = new LinkedHashSet<>();
@@ -1558,10 +1558,7 @@ public final class TypeChecker {
                     Type bindingType = binding.rest()
                             ? objectDestructureRestType(source, selectedMembers)
                             : objectDestructureMemberType(source, binding.name());
-                    requireMutableReferentCompatible(
-                            bindingType, binding.mutableReferent(),
-                            "destructure binding '" + binding.name() + "'");
-                    env.define(binding.name(), bindingType, binding.kind());
+                    defineDestructureBinding(env, binding, bindingType, generics, self);
                 }
             }
             return;
@@ -1726,14 +1723,40 @@ public final class TypeChecker {
                                 typeOf(arm.value(), env, generics, self),
                                 element,
                                 "writech select value");
+                    } else if (arm.destructureKind() != null) {
+                        if (arm.destructureKind() == Ast.DestructureKind.SEQUENCE) {
+                            List<Type> members = sequenceDestructureTypes(
+                                    deref(element), arm.destructureBindings());
+                            for (int i = 0; i < arm.destructureBindings().size(); i++) {
+                                defineDestructureBinding(
+                                        armEnv, arm.destructureBindings().get(i),
+                                        members.get(i), generics, self);
+                            }
+                        } else {
+                            Set<String> selectedFields = new LinkedHashSet<>();
+                            for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                                if (!binding.rest()) selectedFields.add(binding.name());
+                            }
+                            for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                                Type projected = binding.rest()
+                                        ? objectDestructureRestType(deref(element), selectedFields)
+                                        : objectDestructureMemberType(deref(element), binding.name());
+                                defineDestructureBinding(
+                                        armEnv, binding, projected, generics, self);
+                            }
+                        }
                     } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            Type declared = resolve(arm.bindingType(), generics, self);
+                            bound = overlayReadonlyCapabilities(element, declared);
+                            requireAssignable(element, bound,
+                                    "select read binding '" + arm.bindingName() + "'");
+                        }
                         requireMutableReferentCompatible(
-                                element, arm.mutableReferent(),
+                                bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
                 if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
@@ -1771,7 +1794,7 @@ public final class TypeChecker {
             List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings());
             Env loopEnv = new Env(env);
             for (int i = 0; i < loop.bindings().size(); i++) {
-                defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i));
+                defineDestructureBinding(loopEnv, loop.bindings().get(i), elementTypes.get(i), generics, self);
             }
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             env.restoreInitialization(afterIterable);
@@ -1926,7 +1949,11 @@ public final class TypeChecker {
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
                 else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException(
+                else if (receiver == Primitive.STRING || receiver instanceof StringLiteral) {
+                    throw new IllegalArgumentException(
+                            "indexed string assignment is not supported: string is an immutable Copy value; "
+                            + "a 'mut' binding does not create mutable character storage");
+                } else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
@@ -4020,8 +4047,17 @@ public final class TypeChecker {
         }
     }
 
-    private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
+    private void defineDestructureBinding(
+            Env env, Ast.DestructureBinding binding, Type extracted,
+            Set<String> generics, Type self) {
         if (binding.isDiscard()) return;
+        Type type = extracted;
+        if (binding.declaredType() != null) {
+            Type declared = resolve(binding.declaredType(), generics, self);
+            type = overlayReadonlyCapabilities(extracted, declared);
+            requireAssignable(extracted, type,
+                    "typed destructure binding '" + binding.name() + "'");
+        }
         requireMutableReferentCompatible(
                 type, binding.mutableReferent(),
                 "destructure binding '" + binding.name() + "'");
@@ -4034,13 +4070,13 @@ public final class TypeChecker {
         int fixedArity = restIndex >= 0 ? restIndex : bindings.size();
 
         if (source instanceof Tuple tuple) {
-            if (restIndex < 0 && tuple.elements().size() != fixedArity) {
+            // Destructuring selects a positional prefix. Unlike a tuple
+            // *type* or tuple *match pattern*, this is not an exact-arity test.
+            // Trailing unselected elements are discarded, not bound.
+            if (tuple.elements().size() < fixedArity) {
                 throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
-                        + " element(s), pattern has " + fixedArity);
-            }
-            if (restIndex >= 0 && tuple.elements().size() < fixedArity) {
-                throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
-                        + " element(s), pattern requires at least " + fixedArity + " before rest");
+                        + " element(s), pattern requires at least " + fixedArity
+                        + (restIndex >= 0 ? " before rest" : ""));
             }
 
             List<Type> result = new ArrayList<>(bindings.size());
@@ -4878,6 +4914,42 @@ public final class TypeChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordPattern projection) {
+            if (!(subject instanceof Record record)) {
+                throw new IllegalArgumentException(
+                        "record match projection requires a statically known record/struct payload, got "
+                                + subject);
+            }
+            for (int i = 0; i < projection.fields().size(); i++) {
+                String field = projection.fields().get(i);
+                Type member = record.members().get(field);
+                if (member == null) {
+                    throw new IllegalArgumentException(
+                            "match record projection field '" + field
+                                    + "' does not exist in " + subject);
+                }
+                // Binding kinds control local rebinding, not the readonly
+                // capabilities or ownership of the projected field.
+                bindings.define(field, member, projection.kinds().get(i));
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+                throw new IllegalArgumentException("positional tuple match projection requires a Tuple, got " + subject);
+            }
+            if (tuple.elements().size() != projection.bindings().size()) {
+                throw new IllegalArgumentException("tuple match projection arity "
+                        + projection.bindings().size() + " does not match " + tuple.elements().size());
+            }
+            for (int i = 0; i < projection.bindings().size(); i++) {
+                Ast.DestructureBinding binding = projection.bindings().get(i);
+                if (!binding.isDiscard()) {
+                    bindings.define(binding.name(), tuple.elements().get(i), binding.kind());
+                }
+            }
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuplePattern) {
             if (!(subject instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
@@ -5023,6 +5095,14 @@ public final class TypeChecker {
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
             return java.util.Objects.equals(a.value(), b.value());
+        }
+        if (earlier instanceof Ast.RecordPattern a && later instanceof Ast.RecordPattern b) {
+            // Binding kinds do not affect match coverage.
+            return b.fields().containsAll(a.fields());
+        }
+        if (earlier instanceof Ast.TupleProjectionPattern a
+                && later instanceof Ast.TupleProjectionPattern b) {
+            return a.bindings().size() == b.bindings().size();
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
@@ -5253,6 +5333,15 @@ public final class TypeChecker {
             // record fields) must never prove structural coverage.
             return subject instanceof Record record
                     && runtimeRecordShapeCovered(record, shape);
+        }
+        if (pattern instanceof Ast.RecordPattern projection) {
+            return subject instanceof Record record
+                    && record.members().keySet().containsAll(projection.fields());
+        }
+        if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            return subject instanceof Tuple tuple
+                    && tuple.kind() == TupleKind.TUPLE
+                    && tuple.elements().size() == projection.bindings().size();
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
