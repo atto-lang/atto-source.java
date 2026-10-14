@@ -45,7 +45,14 @@ AST node, a distinct presence predicate and a success-edge-only binding.
 
 The Java draft shorthand `if (option as let value) eq 15 then ... fi` is
 a *guarded comparison construct*, not an expression that unconditionally
-evaluates to `T`. A failed extraction yields false and never executes `eq`.
+evaluates to `T`. A failed extraction yields false and never executes `eq`. The `eq`/`neq`
+right-hand operand is resolved in the **enclosing scope**, before the
+conditional binding becomes visible (in the type checker, ownership checker,
+and both runtime evaluators). If an outer owner has the same name as the
+conditional binding, evaluating the comparison right-hand operand can still
+move that **outer** owner, including on an ultimately false comparison.
+Use `if option as const value && value eq expected then` to intentionally
+reference the newly extracted success-edge local on the right.
 `if (option as let value) is type int then ... fi` is likewise a guarded
 type test, not reference identity `is`. These Copy-only lowering paths are
 committed but not yet validated by CI. The eager ordinary call
