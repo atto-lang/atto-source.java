@@ -148,6 +148,19 @@ final class OresKeyedMapTest {
         assertEquals(1, map.size());
     }
 
+    @Test void reportedHostBatchSizeIsValidatedBeforePreallocation() {
+        OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
+        map.put("preserve", 3);
+        Map<String, Integer> adversarial = new java.util.AbstractMap<>() {
+            @Override public int size() { return Integer.MAX_VALUE; }
+            @Override public java.util.Set<Map.Entry<String, Integer>> entrySet() {
+                throw new AssertionError("oversized host batch must fail before iteration");
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(adversarial));
+        assertEquals(Map.of("preserve", 3), map.shallowSnapshot());
+    }
+
     @Test void mapCapacityFailsBeforeInsertionIncludingAtomicBatch() {
         OresKeyedMap<String, Integer> map = OresKeyedMap.stringKeys();
         for (int i = 0; i < OresKeyedMap.MAX_ENTRIES - 1; i++) {
