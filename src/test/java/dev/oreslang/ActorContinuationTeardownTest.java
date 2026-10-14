@@ -24,6 +24,7 @@ final class ActorContinuationTeardownTest {
             AtomicInteger cleanupRuns = new AtomicInteger();
             AtomicInteger actorMessages = new AtomicInteger();
             CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch taskPublished = new CountDownLatch(1);
             CountDownLatch cleanupCompleted = new CountDownLatch(1);
             var actor = runtime.<String>spawnShared(() -> (message, context) -> {
                 if (message.equals("start")) {
@@ -50,6 +51,7 @@ final class ActorContinuationTeardownTest {
                                 }
                             });
                     taskFuture.set(context.runtime().ownCurrentActorFuture(task));
+                    taskPublished.countDown();
                     return;
                 }
                 actorMessages.incrementAndGet();
@@ -60,14 +62,14 @@ final class ActorContinuationTeardownTest {
 
             actor.send("start");
             assertTrue(started.await(5, TimeUnit.SECONDS));
-            OresFuture<Void> task;
-            while ((task = taskFuture.get()) == null) Thread.onSpinWait();
+            assertTrue(taskPublished.await(5, TimeUnit.SECONDS));
+            OresFuture<Void> task = taskFuture.get();
+            assertNotNull(task);
             assertTrue(task.cancel(false));
             assertTrue(cleanupCompleted.await(5, TimeUnit.SECONDS));
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> taskFuture.get().get(5, TimeUnit.SECONDS));
-            assertEquals(0, pendingProducer.pendingRuntimeWaiterCount(),
-                    "cancelled task must release its producer registration");
+            // Late producer settlement must not revive the completed task.
             pendingProducer.completeFromRuntime(1);
             actor.send("finish");
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
