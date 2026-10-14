@@ -6303,26 +6303,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
-                        throw new IllegalArgumentException("indexed map key must be a String or Symbol");
-                    }
-                    Object key = index;
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown struct/map key " + key);
-                    }
-                    Object value = map.get(key);
-                    if (value == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "explicit struct field '" + key + "' is read before initialization");
-                    }
-                    return value;
-                }
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable");
+                // Single implementation for ordinary and continuation paths:
+                // no typed Map can accidentally fall into numeric list indexing.
+                return indexValue(receiver, index);
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Map")) {
