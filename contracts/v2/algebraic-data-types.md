@@ -185,7 +185,12 @@ is not equal to `9007199254740992.0`. Decimal/string roundtripping of a
 binary float is not an equality proof. Signed floating zero is equal to
 integral zero; NaN is not equal to any number, including itself. Compiler
 arm-disjointness and runtime pattern matching MUST share these rules;
-unknown host Number types must not establish compile-time disjointness. Guard-range disjointness is permitted only for
+unknown host Number types must not establish compile-time disjointness.
+Finite mixed-number relational comparisons must also use exact binary
+fraction/integer ordering: `9007199254740993 > 9007199254740992.0` is
+true, and signed floating zero compares as integral zero. NaN/infinity
+retain the existing special-value comparison policy and are never
+converted to finite decimal operands. Guard-range disjointness is permitted only for
 identical patterns binding the same immutable projection from the match
 subject (such as `Status.Count(x)` or `(x, _)`). A same-named outer variable
 is not a stable projection: it may change between guard evaluations and
@@ -219,7 +224,10 @@ host stack frame per source arm, even if 4095 guards complete synchronously
 before the 4096th arm. Regression tests cover both 4096 failed pattern checks
 and 4096 immediately completed guarded branches, as well as synchronous
 versus suspendable guest output equivalence. These tests must execute before
-the stack-safety claim is verified. LLVM must implement an equivalently
+the stack-safety claim is verified. Interpreter match scans also poll
+actor scheduler safepoints: every tested arm for untrusted actors and once
+per 32 arms for trusted execution, so a large matrix of unsuccessful
+patterns cannot bypass the actor work budget. LLVM must implement an equivalently
 bounded dispatch rather than translating the source limit into native stack
 depth. These limits and guard restrictions are language safety contracts,
 not proof that full Java/Graal or LLVM tests have passed.
