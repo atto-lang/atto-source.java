@@ -168,6 +168,60 @@ public final class ExportDependencyManifest {
         }
     }
 
+    /**
+     * Cross-check claimed provider digests against actual supplied canonical
+     * interface files. The driver must independently establish provenance and
+     * must not present a decoded, attacker-controlled file as trusted output.
+     */
+    public static void verifyAgainstProviders(
+            Manifest manifest, java.util.Map<String, ExportInterfaceCodec.InterfaceFile> providers) {
+        Objects.requireNonNull(manifest, "manifest");
+        Objects.requireNonNull(providers, "providers");
+        ExportInterfaceCodec.Header target = manifest.publicApi().header();
+        for (Binding binding : manifest.bindings()) {
+            ExportInterfaceCodec.InterfaceFile provider = providers.get(binding.providerUnit());
+            if (provider == null) {
+                throw new IllegalArgumentException("missing provider interface for "
+                        + binding.providerUnit());
+            }
+            ExportInterfaceCodec.Header source = provider.header();
+            if (!binding.providerInterfaceSha256().equals(provider.sha256())
+                    || !binding.providerNamespace().equals(source.namespace())) {
+                throw new IllegalArgumentException("provider interface fingerprint mismatch");
+            }
+            if (!target.compilerVersion().equals(source.compilerVersion())
+                    || !target.targetAbi().equals(source.targetAbi())
+                    || !target.featurePolicy().equals(source.featurePolicy())) {
+                throw new IllegalArgumentException("provider compilation environment mismatch");
+            }
+            Ast.ImportDecl imported = binding.imported();
+            ExportInterfaceCodec.Kind requested = switch (imported.kind()) {
+                case FUNCTION -> ExportInterfaceCodec.Kind.FUNCTION;
+                case CLASS -> ExportInterfaceCodec.Kind.CLASS;
+                case INTERFACE -> ExportInterfaceCodec.Kind.INTERFACE;
+                case TYPE -> ExportInterfaceCodec.Kind.TYPE;
+                case MODULE -> ExportInterfaceCodec.Kind.MODULE;
+                // These require additional actor/trait/contract-kind admission
+                // metadata that the current .oresi v1 envelope cannot prove.
+                default -> throw new IllegalArgumentException(
+                        "import kind has no verified public interface admission yet");
+            };
+            if (!imported.wildcard()) {
+                for (String name : imported.names()) {
+                    boolean found = false;
+                    for (ExportInterfaceCodec.Entry item : provider.entries()) {
+                        if (item.kind() == requested && item.name().equals(name)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) throw new IllegalArgumentException(
+                            "imported symbol missing from verified provider: " + name);
+                }
+            }
+        }
+    }
+
     private static Manifest pack(String sourceUnit, ExportInterfaceCodec.InterfaceFile api,
                                  List<Binding> resolved) {
         Objects.requireNonNull(api, "publicApi");
