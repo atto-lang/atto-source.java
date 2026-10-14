@@ -45,16 +45,23 @@ Do not infer stages 2–3 are complete from existence of these files.
 
 ## Current hard blockers (October 14, 2026)
 
-- The Java typechecker now recognizes compiler-owned `Error` as a
-  non-generic nominal root, refuses class/type-alias/generic shadowing,
-  and checks subclass ancestry. The runtime's guest `is Error` test uses
-  nominal ancestry instead of treating Java `Throwable` as a guest error.
-  `NativeGuestErrorRootTest` covers source modules and guest constructors,
-  **but these tests have not completed in CI**. No guest throw/raise/panic
-  effect lowering has been enabled yet.
-- Java's `TypedExceptionalEffectAdmissionTest` currently requires
-  `throw`, `raise`, `panic` and `recover` to be rejected as unsupported
-  typed effects. This needs a deliberate compiler/runtime migration.
+- Java recognizes a compiler-owned, non-generic nominal `Error`
+  hierarchy. `ThrowStmt` now has **a restricted local lowering**:
+  `try { throw new GuestError(...); } catch (e) { ... }` passes
+  Error-only type checking and gives `e` the original Oreslang guest object,
+  never a host Java `Throwable`. This is allowed **only** inside a
+  non-actor lexical `try`; async/suspending callables, detached callbacks,
+  borrowed errors and uncaught throws are rejected. `trap` does not consume
+  this internal typed guest signal. Host exceptions keep their existing
+  explicit-catch policy; cancellation and panic remain uncatchable.
+- All statement visitors (ownership, borrow validation, capability admission,
+  return/finally cleanup and incremental tree shaking/dependency scanning)
+  now traverse the `throw` operand. `finally` may not throw.
+- `raise`, `panic` and `recover` **remain disabled** until CONTROL
+  publication, actor-local escalation and supervisor testing exist. The
+  limited lexical throw slice is not a promise of complete exception semantics.
+  `NativeGuestErrorRootTest` and `TypedExceptionalEffectAdmissionTest`
+  cover the new slice, but **the added tests have not executed in CI**.
 - The LLVM compiler supports only a source subset, and `src/core` is not an
   executable native core loader. Its sources do not establish LLVM guest
   inheritance, constructors, typed effects or catchability.
