@@ -78,6 +78,26 @@ establish the necessary simulation relation between all AST/CFG transfer rules
 and abstract model steps. No unbounded machine-checked theorem for the entire
 Oreslang borrow checker is claimed.
 
+## Subsequent owned-container escape audit (2026-10-14)
+
+Java's AST ownership pass must reject both top-level borrowed values and
+recursively nested borrowed type arguments at escape/storage boundaries.
+The latest audit covers returns, lexical owned containers, tuple/list/struct
+payloads, explicit struct field declarations, `trap`, channel writes
+(including select arms), and `Mutex.new`/`SharedMutex.new` state.
+Top-level lexical borrowed bindings and permitted returned incoming borrows
+continue to use their provenance/lease rules.
+
+The original regression class now exercises 13 boundary cases (8 added to
+the prior 5). The exact Java checker and original test blobs passed 92 Maven
+ownership regressions across nine suites in the funded, private CI mirror:
+https://github.com/canonical-cloud/canonical-docs/actions/runs/38624648375
+
+This verifies those tested escape boundaries, not all aliases, function
+effects, interprocedural lifetimes, or compiler-to-SMT refinement. In
+particular, generic unknown functions and low-level host interop require
+separate effect/lifetime reasoning; we make no whole-language soundness claim.
+
 ## Follow-up formal program
 
 Prove (using a proof assistant or a checked transition-system/refinement proof)
