@@ -19,7 +19,10 @@ final class ActorContinuationTeardownTest {
     void cancelledAwaitRunsCleanupOnOwningActorContinuationLane() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            OresFuture<Integer> pendingProducer = new OresFuture<>();
+            AtomicReference<OresFuture.Callback<Integer>> producerCallback =
+                    new AtomicReference<>();
+            OresFuture<Integer> pendingProducer =
+                    OresFuture.fromCallback(producerCallback::set);
             AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
             AtomicInteger cleanupRuns = new AtomicInteger();
             AtomicInteger actorMessages = new AtomicInteger();
@@ -70,7 +73,7 @@ final class ActorContinuationTeardownTest {
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> taskFuture.get().get(5, TimeUnit.SECONDS));
             // Late producer settlement must not revive the completed task.
-            pendingProducer.completeFromRuntime(1);
+            producerCallback.get().resolve(1);
             actor.send("finish");
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
             assertTrue(actor.failure().isEmpty());
