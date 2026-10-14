@@ -55,6 +55,14 @@ public final class SymbolPropertyKeyCodec {
                     "key codec accepts only String or Symbol");
         }
 
+        // Bound the input before allocating the UTF-8 encoder's buffer.
+        // A hostile text key may be multi-megabyte even though v1 accepts
+        // at most 16 KiB. UTF-16 code units are a lower bound on UTF-8 bytes
+        // for well-formed Unicode, so this precheck cannot reject a valid
+        // canonical key that the subsequent byte-budget check would accept.
+        if (value.length() > limit) {
+            throw new IllegalArgumentException("key exceeds tagged wire length budget");
+        }
         byte[] utf8 = strictEncode(value);
         if (utf8.length > limit || kind != TEXT && utf8.length == 0) {
             throw new IllegalArgumentException("key exceeds tagged wire length budget");
