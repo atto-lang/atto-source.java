@@ -1791,6 +1791,13 @@ public final class Parser {
             return new Ast.ForStmt(null, condition, null, parseLoopBody());
         }
         if (match(IF)) return parseIf();
+        // Preserve mainline procedural dispatch after integrating expression
+        // forms: do-match/do-switch return to the surrounding callable.
+        if (match(DO)) {
+            if (match(MATCH)) return parseMatch();
+            if (match(SWITCH)) return parseSwitch();
+            throw error(previous(), "'do' requires match, switch, or a braced select");
+        }
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
