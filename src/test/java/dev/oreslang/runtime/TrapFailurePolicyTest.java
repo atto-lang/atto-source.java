@@ -56,6 +56,17 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(failure, GuestPanic.class));
     }
 
+    @Test void typedActorRaiseAndPanicRemainTerminalEvenWhenWrapped() {
+        for (GuestActorEffectSignal signal : new GuestActorEffectSignal[]{
+                GuestActorEffectSignal.raise(), GuestActorEffectSignal.panic()
+        }) {
+            RuntimeException wrapped = new CompletionException(
+                    new IllegalStateException("wrapper", signal));
+            assertFalse(TrapFailurePolicy.isTrappable(wrapped, GuestPanic.class));
+            assertFalse(TrapFailurePolicy.isGuestCatchable(wrapped, GuestPanic.class));
+        }
+    }
+
     @Test void cyclesAndExcessiveDepthFailClosed() {
         IllegalStateException a = new IllegalStateException("a");
         IllegalStateException b = new IllegalStateException("b");
