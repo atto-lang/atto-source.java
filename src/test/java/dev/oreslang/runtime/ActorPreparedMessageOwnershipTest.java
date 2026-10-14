@@ -28,7 +28,7 @@ final class ActorPreparedMessageOwnershipTest {
             @Override public int size() { return 1; }
 
             @Override public Set<Entry<String, Object>> entrySet() {
-                boolean snapshotCopy = StackWalker.getInstance().walk(frames ->
+                boolean snapshotCopy = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE).walk(frames ->
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && (frame.getMethodName().equals("freeze")
@@ -48,7 +48,7 @@ final class ActorPreparedMessageOwnershipTest {
             @Override public int size() { return 1; }
 
             @Override public Set<Entry<String, Integer>> entrySet() {
-                boolean copying = StackWalker.getInstance().walk(frames ->
+                boolean copying = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE).walk(frames ->
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && frame.getMethodName().equals("freeze")
@@ -90,7 +90,7 @@ final class ActorPreparedMessageOwnershipTest {
             @Override public int size() { return 1; }
 
             @Override public Set<Entry<String, Integer>> entrySet() {
-                boolean copying = StackWalker.getInstance().walk(frames ->
+                boolean copying = StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE).walk(frames ->
                         frames.anyMatch(frame ->
                                 frame.getClassName().equals(ActorRuntime.class.getName())
                                 && frame.getMethodName().equals("isolateCopy")
