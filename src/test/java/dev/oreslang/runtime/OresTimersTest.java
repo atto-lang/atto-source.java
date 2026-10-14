@@ -83,4 +83,62 @@ final class OresTimersTest {
             assertEquals(0, timers.activeTimerCount());
         }
     }
+
+    @Test
+    void ownerCloseRevokesIdleAndPendingIntervalCapabilities() throws Exception {
+        OresTimers timers = new OresTimers();
+        OresTimers.Interval idle = timers.intervalNanos(1);
+        OresTimers.Interval pending = timers.intervalNanos(
+                TimeUnit.HOURS.toNanos(1));
+        assertEquals(2, timers.activeIntervalCount());
+        OresFuture<Long> waiting = pending.next();
+        timers.close();
+        assertEquals(0, timers.activeTimerCount());
+        assertEquals(0, timers.activeIntervalCount());
+        assertFalse(idle.cancel());
+        assertFalse(pending.cancel());
+        assertThrows(CancellationException.class,
+                () -> idle.next().get(5, TimeUnit.SECONDS));
+        assertThrows(CancellationException.class,
+                () -> waiting.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void closeRacingWithIntervalNextNeverLeavesPendingTimers() throws Exception {
+        for (int i = 0; i < 100; ++i) {
+            OresTimers timers = new OresTimers();
+            OresTimers.Interval interval = timers.intervalNanos(
+                    TimeUnit.HOURS.toNanos(1));
+            AtomicReference<OresFuture<Long>> result = new AtomicReference<>();
+            AtomicReference<Throwable> problem = new AtomicReference<>();
+            Thread requester = Thread.ofPlatform().start(() -> {
+                try {
+                    result.set(interval.next());
+                } catch (Throwable failure) {
+                    problem.set(failure);
+                }
+            });
+            timers.close();
+            requester.join();
+            assertNull(problem.get(), "next() unexpectedly threw during owner shutdown");
+            assertThrows(CancellationException.class,
+                    () -> result.get().get(5, TimeUnit.SECONDS));
+            assertEquals(0, timers.activeTimerCount());
+            assertEquals(0, timers.activeIntervalCount());
+        }
+    }
+
+    @Test
+    void globalTimerReservationReturnsAfterCompletionAndCancellation() throws Exception {
+        int before = OresTimers.availableGlobalTimerSlots();
+        try (OresTimers timers = new OresTimers()) {
+            OresFuture<Void> waiting = timers.afterNanos(
+                    TimeUnit.HOURS.toNanos(1));
+            assertEquals(before - 1, OresTimers.availableGlobalTimerSlots());
+            assertTrue(waiting.cancel(false));
+            assertThrows(CancellationException.class,
+                    () -> waiting.get(5, TimeUnit.SECONDS));
+            assertEquals(before, OresTimers.availableGlobalTimerSlots());
+        }
+    }
 }
