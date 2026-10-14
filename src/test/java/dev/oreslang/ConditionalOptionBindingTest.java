@@ -131,6 +131,50 @@ final class ConditionalOptionBindingTest {
     }
 
     @Test
+    void optionalProducerIsEvaluatedOnceEvenWhenGuardFails() throws Exception {
+        String program = """
+                fnc produce(Option<int> value): Option<int> {
+                  stdio.println("called");
+                  return value;
+                }
+
+                pub fnc main(): void {
+                  if produce(Some(9)) as const n && n eq 15 then
+                    stdio.println("unexpected");
+                  else
+                    stdio.println("false");
+                  fi
+
+                  if (produce(None) as const n) eq 15 then
+                    stdio.println("unexpected");
+                  else
+                    stdio.println("none");
+                  fi
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals(List.of("called", "false", "called", "none"), run(program));
+    }
+
+    @Test
+    void bindingsOutsideIfAreNotAdmittedUntilFlowLoweringExists() {
+        rejects("""
+                fnc bad(Option<int> source): int {
+                  return (source as const value) eq 15 ? 1 : 0;
+                }
+                """, "only supported in if");
+
+        rejects("""
+                fnc bad(Option<int> source): void {
+                  for (; source as let value; ) {
+                    return;
+                  }
+                }
+                """, "only supported in if");
+    }
+
+    @Test
     void guardsDoNotLeakBindingsAcrossShortCircuitOrOuterScope() {
         rejects("""
                 fnc bad(Option<int> maybe): int {
