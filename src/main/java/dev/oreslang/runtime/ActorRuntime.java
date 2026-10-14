@@ -1491,8 +1491,10 @@ public final class ActorRuntime implements AutoCloseable {
         Object prepared = isPrivateKind(cell.kind)
                 ? isolateCopy(value)
                 : freezeForTransport(value);
-        // Validate the copied snapshot too: caller-owned collections may mutate
-        // between the first admission walk and the transport copy.
+        // The pre-copy capability check is not authoritative: a mutable
+        // sender-owned container may change while its snapshot is prepared.
+        // Outputs are data-only for EVERY actor kind, not just UNTRUSTED.
+        rejectDataFreezeCapabilities(prepared, new IdentityHashMap<>(), 0);
         if (cell.kind == ActorKind.UNTRUSTED) {
             rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
         }
@@ -5772,6 +5774,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
