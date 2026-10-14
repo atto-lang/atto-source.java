@@ -3,6 +3,7 @@ package dev.oreslang.types;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
+import dev.oreslang.compiler.LinkedFunctionContract;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
@@ -242,22 +243,7 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.FunctionDecl> entry : linkedFunctions.entrySet()) {
             String local = entry.getKey();
             Ast.FunctionDecl fn = entry.getValue();
-            if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC
-                    || fn.kind() != Ast.CallableKind.FNC
-                    || fn.actorKind() != Ast.ActorKind.NONE
-                    || fn.async() || fn.suspends() || fn.generator()
-                    || fn.structural() || fn.nonLexical() || fn.trapped()
-                    || !fn.genericParameters().isEmpty()
-                    || !safeLinkedPrimitive(fn.returnType(), true)) {
-                throw new IllegalArgumentException(
-                        "linked callable needs a verified primitive-only, effect-free signature");
-            }
-            for (Ast.Param parameter : fn.parameters()) {
-                if (!safeLinkedPrimitive(parameter.type(), false)) {
-                    throw new IllegalArgumentException(
-                            "linked parameter requires a fully known primitive signature");
-                }
-            }
+            LinkedFunctionContract.requirePrimitiveContract(fn);
             // Local declarations cannot override imported bindings. The
             // standard checker already diagnoses those conflicts, but assert
             // it again before adding foreign declarations to the lookup map.
@@ -271,15 +257,6 @@ public final class TypeChecker {
         checker.validate(source);
         OwnershipChecker.check(source);
         return source;
-    }
-
-    private static boolean safeLinkedPrimitive(Ast.TypeRef ref, boolean allowVoid) {
-        if (ref == null || ref.inferArguments() || !ref.arguments().isEmpty()) return false;
-        return switch (ref.name()) {
-            case "int", "float", "bool", "String" -> true;
-            case "void" -> allowVoid;
-            default -> false;
-        };
     }
 
     /**
