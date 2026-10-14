@@ -1,7 +1,6 @@
 package dev.oreslang.ast;
 
 import java.util.List;
-import java.util.Set;
 import java.util.HashSet;
 
 public final class Ast {
