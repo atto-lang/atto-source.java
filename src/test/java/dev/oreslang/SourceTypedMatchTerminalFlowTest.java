@@ -149,6 +149,39 @@ final class SourceTypedMatchTerminalFlowTest {
     }
 
     @Test
+    void terminalCancellationCannotBeReplacedByAnyGuestFinallyOutcome() {
+        CancellationException cancelled = new CancellationException("stop");
+        Object terminal = throwing(cancelled);
+        Object owner = new Object();
+        Object[] cleanupOutcomes = {
+                normal(),
+                returning(23),
+                armResult(42, 5L, owner),
+                throwing(new IllegalArgumentException("guest cleanup error"))
+        };
+        for (Object cleanup : cleanupOutcomes) {
+            Object after = finallyFlow(terminal, cleanup);
+            assertSame(terminal, after);
+            assertEquals("TERMINAL", kind(after));
+            assertSame(cancelled, read(after, "failure"));
+        }
+    }
+
+    @Test
+    void repeatedTerminalCleanupFailureIsBoundedWithoutLosingCancellation() {
+        CancellationException cancelled = new CancellationException("stop");
+        Object pending = throwing(cancelled);
+        for (int i = 0; i < 2_048; i++) {
+            pending = deferFailure(pending, new IllegalStateException("cleanup-" + i));
+            assertEquals("TERMINAL", kind(pending));
+            assertSame(cancelled, read(pending, "failure"));
+        }
+        assertEquals(64, cancelled.getSuppressed().length);
+        assertEquals("cleanup-0", cancelled.getSuppressed()[0].getMessage());
+        assertEquals("cleanup-63", cancelled.getSuppressed()[63].getMessage());
+    }
+
+    @Test
     void guestFailureKeepsExistingFirstFailurePrecedence() {
         IllegalStateException original = new IllegalStateException("guest");
         IllegalArgumentException cleanup = new IllegalArgumentException("defer");
