@@ -100,4 +100,74 @@ final class ModuleVisibilityRuntimeTest {
                 }
                 """));
     }
+
+    @Test
+    void privateModuleFacadePassedThroughAnyDoesNotGrantCrossFileMemberAccess() throws Exception {
+        Files.writeString(temp.resolve("lib.ores"), """
+                define private module Internal as
+                  pub fnc answer(): int { return 123; }
+                end
+                pub fnc expose(): Any { return Internal; }
+                """);
+
+        String main = """
+                import fnc expose from './lib';
+                pub routine main(): void {
+                  val Any leaked = expose();
+                  stdio.stdout.write(leaked.answer());
+                  return;
+                }
+                """;
+        // If module references are rejected as first-class values at the
+        // typechecker, that is secure too. If they are admitted through Any,
+        // the runtime foreign-module facade check must reject the call.
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> run(main));
+        String message = String.valueOf(failure.getMessage());
+        assertTrue(message.contains("private module")
+                        || message.contains("module") && message.contains("value")
+                        || message.contains("unknown") && message.contains("answer"),
+                message);
+    }
+
+    @Test
+    void moduleFacadeDisplayCannotSerializePrivateSourceMetadata() throws Exception {
+        Files.writeString(temp.resolve("lib.ores"), """
+                define module Internal as
+                  pub fnc SECRET_IMPL_SENTINEL(): int { return 77; }
+                end
+                pub fnc expose(): Any { return Internal; }
+                """);
+        String source = """
+                import fnc expose from './lib';
+                pub routine main(): void {
+                  stdio.stdout.write(expose());
+                  return;
+                }
+                """;
+        // The current compatibility runtime can represent module receiver
+        // facades; their Java record toString must never print the AST.
+        String output = run(source);
+        assertEquals("<module>", output);
+        assertFalse(output.contains("SECRET_IMPL_SENTINEL"));
+        assertFalse(output.contains("ModuleDecl"));
+    }
+
+    @Test
+    void publicModuleFacadeStillSupportsAccessAcrossSourceUnits() throws Exception {
+        Files.writeString(temp.resolve("lib.ores"), """
+                define pub module Exposed as
+                  pub fnc answer(): int { return 13; }
+                end
+                pub fnc expose(): Any { return Exposed; }
+                """);
+        assertEquals("13", run("""
+                import fnc expose from './lib';
+                pub routine main(): void {
+                  val Any facade = expose();
+                  stdio.stdout.write(facade.answer());
+                  return;
+                }
+                """));
+    }
+
 }
