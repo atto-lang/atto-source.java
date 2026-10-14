@@ -2145,9 +2145,12 @@ public final class OresEvalRootNode extends RootNode {
                                 if (flow.kind() == SourceFlowKind.THROW
                                         && isGuestCatchableFailure(flow.failure())) {
                                     Env caught = new Env(env);
+                                    Object caughtError =
+                                            flow.failure() instanceof GuestThrowSignal signal
+                                                    ? signal.guestError : flow.failure();
                                     caught.define(
                                             attempted.errorName(),
-                                            flow.failure(),
+                                            caughtError,
                                             Ast.BindingKind.VAL);
                                     runBlock(
                                             t,
@@ -4753,6 +4756,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
+            if (failure instanceof GuestThrowSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
@@ -4771,7 +4775,20 @@ public final class OresEvalRootNode extends RootNode {
         // Explicit guest catch is intentionally broader than trap: callers
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
+        // The guest value stays in the current evaluator/try activation only.
+        // It must never be inserted in ActorRuntime transport or host Throwable
+        // diagnostics. The compiler forbids actor and escaping guest throws.
+        private static final class GuestThrowSignal extends RuntimeException {
+            private final OresObject guestError;
+
+            private GuestThrowSignal(OresObject guestError) {
+                super("guest Error throw", null, false, false);
+                this.guestError = guestError;
+            }
+        }
+
         private boolean isGuestCatchableFailure(Throwable failure) {
+            if (failure instanceof GuestThrowSignal) return true;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
@@ -4970,6 +4987,22 @@ public final class OresEvalRootNode extends RootNode {
                 boolean inheritedTailBarrier) {
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
+            }
+            if (stmt instanceof Ast.ThrowStmt thrown) {
+                Object value = eval(thrown.value(), env);
+                if (!(value instanceof OresObject error)
+                        || !error.owner.classDerivesFromGuestError(
+                                error.klass, new LinkedHashSet<>())) {
+                    throw new IllegalArgumentException(
+                            "guest throw requires a runtime Error-derived value");
+                }
+                if (ActorRuntime.currentActorKind() != null
+                        && ActorRuntime.currentActorKind()
+                                != ActorRuntime.ActorKind.NONE) {
+                    throw new SecurityException(
+                            "guest throw cannot cross an actor isolation boundary");
+                }
+                throw new GuestThrowSignal(error);
             }
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
@@ -5171,11 +5204,14 @@ public final class OresEvalRootNode extends RootNode {
                     catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                     catch (OresPanic panic) { throw panic; }
                     catch (RuntimeException failure) {
-                        // Guest catch may recover explicit denials and other ordinary
-                        // errors, but must never consume panic or scheduler control.
+                        // Guest Error is a value, not a Java Throwable exposed
+                        // to the guest. Existing host failures retain the old
+                        // explicit-catch boundary without masking cancellation.
                         if (!isGuestCatchableFailure(failure)) throw failure;
                         Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        Object caught = failure instanceof GuestThrowSignal signal
+                                ? signal.guestError : failure;
+                        catchEnv.define(tried.errorName(), caught, Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, true);
                     }
                 } catch (RuntimeException | Error failure) {
