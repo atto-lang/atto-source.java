@@ -33,6 +33,16 @@ Current source revision must be taken from the PR head, **not from this document
 - New focused regressions: nested typed-match parsing and fail-closed procedural selection, completed channel read and nested awaited invocation.
 - The workflow `.github/workflows/typed-dispatch-actor-gate.yml` checks exact checkout SHA, PR-head ancestry on pull-request merge-checkouts, and emits Git-tree and SHA-256 source manifests; it invokes targeted and full JVM tests. **A configured gate is not successful verification**.
 
+## 2026-10-13 terminal-flow and cleanup resource-hardening update
+
+- Added a separate `TERMINAL` `SourceFlowKind` for host `Error`, `CancellationException`, and `ActorRuntime.UntrustedActorQuotaExceededException`. The owning `ARM_RESULT` envelope retains its original `matchFrameId` and `ownerTask`; a terminal flow has no match frame and cannot be mistaken for an arm result.
+- The source task's top-level completion and all five loop propagation paths recognize terminal failure; the guest `try/catch` branch only captures ordinary `THROW`, not terminal completion. Typed-match arm runners forward terminal failure instead of converting it to an arm-local value.
+- `sourceFinally` and `sourceCleanup` preserve cancellation/quotas across ordinary returns, guest cleanup exceptions, and ARM_RESULT. Host-fatal cleanup may override ordinary cancellation; it retains the original as suppressed diagnostic. This branch still intentionally retains first-guest-failure precedence for *ordinary* exceptions, unlike the general cleanup-overrides-ordinary policy on newer #823. That discrepancy must be explicitly reconciled, not accidentally silently changed.
+- `preserveCleanupFailure` now bounds memory to a 64-element suppressed diagnostic sample, prevents self/identity duplicates and serializes check/add on the authoritative throwable.
+- Added `SourceTypedMatchTerminalFlowTest` with eight direct reflection-based source-flow tests (classification, quota, ARM_RESULT ownership, precedence, 2048 cleanup transitions) and a 2048-failure suppression test in `ArmResultCleanupFailureTest`. Added both to exact-head JVM and native-carrier CI. **These tests are authored but have not been executed.**
+
+These changes harden *flow classification and cleanup precedence only*. They do NOT prove abrupt actor-stop cleanup actually runs, enforce actor-generation fences on outstanding Futures, or reconcile #823's cleanup-aware scheduler/carrier implementation. Their formal-model/implementation refinement and Native Image/LLVM parity remain open blockers.
+
 ## Outstanding correctness and security proof obligations
 
 - Model `FUNCTION_RETURN`, `ARM_RESULT`, `THROW`, actor cancellation, fatal host errors, and (where necessary) terminal quota exhaustion in one explicit flow lattice. Cleanup must run exactly once, preserve authoritative failure priority, cap suppressed diagnostic allocation, and reject stale task-generation publications. Maintain the extra `matchFrameId`/`ownerTask` ownership from #709 when introducing the terminal failure rules from #823.
