@@ -101,6 +101,12 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final BooleanSupplier cancelAdmission;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
+    // Only stackless cleanup-aware tasks use deferred publication. A caller
+    // requests cancellation now, but actor-owned lexical cleanup runs before
+    // observers can see a settled task Future.
+    private final boolean deferredCancellation;
+    private final AtomicReference<CancellationException> cancellationRequest =
+            new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
 
@@ -121,10 +127,32 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Guest code never receives the admission capability.</p>
      */
     OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook) {
+        this(cancelAdmission, cancelHook, false);
+    }
+
+    OresFuture(Runnable cancelHook, boolean deferredCancellation) {
+        this(() -> true, cancelHook, deferredCancellation);
+    }
+
+    private OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+            boolean deferredCancellation) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
         this.cancelHook = new AtomicReference<>(
                 Objects.requireNonNull(cancelHook, "cancelHook"));
+        this.deferredCancellation = deferredCancellation;
+    }
+
+    CancellationException deferredCancellationCause() {
+        return cancellationRequest.get();
+    }
+
+    boolean completeDeferredCancellationFromRuntime() {
+        CancellationException requested = cancellationRequest.get();
+        if (!deferredCancellation || requested == null) return false;
+        boolean settled = settle(new Cancelled(requested));
+        if (settled) cancelHook.set(null);
+        return settled;
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -432,19 +460,29 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        if (deferredCancellation) {
+            if (!cancellationRequest.compareAndSet(null, cancelled)) return false;
+            // Cleanup-aware cancellation is a request, not yet settlement.
+            // In particular, the hook must enqueue guest cleanup, never run
+            // it on the caller's thread.
+            invokeCancellationHook();
+            return true;
+        }
         if (!settle(new Cancelled(cancelled))) return false;
+        invokeCancellationHook();
+        return true;
+    }
 
+    private void invokeCancellationHook() {
         Runnable hook = cancelHook.getAndSet(null);
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
                 hook.run();
             } catch (RuntimeException | Error ignored) {
-                // Cancellation state is already authoritative. A host
-                // cancellation hook cannot roll it back or poison waiter
-                // delivery.
+                // Cancellation requests must remain authoritative. A failing
+                // hook must not invoke a guest callback on this caller thread.
             }
         }
-        return true;
     }
 
     @Override
