@@ -487,6 +487,21 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     /**
+     * Select readiness must respect cancellation's revocation barrier, not
+     * merely the early state CAS. A cancelled producer is not selectable until
+     * its internal cancel hook has finished; subscribed wakeups are delivered
+     * after that barrier by the normal runtime waiter drain.
+     */
+    Object runtimeSelectReadyStateOrNull() {
+        Object observed = state.get();
+        if (observed == PENDING
+                || (observed instanceof Cancelled && !cancelRevocationComplete.get())) {
+            return null;
+        }
+        return observed;
+    }
+
+    /**
      * Decode a terminal state previously returned by
      * {@link #runtimeTerminalStateOrNull()} without allocating a wrapper.
      */
