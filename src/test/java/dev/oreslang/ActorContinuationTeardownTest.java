@@ -133,7 +133,9 @@ final class ActorContinuationTeardownTest {
             actor.send("start");
             assertTrue(taskPublished.await(5, TimeUnit.SECONDS));
             assertTrue(entered.await(5, TimeUnit.SECONDS));
-            actor.stop();
+            // Host stop is deliberately a completion barrier. Run it on a
+            // separate supervisor thread so the test can release async cleanup.
+            var stopRequest = java.util.concurrent.CompletableFuture.runAsync(actor::stop);
             assertTrue(cleanupStarted.await(5, TimeUnit.SECONDS),
                     "source must unwind despite user mailbox being sealed");
             assertFalse(actor.awaitTermination(100, TimeUnit.MILLISECONDS),
@@ -143,6 +145,7 @@ final class ActorContinuationTeardownTest {
                     "late abandoned producer completion must not replay source work");
             cleanup.get().resolve(33);
             assertTrue(cleanupFinished.await(5, TimeUnit.SECONDS));
+            stopRequest.get(5, TimeUnit.SECONDS);
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
             assertTrue(actor.failure().isEmpty());
             assertEquals(1, cleanupRuns.get());
