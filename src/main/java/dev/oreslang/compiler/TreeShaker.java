@@ -516,7 +516,7 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
+                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -530,15 +530,18 @@ public final class TreeShaker {
                         function.kind(),
                         function.visibility(),
                         function.async(),
+                        function.suspends(),
                         function.generator(),
                         function.structural(),
                         function.nonLexical(),
+                        function.trapped(),
                         function.actorKind(),
                         function.genericParameters(),
                         function.parameters(),
                         function.returnType(),
                         function.annotations(),
-                        rewriteStatements(function.body(), module, locals));
+                        rewriteStatements(function.body(), module, locals),
+                        function.genericSpecs());
             }
             if (declaration instanceof Ast.FieldDecl field) {
                 Ast.Expr initializer = rewriteExpression(field.initializer(), module, Map.of());
@@ -1061,6 +1064,11 @@ public final class TreeShaker {
             if (declaration instanceof Ast.FunctionDecl function) {
                 scanType(function.returnType());
                 for (Ast.Param parameter : function.parameters()) scanType(parameter.type());
+                // Type defaults participate in the public source ABI: a type
+                // referenced only from a default still has to survive pruning.
+                for (Ast.GenericParameter spec : function.genericSpecs()) {
+                    scanType(spec.defaultType());
+                }
                 for (Ast.Annotation annotation : function.annotations()) scanAnnotation(annotation);
                 LinkedHashSet<String> locals = new LinkedHashSet<>();
                 for (Ast.Param parameter : function.parameters()) locals.add(parameter.name());
@@ -1369,7 +1377,7 @@ public final class TreeShaker {
                     }
                 }
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
+                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
                 }
             }
 
