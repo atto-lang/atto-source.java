@@ -143,6 +143,19 @@ public final class OresKeyedMap<K, V> {
         return entries.get(key);
     }
 
+    /**
+     * Guest indexed reads are total only for present keys. Resolve presence
+     * and value under one monitor: containsKey followed by get can otherwise
+     * race with remove/clear and leak null into a statically non-null V.
+     */
+    public synchronized V getRequired(Object key) {
+        checkKey(key);
+        if (!entries.containsKey(key)) {
+            throw new IllegalArgumentException("unknown typed Map key");
+        }
+        return entries.get(key);
+    }
+
     private void checkValue(Object value) {
         Objects.requireNonNull(value, "map value");
         boolean valid = switch (valueDomain) {
@@ -177,13 +190,23 @@ public final class OresKeyedMap<K, V> {
      */
     public synchronized void putAll(Map<? extends K, ? extends V> values) {
         Objects.requireNonNull(values, "map entries");
-        List<Map.Entry<K, V>> prepared = new ArrayList<>(values.size());
+        // Host-supplied Map.size() is not trusted. Enforce the guest bound
+        // before using it as an allocation hint, then enforce it again while
+        // consuming entries (custom Maps may lie about their size).
+        int reportedSize = values.size();
+        if (reportedSize < 0 || reportedSize > MAX_ENTRIES) {
+            throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
+        }
+        List<Map.Entry<K, V>> prepared = new ArrayList<>(reportedSize);
         // A caller may supply IdentityHashMap or a custom Map whose equality
         // differs from the guest Map's nominal String/Symbol equality. Reject
         // duplicate *logical* keys before any writes rather than letting
         // iteration order silently determine the winning value.
         Set<K> incomingKeys = new HashSet<>();
         for (Map.Entry<? extends K, ? extends V> entry : values.entrySet()) {
+            if (prepared.size() >= MAX_ENTRIES) {
+                throw new IllegalArgumentException("typed Map batch exceeds maximum key count");
+            }
             K key = Objects.requireNonNull(entry, "map entry").getKey();
             V value = entry.getValue();
             checkKey(key);
