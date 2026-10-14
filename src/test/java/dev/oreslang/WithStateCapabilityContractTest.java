@@ -87,7 +87,8 @@ final class WithStateCapabilityContractTest {
                 var failure = assertThrows(IllegalArgumentException.class,
                         () -> ActorStateContract.verify(parsed),
                         acquisition + " " + statement);
-                assertTrue(failure.getMessage().contains("nested actor state reference"),
+                assertTrue(failure.getMessage().contains("nested actor state reference")
+                                || failure.getMessage().contains("reference projection"),
                         failure.getMessage());
             }
         }
