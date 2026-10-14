@@ -171,6 +171,38 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
+    @org.junit.jupiter.api.Timeout(20)
+    void pendingDoSelectReceivesDelayedProducerAndReturnsFromAsyncCallable()
+            throws Exception {
+        String source = """
+                async fnc delayedSend(Channel<int> output): void {
+                  rt cooperate;
+                  rt cooperate;
+                  writech output, 19;
+                  return;
+                }
+                async fnc receiveOnce(Channel<int> input): int {
+                  do select {
+                    case readch input: val number {
+                      defer stdio.stdout.write("arm:");
+                      return number * 2;
+                    }
+                  }
+                  return -1;
+                }
+                pub async fnc main(): void {
+                  val Channel<int> pipe = Channel.new<int>(0);
+                  val Future<void> sender = delayedSend(pipe);
+                  stdio.stdout.write(await receiveOnce(pipe));
+                  await sender;
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("arm:38", run(source));
+    }
+
+    @Test
     void channelCloseIsVisibleToSourceAndPreservesCommittedBufferedValue() throws Exception {
         String source = """
                 pub fnc main(): void {
