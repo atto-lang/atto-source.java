@@ -200,6 +200,38 @@ final class SymbolMapGuestSourceTest {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
     }
 
+    @Test void generatorYieldCannotTransferMutableMapOwnership() {
+        String direct = """
+                pub generator fnc unsafeYield(): Map<Symbol, int> {
+                    let mut m = new Map<Symbol, int>();
+                    yield m;
+                }
+                """;
+        String delegated = """
+                pub generator fnc unsafeYield(): Map<Symbol, int> {
+                    let mut m = new Map<Symbol, int>();
+                    yield* [m];
+                }
+                """;
+        for (String source : new String[]{direct, delegated}) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)), source);
+            assertTrue(failure.getMessage().contains("generator yield"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test void generatorsMayStillYieldOrdinaryValues() {
+        String source = """
+                pub generator fnc count(): int {
+                    yield 1;
+                    yield* [2, 3];
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
     @Test void typedMapKeyTypesMustNotBeBorrowed() {
         String[] sources = {
             "pub fnc bad(): void { let mut m = new Map<&Symbol, int>(); return; }",
