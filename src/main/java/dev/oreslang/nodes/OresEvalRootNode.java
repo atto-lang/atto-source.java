@@ -2957,7 +2957,7 @@ public final class OresEvalRootNode extends RootNode {
                                         t,
                                         new ConditionResult(
                                                 true,
-                                                Map.of(
+                                                java.util.Collections.singletonMap(
                                                         test.binding(),
                                                         value)));
                             } else {
@@ -2992,7 +2992,7 @@ public final class OresEvalRootNode extends RootNode {
                                     matched
                                             ? new ConditionResult(
                                                     true,
-                                                    Map.copyOf(bindings))
+                                                    snapshotPatternBindings(bindings))
                                             : ConditionResult.noMatch());
                         });
                 return;
@@ -3022,10 +3022,20 @@ public final class OresEvalRootNode extends RootNode {
             }
             LinkedHashMap<String, Object> bindings =
                     new LinkedHashMap<>(left.bindings());
-            bindings.putAll(right.bindings());
-            return new ConditionResult(
-                    true,
-                    Map.copyOf(bindings));
+            for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
+                if (bindings.containsKey(entry.getKey())
+                        && bindings.get(entry.getKey()) != entry.getValue()) {
+                    throw new IllegalStateException("condition pattern binds '"
+                            + entry.getKey() + "' more than once");
+                }
+                bindings.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+            return new ConditionResult(true, snapshotPatternBindings(bindings));
+        }
+
+        /** Preserve null projected values; Map.copyOf and Map.of reject them. */
+        private Map<String, Object> snapshotPatternBindings(Map<String, Object> bindings) {
+            return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(bindings));
         }
 
         private void evalSuspendableExpr(
@@ -5086,7 +5096,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "the static pattern proof and runtime type metadata disagree");
                     }
                     selected = arm;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = snapshotPatternBindings(bindings);
                 }
 
                 if (selected == null && fallback != null) {
@@ -5095,7 +5105,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException("match fallback did not accept the unmatched subject");
                     }
                     selected = fallback;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = snapshotPatternBindings(bindings);
                 }
 
                 if (selected == null) {
@@ -7927,26 +7937,19 @@ public final class OresEvalRootNode extends RootNode {
                 defineConditionBindings(binary.left(), left.bindings(), rightEnv);
                 ConditionResult right = evalCondition(binary.right(), rightEnv);
                 if (!right.matched()) return ConditionResult.noMatch();
-                LinkedHashMap<String, Object> merged = new LinkedHashMap<>(left.bindings());
-                for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                    Object previous = merged.putIfAbsent(entry.getKey(), entry.getValue());
-                    if (previous != null && previous != entry.getValue()) {
-                        throw new IllegalStateException("condition pattern binds '" + entry.getKey() + "' more than once");
-                    }
-                }
-                return new ConditionResult(true, Map.copyOf(merged));
+                return mergeConditionBindings(left, right);
             }
             if (condition instanceof Ast.TypeTestExpr test) {
                 Object value = eval(test.value(), env);
                 if (!oresTypeMatches(value, test.targetType())) return ConditionResult.noMatch();
                 if (test.binding() == null) return ConditionResult.match();
-                return new ConditionResult(true, Map.of(test.binding(), value));
+                return new ConditionResult(true, java.util.Collections.singletonMap(test.binding(), value));
             }
             if (condition instanceof Ast.PatternTestExpr test) {
                 Object value = eval(test.value(), env);
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
                 return patternMatches(test.pattern(), value, bindings)
-                        ? new ConditionResult(true, Map.copyOf(bindings))
+                        ? new ConditionResult(true, snapshotPatternBindings(bindings))
                         : ConditionResult.noMatch();
             }
             return truth(eval(condition, env)) ? ConditionResult.match() : ConditionResult.noMatch();
