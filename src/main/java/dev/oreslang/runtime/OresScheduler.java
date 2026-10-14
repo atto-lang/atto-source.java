@@ -569,6 +569,10 @@ public final class OresScheduler implements AutoCloseable {
         private final Task<T> task;
         private final Runnable onQuiescent;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
+        /** Observable terminal completion requires full lifecycle retirement. */
+        private final AtomicBoolean quiescenceRetired = new AtomicBoolean();
+        /** Publish terminal state and bounded diagnostics at most once. */
+        private final AtomicBoolean terminalPublicationClaimed = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
         private final AtomicInteger phase = new AtomicInteger(NEW);
@@ -991,17 +995,25 @@ public final class OresScheduler implements AutoCloseable {
                 try {
                     onQuiescent.run();
                 } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
+                    try {
+                        deadlineQuiescenceRetired.set(true);
+                        releaseDeadlineSlotIfRetired();
+                    } finally {
+                        // quiescenceNotified only means that retirement began.
+                        // An accepted late cancellation must not publish while
+                        // an actor's onQuiescent callback still owns resources.
+                        quiescenceRetired.set(true);
+                    }
                 }
             }
         }
 
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone() || executing.get()
-                    || closeCancellationPending.get()) return;
+                    || closeCancellationPending.get() || !quiescenceRetired.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
-            if (outcome == null) return;
+            if (outcome == null
+                    || !terminalPublicationClaimed.compareAndSet(false, true)) return;
             java.util.concurrent.CancellationException requested =
                     completion.deferredCancellationCause();
             if (requested != null && !(outcome instanceof TerminalFailure<?> failure
