@@ -8150,12 +8150,13 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
-            if (left == right) return true;
-            if (left == null || right == null) return false;
-
+            // Numeric identity is NOT equality: the same boxed Double.NaN
+            // object must still compare unequal to itself per IEEE rules.
             if (left instanceof Number a && right instanceof Number b) {
                 return numericValueEquals(a, b);
             }
+            if (left == right) return true;
+            if (left == null || right == null) return false;
             if (left instanceof Complex || right instanceof Complex) {
                 try {
                     Complex a = asComplex(left);
@@ -8252,17 +8253,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
-                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(left.toString())
-                            .compareTo(new java.math.BigDecimal(right.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return left.doubleValue() == right.doubleValue();
-                }
-            }
-            if (isIntegral(left) && isIntegral(right)) return left.longValue() == right.longValue();
-            return left.doubleValue() == right.doubleValue();
+            Boolean exact = dev.oreslang.runtime.NumericPatternEquality.equal(left, right);
+            // Unknown host Number implementations have no static proof.
+            // Preserve their existing dynamic comparison as a fallback;
+            // source-recognized Number carriers always use exact equality.
+            return exact != null ? exact : left.doubleValue() == right.doubleValue();
         }
 
         private boolean isScalarEqualityCarrier(Object value) {
