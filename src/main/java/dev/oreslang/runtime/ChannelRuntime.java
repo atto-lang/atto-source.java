@@ -32,10 +32,13 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class ChannelRuntime {
     private ChannelRuntime() { }
 
+    /** Per-channel backlog bound retained for current-main compatibility. */
+    public static final int DEFAULT_MAX_PENDING_REGISTRATIONS = 4_096;
+    /** Maximum arity for a single static or dynamic select. */
+    public static final int MAX_SELECT_CASES = 256;
+
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
-    /** Bound descriptors and pending waiters before scheduling guest continuations. */
-    private static final int MAX_SELECT_CASES = 256;
     private static final int MAX_PENDING_SELECTS = 4_096;
     private static long nextTicket;
 
@@ -80,6 +83,13 @@ public final class ChannelRuntime {
         }
     }
 
+    /** Distinguishes a single channel's backlog quota from global admission. */
+    public static final class ChannelBackpressureException extends IllegalStateException {
+        public ChannelBackpressureException(String message) {
+            super(message);
+        }
+    }
+
     /**
      * Bounded MPMC channel. Capacity zero is a rendezvous channel.
      *
@@ -88,21 +98,45 @@ public final class ChannelRuntime {
      */
     public static final class Channel<T> implements AutoCloseable {
         private final int capacity;
+        private final int maxPendingRegistrations;
         private final java.util.ArrayDeque<T> buffer = new java.util.ArrayDeque<>();
         private final ArrayList<CaseRegistration> registrations = new ArrayList<>();
         private boolean closed;
         private Throwable closeCause;
 
         public Channel(int capacity) {
+            this(capacity, DEFAULT_MAX_PENDING_REGISTRATIONS);
+        }
+
+        /** Each pending select arm consumes a bounded per-channel registration. */
+        public Channel(int capacity, int maxPendingRegistrations) {
             if (capacity < 0) {
                 throw new IllegalArgumentException(
                         "channel capacity cannot be negative");
             }
+            if (maxPendingRegistrations < 1) {
+                throw new IllegalArgumentException(
+                        "max pending channel registrations must be positive");
+            }
             this.capacity = capacity;
+            this.maxPendingRegistrations = maxPendingRegistrations;
         }
 
         public int capacity() {
             return capacity;
+        }
+
+        public int maxPendingRegistrations() {
+            return maxPendingRegistrations;
+        }
+
+        public int pendingRegistrations() {
+            COORDINATOR.lock();
+            try {
+                return registrations.size();
+            } finally {
+                COORDINATOR.unlock();
+            }
         }
 
         public int size() {
@@ -614,7 +648,16 @@ public final class ChannelRuntime {
                     decided = true;
                     unregisterLocked(this);
                 }
-                if (!decided && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                if (!decided && !immediateOnly && exceedsPendingBudgetLocked(this)) {
+                    // Preserve per-channel admission limits independently of
+                    // the global cap; a ready arm was already allowed to commit.
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new ChannelBackpressureException(
+                                    "channel pending registration budget exhausted")));
+                }
+                if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
                     // Try all immediately committable channel/Future cases
                     // before rejecting registration. A full pending budget must
                     // not prevent progress for an already-ready operation.
@@ -697,6 +740,20 @@ public final class ChannelRuntime {
 
     private static boolean exceedsPendingBudgetLocked(
             SelectRegistration selection) {
+        for (CaseRegistration registration : selection.registrations) {
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                Channel<?> channel = registration.channel();
+                if (channel.registrations.size() > channel.maxPendingRegistrations) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** All participating channel arms must fit their budgets, or none remain. */
+    private static boolean exceedsPendingBudgetLocked(SelectRegistration selection) {
         for (CaseRegistration registration : selection.registrations) {
             if (registration.selectCase instanceof ReadCase<?>
                     || registration.selectCase instanceof WriteCase<?>) {
