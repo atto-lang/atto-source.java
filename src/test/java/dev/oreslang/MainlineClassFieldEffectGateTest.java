@@ -148,6 +148,70 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectUnprovenLocalNamespaceValueWithoutLookupEffects() {
+        // A value leaf does not become pure simply because its name was
+        // declared in this source file rather than in an imported unit.
+        String source = """
+                define module Settings as
+                  pub val int answer: 42;
+                end
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: Settings;
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
+    void rejectScalarConstructorParameterShadowingZeroArgumentHelper() {
+        // Runtime call dispatch sees the local scalar before the global
+        // function. A checker that authorizes by function name alone is
+        // unsound, because evaluating forty() will call an int value.
+        String source = """
+                fnc forty(): int { return 40; }
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: forty();
+                  constructor(int forty) { return; }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
+    void rejectBorrowOperatorsDuringEagerInitialization() {
+        String source = """
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: &seed;
+                  constructor(int seed) { return; }
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
+    void retainScalarConstructorParameterArithmetic() {
+        String source = """
+                define class Safe as
+                  pub final int answer: seed + 2;
+                  constructor(int seed) { return; }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
