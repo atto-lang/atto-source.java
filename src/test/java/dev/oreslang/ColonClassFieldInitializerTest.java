@@ -25,6 +25,32 @@ final class ColonClassFieldInitializerTest {
     }
 
     @Test
+    void finalConstNewlineSeparatesMembersButSameLineRequiresSemicolon() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Config as
+                  final const int answer: (2 + 3) * 4
+                  final const bool ready: true && !false
+                  final const string label: "hello"
+                  private final const int marker: 9
+                end
+                """)));
+
+        for (String source : new String[]{
+                "define class Bad as int first: 1 pub int second: 2 end",
+                "define class Bad as int first: 1 final const int second: 2 end",
+                "define class Bad as final const int first: 1 final const int second: 2 end"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(source), source);
+        }
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Good as
+                  final const int first: 1; final const int second: 2;
+                end
+                """)));
+    }
+
+    @Test
     void finalConstLiteralHasTheSameFixedSlotBindingAsFinal() {
         Ast.Program program = Parser.parse("""
                 define class Foo as
