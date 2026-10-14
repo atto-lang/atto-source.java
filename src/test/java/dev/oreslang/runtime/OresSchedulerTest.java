@@ -108,6 +108,56 @@ final class OresSchedulerTest {
     }
 
     @Test
+    void cancellationSettlementFollowsFinalGuestContextExit() throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        AtomicBoolean insideGuestTurn = new AtomicBoolean();
+        AtomicBoolean cancelledDuringGuestTurn = new AtomicBoolean();
+        AtomicInteger resumes = new AtomicInteger();
+        CountDownLatch reachedAwait = new CountDownLatch(1);
+        CountDownLatch cancelledObserved = new CountDownLatch(1);
+        OresFuture<Integer> producer = new OresFuture<>();
+
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "cleanup-context-exit", 1, executor, turn -> {
+                    assertFalse(insideGuestTurn.get(),
+                            "cleanup may not nest a language/context turn");
+                    insideGuestTurn.set(true);
+                    try {
+                        turn.run();
+                    } finally {
+                        insideGuestTurn.set(false);
+                    }
+                })) {
+            OresFuture<Integer> task = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                        if (resumes.getAndIncrement() == 0) {
+                            reachedAwait.countDown();
+                            return OresScheduler.await(producer);
+                        }
+                        assertInstanceOf(
+                                java.util.concurrent.CancellationException.class,
+                                resume.failure());
+                        return OresScheduler.done(100);
+                    });
+            task.whenCompleteRuntime((value, failure) -> {
+                cancelledDuringGuestTurn.set(insideGuestTurn.get());
+                cancelledObserved.countDown();
+            });
+            assertTrue(reachedAwait.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            assertTrue(cancelledObserved.await(5, TimeUnit.SECONDS));
+            assertTrue(task.isCancelled());
+            assertFalse(cancelledDuringGuestTurn.get(),
+                    "terminal cancellation must publish only after context leave");
+            assertEquals(2, resumes.get(), "exactly one cleanup resume is admitted");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
         IllegalStateException failure = new IllegalStateException("guest context entry rejected");
         try (OresScheduler scheduler = OresScheduler.managed(1, runnable -> { throw failure; })) {
