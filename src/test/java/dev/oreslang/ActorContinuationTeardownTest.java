@@ -386,4 +386,63 @@ final class ActorContinuationTeardownTest {
         }
     }
 
+    @Test
+    void cancellationRequestDoesNotAuthorizeAlreadyRunningGuestFrame()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch running = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskFuture = new AtomicReference<>();
+            AtomicInteger cleanupRuns = new AtomicInteger();
+            AtomicInteger ordinaryFrameDenied = new AtomicInteger();
+            AtomicInteger earlyPrivilege = new AtomicInteger();
+
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                OresFuture<Void> task = context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int resumes;
+
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) throws Exception {
+                                if (resumes++ == 0) {
+                                    running.countDown();
+                                    assertTrue(release.await(5, TimeUnit.SECONDS));
+                                    if (OresScheduler.currentTaskInCleanup()) {
+                                        earlyPrivilege.incrementAndGet();
+                                    }
+                                    try {
+                                        context.runtime().schedulerSafepoint();
+                                    } catch (ActorRuntime.ActorCancellationSignal stopped) {
+                                        ordinaryFrameDenied.incrementAndGet();
+                                    }
+                                    return OresScheduler.cooperate();
+                                }
+                                assertInstanceOf(
+                                        java.util.concurrent.CancellationException.class,
+                                        resume.failure());
+                                assertTrue(OresScheduler.currentTaskInCleanup(),
+                                        "only injected terminal cleanup has STOP authority");
+                                cleanupRuns.incrementAndGet();
+                                return OresScheduler.done(null);
+                            }
+                        });
+                taskFuture.set(task);
+            });
+            actor.send(1);
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            release.countDown();
+
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertEquals(0, earlyPrivilege.get(),
+                    "a cancellation request alone cannot authorize ordinary guest code");
+            assertEquals(1, ordinaryFrameDenied.get(),
+                    "STOP must still be enforced at the next ordinary safepoint");
+            assertEquals(1, cleanupRuns.get());
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> taskFuture.get().get(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
