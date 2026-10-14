@@ -4741,18 +4741,18 @@ public final class ActorRuntime implements AutoCloseable {
         if (currentActor.get() != null) return;
 
         try {
-            cell.awaitFinalized(CLOSE_WAIT_NANOS);
+            if (!ref.terminalFinalization.await(CLOSE_WAIT_NANOS, TimeUnit.NANOSECONDS)) {
+                throw new IllegalStateException(
+                        "actor " + ref.id()
+                                + " or one of its child actors did not finalize within the stop deadline");
+            }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(
                     "interrupted while waiting for actor " + ref.id() + " to finalize",
                     interrupted);
         }
-        if (!cell.finalized()) {
-            throw new IllegalStateException(
-                    "actor " + ref.id()
-                            + " or one of its child actors did not finalize within the stop deadline");
-        }
+        // Host stop observes the same final-publication barrier as ActorRef.
     }
 
     public boolean cancel(ActorRef<?> ref) {
@@ -6491,13 +6491,13 @@ public final class ActorRuntime implements AutoCloseable {
             long remaining = deadline - System.nanoTime();
             if (remaining > 0) {
                 try {
-                    cell.awaitFinalized(remaining);
+                    cell.ref.terminalFinalization.await(remaining, TimeUnit.NANOSECONDS);
                 } catch (InterruptedException waitInterrupted) {
                     interrupted = true;
                     break;
                 }
             }
-            if (!cell.finalized()) stillRunning.add(cell.ref.id());
+            if (cell.ref.terminalFinalization.getCount() != 0) stillRunning.add(cell.ref.id());
         }
 
         boolean dispatchersTerminated = true;
@@ -6535,7 +6535,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
-                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
+                    if (cell.ref.terminalFinalization.getCount() != 0
+                            && !stillRunning.contains(cell.ref.id())) {
                         stillRunning.add(cell.ref.id());
                     }
                 }
