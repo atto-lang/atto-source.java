@@ -118,6 +118,14 @@ public final class TwoPhaseInterfaceLinker {
         Objects.requireNonNull(resolvedOverrides);
         Objects.requireNonNull(trustedExternalPins);
         Set<String> available = declarations.programs.keySet();
+        if (!available.equals(trustedExternalPins.keySet())) {
+            throw new IllegalArgumentException(
+                    "external pin map must match the exact source-unit set");
+        }
+        if (!available.containsAll(resolvedOverrides.keySet())) {
+            throw new IllegalArgumentException(
+                    "unknown source unit supplied import resolution overrides");
+        }
         for (Map.Entry<String, Ast.Program> entry : declarations.programs.entrySet()) {
             String importer = entry.getKey();
             // Duplicate import bindings can resolve to different providers
