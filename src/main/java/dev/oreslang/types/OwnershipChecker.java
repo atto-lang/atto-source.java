@@ -1297,7 +1297,7 @@ public final class OwnershipChecker {
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
@@ -1313,7 +1313,7 @@ public final class OwnershipChecker {
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
@@ -2867,6 +2867,19 @@ public final class OwnershipChecker {
             Ast.CallExpr call,
             Scope scope,
             Map<String, Ast.TypeRef> initialBindings) {
+        return specializeCall(allGenericNames, explicitGenericNames, parameters, result,
+                call, scope, initialBindings, List.of());
+    }
+
+    private CallSignature specializeCall(
+            List<String> allGenericNames,
+            List<String> explicitGenericNames,
+            List<Ast.Param> parameters,
+            Ast.TypeRef result,
+            Ast.CallExpr call,
+            Scope scope,
+            Map<String, Ast.TypeRef> initialBindings,
+            List<Ast.GenericParameter> genericSpecs) {
         Map<String, Ast.TypeRef> bindings = new HashMap<>(initialBindings);
         Set<String> fixed = new HashSet<>(initialBindings.keySet());
         GenericCallArguments.Bound bound =
@@ -2877,6 +2890,18 @@ public final class OwnershipChecker {
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
+        }
+        if (!genericSpecs.isEmpty()) {
+            if (!genericSpecs.stream().map(Ast.GenericParameter::name).toList()
+                    .equals(explicitGenericNames)) {
+                throw new IllegalArgumentException("ownership generic declaration names diverge");
+            }
+            for (Ast.GenericParameter spec : genericSpecs) {
+                if (bindings.containsKey(spec.name()) || bound.inferenceHoles().contains(spec.name())
+                        || spec.defaultType() == null) continue;
+                Ast.TypeRef resolvedDefault = substituteType(spec.defaultType(), bindings);
+                bindings.put(spec.name(), resolvedDefault);
+            }
         }
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
