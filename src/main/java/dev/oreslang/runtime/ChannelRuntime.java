@@ -39,6 +39,8 @@ public final class ChannelRuntime {
 
     private static final ReentrantLock COORDINATOR = new ReentrantLock(true);
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
+    /** Global cap on pending selections, independent of per-channel arm limits. */
+    private static final int MAX_PENDING_SELECTS = 4_096;
     private static long nextTicket;
 
     public enum SelectPolicy {
@@ -53,6 +55,7 @@ public final class ChannelRuntime {
     public enum SelectOperation {
         READ,
         WRITE,
+        FUTURE,
         DEFAULT
     }
 
@@ -72,6 +75,12 @@ public final class ChannelRuntime {
     /** Admission exhaustion is distinct from closure; no waiter is retained. */
     public static final class ChannelBackpressureException extends IllegalStateException {
         public ChannelBackpressureException(String message) {
+            super(message);
+        }
+    }
+
+    public static final class SelectAdmissionException extends IllegalStateException {
+        public SelectAdmissionException(String message) {
             super(message);
         }
     }
@@ -258,7 +267,23 @@ public final class ChannelRuntime {
         }
     }
 
-    public sealed interface SelectCase permits ReadCase, WriteCase, DefaultCase { }
+    /**
+     * Runtime-side descriptor protocol for the source-level Selectable<T> trait.
+     * One invocation reduces a source to one NEXT event operation. The method
+     * must be side-effect-free: no subscriptions, waiting, consumption, guest
+     * callbacks, or producer scheduling; only an approved SelectCase descriptor.
+     *
+     * <p>Java host callers are trusted; the Oreslang compiler must statically
+     * enforce pure/effect-safe descriptions before opening this adapter to
+     * guest-defined traits. The winner coordinator still only accepts the
+     * sealed channel/Future cases below.</p>
+     */
+    @FunctionalInterface
+    public interface Selectable<T> {
+        SelectCase selectNext();
+    }
+
+    public sealed interface SelectCase permits ReadCase, WriteCase, FutureCase, DefaultCase { }
 
     public record ReadCase<T>(Channel<T> channel) implements SelectCase {
         public ReadCase {
@@ -276,7 +301,18 @@ public final class ChannelRuntime {
         }
     }
 
+    /** One immutable Future completion, not another concurrently running actor. */
+    public record FutureCase<T>(OresFuture<T> future) implements SelectCase {
+        public FutureCase {
+            Objects.requireNonNull(future, "future");
+        }
+    }
+
     public record DefaultCase() implements SelectCase { }
+
+    public static <T> FutureCase<T> await(OresFuture<T> future) {
+        return new FutureCase<>(future);
+    }
 
     public static <T> ReadCase<T> read(Channel<T> channel) {
         return new ReadCase<>(channel);
@@ -344,6 +380,33 @@ public final class ChannelRuntime {
                 copy.add(Objects.requireNonNull(selectCase));
             }
             return new SelectSet(copy);
+        }
+
+        /**
+         * Reduce heterogeneous trusted sources to exactly one operation each
+         * BEFORE acquiring the atomic coordinator. Describing a candidate
+         * must never await or consume its next event. A default is a select
+         * control arm, not a one-event Selectable source.
+         */
+        public static SelectSet fromSelectables(
+                Iterable<? extends Selectable<?>> selectables) {
+            Objects.requireNonNull(selectables, "selectables");
+            ArrayList<SelectCase> cases = new ArrayList<>();
+            for (Selectable<?> selectable : selectables) {
+                if (cases.size() >= MAX_SELECT_CASES) {
+                    throw new SelectAdmissionException(
+                            "selectable source quota exceeded: " + MAX_SELECT_CASES);
+                }
+                SelectCase operation = Objects.requireNonNull(
+                        Objects.requireNonNull(selectable, "selectable source").selectNext(),
+                        "selectNext must produce one operation");
+                if (operation instanceof DefaultCase) {
+                    throw new IllegalArgumentException(
+                            "Selectable<T> cannot reduce to a default arm");
+                }
+                cases.add(operation);
+            }
+            return new SelectSet(cases);
         }
 
         /**
@@ -501,12 +564,13 @@ public final class ChannelRuntime {
             if (selectCase instanceof ReadCase<?> read) return read.channel();
             if (selectCase instanceof WriteCase<?> write) return write.channel();
             throw new IllegalStateException(
-                    "default case is never channel-registered");
+                    "only channel cases have channel registrations");
         }
 
         private SelectOperation operation() {
             if (selectCase instanceof ReadCase<?>) return SelectOperation.READ;
             if (selectCase instanceof WriteCase<?>) return SelectOperation.WRITE;
+            if (selectCase instanceof FutureCase<?>) return SelectOperation.FUTURE;
             return SelectOperation.DEFAULT;
         }
 
@@ -520,6 +584,9 @@ public final class ChannelRuntime {
         private final SelectPolicy policy;
         private final int[] order;
         private final ArrayList<CaseRegistration> registrations =
+                new ArrayList<>();
+        /** Detached on any winner/cancellation; never cancels a shared producer Future. */
+        private final ArrayList<OresFuture.RuntimeWaiterRegistration<?>> futureWaiters =
                 new ArrayList<>();
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
@@ -585,10 +652,64 @@ public final class ChannelRuntime {
                                     "channel pending registration budget exhausted")));
                 }
 
+                if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                    // Ready operations have already been given a chance to commit.
+                    decided = true;
+                    unregisterLocked(this);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "pending select registration quota exceeded")));
+                }
+
                 if (!decided && immediateOnly) {
                     decided = true;
                     unregisterLocked(this);
                 }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            runCompletions(completions);
+            if (!immediateOnly) attachFutureWaiters();
+        }
+
+        private void attachFutureWaiters() {
+            List<CaseRegistration> pending;
+            COORDINATOR.lock();
+            try {
+                if (decided) return;
+                pending = List.copyOf(registrations);
+            } finally {
+                COORDINATOR.unlock();
+            }
+            for (CaseRegistration registration : pending) {
+                if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
+                // Registration can settle while we are attaching an earlier
+                // Future listener. Do not execute guest-controlled callback
+                // registration for operations that have already lost.
+                COORDINATOR.lock();
+                try {
+                    if (decided) return;
+                } finally {
+                    COORDINATOR.unlock();
+                }
+                OresFuture.RuntimeWaiterRegistration<?> waiter =
+                        candidate.future().whenCompleteRuntimeCancellable(
+                                (ignored, failure) -> futureBecameReady());
+                COORDINATOR.lock();
+                try {
+                    if (decided) waiter.detach();
+                    else futureWaiters.add(waiter);
+                } finally {
+                    COORDINATOR.unlock();
+                }
+            }
+        }
+
+        private void futureBecameReady() {
+            ArrayList<Runnable> completions = new ArrayList<>();
+            COORDINATOR.lock();
+            try {
+                if (!decided) pumpLocked(completions);
             } finally {
                 COORDINATOR.unlock();
             }
@@ -612,9 +733,13 @@ public final class ChannelRuntime {
     private static boolean exceedsPendingBudgetLocked(
             SelectRegistration selection) {
         for (CaseRegistration registration : selection.registrations) {
-            Channel<?> channel = registration.channel();
-            if (channel.registrations.size() > channel.maxPendingRegistrations) {
-                return true;
+            // FutureCase has no Channel and consumes no per-channel credits.
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                Channel<?> channel = registration.channel();
+                if (channel.registrations.size() > channel.maxPendingRegistrations) {
+                    return true;
+                }
             }
         }
         return false;
@@ -633,7 +758,10 @@ public final class ChannelRuntime {
             CaseRegistration registration =
                     new CaseRegistration(selection, index, selectCase);
             selection.registrations.add(registration);
-            channelOf(selectCase).registrations.add(registration);
+            activeArmRegistrations++;
+            if (selectCase instanceof ReadCase<?> || selectCase instanceof WriteCase<?>) {
+                channelOf(selectCase).registrations.add(registration);
+            }
         }
     }
 
@@ -641,11 +769,23 @@ public final class ChannelRuntime {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
+        if (activeArmRegistrations < selection.registrations.size()) {
+            throw new IllegalStateException("select arm registration accounting underflow");
+        }
+        activeArmRegistrations -= selection.registrations.size();
         for (CaseRegistration registration :
                 List.copyOf(selection.registrations)) {
-            registration.channel().registrations.remove(registration);
+            if (registration.selectCase instanceof ReadCase<?>
+                    || registration.selectCase instanceof WriteCase<?>) {
+                registration.channel().registrations.remove(registration);
+            }
         }
         selection.registrations.clear();
+        for (OresFuture.RuntimeWaiterRegistration<?> waiter :
+                selection.futureWaiters) {
+            waiter.detach();
+        }
+        selection.futureWaiters.clear();
     }
 
     /**
@@ -664,6 +804,22 @@ public final class ChannelRuntime {
                 CaseRegistration chosen =
                         preferredCommittableCaseLocked(selection);
                 if (chosen == null) continue;
+
+                if (chosen.selectCase instanceof FutureCase<?> awaiting) {
+                    Object settled = awaiting.future().runtimeSelectReadyStateOrNull();
+                    if (settled == null) continue;
+                    Throwable failure = OresFuture.runtimeTerminalFailure(settled);
+                    if (failure != null) {
+                        commitFailureLocked(chosen, failure, completions);
+                    } else {
+                        commitSingleLocked(chosen,
+                                new SelectResult(chosen.index, SelectOperation.FUTURE,
+                                        OresFuture.runtimeTerminalValue(settled)),
+                                completions);
+                    }
+                    progressed = true;
+                    break;
+                }
 
                 Channel<?> channel = chosen.channel();
 
@@ -751,6 +907,12 @@ public final class ChannelRuntime {
                     findRegistration(selection, index);
             if (registration == null) continue;
 
+            if (registration.selectCase instanceof FutureCase<?> awaiting) {
+                if (awaiting.future().runtimeSelectReadyStateOrNull() != null) {
+                    return registration;
+                }
+                continue;
+            }
             Channel<?> channel = registration.channel();
             if (registration.operation() == SelectOperation.READ) {
                 if (!channel.buffer.isEmpty() || channel.closed) {
@@ -794,6 +956,9 @@ public final class ChannelRuntime {
     }
 
     private static boolean basicReadyLocked(CaseRegistration registration) {
+        if (registration.selectCase instanceof FutureCase<?> awaiting) {
+            return awaiting.future().runtimeSelectReadyStateOrNull() != null;
+        }
         Channel<?> channel = registration.channel();
 
         if (registration.operation() == SelectOperation.READ) {
