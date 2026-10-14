@@ -134,6 +134,20 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void scalarConstructorParameterMayShadowImportedNamespace() {
+        // An imported runtime name is opaque, but an actual local constructor
+        // parameter with the same spelling is an independently owned scalar.
+        String source = """
+                import module Remote from './remote';
+                define class Safe as
+                  pub final int answer: Remote + 1;
+                  constructor(int Remote) { return; }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
