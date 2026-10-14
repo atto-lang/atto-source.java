@@ -4996,9 +4996,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "guest throw requires a runtime Error-derived value");
                 }
-                if (ActorRuntime.currentActorKind() != null
-                        && ActorRuntime.currentActorKind()
-                                != ActorRuntime.ActorKind.NONE) {
+                if (ActorRuntime.currentActorKind() != null) {
                     throw new SecurityException(
                             "guest throw cannot cross an actor isolation boundary");
                 }
