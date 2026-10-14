@@ -272,6 +272,43 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void concurrentCancellationAndFutureSettlementDoNotRetainLosingWaiters()
+            throws Exception {
+        for (int round = 0; round < 64; round++) {
+            var producer = new OresFuture<Integer>();
+            var channel = new ChannelRuntime.Channel<Integer>(1);
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.await(producer), ChannelRuntime.read(channel))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            var gate = new CountDownLatch(1);
+            Thread canceller = Thread.startVirtualThread(() -> {
+                awaitStart(gate);
+                selected.cancel(false);
+            });
+            Thread settler = Thread.startVirtualThread(() -> {
+                awaitStart(gate);
+                assertTrue(producer.completeFromRuntime(19));
+            });
+            gate.countDown();
+            canceller.join(5_000);
+            settler.join(5_000);
+            assertFalse(canceller.isAlive(), "cancel stalled in round " + round);
+            assertFalse(settler.isAlive(), "settlement stalled in round " + round);
+            if (selected.isCancelled()) {
+                assertThrows(CancellationException.class, selected::join);
+            } else {
+                assertEquals(ChannelRuntime.SelectOperation.FUTURE,
+                        selected.join().operation());
+                assertEquals(19, selected.join().value());
+            }
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(19, producer.join());
+            assertTrue(channel.tryWrite(73));
+            assertEquals(73, channel.tryRead().orElseThrow());
+        }
+    }
+
+    @Test
     void maximumFanInPreservesHighIndexWinnerAndRefundsEveryLosingWaiter() {
         // Probe the largest supported arm set. The channel is deliberately
         // last, so arbitration visits every pending Future before its winner.
