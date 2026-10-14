@@ -134,7 +134,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         this(() -> true, cancelHook, deferredCancellation);
     }
 
-    private OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
+    OresFuture(BooleanSupplier cancelAdmission, Runnable cancelHook,
             boolean deferredCancellation) {
         this.cancelAdmission = Objects.requireNonNull(
                 cancelAdmission, "cancelAdmission");
@@ -461,7 +461,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
         if (deferredCancellation) {
-            if (!cancellationRequest.compareAndSet(null, cancelled)) return false;
+            // Cancel and runtime settlement must arbitrate against the same
+            // lock. Otherwise the initial pending check can become stale
+            // while an already-completed Future accepts a late cancellation.
+            synchronized (cancellationRequest) {
+                if (state.get() != PENDING) return false;
+                if (!cancellationRequest.compareAndSet(null, cancelled)) return false;
+            }
             // Cleanup-aware cancellation is a request, not yet settlement.
             // In particular, the hook must enqueue guest cleanup, never run
             // it on the caller's thread.
@@ -596,7 +602,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     private boolean settle(Object terminal) {
-        if (!state.compareAndSet(PENDING, terminal)) return false;
+        final boolean settled;
+        if (deferredCancellation) {
+            synchronized (cancellationRequest) {
+                settled = state.compareAndSet(PENDING, terminal);
+            }
+        } else {
+            settled = state.compareAndSet(PENDING, terminal);
+        }
+        if (!settled) return false;
 
         RuntimeWaiterRegistration<T> waiter;
         while ((waiter = waiters.poll()) != null) {

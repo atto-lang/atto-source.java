@@ -10,6 +10,41 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class OresFutureCallbackTest {
 
+
+    @Test
+    void deferredCancelCannotReportSuccessAfterRuntimeAlreadySettled() throws Exception {
+        java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch proceed = new java.util.concurrent.CountDownLatch(1);
+        OresFuture<Integer> future = new OresFuture<>(() -> {
+            entered.countDown();
+            try {
+                return proceed.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }, () -> { }, true);
+
+        java.util.concurrent.ExecutorService worker =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            java.util.concurrent.Future<Boolean> cancellation =
+                    worker.submit(() -> future.cancel(false));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertTrue(future.completeFromRuntime(42));
+            proceed.countDown();
+            assertFalse(cancellation.get(5, TimeUnit.SECONDS),
+                    "late deferred cancellation cannot claim a terminal Future");
+            assertEquals(42, future.get(5, TimeUnit.SECONDS));
+            assertNull(future.deferredCancellationCause(),
+                    "rejected cancellation must not install a pending request");
+        } finally {
+            proceed.countDown();
+            worker.shutdownNow();
+            assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
     @Test
     void fromCallbackMaySettleSynchronouslyButRemainsSingleShot() throws Exception {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
