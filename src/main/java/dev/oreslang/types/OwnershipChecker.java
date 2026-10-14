@@ -595,9 +595,8 @@ public final class OwnershipChecker {
                         for (int j = 0; j < arm.destructureBindings().size(); j++) {
                             Ast.DestructureBinding binding = arm.destructureBindings().get(j);
                             if (binding.isDiscard()) continue;
-                            Ast.TypeRef projected = binding.declaredType() != null
-                                    ? binding.declaredType()
-                                    : arm.destructureKind() == Ast.DestructureKind.SEQUENCE
+                            Ast.TypeRef sourceField =
+                                    arm.destructureKind() == Ast.DestructureKind.SEQUENCE
                                             ? sequenceDestructureBindingType(element, j, binding.rest())
                                             : destructureBindingType(
                                                     new Ast.DestructureStmt(
@@ -605,6 +604,19 @@ public final class OwnershipChecker {
                                                             arm.destructureBindings(),
                                                             new Ast.LiteralExpr(null)),
                                                     element, j, binding.name());
+                            Ast.TypeRef projected = binding.declaredType() != null
+                                    ? binding.declaredType() : sourceField;
+                            // A winning channel read transfers one aggregate.
+                            // Its subfields do not become independently owned
+                            // move-only values merely by binding new names.
+                            // Until projection leases/move-from-field lowering
+                            // is implemented, fail closed instead of allowing
+                            // a non-Copy field to escape as an untracked owner.
+                            if (kindOfType(sourceField) != ValueKind.COPY
+                                    || kindOfType(projected) != ValueKind.COPY) {
+                                throw error("non-Copy select read projection '" + binding.name()
+                                        + "' requires explicit owned-field transfer/loan lowering");
+                            }
                             armScope.define(binding.name(), new VarState(
                                     projected,
                                     binding.mutableReferent(),
