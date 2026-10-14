@@ -11,6 +11,19 @@
 - Actor carrier admission permits STOP cleanup only after checking the authenticated `CleanupTurn` again. Normal guest messages, foreign/stale callbacks, and ordinary source execution remain blocked. `schedulerSafepoint` allows actor cancellation cleanup only after terminal resume is actually injected into that SourceTask.
 - `SourceTask` now implements `CleanupAwareTask`, and nine actor teardown/cleanup races from #823 have been ported to `ActorTicketedStopCleanupIntegrationTest` while retaining the existing #709 serial ticket tests.
 
+## Follow-up safety audit (2026-10-14)
+
+**Confirmed source defects corrected on the WIP branch:**
+
+1. **STOP dequeue dead-end:** the actor's outer mailbox loop admitted source cleanup but an inner unconditional `if (stopped.get()) break` prevented every STOP continuation. The inner gate now stops only after cleanup eligibility is exhausted; each envelope still passes its independent post-STOP authority check under `lifecycleLock`.
+2. **Split classification/reservation:** `enqueueContinuation` initially classified a turn as ordinary/cleanup outside `lifecycleLock`, then reserved its CONTROL slot under a second lock and rechecked when publishing. A STOP in the gap could revoke a legitimate source continuation. Cleanup classification, ticket provenance, mailbox capacity reservation, and publication now share one actor lifecycle transaction. Foreign/revoked tickets are rejected before capacity accounting and overflow is reported after releasing the lifecycle monitor.
+3. **Misclassified STOP revocation:** `SerialExecutionTicket.requireAdmissible` treated a valid same-incarnation ticket whose ordinary authority had just been revoked as a generic illegal/foreign continuation. It now distinguishes a benign local `RetiredTaskException` from truly foreign actor/incarnation attempts, so cancellation races do not poison actor supervision.
+4. **Cross-carrier data races:** `sourceCleanupTasks` now uses a concurrent key set; `sourceScheduler`, `sourceCancellationPending` and `finalized` are visible across scheduler, actor and cancelling threads. STOP continues to enforce lifecycle-lock ordering for actual state transitions.
+
+**New regressions:** STOP/carrier authority test in `SerialExecutionTicketTest`; `ActorCleanupStopRaceStressTest` races Future producer completion and actor STOP for 24 attempts, ensuring at most one cleanup invocation, actor-lane execution and no retired-source reentry. This suite is included in the JVM and native-carrier focused selectors. The nine upstream actor lifecycle scenarios are still included.
+
+**Evidence limitation:** exact-head source-org GitHub Actions jobs, including typed-dispatch and fast CI, report failed with **zero job steps executed**. No code has compiled on that runner. The 24-attempt test is committed but **has not been run**, and no TLA+ refinement, Native Image, LLVM parity, or verified complete cross-org private mirror exists. Keep this PR draft until those gates actually execute.
+
 ## Required verification before review or merge
 
 1. **Compile the entire exact source tree** on GraalVM JDK 25; fail hard if any source filename, generated resource, license, Maven profile, or dependency is missing.
