@@ -23,6 +23,7 @@ public final class ExportInterfaceCollector {
             throw new IllegalArgumentException("interface namespace does not match checked source");
         List<ExportInterfaceCodec.Entry> entries = new ArrayList<>();
         for (Ast.ModuleDecl module : checked.modules()) {
+            int beforeModule = entries.size();
             String owner = module.name();
             StringBuilder info = new StringBuilder();
             types(info, module.contracts());
@@ -148,6 +149,11 @@ public final class ExportInterfaceCollector {
                     entries.add(new ExportInterfaceCodec.Entry(owner,
                             ExportInterfaceCodec.Kind.BINDING, f.name(), sig.toString()));
                 }
+            }
+            // An entirely private module has no externally observable surface:
+            // do not leak even its name into the distributable descriptor.
+            if (entries.size() == beforeModule + 1) {
+                entries.remove(beforeModule);
             }
         }
         return ExportInterfaceCodec.encode(header, entries);
