@@ -52,8 +52,10 @@ public final class CompileTimeConstantEvaluator {
         if (expression instanceof Ast.UnaryExpr unary) {
             Object operand = evaluate(unary.operand(), budget, depth + 1);
             return switch (unary.operator()) {
-                case "+" -> requireInt(operand);
-                case "-" -> checked(() -> Math.negateExact(requireInt(operand)));
+                case "+" -> operand instanceof Double d ? finiteFloat(d) : requireInt(operand);
+                case "-" -> operand instanceof Double d
+                        ? finiteFloat(-d)
+                        : checked(() -> Math.negateExact(requireInt(operand)));
                 case "~" -> ~requireInt(operand);
                 case "!" -> !requireBool(operand);
                 default -> throw reject("unsupported unary operator " + unary.operator());
@@ -109,6 +111,11 @@ public final class CompileTimeConstantEvaluator {
         // Includes calls, names, members, casts, assignments, constructors,
         // containers, borrows, awaits, traps and runtime intrinsics.
         throw reject("runtime/unsupported expression " + expression.getClass().getSimpleName());
+    }
+
+    private static double finiteFloat(double value) {
+        if (!Double.isFinite(value)) throw reject("non-finite floating-point constant");
+        return value;
     }
 
     private static long requireInt(Object value) {
