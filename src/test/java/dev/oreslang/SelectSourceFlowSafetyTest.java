@@ -116,6 +116,61 @@ final class SelectSourceFlowSafetyTest {
     }
 
     @Test
+    void selectedProceduralReturnResumesAfterCooperateAndRunsBothDefersOnce()
+            throws Exception {
+        String source = """
+                pub fnc compute(): int {
+                  defer stdio.stdout.write("outer:");
+                  do select {
+                    default: {
+                      defer stdio.stdout.write("arm:");
+                      stdio.stdout.write("before:");
+                      rt cooperate;
+                      stdio.stdout.write("after:");
+                      return 27;
+                    }
+                  }
+                  return 99;
+                }
+                pub async fnc main(): void {
+                  stdio.stdout.write(compute());
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("before:after:arm:outer:27", run(source));
+    }
+
+    @Test
+    void selectedContinueAndBreakPropagateAfterCooperateWithoutReplay()
+            throws Exception {
+        String source = """
+                pub fnc count(): int {
+                  let int passes = 0;
+                  loop {
+                    passes = passes + 1;
+                    do select {
+                      default: {
+                        rt cooperate;
+                        if passes < 3; then
+                          continue;
+                        fi
+                        break;
+                      }
+                    }
+                  }
+                  return passes;
+                }
+                pub async fnc main(): void {
+                  stdio.stdout.write(count());
+                  return;
+                }
+                """;
+        assertWarnings(source, 0);
+        assertEquals("3", run(source));
+    }
+
+    @Test
     void channelCloseIsVisibleToSourceAndPreservesCommittedBufferedValue() throws Exception {
         String source = """
                 pub fnc main(): void {
