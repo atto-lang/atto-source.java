@@ -24,12 +24,17 @@ proven effect-free. Indexing is rejected even when its operands are pure,
 because bounds failure could unwind an incompletely constructed object and
 partial-construction resource cleanup remains unproven.
 
-Member reads and imported runtime value names are also rejected in eager
-initializers. Resolving a module export, imported namespace or host member can
-execute code outside the local initializer's effect proof; visiting only the
-receiver expression is not sufficient. Scalar constructor parameters remain
-available directly, and explicitly verified zero-argument scalar helpers
-remain admissible.
+Member reads and all nonlocal runtime value names are rejected in eager
+initializers. Resolving a module export, imported namespace, host member or
+global value can execute code outside the local initializer's effect proof;
+visiting only a member receiver is not sufficient. The only admitted direct
+value-name leaves are the constructor's checked scalar parameters. An eager
+unary borrow (`&` or `&mut`) cannot create a loan across construction.
+
+A verified zero-argument scalar helper may still be called, but its callable
+name must resolve to that function in the runtime lexical environment. A
+constructor parameter shadowing the callable, or a foreign/imported class
+namespace with unproven effects, cannot satisfy this exception.
 
 The synchronous scalar-helper exception requires a statically resolved
 zero-argument, non-generic, non-async, non-suspending, non-generator,
