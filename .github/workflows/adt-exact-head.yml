@@ -11,6 +11,8 @@ on:
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
       - 'src/main/java/dev/oreslang/runtime/MatchContinuationQueue.java'
       - 'src/test/java/dev/oreslang/MatchContinuationQueueTest.java'
+      - 'src/test/java/dev/oreslang/runtime/MatchContinuationQueueSmoke.java'
+      - 'scripts/verify-adt-queue.sh'
       - 'src/test/java/dev/oreslang/*Adt*'
       - 'src/test/java/dev/oreslang/*ADT*'
       - 'src/test/java/dev/oreslang/*Enum*'
@@ -26,7 +28,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pure-JDK queue verification is independent of Maven and GraalVM.
+  # This remains a required prerequisite for the targeted guest suite.
+  adt-portable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Check revision and compile production queue without Maven
+        run: |
+          git rev-parse HEAD
+          bash scripts/verify-adt-queue.sh
+
   adt-targeted:
+    needs: adt-portable
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
