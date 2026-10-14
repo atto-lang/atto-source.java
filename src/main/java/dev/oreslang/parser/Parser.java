@@ -2617,6 +2617,11 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch(boolean procedural, boolean valuePosition) {
+        // The direct callable return hint applies to this match only. Consume
+        // it before parsing subject/guards/arms, so an unannotated nested match
+        // cannot silently inherit the enclosing callable's result type.
+        Ast.TypeRef directReturnHint = valuePosition ? directReturnMatchType : null;
+        if (valuePosition) directReturnMatchType = null;
         // Canonical match is ordered and spells its boundary explicitly:
         //   match value over
         //     on Pattern -> { ... }
@@ -2640,15 +2645,15 @@ public final class Parser {
             consume(GT, "expected '>' after match return-type contract");
         }
         if (valuePosition && returnContract == null) {
-            if (directReturnMatchType == null
-                    || "void".equalsIgnoreCase(directReturnMatchType.name())) {
+            if (directReturnHint == null
+                    || "void".equalsIgnoreCase(directReturnHint.name())) {
                 throw error(peek(), "value-producing match requires <ret=Type> "
                         + "unless used directly as 'return match' in a callable with a typed result");
             }
             // Typechecker, ownership checker and actor runtime consume this
             // explicit AST result contract. Never infer a contract from an
             // expression's runtime value or from a neighboring match arm.
-            returnContract = directReturnMatchType;
+            returnContract = directReturnHint;
         }
         if (valuePosition && procedural) {
             throw error(peek(), "do match cannot produce an expression result");
