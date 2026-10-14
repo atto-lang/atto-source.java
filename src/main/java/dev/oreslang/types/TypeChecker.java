@@ -8067,6 +8067,17 @@ public final class TypeChecker {
             Binding inherited = parent.lookup(name);
             if (deferredCaptureBoundary
                     && inherited != null
+                    && isTypedMapType(inherited.type())) {
+                // A captured Map survives the creating scope. No loan can be
+                // proved to end before the closure executes, so prevent both
+                // readonly and mutable captures until non-lexical lifetimes
+                // and exclusive moves are implemented.
+                throw new IllegalArgumentException(
+                        "cannot capture typed Map '" + name
+                                + "' in deferred code without a borrow lifetime proof");
+            }
+            if (deferredCaptureBoundary
+                    && inherited != null
                     && inherited.hasUninitializedFields()) {
                 throw new IllegalArgumentException(
                         "cannot capture partially initialized explicit struct '" + name
