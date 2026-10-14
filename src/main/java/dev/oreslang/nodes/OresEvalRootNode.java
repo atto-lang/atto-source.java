@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.types.FixedProductCallPlan;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -896,6 +897,31 @@ public final class OresEvalRootNode extends RootNode {
         @FunctionalInterface
         private interface SourceArgsCont {
             void accept(SourceTask task, List<Object> values, Throwable failure);
+        }
+
+        @FunctionalInterface
+        private interface SourceDirectArgsCont {
+            void accept(SourceTask task, DirectArguments args, Throwable failure);
+        }
+
+        private record DirectArguments(List<Object> values,
+                                       List<FixedProductCallPlan.InputSlot> inputs) {
+            private DirectArguments {
+                values = List.copyOf(values);
+                inputs = List.copyOf(inputs);
+                if (values.size() != inputs.size()) {
+                    throw new IllegalArgumentException("direct product values/labels out of sync");
+                }
+            }
+
+            private List<Object> inAbiOrder(Ast.FunctionDecl fn) {
+                if (inputs.stream().noneMatch(slot -> slot.label() != null)) return values;
+                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                        fn.parameters().stream().map(Ast.Param::name).toList(), inputs);
+                ArrayList<Object> ordered = new ArrayList<>(values.size());
+                for (int source : plan.abiToSource()) ordered.add(values.get(source));
+                return List.copyOf(ordered);
+            }
         }
 
         @FunctionalInterface
@@ -3561,6 +3587,76 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void appendDirectArgument(
+                Ast.Expr argument, Object value,
+                ArrayList<Object> values,
+                ArrayList<FixedProductCallPlan.InputSlot> slots) {
+            if (!(argument instanceof Ast.SpreadExpr)) {
+                values.add(value);
+                slots.add(FixedProductCallPlan.InputSlot.positional());
+                return;
+            }
+            if (value instanceof ReadonlyRecordValue record) {
+                for (Map.Entry<String, Object> field : record.entrySet()) {
+                    slots.add(FixedProductCallPlan.InputSlot.named(field.getKey()));
+                    values.add(field.getValue());
+                }
+                return;
+            }
+            List<Object> expanded = expandArgumentSequence(value, "direct call spread");
+            values.addAll(expanded);
+            for (int i = 0; i < expanded.size(); i++) {
+                slots.add(FixedProductCallPlan.InputSlot.positional());
+            }
+        }
+
+        private DirectArguments evaluateDirectArguments(List<Ast.Expr> arguments, Env env) {
+            ArrayList<Object> values = new ArrayList<>();
+            ArrayList<FixedProductCallPlan.InputSlot> slots = new ArrayList<>();
+            for (Ast.Expr argument : arguments) {
+                // Evaluates the entire operand exactly once, in lexical order.
+                Ast.Expr operand = argument instanceof Ast.SpreadExpr spread
+                        ? spread.expression() : argument;
+                appendDirectArgument(argument, eval(operand, env), values, slots);
+            }
+            return new DirectArguments(values, slots);
+        }
+
+        private void evalSuspendableDirectArguments(
+                SourceTask task, List<Ast.Expr> arguments, Env env,
+                SourceDirectArgsCont continuation) {
+            ArrayList<Object> values = new ArrayList<>();
+            ArrayList<FixedProductCallPlan.InputSlot> slots = new ArrayList<>();
+            evalSuspendableDirectArgumentAt(task, arguments, env, values, slots, 0, continuation);
+        }
+
+        private void evalSuspendableDirectArgumentAt(
+                SourceTask task, List<Ast.Expr> arguments, Env env,
+                ArrayList<Object> values,
+                ArrayList<FixedProductCallPlan.InputSlot> slots,
+                int index, SourceDirectArgsCont continuation) {
+            if (index == arguments.size()) {
+                continuation.accept(task, new DirectArguments(values, slots), null);
+                return;
+            }
+            Ast.Expr argument = arguments.get(index);
+            Ast.Expr operand = argument instanceof Ast.SpreadExpr spread
+                    ? spread.expression() : argument;
+            evalSuspendableExpr(task, operand, env, (t, value, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                try {
+                    appendDirectArgument(argument, value, values, slots);
+                    evalSuspendableDirectArgumentAt(
+                            t, arguments, env, values, slots, index + 1, continuation);
+                } catch (RuntimeException | Error error) {
+                    continuation.accept(t, null, error);
+                }
+            });
+        }
+
         private void evalSuspendableArguments(
                 SourceTask task,
                 List<Ast.Expr> expressions,
@@ -4070,29 +4166,27 @@ public final class OresEvalRootNode extends RootNode {
                         : findFunction(name.name(), call.arguments().size());
                 if (direct != null || (spread && hasFunctionFamily(name.name()))) {
                     requireExplicitClassCallableImport(env, name.name());
-                    evalSuspendableArguments(
+                    evalSuspendableDirectArguments(
                             task,
                             call.arguments(),
                             env,
-                            (t, values, failure) -> {
+                            (t, evaluated, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
                                 try {
-                                    // For a fixed spread, select the overload
-                                    // by expanded arity, never by the count of
-                                    // syntactic aggregate arguments. Evaluate
-                                    // each spread source only once beforehand.
+                                    // Overload identity depends only on expanded
+                                    // arity; source labels bind after selection.
                                     Ast.FunctionDecl selected = spread
-                                            ? findFunction(name.name(), values.size()) : direct;
+                                            ? findFunction(name.name(), evaluated.values().size()) : direct;
                                     if (selected == null) {
                                         throw new IllegalArgumentException(
                                                 "no function " + name.name()
-                                                        + " with expanded arity " + values.size());
+                                                        + " with expanded arity " + evaluated.values().size());
                                     }
                                     Invocation invocation =
-                                            functionInvocation(selected, values);
+                                            functionInvocation(selected, evaluated.inAbiOrder(selected));
                                     completeSourceInvocation(
                                             t,
                                             invocation,
@@ -5670,15 +5764,15 @@ public final class OresEvalRootNode extends RootNode {
                         : findFunction(directName.name(), call.arguments().size());
                 if (direct != null || (spread && hasFunctionFamily(directName.name()))) {
                     requireExplicitClassCallableImport(env, directName.name());
-                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    DirectArguments args = evaluateDirectArguments(call.arguments(), env);
                     Ast.FunctionDecl selected = spread
-                            ? findFunction(directName.name(), args.size()) : direct;
+                            ? findFunction(directName.name(), args.values().size()) : direct;
                     if (selected == null) {
                         throw new IllegalArgumentException(
                                 "no function " + directName.name()
-                                        + " with expanded arity " + args.size());
+                                        + " with expanded arity " + args.values().size());
                     }
-                    return functionInvocation(selected, args);
+                    return functionInvocation(selected, args.inAbiOrder(selected));
                 }
             }
 
