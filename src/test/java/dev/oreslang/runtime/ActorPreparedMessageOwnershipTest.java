@@ -72,6 +72,61 @@ final class ActorPreparedMessageOwnershipTest {
     }
 
     @Test
+    void dataOnlyFreezeRejectsIdentityBasedDuplicateLogicalSymbolKeys() {
+        Object first = OresSymbol.process("ready");
+        Object second = OresSymbol.process("ready");
+        assertNotSame(first, second);
+        java.util.IdentityHashMap<Object, Object> hostile = new java.util.IdentityHashMap<>();
+        hostile.put(first, "safe");
+        hostile.put(second, "overwritten");
+        assertEquals(2, hostile.size());
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> ActorRuntime.freeze(hostile));
+        assertTrue(denied.getMessage().contains("duplicate logical Map key"),
+                denied.getMessage());
+
+        // String and Symbol keys are nominally different despite matching text.
+        Map<Object, Object> allowed = new java.util.LinkedHashMap<>();
+        allowed.put("ready", 1);
+        allowed.put(OresSymbol.process("ready"), 2);
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> detached = (Map<Object, Object>) ActorRuntime.freeze(allowed);
+        assertEquals(2, detached.size());
+        assertEquals(1, detached.get("ready"));
+        assertEquals(2, detached.get(OresSymbol.process("ready")));
+    }
+
+    @Test
+    void privateMailboxRejectsIdentityBasedDuplicateSymbolKeys() {
+        java.util.IdentityHashMap<Object, Object> hostile = new java.util.IdentityHashMap<>();
+        hostile.put(OresSymbol.process("ready"), 1);
+        hostile.put(OresSymbol.process("ready"), 2);
+        assertEquals(2, hostile.size());
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var sink = runtime.<Object>spawnPrivate(
+                    ignored -> (message, context) -> {});
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class, () -> sink.send(hostile));
+            assertTrue(denied.getMessage().contains("duplicate logical Map key"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
+    void dataOnlyFreezeRejectsIdentityBackedDuplicateLogicalSetElements() {
+        java.util.Set<Object> hostile = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<Object, Boolean>());
+        hostile.add(OresSymbol.process("ready"));
+        hostile.add(OresSymbol.process("ready"));
+        assertEquals(2, hostile.size());
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () -> ActorRuntime.freeze(hostile));
+        assertTrue(denied.getMessage().contains("duplicate logical Set element"),
+                denied.getMessage());
+    }
+
+    @Test
     void frozenCopyEnforcesAggregateGraphQuotaAcrossNestedLists() {
         AtomicBoolean expanded = new AtomicBoolean();
         IllegalArgumentException denied = assertThrows(
