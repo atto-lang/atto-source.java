@@ -57,6 +57,17 @@ while preserving the same dependency set still invalidates the plan.
 External imported symbol selectors are also part of the fingerprint, even
 when the external provider hash is unchanged.
 
+`fromCheckedPrograms` is the preferred interface-planning entry point
+when the compiler already has ownership/type-admitted programs. It derives
+each public `.oresi` envelope from the **same checked source AST**, rather
+than accepting a potentially stale caller-provided export envelope. Its
+envelopes still use the experimental v1 collector, so unsupported private
+native layouts fail closed. The caller must remain a trusted compiler driver:
+supplying an arbitrary AST under the name 'checked' does not make it
+admitted source. The lower-level `fromValidatedImportGraph` accepts export
+files directly for compatibility and targeted testing, but MUST NOT itself
+be used as proof that those exports correspond to the program.
+
 ### Audit hardening (2026-10-14)
 
 The integrated entry point now rejects noncanonical source-unit paths
