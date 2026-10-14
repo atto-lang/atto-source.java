@@ -1557,7 +1557,16 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
         }
-        if (cell.kind != ActorKind.UNTRUSTED) return cell.sourceScheduler().start(task);
+        if (cell.kind != ActorKind.UNTRUSTED) {
+            // Linearize source task registration with STOP. The older fast
+            // path admitted fresh user work while an already-running actor
+            // frame was concurrently being stopped by its supervisor.
+            synchronized (cell.lifecycleLock) {
+                if (cell.stopped.get() || cell.finalized || closed.get())
+                    throw terminated(cell.ref);
+                return cell.sourceScheduler().start(task);
+            }
+        }
         // Do not mint multiple independent root budgets from one physical
         // mailbox turn. While one source-task cohort is live, its nested
         // tasks share the same quota; a second top-level task fails closed.
@@ -1565,6 +1574,8 @@ public final class ActorRuntime implements AutoCloseable {
         // is still suspended.
         UntrustedLogicalQuota inheritedQuota = CURRENT_UNTRUSTED_QUOTA.get();
         synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get())
+                throw terminated(cell.ref);
             // Unlike the physical-cohort count, this remains charged while a
             // terminal Future subscriber is blocked AFTER guest quiescence.
             if (cell.activeUntrustedTimedAdmissions >=
@@ -1647,7 +1658,13 @@ public final class ActorRuntime implements AutoCloseable {
         };
         OresFuture<T> future;
         try {
-            future = cell.sourceScheduler().startWithWallDeadline(resume -> {
+            synchronized (cell.lifecycleLock) {
+                // The cohort slot was reserved above. A STOP between that
+                // reservation and scheduler publication must still fail
+                // closed; the catch block releases the unused reservation.
+                if (cell.stopped.get() || cell.finalized || closed.get())
+                    throw terminated(cell.ref);
+                future = cell.sourceScheduler().startWithWallDeadline(resume -> {
                 UntrustedLogicalQuota previous = CURRENT_UNTRUSTED_QUOTA.get();
                 CURRENT_UNTRUSTED_QUOTA.set(quota);
                 boolean entered = false;
@@ -1671,6 +1688,7 @@ public final class ActorRuntime implements AutoCloseable {
                             UntrustedActorQuotaExceededException.Resource.WALL_TIME,
                             "untrusted logical task exceeded wall-time budget while suspended"),
                     notificationsDrained);
+            }
         } catch (RuntimeException | Error failure) {
             // No task was admitted. Release the pre-reserved quota slot.
             // The scheduler's own retirement callback also claims this

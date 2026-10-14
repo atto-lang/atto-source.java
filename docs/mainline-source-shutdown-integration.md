@@ -17,6 +17,13 @@ This branch is intentionally based on Java `main` at `97e28489ece594d6e664932106
 - New race regressions cover async cleanup and late producers, wrapped-fatal precedence, scheduler-close revocation, and deferred cancel-vs-settlement arbitration.
 - **This is NOT yet actor STOP authorization.** The post-STOP actor CONTROL mailbox remains sealed; actor-lifecycle cleanup authentication/timeout and serial tickets from #922 require separate integration and tests.
 
+## Actor STOP admission fence
+
+- Trusted source task startup is now atomic with the actor lifecycle STOP seal; already-running actor turns cannot admit fresh user work once STOP has linearized.
+- Untrusted source task admission checks STOP both before reserving its bounded logical quota and again while publishing the scheduler task. An aborted admission releases the existing quota reservation.
+- The new host-STOP race regression proves rejection happens while the stopped actor still physically owns its active turn. No source guest task is allowed to start.
+- These are **admission protections only**. Authenticated post-STOP lexical cleanup continuations remain a separate integration gate.
+
 ## Still excluded / mandatory gates
 
 - The older inline critical-state/handle_state fixture was excluded from active Maven tests: current main's actor-state declaration contract differs, and simply changing its spelling would weaken the sealed-state proof. It remains in #823 until its feature-level lowering is ported.
