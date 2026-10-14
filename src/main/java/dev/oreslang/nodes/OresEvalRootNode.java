@@ -4915,17 +4915,31 @@ public final class OresEvalRootNode extends RootNode {
                     try {
                         eval(deferred.pop(), env);
                     } catch (RuntimeException | Error failure) {
-                        if (cleanupFailure == null) cleanupFailure = failure;
-                        else if (cleanupFailure != failure)
-                            preserveCleanupFailure(cleanupFailure, failure);
+                        if (cleanupFailure == null) {
+                            cleanupFailure = failure;
+                        } else if (cleanupFailure != failure) {
+                            if (sourceCleanupDominates(cleanupFailure, failure)) {
+                                preserveCleanupFailure(failure, cleanupFailure);
+                                cleanupFailure = failure;
+                            } else {
+                                preserveCleanupFailure(cleanupFailure, failure);
+                            }
+                        }
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || cleanupFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (cleanupFailure == null) cleanupFailure = failure;
-                    else if (cleanupFailure != failure)
-                        preserveCleanupFailure(cleanupFailure, failure);
+                    if (cleanupFailure == null) {
+                        cleanupFailure = failure;
+                    } else if (cleanupFailure != failure) {
+                        if (sourceCleanupDominates(cleanupFailure, failure)) {
+                            preserveCleanupFailure(failure, cleanupFailure);
+                            cleanupFailure = failure;
+                        } else {
+                            preserveCleanupFailure(cleanupFailure, failure);
+                        }
+                    }
                 }
                 if (originalFailure != null) {
                     // Keep first-failure semantics for ordinary guest errors,
