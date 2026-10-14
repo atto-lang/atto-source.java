@@ -1546,11 +1546,15 @@ public final class TypeChecker {
             // Mutable maps are affine until borrow tracking can prove there are
             // no competing live writable aliases. Read-only aliases cannot
             // be promoted into writable references.
-            if (binding.mutableReferent() && isTypedMapType(actual)
+            if (isTypedMapType(actual)
                     && !(binding.initializer() instanceof Ast.NewExpr created
                             && created.type().name().equals("Map"))) {
+                // Even a readonly alias of a mutable map would need an active
+                // lifetime loan so owners cannot write while it exists.
+                // Reject all local aliases until non-lexical loan lifetimes
+                // and exclusive moves are tracked end to end.
                 throw new IllegalArgumentException(
-                        "mutable typed Map binding must own a fresh new Map<K,V>() value; cannot upgrade or alias a Map");
+                        "typed Map bindings must own a fresh new Map<K,V>() value; borrowed aliases are not implemented");
             }
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields, binding.mutableReferent());
