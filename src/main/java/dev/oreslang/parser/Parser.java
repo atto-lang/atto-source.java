@@ -3489,11 +3489,18 @@ public final class Parser {
     }
 
     private void consumeClassFieldTerminator(String message) {
-        if (match(SEMICOLON) || check(AT) || check(END) || check(PUB) || check(PRIVATE)
-                || check(STATIC) || check(ABSTRACT) || check(ASYNC) || check(SUSPENDS) || check(LBRACKET)
-                || isBindingKind(peek().type())
-                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))
-                || isNextContextualMemberLine()) return;
+        // A semicolon or an actual class terminator always ends the field.
+        if (match(SEMICOLON) || check(END)) return;
+        // A new member declaration must begin on a DIFFERENT source line.
+        // Accepting PUB/CONST/IDENT unconditionally allowed two adjacent
+        // same-line fields without a semicolon and bypassed formatting rules.
+        if (current > 0 && previous().line() < peek().line()
+                && (check(AT) || check(PUB) || check(PRIVATE)
+                        || check(STATIC) || check(ABSTRACT) || check(ASYNC)
+                        || check(SUSPENDS) || check(LBRACKET)
+                        || isBindingKind(peek().type())
+                        || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))
+                        || isNextContextualMemberLine())) return;
         throw error(peek(), message);
     }
 
@@ -3506,9 +3513,10 @@ public final class Parser {
         if (check(MUT)) return looksLikeTypeFirstClassField();
         if (!check(IDENT)) return false;
         String word = peek().lexeme();
-        return ((word.equals("suspend") || word.equals("method")
-                || word.equals("final") || word.equals("critical"))
-                && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
+        return (word.equals("final") && checkNext(CONST))
+                || ((word.equals("suspend") || word.equals("method")
+                        || word.equals("final") || word.equals("critical"))
+                        && (checkNext(IDENT) || checkNext(MUT) || checkNext(FNC) || checkNext(LPAREN)))
                 || looksLikeTypeFirstClassField();
     }
 
