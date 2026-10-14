@@ -116,6 +116,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<RuntimeWaiterRegistration<T>> waiters = new ConcurrentLinkedQueue<>();
+    /**
+     * Serializes the short registration decision with the producer's queue
+     * drain. Terminal-state publication itself remains lock-free. No user or
+     * runtime completion callback is ever invoked while holding this monitor.
+     *
+     * A waiter must either be admitted before the terminal drain, or observe
+     * the terminal state and be notified inline; it must never straddle the
+     * drain as an unclaimed, permanently retained queue node.
+     */
+    private final Object waiterAdmissionLock = new Object();
 
     public OresFuture() {
         this(() -> true, () -> { });
@@ -431,21 +441,23 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Objects.requireNonNull(callback, "callback");
         RuntimeWaiterRegistration<T> waiter =
                 new RuntimeWaiterRegistration<>(this, callback);
-        waiters.add(waiter);
-
-        Object observed = state.get();
-        if (observed != PENDING
-                && (!(observed instanceof Cancelled)
-                        || cancelRevocationComplete.get())) {
-            // Cancellation state is visible immediately at CAS, but ordinary
-            // runtime subscribers must not run until internal revocation.
-            // If revocation is still underway, leave this registration in
-            // the queue: the cancelling thread will drain it afterwards.
-            // Otherwise remove/claim atomically against the settlement drain
-            // so the callback runs no more than once.
-            waiters.remove(waiter);
-            notifyWaiter(waiter, observed);
+        Object observed;
+        synchronized (waiterAdmissionLock) {
+            observed = state.get();
+            if (observed == PENDING
+                    || (observed instanceof Cancelled
+                            && !cancelRevocationComplete.get())) {
+                // If terminal CAS races after this observation, the producer
+                // must enter the same lock before polling waiters. A pending
+                // cancellation keeps registrations queued until revocation
+                // completes, so no host callback runs before its barrier.
+                waiters.add(waiter);
+                return waiter;
+            }
         }
+        // Terminal callbacks run outside the admission lock. Already-settled
+        // futures need no queue node, preventing post-drain retention.
+        notifyWaiter(waiter, observed);
         return waiter;
     }
 
@@ -626,8 +638,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             } else {
                 afterStateClaimed.run();
             }
-            RuntimeWaiterRegistration<T> waiter;
-            while ((waiter = waiters.poll()) != null) {
+            while (true) {
+                RuntimeWaiterRegistration<T> waiter;
+                synchronized (waiterAdmissionLock) {
+                    waiter = waiters.poll();
+                }
+                if (waiter == null) break;
+                // Never execute a callback under the admission monitor:
+                // callbacks may register more Futures or select other arms.
                 notifyWaiter(waiter, terminal);
             }
             return true;
