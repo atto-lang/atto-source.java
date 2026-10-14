@@ -218,6 +218,48 @@ final class ConditionalOptionBindingTest {
     }
 
     @Test
+    void duplicateConditionalNamesAreRejectedEvenForIdenticalCopyValues() {
+        rejects("""
+                fnc invalid(Option<int> a, Option<int> b): int {
+                  if a as const value && b as let value then
+                    return value;
+                  else
+                    return 0;
+                  fi
+                }
+                """, "duplicate binding");
+    }
+
+    @Test
+    void shortCircuitSkipsSideEffectingGuardOnNone() throws Exception {
+        String program = """
+                fnc inspect(int candidate): bool {
+                  stdio.println("rhs");
+                  return candidate eq 15;
+                }
+
+                pub fnc main(): void {
+                  if None as const value && inspect(value) then
+                    stdio.println("unexpected");
+                  else
+                    stdio.println("missing");
+                  fi
+                  if Some(15) as const value && inspect(value) then
+                    stdio.println("present");
+                  fi
+                  return;
+                }
+                """;
+        // A type-inferred None lacks a concrete T; annotate it through a
+        // declared Option<int> to keep the Copy payload proof explicit.
+        String typed = program.replace("if None as const value", "if missing as const value")
+                .replace("pub fnc main(): void {",
+                        "pub fnc main(): void {\n  val Option<int> missing = None;");
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(typed)));
+        assertEquals(List.of("missing", "rhs", "present"), run(typed));
+    }
+
+    @Test
     void guardsDoNotLeakBindingsAcrossShortCircuitOrOuterScope() {
         rejects("""
                 fnc bad(Option<int> maybe): int {
