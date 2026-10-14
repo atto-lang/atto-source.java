@@ -34,6 +34,10 @@ typedef enum ores_turn_status {
  * retired with no outstanding cleanup tickets. VM must fence ALL other
  * callers before destruction; pointers from a destroyed VM may be recycled
  * by the allocator and are never valid against a later VM instance.
+ * Physical turn leases use per-thread monotonic tokens, not reusable pthread_t
+ * values. Abandoned leases from exited carriers must NOT be claimed/released
+ * by a replacement thread; the VM must quiesce actual guest frames before
+ * final retirement.
  */
 ores_turn_vm *ores_turn_vm_new(size_t max_objects);
 ores_turn_status ores_turn_vm_destroy(ores_turn_vm *vm);
