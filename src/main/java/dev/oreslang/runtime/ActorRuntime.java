@@ -4438,8 +4438,8 @@ public final class ActorRuntime implements AutoCloseable {
             // A force revocation can race a previously initiated structured
             // STOP. Its idempotent terminateTree() must not leave the old
             // cleanup lane parked after the physical isolate was revoked.
-            for (ActorCell<?> cell : attempt.cells) {
-                cell.revokeSourceCleanupAfterForceStop();
+            for (ActorCell<?> revokedCell : attempt.cells) {
+                revokedCell.revokeSourceCleanupAfterForceStop();
             }
             return true;
         } finally {
