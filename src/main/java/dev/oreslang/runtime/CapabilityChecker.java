@@ -306,6 +306,7 @@ public final class CapabilityChecker {
                 checkExpr(s.initializer(), policy);
             }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
+            else if (stmt instanceof Ast.ActorEffectStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ThrowStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.YieldStmt s) checkExpr(s.value(), policy);
