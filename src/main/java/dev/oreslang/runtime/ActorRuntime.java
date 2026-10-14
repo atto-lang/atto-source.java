@@ -6839,6 +6839,38 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * STOP may inherit queued ordinary CONTROL callbacks and unstarted
+         * scheduler tasks. Neither is authorized to consume the remaining
+         * continuation capacity ahead of terminal source cleanup.
+         *
+         * Must be called under lifecycleLock. Keep only immutable envelopes
+         * belonging to this actor's source scheduler; their *dynamic* cleanup
+         * authorization is checked again immediately before execution.
+         */
+        private void pruneStoppedContinuationQueueLocked() {
+            List<MessageEnvelope> retained = new ArrayList<>();
+            while (continuationMailbox.drainOne(envelope -> {
+                if (envelope.continuation() instanceof OresScheduler.CleanupTurn turn
+                        && turn.ownedBy(sourceScheduler)) {
+                    retained.add(envelope);
+                } else {
+                    releaseMailboxSlot(true);
+                    envelope.close();
+                }
+            })) {
+                // Other producer threads cannot publish to this queue without
+                // lifecycleLock. The relative order of retained turns is fixed.
+            }
+            for (MessageEnvelope envelope : retained) {
+                if (!continuationMailbox.tryWrite(envelope)) {
+                    throw new IllegalStateException(
+                            "actor STOP source-cleanup queue accounting violation for "
+                                    + ref.id());
+                }
+            }
+        }
+
         private void drainUserMailboxReservations() {
             while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot(false);
@@ -6945,8 +6977,11 @@ public final class ActorRuntime implements AutoCloseable {
                     continuationMailbox.close(cause);
                     drainMailboxReservations();
                 } else {
-                    // Keep bounded control capacity exclusively for authorized
-                    // cleanup after all normal user messages are sealed.
+                    // Reclaim ordinary queued CONTROL turns before cancellation
+                    // needs to enqueue a resumed cleanup task. Do not discard
+                    // an already-queued source turn merely because its deferred
+                    // cancellation permit has not yet been published.
+                    pruneStoppedContinuationQueueLocked();
                     drainUserMailboxReservations();
                 }
                 for (var waiter : pendingSourceReceiveWaiters) waiter.detach();
