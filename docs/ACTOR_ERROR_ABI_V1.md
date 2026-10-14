@@ -43,6 +43,32 @@ not** establish executable guest exception lowering on LLVM.
 
 Do not infer stages 2–3 are complete from existence of these files.
 
+## Typed actor CONTROL slice (October 14, 2026)
+
+Java/GraalVM now parses `raise expr` and `panic expr` as distinct, terminal
+actor effects. The typechecker requires a non-suspending actor activation and
+an owned, nominally proven `Error`-derived value. Outside actors, borrowed
+values, `Any`/`Unknown`, structural imitations and effect statements inside
+`finally` are rejected. `recover` and actor pseudo-handlers remain gated.
+
+Inside an actor turn, the evaluator validates the guest instance, **drops
+the instance**, and emits a stackless `GuestActorEffectSignal` holding only
+`RAISE` or `PANIC`. Neither `trap` nor explicit source `catch` may
+consume the signal, even through a wrapped host exception. On terminal actor
+failure, the runtime publishes an immutable `ActorFailureNotice` to a bounded
+nonblocking **host/supervisor-only CONTROL queue**, after releasing actor
+lifecycle locks. The notice contains actor identity, structured-parent identity
+(if present), effect kind and frozen actor-supervision ABI code 1009; its
+diagnostic is a fixed protocol string, never guest or host exception text.
+A full queue increments a dropped counter instead of blocking an actor.
+
+The initial notification queue is **host-observable**, not yet an automatic
+parent-actor `on_raise`/`recover` invocation. Scheduler-domain delivery,
+structured recovery hooks, native guest LLVM lowering and end-to-end guest
+actor tests are separate merge blockers. Tests have been added to exercise
+real host actor turns and queue publication, but their execution is not yet
+CI-verified. No live guest Error crosses actor heaps.
+
 ## Current hard blockers (October 14, 2026)
 
 - Java recognizes a compiler-owned, non-generic nominal `Error`
