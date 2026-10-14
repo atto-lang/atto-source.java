@@ -324,7 +324,7 @@ final class ExclusiveAdtMatchSafetyTest {
                     .allowAllAccess(false).out(output).build()) {
                 context.eval(guest);
             }
-            assertEquals("chosen\\nafter".replace("\\n", "\n"),
+            assertEquals("chosen\nafter",
                     output.toString(StandardCharsets.UTF_8)
                             .strip().replace("\r\n", "\n"), prefix);
         }
