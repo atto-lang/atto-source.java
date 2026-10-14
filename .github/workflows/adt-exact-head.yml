@@ -9,6 +9,8 @@ on:
       - 'src/main/java/dev/oreslang/parser/**'
       - 'src/main/java/dev/oreslang/types/**'
       - 'src/main/java/dev/oreslang/nodes/OresEvalRootNode.java'
+      - 'src/main/java/dev/oreslang/runtime/MatchContinuationQueue.java'
+      - 'src/test/java/dev/oreslang/MatchContinuationQueueTest.java'
       - 'src/test/java/dev/oreslang/*Adt*'
       - 'src/test/java/dev/oreslang/*ADT*'
       - 'src/test/java/dev/oreslang/*Enum*'
@@ -45,7 +47,7 @@ jobs:
       - name: Run ADT guest compiler/runtime conformance and stress tests
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest,NumericPatternEqualityTest \
+            -Dtest=AdtConformanceCorpusTest,AlgebraicDataTypeMatchTest,ExclusiveAdtMatchSafetyTest,EnumScalarPayloadRangeHardeningTest,EnumOwnershipMatchTest,NestedEnumLocalValueTest,AdtFiniteMatchOracleTest,ExplicitDispatchStatementSyntaxTest,NumericPatternEqualityTest,MatchContinuationQueueTest \
             test
       - name: Upload exact-head targeted test reports
         if: always()
