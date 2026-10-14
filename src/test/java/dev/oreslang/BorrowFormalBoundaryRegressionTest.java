@@ -70,4 +70,54 @@ final class BorrowFormalBoundaryRegressionTest {
                 }
                 """)));
     }
+
+    @Test
+    void returnedOwnedOptionCannotConcealNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): Option<borrow Box> {
+                  return wrapped;
+                }
+                """, "cannot return an owned value containing nested borrowed references");
+    }
+
+    @Test
+    void localOwnedOptionCannotConcealNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val Option<borrow Box> saved = wrapped;
+                  return;
+                }
+                """, "cannot bind an owned container containing nested borrowed references");
+    }
+
+    @Test
+    void trapCannotPackageNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val result = trap wrapped;
+                  return;
+                }
+                """, "trap cannot package a borrow or MutexGuard");
+    }
+
+    @Test
+    void ownedTupleCannotConcealNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val pair = (wrapped, 7);
+                  return;
+                }
+                """, "borrowed references cannot be stored in an owned tuple");
+    }
+
+    @Test
+    void channelPayloadCannotTransportNestedBorrow() {
+        reject(BOX + """
+                fnc bad(Option<borrow Box> wrapped): void {
+                  val Channel<Option<borrow Box>> ch = Channel.new<Option<borrow Box>>(1);
+                  nb writech ch, wrapped;
+                  return;
+                }
+                """, "writech cannot transport a borrowed reference");
+    }
 }
