@@ -206,18 +206,23 @@ public final class SymbolPropertyKeyCodec {
     private static List<Object> decodeDistinctKeysChecked(
             List<byte[]> encodedKeys, Function<byte[], Object> decodeKey) {
         Objects.requireNonNull(encodedKeys, "encoded keys");
-        if (encodedKeys.size() > MAX_KEYS_PER_OBJECT) {
+        // Do not pass an untrusted Collection into List.copyOf(): a custom
+        // List can lie about size() and supply unbounded entries from its
+        // iterator, forcing unbounded toArray() growth before our quota check.
+        int reportedCount = encodedKeys.size();
+        if (reportedCount < 0 || reportedCount > MAX_KEYS_PER_OBJECT) {
             throw new IllegalArgumentException("too many tagged keys");
         }
         // Detach ALL frames before decoding or checking duplicate identities.
-        // Otherwise a caller may mutate later frames while earlier ones are
-        // being decoded, producing a key set from several source revisions.
-        // Concurrent mutation DURING a byte[] clone is still not an atomic
-        // snapshot: actor/network ingress must enforce buffer ownership.
-        List<byte[]> sourceFrames = List.copyOf(encodedKeys);
+        // Caller-owned frames may change across iterations; an atomic snapshot
+        // requires transport-level ownership or synchronization as well.
         long total = 0L;
-        java.util.ArrayList<byte[]> frames = new java.util.ArrayList<>(sourceFrames.size());
-        for (byte[] source : sourceFrames) {
+        java.util.ArrayList<byte[]> frames = new java.util.ArrayList<>(reportedCount);
+        for (byte[] source : encodedKeys) {
+            if (frames.size() >= MAX_KEYS_PER_OBJECT) {
+                throw new IllegalArgumentException("too many tagged keys");
+            }
+            Objects.requireNonNull(source, "tagged key entry");
             int size = source.length;
             if (size < HEADER_LENGTH || size > HEADER_LENGTH + MAX_TEXT_KEY_BYTES) {
                 throw new IllegalArgumentException("invalid tagged key frame size");
