@@ -75,6 +75,21 @@ final class NativeGuestErrorRootTest {
         assertEquals(17, result.exitStatus());
     }
 
+    @Test void aliasesAndGenericsCannotShadowCompilerOwnedError() {
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define type Error as int;
+                        pub fnc main(): int { return 1; }
+                        """));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        define class Masked<Error> as
+                            pub val Error code;
+                        end
+                        pub fnc main(): int { return 1; }
+                        """));
+    }
+
     @Test void ordinaryClassesCannotPretendToBeGuestErrors() {
         assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
