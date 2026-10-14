@@ -63,18 +63,18 @@ final class ParenthesizedRecordLiteralTest {
     }
 
     @Test
-    void recordSpreadRemainsRejectedUntilCheckedNamedCallPlanIsIntegrated() {
-        var error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc total(int a, int b): int {
-                            return a + b;
-                        }
-                        pub routine main(): void {
-                            stdio.stdout.write(total(...(b: 22, a: 20)));
-                            return;
-                        }
-                        """)));
-        assertTrue(error.getMessage().contains("statically known tuple"), error.getMessage());
+    void closedCopyRecordSpreadIsCheckedForDirectFunctions() {
+        var parsed = Parser.parse("""
+                fnc total(int a, int b): int {
+                    return a + b;
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(total(...(b: 22, a: 20)));
+                    return;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(parsed));
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(parsed));
     }
 
     @Test
