@@ -1762,15 +1762,17 @@ public final class ActorRuntime implements AutoCloseable {
         // lexical cleanup that cannot be executed under a valid actor lease.
         // SourceTask remains a regular Task until the ticket/STOP lattice is
         // integrated with actor-scoped cleanup authorization.
-        if (task instanceof OresScheduler.CleanupAwareTask<?>) {
-            throw new UnsupportedOperationException(
-                    "actor cleanup-aware source tasks require STOP-safe ticketed "
-                    + "continuation admission and bounded lexical cleanup; not yet supported");
-        }
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
             throw new IllegalStateException(
                     "source actor task requires an executing actor turn");
+        }
+        // Check actor authority before the implementation-admission gate, but
+        // reject unsupported post-STOP cleanup before issuing any task ticket.
+        if (task instanceof OresScheduler.CleanupAwareTask<?>) {
+            throw new UnsupportedOperationException(
+                    "actor cleanup-aware source tasks require STOP-safe ticketed "
+                    + "continuation admission and bounded lexical cleanup; not yet supported");
         }
         final SerialExecutionTicket ticket = cell.issueSourceTaskTicket();
         OresFuture<T> completion;
