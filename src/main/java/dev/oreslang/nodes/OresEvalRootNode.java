@@ -5960,6 +5960,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.MatchExpr valueMatch) {
+                Object subject = eval(valueMatch.subject(), env);
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    // The arm's return is the result of this expression;
+                    // do not throw the enclosing callable's Return signal.
+                    return eval(arm.value(), armEnv);
+                }
+                throw new IllegalStateException(
+                        "exhaustive value match invariant violated at runtime");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -8210,6 +8226,9 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (target.isComplement()) {
+                return !oresTypeMatches(value, target.complementedType());
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
@@ -8483,7 +8502,19 @@ public final class OresEvalRootNode extends RootNode {
                     return left.doubleValue() == right.doubleValue();
                 }
             }
-            if (isIntegral(left) && isIntegral(right)) return left.longValue() == right.longValue();
+            boolean integralLeft = isIntegral(left);
+            boolean integralRight = isIntegral(right);
+            if (integralLeft && integralRight) return left.longValue() == right.longValue();
+            if (integralLeft != integralRight) {
+                // Converting a long above 2^53 to double silently merges
+                // distinct numeric values. Compare exact finite decimal
+                // representations instead, matching static subsumption.
+                Number integer = integralLeft ? left : right;
+                Number floating = integralLeft ? right : left;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
             return left.doubleValue() == right.doubleValue();
         }
 

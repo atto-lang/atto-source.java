@@ -841,6 +841,34 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.MatchExpr match) {
+            ValueInfo subject = checkExpr(match.subject(), scope, false);
+            VarState source = match.subject() instanceof Ast.NameExpr name
+                    ? scope.lookup(name.name()) : null;
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            ValueInfo result = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                try {
+                    definePatternAliases(arm.pattern(), subject.type, source, armScope);
+                    if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                    ValueInfo value = checkExpr(arm.value(), armScope, consuming);
+                    // Do not let branch-scoped loans become expression values:
+                    // a returned borrow could outlive its pattern bindings.
+                    if (isBorrowValue(value) || value.borrowSource != null) {
+                        throw error("value match cannot return a borrowed branch-local value");
+                    }
+                    if (result == null) result = value;
+                } finally {
+                    armScope.close();
+                }
+                exits.add(stateSnapshot(scope));
+            }
+            mergeBranchState(base, exits);
+            return result;
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -2564,7 +2592,13 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.TypePattern typed) {
-            if (typed.binding() != null) defineRefinementAlias(typed.binding(), typed.type(), source, destination);
+            if (typed.binding() != null) {
+                // A negative predicate rules out a type but must never grant
+                // the capabilities of the excluded positive type.
+                Ast.TypeRef bindingType = typed.type().isComplement()
+                        ? subjectType : typed.type();
+                defineRefinementAlias(typed.binding(), bindingType, source, destination);
+            }
             return;
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
