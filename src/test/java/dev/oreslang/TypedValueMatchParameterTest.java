@@ -159,4 +159,15 @@ final class TypedValueMatchParameterTest {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(guest)));
     }
+
+    @Test
+    void unresolvedNominalPatternCannotBecomeAnAlwaysTrueComplement() {
+        for (String pattern : new String[]{"!UnresolvableGuestType", "UnresolvableGuestType as unknown"}) {
+            String guest = "fnc bad(int n): int { return match<int> n over " +
+                    "on " + pattern + " -> { return 1; } " +
+                    "on _ -> { return 2; } end; }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(guest)));
+        }
+    }
 }
