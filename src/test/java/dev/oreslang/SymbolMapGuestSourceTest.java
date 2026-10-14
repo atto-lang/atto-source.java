@@ -217,6 +217,46 @@ final class SymbolMapGuestSourceTest {
                 () -> TypeChecker.checkTypes(Parser.parse(source)));
     }
 
+    @Test void typedMapWritesRemainDistinctFromFixedTupleSlotWritesAfterMainMerge() {
+        String accepted = """
+                pub fnc main(): void {
+                    let mut map = new Map<Symbol, int>();
+                    map[#ready] = 42;
+                    let mut fixed: FixedArray[int, string] = [1, "two"];
+                    fixed[0] = 7;
+                    fixed[1] = "safe";
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(accepted)));
+
+        String wrongMapValue = """
+                pub fnc bad(): void {
+                    let mut map = new Map<Symbol, int>();
+                    map[#ready] = "bad";
+                    return;
+                }
+                """;
+        String wrongTupleSlot = """
+                pub fnc bad(): void {
+                    let mut fixed: FixedArray[int, string] = [1, "two"];
+                    fixed[0] = "corrupt";
+                    return;
+                }
+                """;
+        String wrongDynamicTupleWrite = """
+                fnc bad(int index): void {
+                    let mut fixed: FixedArray[int, string] = [1, "two"];
+                    fixed[index] = 5;
+                    return;
+                }
+                """;
+        for (String invalid : new String[]{wrongMapValue, wrongTupleSlot, wrongDynamicTupleWrite}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(invalid)), invalid);
+        }
+    }
+
     @Test void keylessOrAmbiguousGenericMapCannotBeReified() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.checkTypes(Parser.parse(
                 "pub fnc bad(): void { let mut m = new Map<>(); return; }")));
