@@ -70,16 +70,13 @@ def checked_repo(repository):
 
 
 def require_preflight(repository, root):
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
+    """Never launch an executable from the source checkout to grant CI access.
+
+    A symlink test followed by bash execution can be raced. Read policy
+    safely through directory descriptors and verify the private destination
+    identity through the authenticated GitHub API instead.
+    """
+    checked_policy_fingerprint(root, repository)
     checked_repo(repository)
 
 

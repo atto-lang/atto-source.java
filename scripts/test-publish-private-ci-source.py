@@ -58,6 +58,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
 
+    def test_preflight_never_executes_checkout_guard(self):
+        script = self.root / "scripts" / "check-private-ci-destination.sh"
+        script.parent.mkdir()
+        script.write_text("#!/bin/sh\\nexit 77\\n")
+        with patch.object(pub.subprocess, "run",
+                          side_effect=AssertionError("preflight launched child code")):
+            with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                # setUp stubs the preflight for isolated publisher tests.
+                # This regression invokes the real implementation directly.
+                self.preflight.stop()
+                try:
+                    pub.require_preflight("trusted/ci", self.root)
+                finally:
+                    self.preflight.start()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
         self.assertEqual((sha, count), (A, 1))

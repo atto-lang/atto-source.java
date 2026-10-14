@@ -3738,7 +3738,9 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                Object built;
+                try {
+                    LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
                         if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
@@ -3769,9 +3771,15 @@ public final class OresEvalRootNode extends RootNode {
                         result.put(entry.getKey(), entry.getValue());
                     }
                 }
-                Object built = object.explicitStruct()
-                        ? result
-                        : new ReadonlyRecordValue(result);
+                    built = object.explicitStruct()
+                            ? result
+                            : new ReadonlyRecordValue(result);
+                } catch (RuntimeException | Error assemblyFailure) {
+                    // A malformed record must terminate its suspended call
+                    // through the continuation, not escape into the carrier.
+                    continuation.accept(task, null, assemblyFailure);
+                    return;
+                }
                 continuation.accept(task, built, null);
                 return;
             }

@@ -30,9 +30,13 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
 ```
 
 The checked-in policy file must explicitly list the destination. The
-publisher checks the live GitHub identity and `visibility=private` /
-`private=true` before sending any private bytes and rechecks visibility
-immediately before each write. Every GitHub API write is constructed from
+publisher reads that policy through descriptor-relative no-follow file
+access, **without running a shell script from the checkout as an authorization
+step** (a pathname check followed by execution can be raced). It verifies the
+live GitHub identity and `visibility=private` / `private=true` before
+sending any private bytes, then rechecks visibility immediately before
+each write. The standalone Bash checker remains an operator preflight
+rather than the publisher's privilege boundary. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
 remote, shell command or separate destination argument. It creates blobs,
 then a **fresh standalone source tree with no `base_tree`**, followed by a
