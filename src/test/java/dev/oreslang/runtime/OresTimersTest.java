@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -42,10 +41,10 @@ final class OresTimersTest {
         try (OresTimers timers = new OresTimers();
              OresTimers.Interval interval = timers.intervalNanos(
                      TimeUnit.MILLISECONDS.toNanos(2))) {
-            assertEquals(1L, interval.next().get(5, TimeUnit.SECONDS));
+            assertEquals(1L, interval.next().get(5, TimeUnit.SECONDS).longValue());
             Thread.sleep(25);
             assertEquals(1L, interval.delivered());
-            assertEquals(2L, interval.next().get(5, TimeUnit.SECONDS));
+            assertEquals(2L, interval.next().get(5, TimeUnit.SECONDS).longValue());
             assertEquals(2L, interval.delivered());
             OresFuture<Long> pending = interval.next();
             assertThrows(IllegalStateException.class, interval::next);
