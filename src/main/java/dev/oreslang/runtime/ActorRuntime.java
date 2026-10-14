@@ -5885,6 +5885,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
         }
         if (value == null || isScalar(value)
+                || value instanceof NominalMessageValue
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
@@ -5957,7 +5958,7 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
-        if (value == null || isScalar(value)) return;
+        if (value == null || isScalar(value) || value instanceof NominalMessageValue) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
@@ -5997,6 +5998,7 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof NominalMessageValue) return value; // immutable snapshot
         if (value instanceof Shared<?> shared) {
             shared.value();
             return shared;
@@ -6059,6 +6061,7 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof NominalMessageValue nominal) return nominal.isolatedCopy();
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
@@ -6118,6 +6121,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         long scalar = scalarLogicalBytes(value);
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
+        if (value instanceof NominalMessageValue nominal) {
+            return requireWithinLimit(estimateNominalMessageBytes(nominal), limit);
+        }
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
@@ -6194,6 +6200,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
+        if (value instanceof NominalMessageValue nominal) return estimateNominalMessageBytes(nominal);
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
@@ -6237,6 +6244,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         long scalar = scalarLogicalBytes(value);
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
+        if (value instanceof NominalMessageValue nominal) {
+            return requireWithinLimit(estimateNominalMessageBytes(nominal), limit);
+        }
 
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
@@ -6297,6 +6307,22 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             visiting.remove(value);
         }
+    }
+
+    private static long estimateNominalMessageBytes(NominalMessageValue nominal) {
+        long total = 64L;
+        total = Math.addExact(total, scalarLogicalBytes(nominal.sourceUnitId()));
+        total = Math.addExact(total, scalarLogicalBytes(nominal.qualifiedEnumName()));
+        total = Math.addExact(total, scalarLogicalBytes(nominal.enumName()));
+        total = Math.addExact(total, scalarLogicalBytes(nominal.variantName()));
+        if (nominal.payload() != null) {
+            total = Math.addExact(total, Math.multiplyExact(32L, nominal.payload().size()));
+            for (Map.Entry<String, Object> field : nominal.payload().entrySet()) {
+                total = Math.addExact(total, scalarLogicalBytes(field.getKey()));
+                total = Math.addExact(total, scalarLogicalBytes(field.getValue()));
+            }
+        }
+        return total;
     }
 
     private static long scalarLogicalBytes(Object value) {
@@ -6363,6 +6389,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
+        if (value instanceof NominalMessageValue nominal) return estimateNominalMessageBytes(nominal);
         if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
