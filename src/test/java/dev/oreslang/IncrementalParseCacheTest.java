@@ -93,6 +93,62 @@ final class IncrementalParseCacheTest {
     }
 
     @Test
+    void reorderingPublicDeclarationsDoesNotInvalidateImporters() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "math.ores", """
+                        pub fnc alpha(): int { return 1; }
+                        pub fnc beta(): int { return 2; }
+                        """,
+                "app.ores", """
+                        import fnc {alpha} from './math.ores';
+                        pub fnc main(): void { return; }
+                        """);
+        compiler.compile(initial);
+
+        Map<String, String> reordered = Map.of(
+                "math.ores", """
+                        pub fnc beta(): int { return 2; }
+                        pub fnc alpha(): int { return 1; }
+                        """,
+                "app.ores", initial.get("app.ores"));
+        var after = compiler.compile(reordered);
+        assertEquals(Set.of("math.ores"), after.reparsedUnits());
+        assertTrue(after.rebuilt("math.ores"));
+        assertTrue(after.reused("app.ores"),
+                "changing top-level declaration order is not a public ABI change");
+    }
+
+    @Test
+    void linkedClassRevalidationUsesTheCurrentRawAst() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "model.ores", """
+                        define module exported
+                          pub define class Payload as
+                            @FromJson("external_key")
+                            foo: String;
+                          end
+                        end
+                        """,
+                "consumer.ores", """
+                        import class Payload from "./model.ores";
+                        pub fnc consume(Payload payload): void { return; }
+                        """);
+        var first = compiler.compile(initial);
+        assertEquals(Set.of("model.ores", "consumer.ores"), first.reparsedUnits());
+        assertTrue(compiler.compile(initial).reparsedUnits().isEmpty());
+
+        Map<String, String> changed = new LinkedHashMap<>(initial);
+        changed.put("model.ores", initial.get("model.ores").replace(
+                "external_key", "different_key"));
+        var next = compiler.compile(changed);
+        assertEquals(Set.of("model.ores"), next.reparsedUnits());
+        assertTrue(next.rebuilt("consumer.ores"),
+                "annotation-derived wire ABI must invalidate linked class importers");
+    }
+
+    @Test
     void callerCannotModifyReparseTelemetry() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var result = compiler.compile(sources());
