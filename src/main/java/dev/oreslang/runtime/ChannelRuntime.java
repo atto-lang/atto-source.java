@@ -949,6 +949,11 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // One logical Future can appear in multiple arms. Sampling it once
+        // per scan is essential: settlement between arm checks must not let a
+        // later duplicate look ready while its higher-priority twin looked
+        // pending earlier in the *same* arbitration pass.
+        IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness = null;
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
@@ -958,9 +963,17 @@ public final class ChannelRuntime {
             if (registration == null) continue;
 
             if (registration.selectCase instanceof FutureCase<?> awaiting) {
-                if (awaiting.future().runtimeSelectReadyStateOrNull() != null) {
-                    return registration;
+                OresFuture<?> producer = awaiting.future();
+                Boolean ready = observedFutureReadiness == null
+                        ? null : observedFutureReadiness.get(producer);
+                if (ready == null) {
+                    ready = producer.runtimeSelectReadyStateOrNull() != null;
+                    if (observedFutureReadiness == null) {
+                        observedFutureReadiness = new IdentityHashMap<>();
+                    }
+                    observedFutureReadiness.put(producer, ready);
                 }
+                if (ready) return registration;
                 continue;
             }
             Channel<?> channel = registration.channel();

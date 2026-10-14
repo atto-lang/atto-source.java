@@ -430,6 +430,21 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void repeatedReadyProducerRespectsFairRotationWithoutDuplicateWakeups() {
+        var producer = OresFuture.completed(29);
+        var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < 128; i++) {
+            cases.add(ChannelRuntime.await(producer));
+        }
+        var selection = new ChannelRuntime.SelectSet(cases, 71);
+        var result = selection.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join();
+        assertEquals(71, result.index());
+        assertEquals(29, result.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(72, selection.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join().index());
+    }
+
+    @Test
     void repeatedFutureArmsCancelWithoutCancellingOrRetainingProducer() {
         var producer = new OresFuture<Integer>();
         var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
