@@ -2493,11 +2493,9 @@ public final class OresEvalRootNode extends RootNode {
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
-            runBlock(task, arm.body(), armEnv, (t, flow) ->
-                    continuation.accept(t,
-                            select.explicitDo() && flow.kind() == SourceFlowKind.RETURN
-                                    ? SourceFlow.normal()
-                                    : flow));
+            // Blocking procedural select returns from its enclosing callable:
+            // do not erase RETURN when dispatch resumes after suspension.
+            runBlock(task, arm.body(), armEnv, continuation);
         }
 
         private void runSelectSuspendable(
@@ -5348,19 +5346,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!detached) {
-                if (selected.explicitDo()) {
-                    try {
-                        // Return values are discarded, so this arm must be a
-                        // tail-call barrier even when the caller is in tail
-                        // position. Otherwise 'return fn();' escapes as a
-                        // TailCallSignal and hijacks the enclosing callable.
-                        executeBlock(arm.body(), armEnv, true);
-                    } catch (ReturnSignal ignored) {
-                        // Do-select return is arm-local; expression evaluated, value discarded.
-                    }
-                } else {
-                    executeBlock(arm.body(), armEnv, tailBarrier);
-                }
+                // Blocking do-select carries FUNCTION_RETURN unchanged; a
+                // selected arm is not a detached callback or result boundary.
+                executeBlock(arm.body(), armEnv, tailBarrier);
                 return;
             }
 
