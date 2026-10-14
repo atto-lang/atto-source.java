@@ -3084,18 +3084,21 @@ public final class OwnershipChecker {
      */
     private boolean isRootedAtRecordProjection(Ast.Expr expr, Scope scope) {
         Ast.Expr rootExpr = expr;
-        while (rootExpr instanceof Ast.MemberExpr member
-                || rootExpr instanceof Ast.IndexExpr) {
+        while (true) {
             if (rootExpr instanceof Ast.MemberExpr member) {
                 rootExpr = member.receiver();
+            } else if (rootExpr instanceof Ast.IndexExpr indexed) {
+                rootExpr = indexed.receiver();
             } else {
-                rootExpr = ((Ast.IndexExpr) rootExpr).receiver();
+                break;
             }
         }
         if (!(rootExpr instanceof Ast.NameExpr name)) return false;
         VarState root = scope.lookup(name.name());
         if (root == null) return false;
-        Ast.TypeRef rootType = root.type.isBorrow() ? root.type.borrowedTarget() : root.type;
+        Ast.TypeRef rootType = root.type;
+        if (rootType == null) return false;
+        if (rootType.isBorrow()) rootType = rootType.borrowedTarget();
         return rootType.isRecordType();
     }
 
