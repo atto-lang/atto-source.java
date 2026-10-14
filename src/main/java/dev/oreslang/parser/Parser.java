@@ -3621,6 +3621,9 @@ public final class Parser {
         if (expression instanceof Ast.PatternTestExpr patternTest) {
             return containsExpressionBodyLambda(patternTest.value());
         }
+        if (expression instanceof Ast.OptionBindExpr binding) {
+            return containsExpressionBodyLambda(binding.value());
+        }
         if (expression instanceof Ast.CastExpr cast) {
             return containsExpressionBodyLambda(cast.value());
         }
