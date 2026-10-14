@@ -4,11 +4,11 @@ import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Canonical dispatch mode is always explicit at the statement boundary. */
+/** Canonical procedural dispatch does not yet remove established legacy forms. */
 final class ExplicitDispatchStatementSyntaxTest {
     @Test
-    void bareMatchSwitchAndStaticSelectAreRejected() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+    void legacyStatementFormsRemainAcceptedWhileValueMatchesArePending() {
+        assertDoesNotThrow(() -> Parser.parse("""
                 fnc bad(int x): int {
                     match x over
                         on 1 -> { return 1; }
@@ -16,7 +16,7 @@ final class ExplicitDispatchStatementSyntaxTest {
                     end
                 }
                 """));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        assertDoesNotThrow(() -> Parser.parse("""
                 fnc bad(int x): int {
                     switch x
                         case 1 -> { return 1; }
@@ -24,9 +24,22 @@ final class ExplicitDispatchStatementSyntaxTest {
                     end
                 }
                 """));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+        assertDoesNotThrow(() -> Parser.parse("""
                 fnc bad(): void {
                     select { default: { return; } }
+                }
+                """));
+    }
+
+    @Test
+    void returnMatchRemainsUnimplementedAndCannotMasqueradeAsImplicitActorReply() {
+        // A future expression match must have its own type/result semantics.
+        // A parser-only procedural match must not fake a value-producing result.
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc compute(int x): int {
+                    return match x over {
+                        on _ { return x; }
+                    };
                 }
                 """));
     }
