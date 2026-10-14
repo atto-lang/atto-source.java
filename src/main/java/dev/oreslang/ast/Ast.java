@@ -500,7 +500,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
-            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt, ThrowStmt,
+            BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt, ThrowStmt, ActorEffectStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
     /**
@@ -680,6 +680,19 @@ public final class Ast {
     public record ThrowStmt(Expr value) implements Stmt {
         public ThrowStmt {
             if (value == null) throw new IllegalArgumentException("throw requires an Error value");
+        }
+    }
+
+    /**
+     * Actor-only terminal effects. The typechecker requires an owned nominal
+     * guest Error and a non-suspending actor activation; this AST is never an
+     * ordinary guest expression or a transportable Error object.
+     */
+    public enum ActorEffectKind { RAISE, PANIC }
+    public record ActorEffectStmt(ActorEffectKind kind, Expr value) implements Stmt {
+        public ActorEffectStmt {
+            java.util.Objects.requireNonNull(kind, "actor effect");
+            java.util.Objects.requireNonNull(value, "actor effect Error value");
         }
     }
 
