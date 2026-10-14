@@ -3,7 +3,7 @@
 // Core stdlib semantics live in Oreslang source. Host Java may load this file,
 // but Java interop is forbidden inside packaged std/* modules.
 
-define module core
+define module core as
 
   // Named key/value product. The alias has no runtime constructor or tag.
   define pub type Entry<K, V> = record { key: K, value: V };
