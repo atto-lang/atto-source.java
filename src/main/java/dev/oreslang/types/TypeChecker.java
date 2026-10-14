@@ -1577,6 +1577,10 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
+            if (containsTypedMapType(source)) {
+                throw new IllegalArgumentException(
+                        "cannot destructure a typed Map or Map-containing aggregate without an ownership proof");
+            }
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
                 List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
@@ -1796,6 +1800,10 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
+            if (containsTypedMapType(iterable)) {
+                throw new IllegalArgumentException(
+                        "cannot destructure typed Map elements through iteration without an ownership proof");
+            }
             Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
@@ -1817,6 +1825,10 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
+            if (containsTypedMapType(iterable)) {
+                throw new IllegalArgumentException(
+                        "cannot bind typed Maps through iteration without an ownership proof");
+            }
             Map<Env.Binding, Set<String>> afterIterable = env.initializationSnapshot();
             Type element;
             if (loop.asyncIteration()) {
@@ -4125,6 +4137,10 @@ public final class TypeChecker {
 
     private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
         if (binding.isDiscard()) return;
+        if (containsTypedMapType(type)) {
+            throw new IllegalArgumentException(
+                    "cannot bind a typed Map through destructuring without an ownership proof");
+        }
         requireMutableReferentCompatible(
                 type, binding.mutableReferent(),
                 "destructure binding '" + binding.name() + "'");
