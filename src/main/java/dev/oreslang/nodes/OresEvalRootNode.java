@@ -2493,6 +2493,86 @@ public final class OresEvalRootNode extends RootNode {
                                     : flow));
         }
 
+
+        /**
+         * Blocking value-select is a source expression: the selection suspends
+         * the heap-owned source task, never a scheduler carrier. The winning
+         * arm resumes in that task; its lexical result return completes only
+         * the expression's continuation.
+         */
+        private void runValueSelectSuspendable(
+                SourceTask task,
+                Ast.StaticSelectExpr expression,
+                Env env,
+                SourceValueCont continuation) {
+            if (env.hasLiveMutexGuards()) {
+                continuation.accept(task, null,
+                        new IllegalStateException(
+                                "cannot arm value-select while holding a live MutexGuard"));
+                return;
+            }
+            Ast.SelectStmt select = expression.select();
+            final OresFuture<ChannelRuntime.SelectResult> future;
+            try {
+                future = buildStaticSelectSet(select, env)
+                        .selectAsync(runtimeSelectPolicy(select.policy()));
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+            if (future.isDone()) {
+                try {
+                    runSelectedValueArmSuspendable(
+                            task, select, future.join(), env, continuation);
+                } catch (RuntimeException | Error failure) {
+                    continuation.accept(task, null, failure);
+                }
+                return;
+            }
+            task.suspend(future, (t, value, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, OresFuture.unwrap(failure));
+                    return;
+                }
+                runSelectedValueArmSuspendable(
+                        t, select, (ChannelRuntime.SelectResult) value,
+                        env, continuation);
+            });
+        }
+
+        private void runSelectedValueArmSuspendable(
+                SourceTask task,
+                Ast.SelectStmt select,
+                ChannelRuntime.SelectResult chosen,
+                Env parent,
+                SourceValueCont continuation) {
+            if (chosen.index() < 0 || chosen.index() >= select.arms().size()) {
+                continuation.accept(task, null,
+                        new IllegalStateException("value-select winner index is invalid"));
+                return;
+            }
+            Ast.SelectArm arm = select.arms().get(chosen.index());
+            Env armEnv = new Env(parent);
+            if (arm.operation() == Ast.ChannelOperation.READ
+                    && arm.bindingName() != null) {
+                armEnv.define(arm.bindingName(), chosen.value(), arm.bindingKind());
+            }
+            runBlock(task, arm.body(), armEnv, (t, flow) -> {
+                if (flow.kind() == SourceFlowKind.SELECT_VALUE_RETURN) {
+                    continuation.accept(t, flow.value(), null);
+                } else if (flow.kind() == SourceFlowKind.THROW) {
+                    continuation.accept(t, null, flow.failure());
+                } else {
+                    // No-value fallthrough and attempted procedural callable
+                    // unwind must never silently manufacture an expression.
+                    continuation.accept(t, null,
+                            new IllegalStateException(
+                                    "value-select arm did not produce an expression result: "
+                                            + flow.kind()));
+                }
+            });
+        }
+
         private void runSelectSuspendable(
                 SourceTask task,
                 Ast.SelectStmt select,
@@ -3102,6 +3182,11 @@ public final class OresEvalRootNode extends RootNode {
                             operation,
                             env,
                             continuation);
+                    return;
+                }
+
+                if (expr instanceof Ast.StaticSelectExpr selected) {
+                    runValueSelectSuspendable(task, selected, env, continuation);
                     return;
                 }
 
@@ -6315,6 +6400,33 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ChannelOpExpr channelOp) {
                 return evalChannelOperation(channelOp, env);
+            }
+            if (expr instanceof Ast.StaticSelectExpr selected) {
+                Ast.SelectStmt select = selected.select();
+                if (env.hasLiveMutexGuards()) {
+                    throw new IllegalStateException(
+                            "cannot arm value-select while holding a live MutexGuard");
+                }
+                ChannelRuntime.SelectResult result =
+                        (ChannelRuntime.SelectResult) awaitBlockingChannelFuture(
+                                buildStaticSelectSet(select, env)
+                                        .selectAsync(runtimeSelectPolicy(select.policy())),
+                                "value select");
+                if (result.index() < 0 || result.index() >= select.arms().size()) {
+                    throw new IllegalStateException("value-select winner index is invalid");
+                }
+                Ast.SelectArm arm = select.arms().get(result.index());
+                Env armEnv = new Env(env);
+                if (arm.operation() == Ast.ChannelOperation.READ
+                        && arm.bindingName() != null) {
+                    armEnv.define(arm.bindingName(), result.value(), arm.bindingKind());
+                }
+                try {
+                    executeBlock(arm.body(), armEnv, true);
+                } catch (SelectValueReturnSignal returned) {
+                    return returned.value;
+                }
+                throw new IllegalStateException("value-select arm completed without return");
             }
             if (expr instanceof Ast.DynamicSelectExpr selected) {
                 ChannelRuntime.SelectSet set = asSelectSet(eval(selected.cases(), env));
