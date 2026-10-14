@@ -8351,10 +8351,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private int compare(Object left, Object right) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isIntegral(a) && isIntegral(b)) {
-                    return Long.compare(a.longValue(), b.longValue());
-                }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                // Exact finite ordering must agree with numeric equality:
+                // 2^53+1 > 2^53.0, not a rounding-induced tie.
+                Integer exact = dev.oreslang.runtime.NumericPatternEquality.compareFinite(a, b);
+                return exact != null ? exact : Double.compare(a.doubleValue(), b.doubleValue());
             }
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
