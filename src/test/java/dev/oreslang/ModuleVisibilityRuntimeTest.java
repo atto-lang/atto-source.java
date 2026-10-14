@@ -62,26 +62,30 @@ final class ModuleVisibilityRuntimeTest {
 
     @Test
     void wildcardMayExposeOnlyExplicitlyPublicModuleAndMember() throws Exception {
-        Files.writeString(temp.resolve("lib.ores"), """
-                pub define module Service as
-                  pub fnc answer(): int { return 7; }
-                  fnc internal(): int { return 99; }
-                end
-                """);
-        assertEquals("7", run("""
-                import * as external from './lib';
-                pub routine main(): void {
-                  stdio.stdout.write(external.Service.answer());
-                  return;
-                }
-                """));
-        assertThrows(PolyglotException.class, () -> run("""
-                import * as external from './lib';
-                pub routine main(): void {
-                  stdio.stdout.write(external.Service.internal());
-                  return;
-                }
-                """));
+        // Public spelling is order-insensitive, but still exposes only
+        // explicitly public members through a wildcard namespace.
+        for (String header : new String[] {
+                "pub define module Service as",
+                "define pub module Service as"
+        }) {
+            Files.writeString(temp.resolve("lib.ores"),
+                    header + "\n  pub fnc answer(): int { return 7; }\n"
+                            + "  fnc internal(): int { return 99; }\nend\n");
+            assertEquals("7", run("""
+                    import * as external from './lib';
+                    pub routine main(): void {
+                      stdio.stdout.write(external.Service.answer());
+                      return;
+                    }
+                    """), header);
+            assertThrows(PolyglotException.class, () -> run("""
+                    import * as external from './lib';
+                    pub routine main(): void {
+                      stdio.stdout.write(external.Service.internal());
+                      return;
+                    }
+                    """), header);
+        }
     }
 
     @Test
