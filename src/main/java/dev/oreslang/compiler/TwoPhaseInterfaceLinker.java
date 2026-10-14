@@ -1,6 +1,8 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
+import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -45,11 +47,21 @@ public final class TwoPhaseInterfaceLinker {
         public Set<String> unitIds() { return interfaces.keySet(); }
     }
 
-    public record Linked(Declarations declarations, InterfaceSccPlanner.Plan plan) {
-        public Linked {
-            Objects.requireNonNull(declarations);
-            Objects.requireNonNull(plan);
+    /**
+     * An interface-only planning result, not a proof of multi-unit semantic
+     * admission. Cannot be fabricated via a public record constructor.
+     */
+    public static final class Linked {
+        private final Declarations declarations;
+        private final InterfaceSccPlanner.Plan plan;
+
+        private Linked(Declarations declarations, InterfaceSccPlanner.Plan plan) {
+            this.declarations = Objects.requireNonNull(declarations);
+            this.plan = Objects.requireNonNull(plan);
         }
+
+        public Declarations declarations() { return declarations; }
+        public InterfaceSccPlanner.Plan plan() { return plan; }
     }
 
     /**
@@ -108,7 +120,29 @@ public final class TwoPhaseInterfaceLinker {
         Set<String> available = declarations.programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : declarations.programs.entrySet()) {
             String importer = entry.getKey();
+            // An importer must not bind the same local identifier from
+            // several providers or shadow its own module value declarations.
+            // Exact semantic overload/alias resolution is not implemented
+            // in this provisional linker, so reject uncertain cases.
+            Set<String> localNames = new HashSet<>();
+            for (Ast.ModuleDecl module : entry.getValue().modules()) {
+                for (Ast.Decl own : module.declarations()) {
+                    if (own instanceof Ast.FunctionDecl fn) {
+                        localNames.add(fn.name());
+                    } else if (own instanceof Ast.ClassDecl klass) {
+                        localNames.add(klass.name());
+                    } else if (own instanceof Ast.InterfaceDecl iface) {
+                        localNames.add(iface.name());
+                    } else if (own instanceof Ast.TypeAliasDecl alias) {
+                        localNames.add(alias.name());
+                    } else if (own instanceof Ast.FieldDecl field) {
+                        localNames.add(field.name());
+                    }
+                }
+            }
+            Set<String> importedBindings = new HashSet<>();
             for (Ast.ImportDecl use : entry.getValue().imports()) {
+                ImportRules.validate(use);
                 if (use.wildcard()) {
                     throw new IllegalArgumentException(
                             "wildcard imports need a verified resolved import-closure descriptor");
@@ -121,6 +155,13 @@ public final class TwoPhaseInterfaceLinker {
                 if (use.kind() != Ast.ImportKind.FUNCTION) {
                     throw new IllegalArgumentException(
                             "type-bearing or advanced imports require a checked typed linker");
+                }
+                for (String symbol : use.names()) {
+                    String local = ImportRules.localName(use, symbol);
+                    if (!importedBindings.add(local) || localNames.contains(local)) {
+                        throw new IllegalArgumentException(
+                            "ambiguous or shadowed imported binding: " + local);
+                    }
                 }
                 ExportInterfaceCodec.Kind kind = ExportInterfaceCodec.Kind.FUNCTION;
                 String target = ImportGraph.resolveImportUnitId(importer, use,
