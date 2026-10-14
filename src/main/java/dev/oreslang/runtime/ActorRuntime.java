@@ -7633,15 +7633,40 @@ public final class ActorRuntime implements AutoCloseable {
             return detached;
         }
 
-        /** Complete transport cleanup outside the actor lifecycle monitor. */
+        /** Record every cleanup failure without stranding later reservations. */
+        private Throwable collectStopCleanupFailure(Throwable previous, Throwable failure) {
+            if (previous == null) return failure;
+            if (previous != failure) previous.addSuppressed(failure);
+            return previous;
+        }
+
+        private void throwStopCleanupFailure(Throwable failure) {
+            if (failure == null) return;
+            if (failure instanceof Error error) throw error;
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            throw new IllegalStateException(
+                    "actor STOP cleanup failed for " + ref.id(), failure);
+        }
+
+        /** Complete every transport refund, even if an earlier release hook fails. */
         private void releaseDrainedMailboxReservations(List<MessageEnvelope> detached) {
             if (Thread.holdsLock(lifecycleLock)) {
                 throw new IllegalStateException("mailbox release must run outside lifecycleLock");
             }
+            Throwable failure = null;
             for (MessageEnvelope envelope : detached) {
-                releaseMailboxSlot(envelope.isContinuation(), envelope.isUrgent());
-                envelope.close();
+                try {
+                    releaseMailboxSlot(envelope.isContinuation(), envelope.isUrgent());
+                } catch (Throwable refundFailure) {
+                    failure = collectStopCleanupFailure(failure, refundFailure);
+                }
+                try {
+                    envelope.close();
+                } catch (Throwable releaseFailure) {
+                    failure = collectStopCleanupFailure(failure, releaseFailure);
+                }
             }
+            throwStopCleanupFailure(failure);
         }
 
         private void fail(Throwable failure) {
@@ -7685,23 +7710,58 @@ public final class ActorRuntime implements AutoCloseable {
             // belongs under lifecycleLock. The pending-release gate keeps
             // finalization from closing memory before every refund is done.
             try {
-                // The STOP flag and lifecycle monitor already fence all new
-                // admissions; close may notify registered select Futures, so
-                // it belongs outside the actor monitor as well.
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                urgentMailbox.close(cause);
-                releaseDrainedMailboxReservations(detached);
+                // Callbacks can throw or reenter actor lifecycle methods.
+                // Continue all independent cleanup phases even on failure;
+                // pendingStopReleases fences finalization until they finish.
+                Throwable cleanupFailure = null;
+                try {
+                    if (cause == null) mailbox.close();
+                    else mailbox.close(cause);
+                } catch (Throwable failure) {
+                    cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                }
+                try {
+                    continuationMailbox.close(cause);
+                } catch (Throwable failure) {
+                    cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                }
+                try {
+                    urgentMailbox.close(cause);
+                } catch (Throwable failure) {
+                    cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                }
+                try {
+                    releaseDrainedMailboxReservations(detached);
+                } catch (Throwable failure) {
+                    cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                }
                 Throwable drainFailure = cause == null ? terminated(ref) : cause;
                 for (DrainWaiter waiter : failedDrainWaiters) {
-                    waiter.completion().failFromRuntime(drainFailure);
+                    try {
+                        waiter.completion().failFromRuntime(drainFailure);
+                    } catch (Throwable failure) {
+                        cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                    }
                 }
-                for (OresFuture<?> future : pending) future.cancel(false);
+                for (OresFuture<?> future : pending) {
+                    try {
+                        future.cancel(false);
+                    } catch (Throwable failure) {
+                        cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                    }
+                }
                 for (ActorCell<?> child : descendants) {
-                    child.cancel(new ActorCancelledException(
-                            child.ref.id(),
-                            "parent actor " + ref.id() + " terminated"));
+                    try {
+                        child.cancel(new ActorCancelledException(
+                                child.ref.id(),
+                                "parent actor " + ref.id() + " terminated"));
+                    } catch (Throwable failure) {
+                        cleanupFailure = collectStopCleanupFailure(cleanupFailure, failure);
+                    }
+                }
+                if (cleanupFailure != null) {
+                    ref.terminationCause.compareAndSet(null, cleanupFailure);
+                    throwStopCleanupFailure(cleanupFailure);
                 }
             } finally {
                 boolean finish;
