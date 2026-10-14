@@ -371,7 +371,7 @@ public final class LinkedProgramRunner {
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
 
-        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, Files.readString(normalized));
+        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, BoundedSourceReader.readUtf8(normalized));
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
