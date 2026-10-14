@@ -25,9 +25,10 @@ change requires its own compatibility and backend admission gate.
 
 ## Implemented Java increment in this PR
 
-Within the process-local `IncrementalCompiler` instance, cache immutable,
-annotation-expanded **parsed** units by normalized source ID and SHA-256
-of the exact source text; retain the public ABI digest with the AST.
+Within the process-local `IncrementalCompiler` instance, cache immutable
+**raw and annotation-expanded** parsed units by normalized source ID and
+SHA-256 of the exact source text; retain the public ABI digest with the
+expanded AST.
 
 - An identical build does not reparse unchanged files.
 - Implementation-only edits reparse/rebuild the edited unit; unchanged dependents
@@ -40,9 +41,12 @@ of the exact source text; retain the public ABI digest with the AST.
   the previously committed parse and compiled caches unchanged.
 - `BuildResult.reparsedUnits()` reports which source files were actually reparsed.
 - `clear()` or an empty source snapshot evicts caches.
+- Type checking consumes the cached **raw** AST, preserving its historical
+  annotation-expansion behavior while removing a duplicate parser pass.
+  Source-reordered exported declarations have a stable ABI digest, so mere
+  declaration movement does not invalidate importers.
 - This is an **in-memory** optimization. No on-disk or cross-process cache is
-  claimed. Dirty units may currently undergo a second parser pass during type
-  checking; eliminating that pass requires a separate parity gate.
+  claimed.
 
 ## Language-feature workstreams
 
@@ -91,8 +95,9 @@ identical hardware/targets and compiler flags. No speedup claim without results.
 
 ## Delivery sequence
 
-1. Java parse cache + transactional invalidation and tests (this PR).
-2. Parse-once typed/ownership admission after AST immutability proof.
+1. Java parse-once AST cache, transactionally staged invalidation,
+   source-order-independent public ABI digests and tests (this PR).
+2. Validate parsing/type-checking parity and measure the speedup.
 3. Typed public-interface schema with explicit compiler/target/feature versioning.
 4. Canonical type/trait/overload resolver with bounded solver budgets.
 5. Generic binding/default resolution parity and specialization memoization.
