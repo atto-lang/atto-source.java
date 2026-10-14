@@ -1876,73 +1876,68 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || closed.get()) return false;
-        final boolean cleanup = cell.stopped.get()
-                && taskTicket != null
-                && cell.authorizedCleanupContinuation(continuation);
-        if (cell.stopped.get() && !cleanup) return false;
-        // An old or foreign task must not be able to exhaust a newer
-        // incarnation's bounded CONTROL lane, even momentarily. Carrier-time
-        // requireAdmissible() remains the authoritative live-lease check.
-        if (taskTicket != null && (!taskTicket.issuedFor(actorId, cell.executionDomain)
-                || (!cleanup && !taskTicket.mayEnqueue()))) {
-            return false;
+        boolean overflow = false;
+        // STOP, cleanup authorization and CONTROL-slot reservation must have
+        // one linearization point. Classifying a turn *before* acquiring this
+        // lock could let STOP revoke an ordinary ticket just before a queued
+        // cleanup turn attempted to reserve its slot.
+        synchronized (cell.lifecycleLock) {
+            if (cell.finalized || closed.get()) return false;
+            boolean cleanup = cell.stopped.get()
+                    && taskTicket != null
+                    && cell.authorizedCleanupContinuation(continuation);
+            if (cell.stopped.get() && !cleanup) return false;
+            if (taskTicket != null
+                    && (!taskTicket.issuedFor(actorId, cell.executionDomain)
+                        || (!cleanup && !taskTicket.mayEnqueue()))) {
+                return false;
+            }
+
+            SerialExecutionTicket.ControlReservation reservation =
+                    taskTicket == null
+                            ? (cell.reserveContinuationSlot()
+                                    ? SerialExecutionTicket.ControlReservation.RESERVED
+                                    : SerialExecutionTicket.ControlReservation.FULL)
+                            : cleanup
+                                    ? taskTicket.reserveCleanupControlSlotFor(
+                                            actorId, cell.executionDomain,
+                                            () -> cell.authorizedCleanupContinuation(continuation),
+                                            cell::reserveContinuationSlot)
+                                    : taskTicket.reserveControlSlotFor(
+                                            actorId, cell.executionDomain,
+                                            cell::reserveContinuationSlot);
+            if (reservation == SerialExecutionTicket.ControlReservation.REVOKED)
+                return false;
+            if (reservation == SerialExecutionTicket.ControlReservation.FULL) {
+                overflow = true;
+            } else {
+                boolean admitted = false;
+                try {
+                    if (!cell.continuationMailbox.tryWrite(
+                            MessageEnvelope.continuation(continuation, taskTicket))) {
+                        throw new IllegalStateException(
+                                "actor continuation mailbox capacity invariant violated for "
+                                        + actorId);
+                    }
+                    admitted = true;
+                    if (currentActor.get() == cell) {
+                        // Force another physical dispatch after this actor turn
+                        // rather than letting cooperate rotate inside one batch.
+                        cell.sourceHandoffRequested = true;
+                    }
+                } finally {
+                    if (!admitted) cell.releaseMailboxSlot(true);
+                }
+            }
         }
-        // A cancelled task racing the mailbox-accounting lock must be
-        // discarded, NOT counted as a legitimate CONTROL overflow. This
-        // decision is linearized with ticket.retire() inside the ticket.
-        SerialExecutionTicket.ControlReservation reservation =
-                taskTicket == null
-                        ? (cell.reserveContinuationSlot()
-                                ? SerialExecutionTicket.ControlReservation.RESERVED
-                                : SerialExecutionTicket.ControlReservation.FULL)
-                        : cleanup
-                                ? taskTicket.reserveCleanupControlSlotFor(
-                                        actorId, cell.executionDomain,
-                                        () -> cell.authorizedCleanupContinuation(continuation),
-                                        cell::reserveContinuationSlot)
-                                : taskTicket.reserveControlSlotFor(
-                                        actorId, cell.executionDomain, cell::reserveContinuationSlot);
-        if (reservation == SerialExecutionTicket.ControlReservation.REVOKED) return false;
-        if (reservation == SerialExecutionTicket.ControlReservation.FULL) {
+        if (overflow) {
+            // Do not recurse into actor STOP while holding lifecycleLock.
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
             return false;
         }
-
-        boolean admitted = false;
-        try {
-            synchronized (cell.lifecycleLock) {
-                if (cell.finalized || closed.get()
-                        || (cell.stopped.get()
-                            && !cell.authorizedCleanupContinuation(continuation))) return false;
-                // Cell retirement/replacement might race slot reservation.
-                // Recheck immutable ticket provenance at publication too.
-                if (taskTicket != null
-                        && (!taskTicket.issuedFor(actorId, cell.executionDomain)
-                            || (!cleanup && !taskTicket.mayEnqueue())
-                            || (cleanup
-                                && !cell.authorizedCleanupContinuation(continuation)))) return false;
-                if (!cell.continuationMailbox.tryWrite(
-                        MessageEnvelope.continuation(continuation, taskTicket))) {
-                    throw new IllegalStateException(
-                            "actor continuation mailbox capacity invariant violated for " + actorId);
-                }
-                admitted = true;
-
-                // If this continuation was published by the actor envelope that
-                // is executing right now, force the enclosing actor batch to
-                // leave its TurnExecutor boundary before the continuation can
-                // run. That makes scheduler cooperation a real carrier handoff
-                // rather than a same-batch queue rotation.
-                if (currentActor.get() == cell) {
-                    cell.sourceHandoffRequested = true;
-                }
-            }
-            cell.schedule();
-            return true;
-        } finally {
-            if (!admitted) cell.releaseMailboxSlot(true);
-        }
+        cell.schedule();
+        return true;
     }
 
     /**
