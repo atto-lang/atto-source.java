@@ -33,8 +33,16 @@ expanded AST.
 - An identical build does not reparse unchanged files.
 - Implementation-only edits reparse/rebuild the edited unit; unchanged dependents
   reuse their checked units when their imported ABI does not change.
-- ABI changes rebuild the conservative reverse-import closure.
+- ABI changes and effective import retargeting (even if the dependency set
+  stays identical) rebuild the conservative reverse-import closure.
 - Imports are validated against the full current snapshot, even on parse-cache hits.
+  Effective imports record resolved targets and declaration identities for
+  every source unit, rather than assuming an unchanged target *set* proves
+  identical bindings.
+- When any import is unversioned or resolves outside the supplied source
+  snapshot (including host Java imports), that unit and its dependent closure
+  are checked again on every build. Full reuse requires an external-version
+  fingerprint mechanism not yet implemented.
 - Rechecking dirty units still runs type/ownership admission against current linked
   declarations; parsed ASTs and checked units are distinct objects.
 - The cache is staged: any failed parse, import, type, or ownership check leaves
@@ -45,6 +53,11 @@ expanded AST.
   annotation-expansion behavior while removing a duplicate parser pass.
   Source-reordered exported declarations have a stable ABI digest, so mere
   declaration movement does not invalidate importers.
+- Public ABI fingerprints also include parameter names (needed for named
+  calls), callable suspension/nonlexical/trap metadata, public annotations,
+  mutability capabilities, class/interface declaration kinds, and module
+  contracts. This deliberately prefers conservative invalidation over stale
+  importer validation.
 - This is an **in-memory** optimization. No on-disk or cross-process cache is
   claimed.
 
@@ -66,7 +79,9 @@ expanded AST.
 ## Interface-fingerprint hazards to audit before persistent caching
 
 The current Java ABI digest is conservative but not a complete versioned
-cross-process interface format. In particular audit the following before
+cross-process interface format. The additions in this PR prevent identified
+missing-invalidations but do not establish that *all* public semantics are
+captured; adding another AST modifier needs a deliberate ABI audit. In particular audit the following before
 reusing a digest outside the live compiler object:
 
 - Public class physical layout, including private storage affecting native ABI,
