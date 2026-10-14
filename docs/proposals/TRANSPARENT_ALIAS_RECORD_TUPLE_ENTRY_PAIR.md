@@ -93,3 +93,36 @@ whole-program/import-linking contract, not a parser-only check.
 
 Finally, no built-in `Entry` or `Pair` type or constructors are implemented
 by the declaration spelling change. This proposal does not silently add them.
+
+## Cross-source hardening (October 14, 2026)
+
+A public `import type` declaration is **not** a type-layout witness.
+The incremental linker resolves the named exported declaration in the exact
+source unit and recursively substitutes all source-local/private helper
+aliases before passing a synthetic public signature to the type checker.
+
+- `import type Pair from "./library.ores"` and named `import types Pair`
+  receive a checked type ref, not an opaque `Named("Pair")`.
+- Direct standalone type checking of an imported type without linked metadata
+  fails closed on its first type use.
+- Only `pub` alias names are exported. Private helper alias *names* do not
+  become public, although their representation can be incorporated into a
+  publicly exported structural signature.
+- Unknown foreign *nominal* targets are rejected until a verified
+  cross-unit nominal ABI witness is supported. Cross-file alias chains that
+  require re-exporting foreign imported types remain a documented limitation.
+- Cycles, wrong type-parameter counts, unrecognized compiler-synthetic types,
+  recursive expansion depth above 64 and total expanded nodes above 16,384
+  fail with deterministic type/link diagnostics rather than unbounded work.
+- A named entry `record{key:K,value:V}` and positional `Tuple[K,V]` have
+  distinct field/index semantics and no automatic conversion.
+
+Verification: the private funded [exact-source JDK25 JUnit run](https://github.com/embedded-alerts-test/web-ui-e2e/actions/runs/38616962504)
+passed **24 tests**, and the [cross-file mini-compiler harness](https://github.com/embedded-alerts-test/web-ui-e2e/actions/runs/38616962628)
+passed its targeted 11 cases. The mini-compiler harness replaces the
+runtime-dependent `OresCompiler` façade with an equivalent
+parse/type-check/ownership admission entry point, while compiling the
+real Oreslang `Parser`, `TypeChecker`, `OwnershipChecker`,
+`IncrementalCompiler`, `ImportGraph`, and `PublicTypeAliasLinker`.
+This is not whole-repository Maven, native GraalVM, actor transport or
+LLVM conformance evidence.
