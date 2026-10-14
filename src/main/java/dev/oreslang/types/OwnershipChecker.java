@@ -1050,6 +1050,11 @@ public final class OwnershipChecker {
                     throw error("unknown record field '" + member.member() + "'");
                 }
                 ValueKind valueKind = kindOfType(valueType);
+                if (consuming && valueKind != ValueKind.COPY) {
+                    throw error("cannot move non-Copy record field '" + member.member()
+                            + "' without tracked field ownership and exactly-once drop; "
+                            + "move the containing record as a whole instead");
+                }
                 return new ValueInfo(valueType, valueKind, null);
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
@@ -1060,6 +1065,11 @@ public final class OwnershipChecker {
                             ownershipFieldType(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
+                    if (consuming && isRootedAtRecordProjection(member.receiver(), scope)
+                            && fieldKind != ValueKind.COPY) {
+                        throw error("cannot move non-Copy member '" + member.member()
+                                + "' through an owned record projection; field moves need a checked drop plan");
+                    }
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
                         throw error("cannot move actor-owned field '" + member.member()
                                 + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
@@ -1079,6 +1089,11 @@ public final class OwnershipChecker {
             checkExpr(indexed.index(), scope, false);
             Ast.TypeRef elementType = collectionElementType(receiver.type);
             ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            if (consuming && isRootedAtRecordProjection(indexed.receiver(), scope)
+                    && elementKind != ValueKind.COPY) {
+                throw error("cannot move non-Copy indexed element through a record projection; "
+                        + "projected element moves need ownership and drop tracking");
+            }
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
@@ -3058,6 +3073,30 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    /**
+     * Product values have no tracked partial-move bitmap today. Reject
+     * consuming a non-Copy descendant of a record field, including nested
+     * record/class/index projections, until exact-once field-drop glue exists.
+     * Ordinary scalar/Copy field reads and immutable projected borrows remain
+     * admissible through their existing checks.
+     */
+    private boolean isRootedAtRecordProjection(Ast.Expr expr, Scope scope) {
+        Ast.Expr rootExpr = expr;
+        while (rootExpr instanceof Ast.MemberExpr member
+                || rootExpr instanceof Ast.IndexExpr) {
+            if (rootExpr instanceof Ast.MemberExpr member) {
+                rootExpr = member.receiver();
+            } else {
+                rootExpr = ((Ast.IndexExpr) rootExpr).receiver();
+            }
+        }
+        if (!(rootExpr instanceof Ast.NameExpr name)) return false;
+        VarState root = scope.lookup(name.name());
+        if (root == null) return false;
+        Ast.TypeRef rootType = root.type.isBorrow() ? root.type.borrowedTarget() : root.type;
+        return rootType.isRecordType();
     }
 
     private boolean isRootedAtActorSelf(Ast.Expr expr, Scope scope) {
