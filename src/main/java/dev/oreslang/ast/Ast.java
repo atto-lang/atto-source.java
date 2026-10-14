@@ -605,7 +605,8 @@ public final class Ast {
      * They deliberately do not encode JVM Class/instanceof semantics.
      */
     public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern,
-            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern, RecordPattern { }
+            TypePattern, StructuralPattern, TuplePattern, ConstructorPattern, RecordPattern,
+            TupleProjectionPattern { }
 
     public record WildcardPattern() implements Pattern { }
     public record LiteralPattern(Object value) implements Pattern { }
@@ -641,17 +642,40 @@ public final class Ast {
      * The projected fields bind by name; unlike a structural type guard,
      * a record projection never invokes members or methods.
      */
-    public record RecordPattern(List<String> fields) implements Pattern {
+    public record RecordPattern(List<String> fields, List<BindingKind> kinds) implements Pattern {
+        public RecordPattern(List<String> fields) {
+            this(fields, java.util.Collections.nCopies(fields.size(), BindingKind.VAL));
+        }
         public RecordPattern {
             fields = List.copyOf(fields);
-            if (fields.isEmpty()) {
-                throw new IllegalArgumentException("record match projection requires a field");
+            kinds = List.copyOf(kinds);
+            if (fields.isEmpty() || fields.size() != kinds.size()) {
+                throw new IllegalArgumentException("record match projection requires matching fields and kinds");
             }
             java.util.HashSet<String> names = new java.util.HashSet<>();
             for (String field : fields) {
                 if (field == null || field.isBlank() || field.equals("_") || !names.add(field)) {
                     throw new IllegalArgumentException(
                             "invalid or duplicate match record projection field: " + field);
+                }
+            }
+        }
+    }
+
+    /** Exact-arity positional constructor payload projection; never a record lookup. */
+    public record TupleProjectionPattern(List<DestructureBinding> bindings) implements Pattern {
+        public TupleProjectionPattern {
+            bindings = List.copyOf(bindings);
+            if (bindings.size() < 2) {
+                throw new IllegalArgumentException("tuple match projection requires at least two positions");
+            }
+            java.util.HashSet<String> names = new java.util.HashSet<>();
+            for (DestructureBinding binding : bindings) {
+                if (binding.rest() || binding.declaredType() != null || binding.mutableReferent()) {
+                    throw new IllegalArgumentException("tuple match projection does not support rest, type casts, or mut grants");
+                }
+                if (!binding.isDiscard() && !names.add(binding.name())) {
+                    throw new IllegalArgumentException("duplicate tuple projection binding: " + binding.name());
                 }
             }
         }
