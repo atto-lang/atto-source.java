@@ -977,7 +977,7 @@ public final class Parser {
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         consumeExpressionClassFieldTerminator(initializer, "final actor field should end with ';'");
         return new Ast.FieldDecl(name, visibility, Ast.BindingKind.CONST,
-                type, annotations, initializer, false);
+                type, annotations, initializer, false, true, false);
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
