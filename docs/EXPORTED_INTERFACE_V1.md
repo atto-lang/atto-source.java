@@ -34,9 +34,12 @@ a trust proof: always validate provenance and compare expected fingerprints.
 Export metadata includes callable effect/mutability/ownership-shaped AST
 markers and named parameter labels. Public classes/interfaces/aliases and
 public bindings are extracted without serializing executable bodies. Private
-declarations are not exported. Because the current AST does not safely
+declarations are not exported and entirely private modules produce no
+exported entries. Because the current AST does not safely
 represent every native layout contract, synthesized constructors with
 private fields are **rejected** rather than exposing private field data.
+Classes with private fields annotated `FromJson` are likewise rejected
+pending an opaque wire-layout contract.
 Public inferred signatures likewise fail closed until they can be expressed
 from a fully resolved typed descriptor.
 
@@ -52,7 +55,8 @@ from a fully resolved typed descriptor.
   must prove module visibility at export time before treating this prototype
   as a distributable interface.
 - Private fields annotated for serialization can alter observable wire
-  contracts; this needs an explicit policy before native/linker reuse.
+  contracts; this v1 collector rejects such classes until an explicit
+  opaque policy exists.
 - Cyclic imports, nominal overload selector identities, native object format,
   compiler version provenance, and cache authentication are not implemented.
 - Byte-hashing is not cryptographic authentication; a producer can choose its
@@ -64,11 +68,11 @@ from a fully resolved typed descriptor.
 ## Verified evidence
 
 The exact codec and collector sources compiled against Oreslang's actual
-`Ast.java` using JDK 21 in a **private** authorized CI repository; 20
+`Ast.java` using JDK 21 in a **private** authorized CI repository; 22
 standalone smoke assertions passed across deterministic encoding, wire
 validation, ABI sensitivity, public/private filtering, and namespace checks:
 
-https://github.com/canonical-cloud/canonical-docs/actions/runs/38613576770
+https://github.com/canonical-cloud/canonical-docs/actions/runs/38614132614
 
 This does NOT verify the full JVM/GraalVM compiler, Java PR #924 or the
 LLVM backend; all require their own integration and conformance gates.
