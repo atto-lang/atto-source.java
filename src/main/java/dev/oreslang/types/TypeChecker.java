@@ -4748,6 +4748,15 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        Ast.ClassDecl transportedClass = findClass(named.name());
+        if (named.name().equals("Error")
+                || transportedClass != null
+                        && classDerivesFromGuestError(
+                                transportedClass, new LinkedHashSet<>())) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport a live guest Error; use an approved value-only envelope");
+        }
+
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
