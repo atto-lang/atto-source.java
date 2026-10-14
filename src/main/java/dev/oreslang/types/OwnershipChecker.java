@@ -315,7 +315,7 @@ public final class OwnershipChecker {
                         // Every initializer sees the original scope, including
                         // when an unpacked binding shadows an outer owner.
                         Scope elementScope = new Scope(scope);
-                        checkBinding(new Ast.BindingStmt(binding.kind(), null, binding.name(),
+                        checkBinding(new Ast.BindingStmt(binding.kind(), binding.declaredType(), binding.name(),
                                 tuple.elements().get(i), binding.mutableReferent()), elementScope);
                         if (unpacked.putIfAbsent(binding.name(), elementScope.lookup(binding.name())) != null) {
                             throw error("duplicate tuple binding '" + binding.name() + "'");
@@ -326,10 +326,20 @@ public final class OwnershipChecker {
                 return;
             }
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
+            // An extracted binding is currently an independent local. It cannot
+            // inherit a borrow without a registered projection lease. Until
+            // scoped projection loans are implemented, reject borrowed aggregate
+            // extraction rather than making an apparently owned alias.
+            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                    || source.borrowSource != null || source.borrowLease) {
+                throw error("borrowed aggregate destructuring requires a scoped projection loan");
+            }
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = destructureBindingType(destructure, source.type, i, binding.name());
+                Ast.TypeRef bindingType = binding.declaredType() != null
+                        ? binding.declaredType()
+                        : destructureBindingType(destructure, source.type, i, binding.name());
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
@@ -579,17 +589,41 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
-                } else if (arm.operation() == Ast.ChannelOperation.READ
-                        && arm.bindingName() != null) {
+                } else if (arm.operation() == Ast.ChannelOperation.READ) {
                     Ast.TypeRef element = elementTypes.get(i);
-                    armScope.define(
-                            arm.bindingName(),
-                            new VarState(
-                                    element,
-                                    arm.mutableReferent(),
-                                    arm.bindingKind() == Ast.BindingKind.LET,
-                                    kindOfType(element),
+                    if (arm.destructureKind() != null) {
+                        for (int j = 0; j < arm.destructureBindings().size(); j++) {
+                            Ast.DestructureBinding binding = arm.destructureBindings().get(j);
+                            if (binding.isDiscard()) continue;
+                            Ast.TypeRef projected = binding.declaredType() != null
+                                    ? binding.declaredType()
+                                    : arm.destructureKind() == Ast.DestructureKind.SEQUENCE
+                                            ? sequenceDestructureBindingType(element, j, binding.rest())
+                                            : destructureBindingType(
+                                                    new Ast.DestructureStmt(
+                                                            Ast.DestructureKind.OBJECT,
+                                                            arm.destructureBindings(),
+                                                            new Ast.LiteralExpr(null)),
+                                                    element, j, binding.name());
+                            armScope.define(binding.name(), new VarState(
+                                    projected,
+                                    binding.mutableReferent(),
+                                    binding.kind() == Ast.BindingKind.LET,
+                                    kindOfType(projected),
                                     Origin.LOCAL));
+                        }
+                    } else if (arm.bindingName() != null) {
+                        Ast.TypeRef bound = arm.bindingType() == null
+                                ? element : arm.bindingType();
+                        armScope.define(
+                                arm.bindingName(),
+                                new VarState(
+                                        bound,
+                                        arm.mutableReferent(),
+                                        arm.bindingKind() == Ast.BindingKind.LET,
+                                        kindOfType(bound),
+                                        Origin.LOCAL));
+                    }
                 }
 
                 if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
@@ -642,7 +676,9 @@ public final class OwnershipChecker {
             for (int i = 0; i < loop.bindings().size(); i++) {
                 Ast.DestructureBinding binding = loop.bindings().get(i);
                 if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = sequenceDestructureBindingType(elementType, i, binding.rest());
+                Ast.TypeRef bindingType = binding.declaredType() != null
+                        ? binding.declaredType()
+                        : sequenceDestructureBindingType(elementType, i, binding.rest());
                 loopScope.define(binding.name(), new VarState(
                         bindingType,
                         binding.mutableReferent(),
@@ -2324,6 +2360,9 @@ public final class OwnershipChecker {
                     if (arm.bindingName() != null) {
                         armLocals.add(arm.bindingName());
                     }
+                    for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                        if (!binding.isDiscard()) armLocals.add(binding.name());
+                    }
                     scanStatements(
                             arm.body(),
                             armLocals,
@@ -2483,6 +2522,39 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (pattern instanceof Ast.RecordPattern projection) {
+            Ast.TypeRef shape = subjectType;
+            if (shape != null && shape.isBorrow()) shape = shape.borrowedTarget();
+            Map<String, Ast.TypeRef> members =
+                    shape != null && shape.isRecordType()
+                            ? shape.recordMembers() : Map.of();
+            for (int i = 0; i < projection.fields().size(); i++) {
+                String field = projection.fields().get(i);
+                Ast.TypeRef declared = members.getOrDefault(field, Ast.TypeRef.inferred());
+                defineProjectionAlias(field, declared, source, destination, projection.kinds().get(i));
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            Ast.TypeRef tuple = subjectType != null && subjectType.isBorrow()
+                    ? subjectType.borrowedTarget() : subjectType;
+            // TypeChecker resolves source Tuple<T,U> to a positional product.
+            // OwnershipChecker also sees the original parsed TypeRef, which is
+            // not the internal $tuple$ shape; both spellings must agree.
+            List<Ast.TypeRef> elementTypes = tuple != null
+                    && (tuple.isTupleType() || tuple.name().equals("Tuple"))
+                    ? tuple.arguments() : List.of();
+            if (elementTypes.size() != projection.bindings().size()) {
+                throw error("tuple match projection needs a proven exact-arity tuple type");
+            }
+            for (int i = 0; i < projection.bindings().size(); i++) {
+                Ast.DestructureBinding binding = projection.bindings().get(i);
+                if (binding.isDiscard()) continue;
+                defineProjectionAlias(binding.name(), elementTypes.get(i),
+                        source, destination, binding.kind());
+            }
+            return;
+        }
         if (pattern instanceof Ast.TuplePattern tuple) {
             List<Ast.TypeRef> elementTypes =
                     subjectType != null && subjectType.isTupleType()
@@ -2522,6 +2594,34 @@ public final class OwnershipChecker {
             return List.of(subjectType.arguments().get(1));
         }
         return List.of();
+    }
+
+    /**
+     * Projections of Copy fields are independent local values. They must not
+     * carry an ownershipRoot alias back to the aggregate: rebinding a local
+     * otherwise could resurrect a moved original. Non-Copy projections stay
+     * conservative aliases; rebinding them requires a separate move proof.
+     */
+    private void defineProjectionAlias(String name, Ast.TypeRef type, VarState source,
+            Scope destination, Ast.BindingKind bindingKind) {
+        Ast.TypeRef safe = source == null ? type : overlayReadonlyCapabilities(source.type, type);
+        ValueKind kind = kindOfType(safe);
+        if (source == null && kind != ValueKind.COPY) {
+            // A constructor expression/call has no tracked owner VarState.
+            // Until move-from-temporary lowering exists, exposing an owned
+            // projection would allow untracked aliases or double moves.
+            throw error("non-Copy match projection '" + name
+                    + "' requires a tracked source owner; bind the source first");
+        }
+        if (bindingKind == Ast.BindingKind.LET && kind != ValueKind.COPY) {
+            throw error("let match projection of non-Copy field '" + name
+                    + "' requires explicit move/loan lowering; use const or val");
+        }
+        VarState alias = new VarState(safe, false, bindingKind == Ast.BindingKind.LET,
+                kind, Origin.LOCAL);
+        alias.aliasSource = source != null && kind != ValueKind.COPY
+                ? ownershipRoot(source) : null;
+        destination.define(name, alias);
     }
 
     private void defineRefinementAlias(String name, Ast.TypeRef narrowedType, VarState source, Scope destination) {
@@ -2610,6 +2710,12 @@ public final class OwnershipChecker {
         else if (pattern instanceof Ast.TypePattern typed && typed.binding() != null) names.add(typed.binding());
         else if (pattern instanceof Ast.StructuralPattern structural && structural.binding() != null) {
             names.add(structural.binding());
+        } else if (pattern instanceof Ast.RecordPattern projection) {
+            names.addAll(projection.fields());
+        } else if (pattern instanceof Ast.TupleProjectionPattern projection) {
+            for (Ast.DestructureBinding binding : projection.bindings()) {
+                if (!binding.isDiscard()) names.add(binding.name());
+            }
         } else if (pattern instanceof Ast.TuplePattern tuple) {
             for (Ast.Pattern nested : tuple.elements()) collectPatternBindingNames(nested, names);
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
@@ -3108,6 +3214,11 @@ public final class OwnershipChecker {
             CaptureSet captures = new CaptureSet();
             Set<String> locals = new HashSet<>();
             if (arm.bindingName() != null) locals.add(arm.bindingName());
+            // Winning readch projections are arm-local, not closure captures:
+            // the selector supplies them only after the channel read settles.
+            for (Ast.DestructureBinding binding : arm.destructureBindings()) {
+                if (!binding.isDiscard()) locals.add(binding.name());
+            }
             scanStatements(arm.body(), locals, outer, null, captures);
             perArm.add(captures);
 
