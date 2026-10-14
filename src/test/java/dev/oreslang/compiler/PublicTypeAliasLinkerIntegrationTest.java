@@ -128,4 +128,22 @@ final class PublicTypeAliasLinkerIntegrationTest {
                                             + "fnc bad(Pair<string,int> p): void { return; }")));
         }
     }
+
+    @Test
+    void repeatedAliasExpansionHasAGlobalBudget() {
+        StringBuilder source = new StringBuilder("define module product\n");
+        source.append("type A0<T> = Tuple[T,T];\n");
+        for (int i = 1; i <= 15; i++) {
+            source.append("type A").append(i).append("<T> = Tuple[A")
+                    .append(i - 1).append("<T>, A").append(i - 1).append("<T>];\n");
+        }
+        source.append("define pub type alias Large as A15<int>;\nend\n");
+        var parsed = dev.oreslang.parser.Parser.parse(source.toString());
+        var consumer = dev.oreslang.parser.Parser.parse(
+                "import type Large from \"./library.ores\"; fnc run(): void { return; }");
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> PublicTypeAliasLinker.link("app.ores", consumer,
+                        Map.of("app.ores", consumer, "library.ores", parsed), Map.of()));
+        assertTrue(error.getMessage().contains("expansion exceeds"), error.getMessage());
+    }
 }
