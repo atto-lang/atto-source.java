@@ -4427,10 +4427,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object indexValue(Object receiver, Object index) {
             if (receiver instanceof OresKeyedMap<?, ?> map) {
-                if (!map.containsKey(index)) {
-                    throw new IllegalArgumentException("unknown typed Map key");
-                }
-                return map.get(index);
+                // A single synchronized operation must test presence and
+                // read the value, even when other guest tasks remove keys.
+                return map.getRequired(index);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
