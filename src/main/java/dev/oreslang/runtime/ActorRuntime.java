@@ -7673,10 +7673,6 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingStopReleases++;
                 failedDrainWaiters = List.copyOf(pendingDrains);
                 pendingDrains.clear();
-                if (cause == null) mailbox.close();
-                else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                urgentMailbox.close(cause);
                 detached = detachMailboxReservationsLocked();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
@@ -7689,6 +7685,13 @@ public final class ActorRuntime implements AutoCloseable {
             // belongs under lifecycleLock. The pending-release gate keeps
             // finalization from closing memory before every refund is done.
             try {
+                // The STOP flag and lifecycle monitor already fence all new
+                // admissions; close may notify registered select Futures, so
+                // it belongs outside the actor monitor as well.
+                if (cause == null) mailbox.close();
+                else mailbox.close(cause);
+                continuationMailbox.close(cause);
+                urgentMailbox.close(cause);
                 releaseDrainedMailboxReservations(detached);
                 Throwable drainFailure = cause == null ? terminated(ref) : cause;
                 for (DrainWaiter waiter : failedDrainWaiters) {
