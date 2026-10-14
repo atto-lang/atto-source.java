@@ -272,6 +272,41 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void maximumFanInPreservesHighIndexWinnerAndRefundsEveryLosingWaiter() {
+        // Probe the largest supported arm set. The channel is deliberately
+        // last, so arbitration visits every pending Future before its winner.
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var cases = new java.util.ArrayList<ChannelRuntime.SelectCase>();
+        for (int i = 0; i < ChannelRuntime.MAX_SELECT_CASES - 1; i++) {
+            cases.add(ChannelRuntime.await(producer));
+        }
+        cases.add(ChannelRuntime.read(channel));
+        var selection = new ChannelRuntime.SelectSet(cases);
+        var pending = selection.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertEquals(ChannelRuntime.MAX_SELECT_CASES - 1,
+                producer.pendingRuntimeWaiterCount());
+        assertTrue(channel.tryWrite(42));
+        var channelWinner = pending.join();
+        assertEquals(ChannelRuntime.MAX_SELECT_CASES - 1, channelWinner.index());
+        assertEquals(42, channelWinner.value());
+        assertTrue(channel.tryRead().isEmpty());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertFalse(producer.isDone());
+
+        // A reused select sees its first newly completed Future and never
+        // consumes a channel value merely because that channel was registered.
+        var waitingAgain = selection.selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+        assertTrue(producer.completeFromRuntime(99));
+        var futureWinner = waitingAgain.join();
+        assertEquals(0, futureWinner.index());
+        assertEquals(99, futureWinner.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertTrue(channel.tryWrite(73));
+        assertEquals(73, channel.tryRead().orElseThrow());
+    }
+
+    @Test
     void immediateProbeOnPendingFutureRegistersNoWaiter() {
         var future = new OresFuture<Integer>();
         var set = ChannelRuntime.SelectSet.of(ChannelRuntime.await(future));
