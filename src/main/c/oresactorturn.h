@@ -30,7 +30,10 @@ typedef enum ores_turn_status {
 } ores_turn_status;
 
 /* max_objects bounds lifetime allocations of caps, tickets and leases.
- * Destruction requires no physically active lease. VM must fence all callers.
+ * Destruction requires every actor to be stopped, physically quiescent and
+ * retired with no outstanding cleanup tickets. VM must fence ALL other
+ * callers before destruction; pointers from a destroyed VM may be recycled
+ * by the allocator and are never valid against a later VM instance.
  */
 ores_turn_vm *ores_turn_vm_new(size_t max_objects);
 ores_turn_status ores_turn_vm_destroy(ores_turn_vm *vm);

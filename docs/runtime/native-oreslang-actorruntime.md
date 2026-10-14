@@ -133,6 +133,31 @@ prevent pointer ABA; therefore admission can fail when the bounded lifetime
 budget is exhausted even if many old turns have finished. The host must quiesce
 and fence every possible caller before destroying the native VM.
 
+### Extended native admission and teardown stress audit
+
+The native admission regression suite additionally races **200 STOP/user-claim**
+interleavings and **200 force-revoke/cleanup-claim** interleavings, with
+carrier-owned release, plus forged/cross-VM stack-pointer guesses and malformed
+input checks. The number of interleavings is a stress sample, not a formal
+exhaustiveness proof; the linked VM-wide mutex is the native linearization
+point.
+
+The VM destructor now fails closed until **every actor is STOPPED,
+physically quiescent, free of outstanding cleanup tickets, and RETIRED**.
+A no-active-lease check alone would have permitted dropping an unretired
+actor and its cleanup obligations. The host must independently fence all
+threads that can call into this VM before teardown. Opaque pointer addresses
+are never reused *within the lifetime of one VM*, but after destroying a VM
+the allocator can recycle addresses; old host pointers must never be used
+against a new VM. A production handle should additionally carry VM-instance
+identity and a generation-scoped secret/nonce independent of allocation
+address.
+
+Native compiler-and-test evidence is required on the exact Git tree; successful
+registration of a GitHub Actions workflow without executed job steps is not
+validation. Cross-org CI mirrors require private/private pinned repository IDs
+and exact tree equality before any conformance claim.
+
 **Critical limitations:** Native `force_revoke` fences *future* claims; it
 does not asynchronously terminate an already-running native carrier. Cleanup
 tickets may only be minted by the trusted scheduler for a real registered

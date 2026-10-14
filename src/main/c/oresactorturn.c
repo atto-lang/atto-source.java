@@ -98,7 +98,11 @@ ores_turn_status ores_turn_vm_destroy(ores_turn_vm *vm) {
     if (!vm) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     for (const ores_actor_cap *a = vm->actors; a; a = a->next) {
-        if (a->active) {
+        /* VM teardown must not bypass STOP, unresolved cleanup tickets,
+         * physical turn quiescence, or final state retirement. Other host
+         * threads must already be fenced before the caller attempts destroy.
+         */
+        if (!a->retired || a->active || a->pending_tickets) {
             pthread_mutex_unlock(&vm->mutex);
             return ORES_TURN_BUSY;
         }
