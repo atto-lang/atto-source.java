@@ -138,6 +138,24 @@ description = "Async ordered matching keeps first-match precedence for overlappi
 expected_stdout = "first\n"
 
 [[case]]
+id = "exclusive.do.suspendable"
+source = "exclusive-do-suspendable.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Explicit do preserves legacy exclusive semantics across suspension"
+expected_stdout = "true\npositive\nfallback\n"
+
+[[case]]
+id = "ordered.do.suspendable"
+source = "ordered-do-suspendable.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Explicit do preserves ordered over semantics and first successful arm"
+expected_stdout = "first\n"
+
+[[case]]
 id = "reject.exclusive.free.guard"
 source = "exclusive-free-guard.ores"
 kind = "reject"
