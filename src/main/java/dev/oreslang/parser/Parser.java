@@ -539,7 +539,13 @@ public final class Parser {
             }
             if (isBindingKind(peek().type())) {
                 validateClassFieldModifiers(mods);
-                fields.add(parseField(annotations, mods.visibility));
+                Ast.FieldDecl field = parseField(annotations, mods.visibility);
+                if (field.bindingKind() == Ast.BindingKind.CONST
+                        && field.initializer() == null) {
+                    throw error(previous(), "final/const class field '" + field.name()
+                            + "' requires a declaration-site initializer");
+                }
+                fields.add(field);
                 continue;
             }
             if (check(IDENT) && checkNext(COLON)) {
