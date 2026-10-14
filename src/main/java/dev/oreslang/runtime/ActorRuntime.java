@@ -6616,6 +6616,11 @@ public final class ActorRuntime implements AutoCloseable {
                 if (envelope.taskTicket() != null
                         && envelope.continuation() instanceof OresScheduler.CleanupTurn turn
                         && turn.ownedBy(sourceScheduler)
+                        // Never preserve a queued initial source turn which
+                        // has not entered a guest frame: it has no lexical
+                        // resources, and retaining it can exhaust the CONTROL
+                        // lane ahead of a genuinely suspended task's cleanup.
+                        && turn.mayNeedLexicalCleanup()
                         // Before STOP injects cancellation, ordinary queued
                         // source turns may still become terminal cleanup turns.
                         // After all requests are installed, a turn with no
