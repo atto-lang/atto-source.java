@@ -4678,7 +4678,8 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.stopped.get() && !cell.endRequested) {
+        if (cell != null && cell.stopped.get() && !cell.endRequested
+                && !OresScheduler.currentTaskInCleanup()) {
             throw new ActorCancellationSignal("actor execution stopped");
         }
         if (cell != null && cell.kind == ActorKind.UNTRUSTED) {
@@ -6872,6 +6873,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
+            List<OresFuture<?>> lexicalCleanup;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
@@ -6880,8 +6882,17 @@ public final class ActorRuntime implements AutoCloseable {
                 stopped.set(true);
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
-                continuationMailbox.close(cause);
-                drainMailboxReservations();
+                lexicalCleanup = List.copyOf(sourceCleanupTasks);
+                // Only previously-owned stackless lexical continuations may
+                // cross the stop barrier. Ordinary control/user mail is sealed.
+                if (lexicalCleanup.isEmpty() || forceKillFenced || closed.get()) {
+                    continuationMailbox.close(cause);
+                    drainMailboxReservations();
+                } else {
+                    drainUserMailboxReservations();
+                }
+                for (var waiter : pendingSourceReceiveWaiters) waiter.detach();
+                pendingSourceReceiveWaiters.clear();
                 descendants = List.copyOf(children);
                 pending = List.copyOf(pendingOperations);
                 pendingOperations.clear();
@@ -6892,6 +6903,10 @@ public final class ActorRuntime implements AutoCloseable {
             // Cancellation removes channel/select waiter registrations before
             // any future channel activity can revive work for this dead actor.
             for (OresFuture<?> future : pending) future.cancel(false);
+            // Source tasks remain owned even if their caller omitted the
+            // generic ownCurrentActorFuture registration. Request terminal
+            // unwind through the actor's private continuation mailbox.
+            for (OresFuture<?> future : lexicalCleanup) future.cancel(false);
 
             for (ActorCell<?> child : descendants) {
                 child.cancel(new ActorCancelledException(
