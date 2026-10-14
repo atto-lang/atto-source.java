@@ -3,12 +3,15 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.Types;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -119,6 +122,52 @@ final class SuspendableProductSpreadParityTest {
                 }
                 """;
         assertEquals("1923", checkedExecution(code));
+    }
+
+    @Test
+    void staticallyTypedRecordFieldsRetainLexicalOrderAndImmutableSnapshot() {
+        LinkedHashMap<String, Types.Type> fields = new LinkedHashMap<>();
+        fields.put("zeta", Types.Primitive.STRING);
+        fields.put("alpha", Types.Primitive.INT);
+        fields.put("middle", Types.Primitive.BOOL);
+        var record = new Types.Record(fields, true);
+        assertEquals(List.of("zeta", "alpha", "middle"),
+                List.copyOf(record.members().keySet()));
+        fields.remove("zeta");
+        assertEquals(List.of("zeta", "alpha", "middle"),
+                List.copyOf(record.members().keySet()));
+        assertThrows(UnsupportedOperationException.class,
+                () -> record.members().put("delta", Types.Primitive.INT));
+        LinkedHashMap<String, Types.Type> bad = new LinkedHashMap<>();
+        bad.put("unsafe", null);
+        assertThrows(NullPointerException.class, () -> new Types.Record(bad, true));
+    }
+
+    @Test
+    void recordSpreadChecksMixedScalarTypesByLabelNotByPosition() throws Exception {
+        String code = """
+                fnc checked(string name, int count): string { return name; }
+                pub routine main(): void {
+                    const args = (count: 42, name: "matched");
+                    stdio.stdout.write(checked(...args));
+                    return;
+                }
+                """;
+        assertEquals("matched", checkedExecution(code));
+    }
+
+    @Test
+    void recordSpreadRejectsMismatchedNamedScalarTypes() {
+        String code = """
+                fnc checked(string name, int count): string { return name; }
+                pub routine main(): void {
+                    const args = (count: "not-an-int", name: 42);
+                    stdio.stdout.write(checked(...args));
+                    return;
+                }
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(code)));
     }
 
     @Test
