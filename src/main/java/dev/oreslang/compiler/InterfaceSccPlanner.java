@@ -80,6 +80,25 @@ public final class InterfaceSccPlanner {
             Map<String, Map<String, String>> externalImportPins) {
         Objects.requireNonNull(admittedPrograms, "admittedPrograms");
         Objects.requireNonNull(environmentByUnit, "environmentByUnit");
+        Objects.requireNonNull(resolvedOverrides, "resolvedOverrides");
+        Objects.requireNonNull(externalImportPins, "externalImportPins");
+        if (admittedPrograms.size() > MAX_UNITS) {
+            throw new IllegalArgumentException("too many source units");
+        }
+        long importCount = 0;
+        for (Map.Entry<String, dev.oreslang.ast.Ast.Program> entry : admittedPrograms.entrySet()) {
+            String unit = entry.getKey();
+            validateUnit(unit);
+            if (!unit.equals(ImportGraph.normalizeUnitId(unit))) {
+                throw new IllegalArgumentException("noncanonical source unit ID: " + unit);
+            }
+            dev.oreslang.ast.Ast.Program source = Objects.requireNonNull(
+                    entry.getValue(), "checked source");
+            importCount += source.imports().size();
+            if (importCount > MAX_SOURCE_IMPORTS) {
+                throw new IllegalArgumentException("source import budget exceeded");
+            }
+        }
         if (!admittedPrograms.keySet().equals(environmentByUnit.keySet())) {
             throw new IllegalArgumentException(
                     "checked source and compiler environment sets must match exactly");
