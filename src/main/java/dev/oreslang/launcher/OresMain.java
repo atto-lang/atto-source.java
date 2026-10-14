@@ -83,10 +83,8 @@ public final class OresMain {
                         ? "interpreter-no-jit" : "runtime-selected") + "\"}");
             return 0;
         }
-        String perfEnv = System.getenv("ORES_CORE_PERF");
-        boolean corePerf = "true".equalsIgnoreCase(perfEnv) || "1".equals(perfEnv);
-        String debugEnv = System.getenv("ORES_CORE_DEBUG");
-        boolean coreDebug = "true".equalsIgnoreCase(debugEnv) || "1".equals(debugEnv);
+        boolean corePerf = envFlagEnabled("ORES_CORE_PERF");
+        boolean coreDebug = envFlagEnabled("ORES_CORE_DEBUG");
         boolean strict = envFlagEnabled("ORES_STRICT_ISOLATE");
         boolean checkOnly = envFlagEnabled("ORES_CHECK");
         boolean buildAnalysis = envFlagEnabled("ORES_BUILD_ANALYSIS");
