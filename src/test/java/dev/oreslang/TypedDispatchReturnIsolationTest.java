@@ -54,6 +54,36 @@ final class TypedDispatchReturnIsolationTest {
     }
 
     @Test
+    void directReturnMatchTypeHintDoesNotLeakIntoItsSubject() {
+        IllegalArgumentException diagnostic = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                    fnc classify(bool ready): int {
+                        return match match ready over
+                            on true -> { return true; }
+                            on _ -> { return false; }
+                        end over
+                            on true -> { return 1; }
+                            on _ -> { return 0; }
+                        end
+                    }
+                    """));
+        assertTrue(diagnostic.getMessage().contains("<ret=Type>"),
+                diagnostic::toString);
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc classify(bool ready): int {
+                    return match match<ret=bool> ready over
+                        on true -> { return true; }
+                        on _ -> { return false; }
+                    end over
+                        on true -> { return 1; }
+                        on _ -> { return 0; }
+                    end
+                }
+                """));
+    }
+
+    @Test
     void plainValueMatchCannotBorrowEnclosingCallableReturnContract() {
         IllegalArgumentException diagnostic = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("""
