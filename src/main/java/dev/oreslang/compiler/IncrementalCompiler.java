@@ -322,15 +322,21 @@ public final class IncrementalCompiler {
             if (fn.async()) abi.append("async ");
             if (fn.generator()) abi.append("generator ");
             if (fn.structural()) abi.append("structural ");
+            abi.append("suspends=").append(fn.suspends())
+                    .append(" nonlexical=").append(fn.nonLexical())
+                    .append(" trapped=").append(fn.trapped()).append(' ');
             abi.append(fn.kind()).append(" pub ").append(fn.name());
             appendGenerics(abi, fn.genericParameters());
             appendParams(abi, fn.parameters());
-            abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            abi.append("=>").append(typeRef(fn.returnType()));
+            appendAnnotations(abi, fn.annotations());
+            abi.append('\n');
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
             if (klass.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(klass.actorKind()).append(" pub class ").append(klass.name());
+            abi.append(klass.actorKind()).append(" pub class ").append(klass.name())
+                    .append(" abstract=").append(klass.isAbstract());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
@@ -341,6 +347,7 @@ public final class IncrementalCompiler {
                     && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
                 abi.append(" constructor");
                 appendParams(abi, klass.constructor().parameters());
+                appendAnnotations(abi, klass.constructor().annotations());
                 abi.append('\n');
             } else if (klass.constructor() == null) {
                 // Legacy synthesized constructors are externally visible when
@@ -364,7 +371,10 @@ public final class IncrementalCompiler {
                 if (field.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(" field ").append(field.bindingKind()).append(' ')
                         .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
-                        .append(' ').append(field.name()).append('\n');
+                        .append(' ').append(field.name()).append(" mutableReferent=")
+                        .append(field.mutableReferent());
+                appendAnnotations(abi, field.annotations());
+                abi.append('\n');
             }
             List<String> methodEntries = new ArrayList<>();
             for (Ast.MethodDecl method : klass.methods()) {
@@ -377,7 +387,8 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.InterfaceDecl iface) {
             // Private contracts/traits/interfaces are not part of the imported ABI.
             if (iface.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
+            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name())
+                    .append(" moduleContract=").append(iface.moduleContract());
             appendGenerics(abi, iface.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
@@ -403,7 +414,10 @@ public final class IncrementalCompiler {
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
-                    .append(' ').append(field.name()).append('\n');
+                    .append(' ').append(field.name()).append(" mutableReferent=")
+                    .append(field.mutableReferent());
+            appendAnnotations(abi, field.annotations());
+            abi.append('\n');
         }
     }
 
@@ -411,12 +425,17 @@ public final class IncrementalCompiler {
         StringBuilder out = new StringBuilder();
         if (method.async()) out.append("async ");
         if (method.structural()) out.append("structural ");
+        out.append("suspends=").append(method.suspends())
+                .append(" abstract=").append(method.isAbstract())
+                .append(" receiver=").append(typeRef(method.explicitReceiverType()));
         out.append(method.isStatic() ? " static-fnc " : " method ")
                 .append(method.name())
                 .append("#arity").append(method.arity());
         appendGenerics(out, method.genericParameters());
         appendParams(out, method.parameters());
-        out.append("=>").append(typeRef(method.returnType())).append('\n');
+        out.append("=>").append(typeRef(method.returnType()));
+        appendAnnotations(out, method.annotations());
+        out.append('\n');
         return out.toString();
     }
 
@@ -443,9 +462,32 @@ public final class IncrementalCompiler {
             if (param.structural()) abi.append("structural ");
             abi.append(typeRef(param.type()));
             if (param.mutable()) abi.append(" mut");
+            // Names participate in named-argument call resolution.
+            appendLengthPrefixed(abi, param.name());
             abi.append(',');
         }
         abi.append(')');
+    }
+
+    private static void appendLengthPrefixed(StringBuilder abi, String value) {
+        if (value == null) {
+            abi.append("-1:");
+        } else {
+            abi.append(value.length()).append(':').append(value);
+        }
+    }
+
+    private static void appendAnnotations(StringBuilder abi, List<Ast.Annotation> annotations) {
+        abi.append(" annotations[");
+        for (Ast.Annotation annotation : annotations) {
+            appendLengthPrefixed(abi, annotation.name());
+            abi.append('(');
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                appendLengthPrefixed(abi, typeRef(argument));
+            }
+            abi.append(')');
+        }
+        abi.append(']');
     }
 
     private static String typeRef(Ast.TypeRef ref) {
