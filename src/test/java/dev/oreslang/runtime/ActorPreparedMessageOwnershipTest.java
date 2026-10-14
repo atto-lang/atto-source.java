@@ -79,6 +79,47 @@ final class ActorPreparedMessageOwnershipTest {
     }
 
     @Test
+    void privateMailboxRejectsHostileMapThatExpandsOnlyDuringSnapshot() {
+        AtomicBoolean expanded = new AtomicBoolean();
+        Map<String, Integer> hostile = new AbstractMap<>() {
+            @Override public int size() { return 1; }
+
+            @Override public Set<Entry<String, Integer>> entrySet() {
+                boolean copying = StackWalker.getInstance().walk(frames ->
+                        frames.anyMatch(frame ->
+                                frame.getClassName().equals(ActorRuntime.class.getName())
+                                && frame.getMethodName().equals("isolateCopy")));
+                if (!copying) return Set.of(Map.entry("safe", 1));
+                expanded.set(true);
+                return new java.util.AbstractSet<>() {
+                    @Override public int size() { return 1; }
+                    @Override public java.util.Iterator<Entry<String, Integer>> iterator() {
+                        return new java.util.Iterator<>() {
+                            private int produced;
+                            @Override public boolean hasNext() { return produced <= 50_000; }
+                            @Override public Entry<String, Integer> next() {
+                                if (!hasNext()) throw new java.util.NoSuchElementException();
+                                produced++;
+                                return Map.entry("safe", 1);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var sink = runtime.<Object>spawnPrivate(
+                    ignored -> (message, context) -> {});
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class, () -> sink.send(hostile));
+            assertTrue(expanded.get(),
+                    "the source must expand only inside private actor copy");
+            assertTrue(denied.getMessage().contains("node budget"), denied.getMessage());
+        }
+    }
+
+    @Test
     void dataOnlyFreezeRejectsCapabilityInsertedDuringSnapshot() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<Integer>spawnShared(() -> (value, context) -> {});
