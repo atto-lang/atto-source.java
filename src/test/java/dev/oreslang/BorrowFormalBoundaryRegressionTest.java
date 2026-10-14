@@ -114,7 +114,7 @@ final class BorrowFormalBoundaryRegressionTest {
     void channelPayloadCannotTransportNestedBorrow() {
         reject(BOX + """
                 fnc bad(Option<borrow Box> wrapped): void {
-                  val Channel<Option<borrow Box>> ch = Channel.new<Option<borrow Box>>(1);
+                  val Channel<Any> ch = Channel.new<Any>(1);
                   nb writech ch, wrapped;
                   return;
                 }
