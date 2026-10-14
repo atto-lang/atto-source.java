@@ -3118,7 +3118,44 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // Keep the common, non-suspending path allocation-free. Crucially,
+            // evaluate before publishing so downstream exceptions never become
+            // a second result. Typed value matches always use their owned
+            // SourceTask ARM_RESULT frame, even when synchronously decidable.
+            if (!(expr instanceof Ast.ValueMatchExpr)) {
+                boolean mightSuspend;
+                try {
+                    mightSuspend = expressionContainsPotentialSuspension(
+                            expr,
+                            java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
+                    return;
+                }
+                if (!mightSuspend) {
+                    Object immediate;
+                    try {
+                        immediate = eval(expr, env);
+                    } catch (RuntimeException | Error failure) {
+                        downstream.accept(task, null, failure);
+                        return;
+                    }
+                    downstream.accept(task, immediate, null);
+                    return;
+                }
+            }
+            // A suspendable evaluation can publish on another carrier. Fence
+            // all completion paths, including immediate future completions.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont continuation = (t, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "source expression continuation attempted multiple deliveries");
+                }
+                downstream.accept(t, value, failure);
+            };
             try {
                 if (expr instanceof Ast.ValueMatchExpr matched) {
                     evalSuspendableExpr(task, matched.subject(), env,
@@ -3131,17 +3168,6 @@ public final class OresEvalRootNode extends RootNode {
                             });
                     return;
                 }
-                if (!expressionContainsPotentialSuspension(
-                        expr,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
-                    return;
-                }
-
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -3588,8 +3614,12 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
-                continuation.accept(task, eval(expr, env), null);
+                Object fallback = eval(expr, env);
+                continuation.accept(task, fallback, null);
             } catch (RuntimeException | Error failure) {
+                // A failure thrown by an already-delivered continuation is
+                // downstream flow, NOT another expression-evaluation failure.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
