@@ -68,6 +68,9 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    // Local-only first exception slice: never permit a guest Error value to
+    // unwind into actor scheduler, host process, or future callbacks.
+    private int lexicalGuestTryDepth;
     private Ast.ClassDecl currentClassOwner;
     // Only an actual constructor may initialize an otherwise fixed, initially
     // absent class field. Class methods never inherit constructor privileges.
@@ -1480,6 +1483,25 @@ public final class TypeChecker {
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.ThrowStmt thrown) {
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "guest throw in an actor requires supervisor CONTROL lowering; not enabled");
+            }
+            if (lexicalGuestTryDepth == 0) {
+                throw new IllegalArgumentException(
+                        "guest throw currently requires an enclosing lexical try/catch");
+            }
+            Type valueType = deref(typeOf(thrown.value(), env, generics, self));
+            // Unknown and broad Any must never bypass the checked Error-only
+            // requirement. Class hierarchy ancestry is nominal, not structural.
+            if (valueType == Unknown.INSTANCE
+                    || !assignable(valueType, new Named("Error", List.of()))) {
+                throw new IllegalArgumentException(
+                        "throw requires a statically proven Error-derived guest value");
+            }
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             boolean namedInference = binding.inferredTypeName() != null;
             Type declaredAhead = namedInference || binding.declaredType() == null
@@ -1713,7 +1735,12 @@ public final class TypeChecker {
         if (stmt instanceof Ast.TryStmt attempted) {
             Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
             env.restoreInitialization(before);
-            checkBlock(attempted.body(), env, generics, expectedReturn, self);
+            lexicalGuestTryDepth++;
+            try {
+                checkBlock(attempted.body(), env, generics, expectedReturn, self);
+            } finally {
+                lexicalGuestTryDepth--;
+            }
             Map<Env.Binding, Set<String>> normalExit = env.initializationSnapshot();
 
             env.restoreInitialization(before);
