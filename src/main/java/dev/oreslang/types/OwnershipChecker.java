@@ -1771,8 +1771,15 @@ public final class OwnershipChecker {
                 inputs.add(FixedProductCallPlan.InputSlot.positional());
             }
         }
-        if (inputs.stream().anyMatch(input -> input.label() != null)
-                && inputs.size() == params.size()) {
+        // Arity and the complete source-slot shape must be proved here too,
+        // not delegated to TypeChecker. In particular, the ownership pass
+        // must never silently skip trailing arguments (and their moves/loans)
+        // when a forged or independently checked AST has extra spread slots.
+        if (inputs.size() != params.size()) {
+            throw error(callable + " expanded argument arity mismatch: expected "
+                    + params.size() + ", got " + inputs.size());
+        }
+        if (inputs.stream().anyMatch(input -> input.label() != null)) {
             FixedProductCallPlan plan = FixedProductCallPlan.bind(
                     params.stream().map(Ast.Param::name).toList(), inputs);
             List<Ast.Param> reordered = new ArrayList<>(params.size());
@@ -1804,7 +1811,9 @@ public final class OwnershipChecker {
                         if (fields.isEmpty()) {
                             throw error(callable + " record spread requires a nonempty closed pack");
                         }
-                        if (parameterIndex + fields.size() > sourceParameters.size()) return;
+                        if (parameterIndex + fields.size() > sourceParameters.size()) {
+                            throw error(callable + " record spread exceeds checked parameter arity");
+                        }
                         for (int i = 0; i < fields.size(); i++) {
                             Ast.Param target = sourceParameters.get(parameterIndex + i);
                             if (target.structural() || target.type().isBorrow()) {
@@ -1827,7 +1836,9 @@ public final class OwnershipChecker {
                     }
 
                     int width = spreadType.arguments().size();
-                    if (parameterIndex + width > sourceParameters.size()) return; // TypeChecker reports arity.
+                    if (parameterIndex + width > sourceParameters.size()) {
+                        throw error(callable + " tuple spread exceeds checked parameter arity");
+                    }
                     for (int i = 0; i < width; i++) {
                         Ast.Param target = sourceParameters.get(parameterIndex + i);
                         if (target.structural() || target.type().isBorrow()) {
@@ -1845,7 +1856,9 @@ public final class OwnershipChecker {
                     continue;
                 }
 
-                if (parameterIndex >= sourceParameters.size()) return; // TypeChecker reports arity.
+                if (parameterIndex >= sourceParameters.size()) {
+                    throw error(callable + " supplied an argument beyond checked parameter arity");
+                }
                 Ast.Param param = sourceParameters.get(parameterIndex);
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
@@ -1879,6 +1892,9 @@ public final class OwnershipChecker {
                     invocationLoans.put(loanOwner, mutable);
                 }
                 parameterIndex++;
+            }
+            if (parameterIndex != sourceParameters.size()) {
+                throw error(callable + " did not bind every checked argument slot");
             }
         } finally {
             // Restore the parent scope on every path: successful call,
