@@ -183,6 +183,24 @@ description = "2^53 precision loss cannot prove numerical guards disjoint"
 diagnostic_contains = "overlapping exclusive match arms"
 
 [[case]]
+id = "numeric.mixed.exact"
+source = "numeric-mixed-exact.ores"
+kind = "run"
+java = "required"
+llvm = "pending"
+description = "Large integer differs from rounded binary64; exact mixed source numeric matching"
+expected_stdout = "2\n1\n"
+
+[[case]]
+id = "reject.numeric.mixed.overlap"
+source = "numeric-mixed-overlap.ores"
+kind = "reject"
+java = "required"
+llvm = "pending"
+description = "Exactly matching integral and float patterns remain overlapping"
+diagnostic_contains = "overlapping exclusive match arms"
+
+[[case]]
 id = "reject.signed.unary.u8"
 source = "unary-u8-negative.ores"
 kind = "reject"
