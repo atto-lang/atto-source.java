@@ -1643,8 +1643,18 @@ public final class Parser {
                     + "' requires checked exception and supervision lowering; source effect is not yet enabled");
         }
         if (looksLikeStaticSelectStatement()) {
-            if (!check(DO)) throw error(peek(), "bare static select statement is forbidden; use do select or return select");
-            return parseStaticSelectStatement();
+            if (!check(DO)) throw error(peek(),
+                    "bare static select statement is forbidden; use do select or return select");
+            // Procedural do-select is an enclosing-callable control boundary,
+            // even when nested inside a value-producing match arm. Without
+            // this reset its 'return' could incorrectly become ARM_RESULT.
+            int priorValueArmDepth = valueArmDepth;
+            valueArmDepth = 0;
+            try {
+                return parseStaticSelectStatement();
+            } finally {
+                valueArmDepth = priorValueArmDepth;
+            }
         }
         // "cb" is reserved for callback-bearing writech; it is not the
         // no-result/static-select marker. "do" is the canonical spelling.
