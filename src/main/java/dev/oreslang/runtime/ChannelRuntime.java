@@ -632,14 +632,19 @@ public final class ChannelRuntime {
         }
 
         private boolean cancelAdmission() {
+            ArrayList<Runnable> cleanups = new ArrayList<>();
             COORDINATOR.lock();
             try {
                 if (decided) return false;
                 decided = true;
-                unregisterLocked(this);
+                unregisterLocked(this, cleanups);
                 return true;
             } finally {
                 COORDINATOR.unlock();
+                // Cancellation admission is synchronous: loser detachment must
+                // finish before OresFuture publishes the cancelled terminal.
+                // Never unlink large producer queues under COORDINATOR.
+                runCompletions(cleanups);
             }
         }
 
@@ -668,19 +673,19 @@ public final class ChannelRuntime {
                     // This check follows pumpLocked so an immediately ready
                     // operation may still succeed even when waiters are full.
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new ChannelBackpressureException(
                                     "channel pending registration budget exhausted")));
                 }
                 if (!decided && immediateOnly) {
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                 }
                 if (!decided && !immediateOnly
                         && activeArmRegistrations > MAX_PENDING_SELECT_ARM_REGISTRATIONS) {
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
                                     "pending select arm registration quota exceeded")));
@@ -690,7 +695,7 @@ public final class ChannelRuntime {
                     // before rejecting registration. A full pending budget must
                     // not prevent progress for an already-ready operation.
                     decided = true;
-                    unregisterLocked(this);
+                    unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
                                     "pending select registration quota exceeded")));
@@ -731,13 +736,17 @@ public final class ChannelRuntime {
                 OresFuture.RuntimeWaiterRegistration<?> waiter =
                         candidate.future().whenCompleteRuntimeCancellable(
                                 (ignored, failure) -> futureBecameReady());
+                boolean lost;
                 COORDINATOR.lock();
                 try {
-                    if (decided) waiter.detach();
-                    else futureWaiters.add(waiter);
+                    lost = decided;
+                    if (!lost) futureWaiters.add(waiter);
                 } finally {
                     COORDINATOR.unlock();
                 }
+                // Detachment can be O(producer waiters); release the global
+                // coordinator before unlinking a just-lost registration.
+                if (lost) waiter.detach();
             }
         }
 
@@ -804,7 +813,8 @@ public final class ChannelRuntime {
         }
     }
 
-    private static void unregisterLocked(SelectRegistration selection) {
+    private static void unregisterLocked(
+            SelectRegistration selection, List<Runnable> completions) {
         if (!selection.registered) return;
         selection.registered = false;
         ACTIVE.remove(selection);
@@ -821,11 +831,19 @@ public final class ChannelRuntime {
             }
         }
         selection.registrations.clear();
-        for (OresFuture.RuntimeWaiterRegistration<?> waiter :
-                selection.futureWaiters) {
-            waiter.detach();
+        if (!selection.futureWaiters.isEmpty()) {
+            // The decided flag and coordinator removal are authoritative.
+            // Queue unlinks can be linear in the number of waiters sharing
+            // one producer; perform them after the lock is released, before
+            // the corresponding result/failure is published.
+            var detached = List.copyOf(selection.futureWaiters);
+            selection.futureWaiters.clear();
+            completions.add(() -> {
+                for (OresFuture.RuntimeWaiterRegistration<?> waiter : detached) {
+                    waiter.detach();
+                }
+            });
         }
-        selection.futureWaiters.clear();
     }
 
     /**
@@ -1099,8 +1117,8 @@ public final class ChannelRuntime {
         writer.selection.decided = true;
         reader.selection.set.selected(reader.index, reader.selection.policy);
         writer.selection.set.selected(writer.index, writer.selection.policy);
-        unregisterLocked(reader.selection);
-        unregisterLocked(writer.selection);
+        unregisterLocked(reader.selection, completions);
+        unregisterLocked(writer.selection, completions);
 
         SelectResult readResult = new SelectResult(
                 reader.index,
@@ -1126,7 +1144,7 @@ public final class ChannelRuntime {
 
         selection.decided = true;
         selection.set.selected(result.index(), selection.policy);
-        unregisterLocked(selection);
+        unregisterLocked(selection, completions);
         completions.add(() ->
                 selection.future.completeFromRuntime(result));
     }
@@ -1143,7 +1161,7 @@ public final class ChannelRuntime {
         // permanently closed arm can monopolize a reusable SelectSet forever.
         selection.decided = true;
         selection.set.selected(registration.index, selection.policy);
-        unregisterLocked(selection);
+        unregisterLocked(selection, completions);
         completions.add(() ->
                 selection.future.failFromRuntime(failure));
     }
