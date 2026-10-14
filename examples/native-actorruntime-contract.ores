@@ -4,17 +4,73 @@ import module actorruntime from "std/actorruntime";
 // No java: import, JVM reflection or host-written test callback.
 pub routine main(): void {
   // Ordinary user mail is sealed as soon as STOP or revocation wins.
-  if !actorruntime.accept_user_message(false, false, false); do
+  if !actorruntime.accept_user_message(false, false, false, false, false); do
     rt fail("live actor must admit user messages");
   fi
-  if actorruntime.accept_user_message(true, false, false); do
+  if actorruntime.accept_user_message(true, false, false, false, false); do
     rt fail("STOP admitted ordinary user mail");
   fi
-  if actorruntime.accept_user_message(false, false, true); do
+  if actorruntime.accept_user_message(false, false, true, false, false); do
     rt fail("force revoke admitted user mail");
   fi
-  if actorruntime.accept_user_message(false, true, false); do
+  if actorruntime.accept_user_message(false, true, false, false, false); do
     rt fail("finalized actor admitted user mail");
+  fi
+
+  if actorruntime.accept_user_message(false, false, false, true, false); do
+    rt fail("gracefully sealed actor admitted a new user message");
+  fi
+  if actorruntime.accept_user_message(false, false, false, false, true); do
+    rt fail("closed VM admitted a new user message");
+  fi
+
+  // Lane reservation is a checked policy, never the physical atomic reserve.
+  if !actorruntime.can_reserve_lane(true, 1, 2, 2, 18); do
+    rt fail("valid reserved user capacity was refused");
+  fi
+  if actorruntime.can_reserve_lane(true, 2, 2, 2, 18); do
+    rt fail("saturated NORMAL lane stole reserved headroom");
+  fi
+  if actorruntime.can_reserve_lane(true, 1, 2, 18, 18); do
+    rt fail("full aggregate mailbox admitted another slot");
+  fi
+  if actorruntime.can_reserve_lane(false, 0, 2, 0, 18); do
+    rt fail("unauthorized CONTROL lane admitted a reservation");
+  fi
+  if actorruntime.can_reserve_lane(true, -1, 2, 0, 18); do
+    rt fail("negative queue accounting was accepted");
+  fi
+  if actorruntime.can_reserve_lane(true, 1, 2, 0, 18); do
+    rt fail("aggregate count below lane count was accepted");
+  fi
+
+  // Queued source continuations have absolute precedence over new user mail.
+  if actorruntime.choose_mailbox_lane(true, true, true, false, 8) != 1; do
+    rt fail("CONTROL lost precedence to user priority");
+  fi
+  if actorruntime.choose_mailbox_lane(false, true, true, false, 0) != 2; do
+    rt fail("URGENT was not preferred to NORMAL before fairness turn");
+  fi
+  if actorruntime.choose_mailbox_lane(false, true, true, false, 8) != 3; do
+    rt fail("NORMAL was starved after the urgent burst");
+  fi
+  if actorruntime.choose_mailbox_lane(false, true, false, false, 8) != 2; do
+    rt fail("URGENT was blocked when no NORMAL was pending");
+  fi
+  if actorruntime.choose_mailbox_lane(false, true, true, true, 8) != 0; do
+    rt fail("suspended receive admitted later user mail");
+  fi
+  if actorruntime.choose_mailbox_lane(true, true, true, true, 8) != 1; do
+    rt fail("suspended receive lost its CONTROL continuation");
+  fi
+  if actorruntime.choose_mailbox_lane(false, false, true, false, 0) != 3; do
+    rt fail("NORMAL mail was not admitted when URGENT was empty");
+  fi
+  if actorruntime.choose_mailbox_lane(false, false, false, false, 0) != 0; do
+    rt fail("empty mailbox produced spurious work");
+  fi
+  if actorruntime.choose_mailbox_lane(true, false, false, false, -1) != -1; do
+    rt fail("invalid burst accounting did not fail closed");
   fi
 
   // STOP retains pre-queued turns only when the VM attests provenance.
@@ -61,41 +117,78 @@ pub routine main(): void {
     rt fail("injected cleanup was denied on the owning turn");
   fi
 
+  if actorruntime.retain_source_turn(
+    true, false, false, true, true, true, true, true
+  ); do
+    rt fail("closed VM retained a queued source turn");
+  fi
+  if actorruntime.retain_source_turn(
+    true, true, false, false, true, true, true, true
+  ); do
+    rt fail("finalized actor retained a queued source turn");
+  fi
+  if actorruntime.retain_source_turn(
+    true, false, false, false, true, true, true, false
+  ); do
+    rt fail("unregistered source task was retained after STOP");
+  fi
+
   // DONE must await child, carrier, source cleanup and final cleanup barriers.
   if !actorruntime.can_retire_state(
-    true, false, 0, false, false, 0, false, 0, true
+    true, false, 0, false, false, 0, false, 0, 0, 0, true
   ); do
     rt fail("settled actor could not retire its owned state");
   fi
   if actorruntime.can_retire_state(
-    true, false, 1, false, false, 0, false, 0, true
+    true, false, 1, false, false, 0, false, 0, 0, 0, true
   ); do
     rt fail("state retired during a live actor turn");
   fi
   if actorruntime.can_retire_state(
-    true, false, 0, false, true, 0, false, 0, true
+    true, false, 0, false, true, 0, false, 0, 0, 0, true
   ); do
     rt fail("state retired before physical carrier exit");
   fi
   if actorruntime.can_retire_state(
-    true, false, 0, false, false, 1, false, 0, true
+    true, false, 0, false, false, 1, false, 0, 0, 0, true
   ); do
     rt fail("state retired with child actor still alive");
   fi
   if actorruntime.can_retire_state(
-    true, false, 0, false, false, 0, true, 0, true
+    true, false, 0, false, false, 0, true, 0, 0, 0, true
   ); do
     rt fail("state retired before cancellation delivery");
   fi
   if actorruntime.can_retire_state(
-    true, false, 0, false, false, 0, false, 1, true
+    true, false, 0, false, false, 0, false, 1, 0, 0, true
   ); do
     rt fail("state retired with pending source cleanup");
   fi
   if actorruntime.can_retire_state(
-    true, false, 0, false, false, 0, false, 0, false
+    true, false, 0, false, false, 0, false, 0, 0, 0, false
   ); do
     rt fail("state retired before actor final cleanup");
+  fi
+
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, false, 0, 1, 0, true
+  ); do
+    rt fail("state retired before detached STOP refunds");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, false, 0, 0, 1, true
+  ); do
+    rt fail("state retired before an outstanding source task quiesced");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, true, false, 0, false, 0, 0, 0, true
+  ); do
+    rt fail("state retired with scheduler dispatch outstanding");
+  fi
+  if actorruntime.can_retire_state(
+    true, false, 0, false, false, 0, false, 0, -1, 0, true
+  ); do
+    rt fail("state retired with corrupt negative STOP refund accounting");
   fi
 
   if actorruntime.can_publish_done(true, false, true); do

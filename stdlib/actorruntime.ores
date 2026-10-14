@@ -20,9 +20,63 @@ define module actorruntime as
   pub fnc accept_user_message(
     bool stopped,
     bool finalized,
-    bool force_revoked
+    bool force_revoked,
+    bool sealing,
+    bool vm_closed
   ): bool {
-    return !stopped && !finalized && !force_revoked;
+    return !stopped && !finalized && !force_revoked
+      && !sealing && !vm_closed;
+  }
+
+  // Admission quotas apply independently to NORMAL, URGENT, and CONTROL.
+  // This pure gate cannot allocate a credit: the VM must atomically reserve
+  // a bounded slot after the checks, and refund it exactly once on failure.
+  pub fnc can_reserve_lane(
+    bool message_authorized,
+    int queued_in_lane,
+    int lane_capacity,
+    int queued_total,
+    int total_capacity
+  ): bool {
+    return message_authorized
+      && queued_in_lane >= 0 && lane_capacity > 0
+      && queued_in_lane < lane_capacity
+      && queued_total >= 0 && total_capacity > 0
+      && queued_total < total_capacity
+      && queued_total >= queued_in_lane;
+  }
+
+  // Return 0 NONE, 1 INTERNAL_CONTINUATION, 2 URGENT, or 3 NORMAL.
+  // -1 is an invalid accounting state and MUST cause fail-closed shutdown.
+  // This is not supervisor CONTROL; guest code never owns that lane.
+  // Continuations precede all new user mail, even an URGENT flood.
+  // A logically suspended receive can only admit CONTROL continuations.
+  pub fnc choose_mailbox_lane(
+    bool continuation_ready,
+    bool urgent_ready,
+    bool normal_ready,
+    bool receive_suspended,
+    int consecutive_urgent
+  ): int {
+    if consecutive_urgent < 0; do
+      return -1;
+    fi
+    if continuation_ready; do
+      return 1;
+    fi
+    if receive_suspended; do
+      return 0;
+    fi
+    if consecutive_urgent >= 8 && normal_ready; do
+      return 3;
+    fi
+    if urgent_ready; do
+      return 2;
+    fi
+    if normal_ready; do
+      return 3;
+    fi
+    return 0;
   }
 
   // Queue retention and execution permission are deliberately separate.
@@ -68,7 +122,8 @@ define module actorruntime as
   }
 
   // State retirement is gated on logical AND physical turn completion,
-  // structured children, full cancellation delivery and final cleanup.
+  // structured children, complete STOP refunds, task-lifetime retirement,
+  // full cancellation delivery and final cleanup.
   // Even after a deadline/force revoke, active_turns and carrier_active must
   // settle before an actor can publish DONE.
   pub fnc can_retire_state(
@@ -80,12 +135,17 @@ define module actorruntime as
     int live_children,
     bool cancellation_delivery_pending,
     int pending_cleanup_tasks,
+    int pending_stop_releases,
+    int outstanding_source_task_lifetimes,
     bool final_cleanup_completed
   ): bool {
     return stopped && !finalized
       && active_turns == 0 && !scheduled && !carrier_active
       && live_children == 0 && !cancellation_delivery_pending
-      && pending_cleanup_tasks == 0 && final_cleanup_completed;
+      && pending_cleanup_tasks == 0
+      && pending_stop_releases == 0
+      && outstanding_source_task_lifetimes == 0
+      && final_cleanup_completed;
   }
 
   // DONE is a publication barrier, not permission to retire state.

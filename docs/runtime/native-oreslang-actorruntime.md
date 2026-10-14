@@ -38,6 +38,42 @@ execution solely because these policy functions compile.
 All source implementation modules above, except `actorruntime.ores`, are
 **targets, not a statement that those files already exist**.
 
+## Gate 0 implemented policy, not scheduler authority
+
+The first executable functions are deliberately pure Oreslang. Their inputs are
+scalar snapshots of VM-owned state, **not guest permissions**. They cannot
+perform mailbox reservation, authenticate a continuation, obtain a physical
+carrier lease or retire memory. None of these functions is a replacement for a
+VM intrinsic or a security capability.
+
+The initial policy is exercised in
+[`examples/native-actorruntime-contract.ores`](../../examples/native-actorruntime-contract.ores)
+and in a host-side guest-source execution regression. It covers:
+
+- user-mail refusal after STOP, graceful sealing, force revocation, finalization
+  or VM closure;
+- bounded admission decisions for one lane plus the aggregate mailbox budget,
+  rejecting negative/incoherent counters; **the actual atomic reservation
+  remains VM-owned**;
+- scheduler continuations preceding URGENT and NORMAL mail, urgent burst
+  fairness after eight user messages, and suspension preserving only the
+  internal continuation lane;
+- authenticated pre-queued SourceTask retention and single-flight terminal
+  delivery/cleanup decisions;
+- state-retirement barriers including detached STOP releases and outstanding
+  source task lifetimes, and ordered DONE publication.
+
+**Lane 1 in the pure arbitration policy is the scheduler continuation lane,
+not the supervisor CONTROL channel.** Supervisor CONTROL is a distinct
+VM-reserved authenticated route and must never be writable from a guest
+`actorruntime.ores` invocation.
+
+The Java/GraalVM backend still executes the live scheduling and cancellation
+runtime. A passing Gate 0 means Oreslang-owned policy can be linked/executed;
+it does not establish that the live runtime invokes this module or that LLVM
+can compile full actors. Gate 1 requires sealed intrinsics with generation-safe
+handles and actual .ores-owned actor state transitions.
+
 ## VM and trust boundary
 
 To bootstrap an Oreslang program, the VM must exist before any Oreslang module
