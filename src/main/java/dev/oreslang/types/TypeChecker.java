@@ -1652,9 +1652,17 @@ public final class TypeChecker {
                 Type element = currentAsyncCallable
                         ? asyncIterableElementType(iterable)
                         : iterableElementType(iterable);
+                if (containsTypedMapType(element) || containsTypedMapType(iterable)) {
+                    throw new IllegalArgumentException(
+                            "typed Map values cannot cross a generator yield* boundary without an ownership proof");
+                }
                 requireAssignable(element, expectedReturn, "yield* element");
             } else {
                 Type actual = typeOfAgainstExpected(yielded.value(), expectedReturn, env, generics, self);
+                if (containsTypedMapType(actual)) {
+                    throw new IllegalArgumentException(
+                            "typed Map values cannot cross a generator yield boundary without an ownership proof");
+                }
                 requireAssignable(actual, expectedReturn, "yield value");
             }
             return;
@@ -7974,6 +7982,12 @@ public final class TypeChecker {
         if (type instanceof Named named) {
             return named.arguments().stream().anyMatch(TypeChecker::containsTypedMapType);
         }
+        if (type instanceof Function function) {
+            return containsTypedMapType(function.result())
+                    || function.parameters().stream().anyMatch(TypeChecker::containsTypedMapType);
+        }
+        if (type instanceof SelfType selfType) return containsTypedMapType(selfType.bound());
+        if (type instanceof Not negative) return containsTypedMapType(negative.excluded());
         return false;
     }
 
