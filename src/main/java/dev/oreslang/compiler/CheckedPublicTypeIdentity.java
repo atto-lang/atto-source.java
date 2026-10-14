@@ -22,26 +22,43 @@ import java.util.Objects;
 public final class CheckedPublicTypeIdentity {
     private CheckedPublicTypeIdentity() { }
 
+    /** Preferred path: use an already checker-minted token, never a fabricated snapshot. */
+    public static CanonicalTypeIdentity.TypeId publicFunctionReturnType(
+            OresCompiler.CheckedProgram checked, String unitId,
+            ExportInterfaceCodec.Header header, String moduleName,
+            String functionName, int arity) {
+        Objects.requireNonNull(checked, "checked compiler admission");
+        return fromValidatedOrigins(checked.program(), checked.nominalOrigins(),
+                unitId, header, moduleName, functionName, arity);
+    }
+
     public static CanonicalTypeIdentity.TypeId publicFunctionReturnType(
             Ast.Program source, String unitId,
             ExportInterfaceCodec.Header header, String moduleName,
             String functionName, int arity) {
         Objects.requireNonNull(source, "source");
+        TypeChecker.CheckedPublicNominals checked =
+                TypeChecker.checkTypesAndSnapshotPublicNominals(source);
+        return fromValidatedOrigins(checked.program(), checked.resolvedNames(),
+                unitId, header, moduleName, functionName, arity);
+    }
+
+    private static CanonicalTypeIdentity.TypeId fromValidatedOrigins(
+            Ast.Program program, Map<String, TypeChecker.PublicNominalOrigin> known,
+            String unitId, ExportInterfaceCodec.Header header, String moduleName,
+            String functionName, int arity) {
         Objects.requireNonNull(header, "header");
         if (unitId == null || unitId.isBlank() || moduleName == null || moduleName.isBlank()
                 || functionName == null || functionName.isBlank() || arity < 0) {
             throw new IllegalArgumentException("invalid exported callable selector");
         }
-        TypeChecker.CheckedPublicNominals checked =
-                TypeChecker.checkTypesAndSnapshotPublicNominals(source);
-        Ast.Program program = checked.program();
         // Reject private/native layout and incomplete public interfaces before
         // committing its ABI to any nominal type identity.
         ExportInterfaceCodec.InterfaceFile publicApi =
                 ExportInterfaceCollector.collect(program, header);
         Map<String, CanonicalTypeIdentity.Nominal> nominals = new HashMap<>();
         for (Map.Entry<String, TypeChecker.PublicNominalOrigin> symbol
-                : checked.resolvedNames().entrySet()) {
+                : known.entrySet()) {
             TypeChecker.PublicNominalOrigin declaration = symbol.getValue();
             nominals.put(symbol.getKey(), new CanonicalTypeIdentity.Nominal(
                     unitId, header.namespace(),
