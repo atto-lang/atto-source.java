@@ -220,6 +220,25 @@ final class MatchProjectionBindingKindsTest {
     }
 
     @Test
+    void andConditionSeesProjectionBindingsOnRightHandSide() throws Exception {
+        String source = """
+                fnc choose(Option<{v: int}> item): int {
+                  if item matches Some as {let v} && v > 5 then
+                    v = v + 2;
+                    return v;
+                  fi
+                  return 0;
+                }
+                pub routine main(): void {
+                  val Option<{v: int}> item = Some(struct{v: int}{v: 7});
+                  stdio.stdout.write(choose(item));
+                  return;
+                }
+                """;
+        assertEquals("9", outputOf(source));
+    }
+
+    @Test
     void inlineTupleScrutineePreservesCopyOwnership() throws Exception {
         String source = """
                 pub routine main(): void {
