@@ -826,7 +826,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
+            MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
             CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
@@ -837,6 +837,32 @@ public final class Ast {
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
     public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
+
+    /**
+     * Expression-form match: each arm returns a value *to this expression*,
+     * never to the surrounding callable. Distinct from procedural MatchStmt.
+     *
+     * The initial compiler admission accepts exactly one explicit return
+     * expression per arm. More complex arm bodies need an explicit local
+     * control-flow representation and must not be silently lowered.
+     */
+    public record MatchValueArm(Pattern pattern, Expr guard, Expr value) {
+        public MatchValueArm {
+            java.util.Objects.requireNonNull(pattern, "value match pattern");
+            java.util.Objects.requireNonNull(value, "value match return expression");
+        }
+    }
+    public record MatchExpr(Expr subject, List<MatchValueArm> arms, TypeRef resultType) implements Expr {
+        public MatchExpr {
+            java.util.Objects.requireNonNull(subject, "value match subject");
+            arms = List.copyOf(arms);
+            if (arms.isEmpty()) throw new IllegalArgumentException("value match requires arms");
+        }
+        /** Backwards-compatible inferred-result expression. */
+        public MatchExpr(Expr subject, List<MatchValueArm> arms) {
+            this(subject, arms, null);
+        }
+    }
 
     /** "value is Type [binding]" -- a nominal/refinement test, not general pattern matching. */
     public record TypeTestExpr(Expr value, TypeRef targetType, String binding) implements Expr { }
