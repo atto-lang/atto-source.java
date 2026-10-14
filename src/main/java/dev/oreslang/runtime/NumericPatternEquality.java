@@ -55,6 +55,26 @@ public final class NumericPatternEquality {
         return a.compareTo(b) == 0;
     }
 
+    /**
+     * Exact ordering for recognized finite numeric carriers. Null means
+     * an unknown/non-finite operand; the interpreter retains its existing
+     * special-value policy for infinity and NaN separately.
+     */
+    public static Integer compareFinite(Number left, Number right) {
+        Objects.requireNonNull(left, "left");
+        Objects.requireNonNull(right, "right");
+        if (!knownFinite(left) || !knownFinite(right)) return null;
+        if (isIntegral(left) && isIntegral(right)) {
+            return Long.compare(left.longValue(), right.longValue());
+        }
+        return exactDecimal(left).compareTo(exactDecimal(right));
+    }
+
+    private static boolean knownFinite(Number value) {
+        if (isFloating(value)) return Double.isFinite(value.doubleValue());
+        return isIntegral(value) || isWide(value);
+    }
+
     private static BigDecimal exactDecimal(Number value) {
         if (value instanceof BigDecimal decimal) return decimal;
         if (value instanceof BigInteger integer) return new BigDecimal(integer);
