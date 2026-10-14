@@ -1801,8 +1801,8 @@ public final class OwnershipChecker {
                     }
                     if (spreadType.isReadonlyRecordType()) {
                         Map<String, Ast.TypeRef> fields = spreadType.recordMembers();
-                        if (fields.isEmpty() || fields.values().stream().anyMatch(t -> !isCopyType(t))) {
-                            throw error(callable + " record spread requires Copy-only scalar fields");
+                        if (fields.isEmpty()) {
+                            throw error(callable + " record spread requires a nonempty closed pack");
                         }
                         if (parameterIndex + fields.size() > sourceParameters.size()) return;
                         for (int i = 0; i < fields.size(); i++) {
