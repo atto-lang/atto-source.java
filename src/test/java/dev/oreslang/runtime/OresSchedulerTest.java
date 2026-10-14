@@ -16,6 +16,48 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresSchedulerTest {
 
     @Test
+    void cleanupPrivilegeBeginsOnlyAfterCancellationWasDeliveredToTask()
+            throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            CountDownLatch running = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicBoolean ordinaryTurnSawCleanupPrivilege = new AtomicBoolean(true);
+            AtomicBoolean cleanupTurnSawPrivilege = new AtomicBoolean();
+            AtomicInteger resumes = new AtomicInteger();
+
+            OresFuture<Void> task = scheduler.start(
+                    new OresScheduler.CleanupAwareTask<Void>() {
+                        @Override public OresScheduler.Step<Void> resume(
+                                OresScheduler.Resume resume) throws Exception {
+                            if (resumes.getAndIncrement() == 0) {
+                                running.countDown();
+                                assertTrue(release.await(5, TimeUnit.SECONDS));
+                                ordinaryTurnSawCleanupPrivilege.set(
+                                        OresScheduler.currentTaskInCleanup());
+                                return OresScheduler.cooperate();
+                            }
+                            assertInstanceOf(
+                                    java.util.concurrent.CancellationException.class,
+                                    resume.failure());
+                            cleanupTurnSawPrivilege.set(
+                                    OresScheduler.currentTaskInCleanup());
+                            return OresScheduler.done(null);
+                        }
+                    });
+            assertTrue(running.await(5, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            release.countDown();
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> task.get(5, TimeUnit.SECONDS));
+            assertFalse(ordinaryTurnSawCleanupPrivilege.get(),
+                    "request alone must not grant post-STOP actor privileges");
+            assertTrue(cleanupTurnSawPrivilege.get(),
+                    "terminal delivery grants lexical cleanup its actor lane");
+            assertEquals(2, resumes.get());
+        }
+    }
+
+    @Test
     void cleanupAwareCancellationDetachesProducerAndAwaitsLexicalCleanup() throws Exception {
         try (OresScheduler scheduler = new OresScheduler(1)) {
             OresFuture<Integer> producer = new OresFuture<>();
