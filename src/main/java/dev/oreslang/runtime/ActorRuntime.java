@@ -4429,6 +4429,12 @@ public final class ActorRuntime implements AutoCloseable {
             attempt.root.cancel(new ActorCancelledException(
                     ref.id(),
                     "actor " + ref.id() + " was force-cancelled"));
+            // A force revocation can race a previously initiated structured
+            // STOP. Its idempotent terminateTree() must not leave the old
+            // cleanup lane parked after the physical isolate was revoked.
+            for (ActorCell<?> cell : attempt.cells) {
+                cell.revokeSourceCleanupAfterForceStop();
+            }
             return true;
         } finally {
             clearForceKillFence(attempt, false);
@@ -6880,6 +6886,24 @@ public final class ActorRuntime implements AutoCloseable {
          * never runs guest code off-lane: it only revokes pending source tasks.
          * A turn already executing retains the ordinary activeTurns barrier.
          */
+        private void revokeSourceCleanupAfterForceStop() {
+            final OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (finalized) return;
+                sourceCancellationPending = false;
+                continuationMailbox.close(ref.terminationCause.get());
+                drainMailboxReservations();
+                scheduler = sourceScheduler;
+            }
+            // Revocation was already confirmed by the VM isolation hook.
+            // No guest cleanup is permitted; settle parked tasks fail-closed.
+            if (scheduler != null) scheduler.close();
+            synchronized (lifecycleLock) {
+                finalizeStopLocked();
+                lifecycleLock.notifyAll();
+            }
+        }
+
         private void expireSourceCleanup() {
             final OresScheduler scheduler;
             synchronized (lifecycleLock) {
