@@ -1,15 +1,60 @@
-# flags-2-env canonical configuration; see github.com/flags-2-env/flags-2-env.
-# flags-2-env reads .cli-flags.toml (not .cli-args.toml).
+# Canonical flags-2-env v0.3.x CLI definitions for JVM and GraalVM Native Image.
+# Use scripts/with-flags2env.sh for standalone GraalVM binaries.
+# Explicit security capabilities are authorized by OresMain, NOT environment defaults.
+[help]
+url = "https://github.com/ores-truffle-oreslang/oreslang-source.java"
+[env]
+load = false
+[parse]
+allow_unknown = true # permission scopes (--allow-read=...) remain OresMain-owned
+errors_env = "ORES_FLAGS2ENV_ERRORS"
+
 [flags.core-perf]
 env = "ORES_CORE_PERF"
 aliases = ["core-perf"]
 type = "bool"
 default = "false"
-help = "Record bounded, allocation-free core timing phases; dump JSONL to stderr on exit."
+help = "Record bounded, allocation-free core timing phases."
 
 [flags.core-debug]
 env = "ORES_CORE_DEBUG"
 aliases = ["core-debug"]
 type = "bool"
 default = "false"
-help = "Record bounded core-only numeric diagnostic events; dump JSONL to stderr on exit."
+help = "Record bounded core diagnostic events."
+
+[flags.strict-isolate]
+env = "ORES_STRICT_ISOLATE"
+aliases = ["strict-isolate"]
+type = "bool"
+help = "Enable strict isolate admission."
+
+[flags.check]
+env = "ORES_CHECK"
+aliases = ["check"]
+type = "bool"
+help = "Typecheck the source without running it."
+
+[flags.build-analysis]
+env = "ORES_BUILD_ANALYSIS"
+aliases = ["build-analysis"]
+type = "bool"
+help = "Analyze AOT build and entry points."
+
+[flags.mode]
+env = "ORES_MODE"
+aliases = ["mode"]
+type = "string"
+help = "Requested execution profile."
+
+[flags.platform]
+env = "ORES_PLATFORM"
+aliases = ["platform"]
+type = "string"
+help = "Execution platform."
+
+[flags.permission-check]
+env = "ORES_PERMISSION_CHECK"
+aliases = ["permission-check"]
+type = "string"
+help = "Permission validation mode."
