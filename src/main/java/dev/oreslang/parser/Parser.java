@@ -714,6 +714,10 @@ public final class Parser {
                 default -> Ast.ActorTransport.WEBSOCKET;
             };
         }
+        // Network bindings are stream actors unless unary is explicit.
+        if (transport != Ast.ActorTransport.GENERIC && role == Ast.ActorReplyRole.INFER) {
+            role = Ast.ActorReplyRole.STREAM;
+        }
         if (role != Ast.ActorReplyRole.INFER || transport != Ast.ActorTransport.GENERIC) {
             if (!check(ACTOR) && !check(ISOACTOR)) {
                 throw error(peek(), "actor role/transport must immediately precede actor");
