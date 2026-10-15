@@ -136,6 +136,74 @@ public final class ActorUnaryReplyBridge<R> {
         return ticket.result();
     }
 
+    /**
+     * Trusted host-facing typed unary reply handoff. Unlike the actor-local
+     * dispatchActorOwned stage, this stage is safe for a caller that may close
+     * the Truffle context as soon as the reply becomes visible.
+     *
+     * Guest middleware remains disabled: middleware.invoke() still allows
+     * CompletionStage stage functions to run on foreign producer threads.
+     */
+    CompletionStage<ActorMiddlewareValuePipeline.Reply<R>> dispatchActorOwnedPostExit(
+            ActorRuntime.ActorContext<?> context,
+            ActorUnaryReplySlot<ActorMiddlewareValuePipeline.Reply<R>> ticket,
+            ActorMiddlewarePipeline.Envelope request,
+            BooleanSupplier cancelled) {
+        Objects.requireNonNull(context, "actor context");
+        ActorRuntime runtime = context.runtime();
+        ActorRuntime.ActorRef<?> self = context.self();
+        CompletionStage<ActorMiddlewareValuePipeline.Reply<R>> internal =
+                dispatchActorOwned(context, ticket, request, cancelled);
+        var outward = new java.util.concurrent.CompletableFuture<
+                ActorMiddlewareValuePipeline.Reply<R>>();
+
+        // If STOP prevents a pending actor continuation from running, only
+        // the finalized owner barrier may publish its cancellation externally.
+        OresFuture.RuntimeWaiterRegistration<Void> doneObserver =
+                self.getDone().whenCompleteRuntimeCancellable((ignored, failure) ->
+                        outward.completeExceptionally(
+                                new java.util.concurrent.CancellationException(
+                                        "actor terminated before external reply publication")));
+        outward.whenComplete((ignored, failure) -> doneObserver.detach());
+
+        runtime.enqueueOnCompletion(
+                internal, runtime.captureCurrentContinuationTarget(),
+                (reply, failure) -> {
+                    final Runnable publish;
+                    try {
+                        if (failure != null) {
+                            Throwable reason = OresFuture.unwrap(failure);
+                            publish = () -> outward.completeExceptionally(reason);
+                        } else {
+                            // A CompletionStage is not a memory-domain boundary.
+                            // Freeze *before* leaving the actor context, and
+                            // expose no guest-owned mutable value to the caller.
+                            @SuppressWarnings("unchecked")
+                            R frozen = (R) ActorRuntime.freeze(reply.value());
+                            var immutable = new ActorMiddlewareValuePipeline.Reply<>(
+                                    frozen, reply.response());
+                            publish = () -> {
+                                if (!self.isAlive()) {
+                                    outward.completeExceptionally(
+                                            new java.util.concurrent.CancellationException(
+                                                    "actor stopped before external reply publication"));
+                                } else {
+                                    outward.complete(immutable);
+                                }
+                            };
+                        }
+                    } catch (RuntimeException invalidReply) {
+                        // Reject unsupported payloads, but only after context
+                        // exit; the failed freeze may still refer to guest data.
+                        runtime.publishAfterCurrentActorCarrierExit(
+                                () -> outward.completeExceptionally(invalidReply));
+                        return;
+                    }
+                    runtime.publishAfterCurrentActorCarrierExit(publish);
+                });
+        return outward.minimalCompletionStage();
+    }
+
     private void settle(
             ActorRuntime.ActorId actor,
             long generation,

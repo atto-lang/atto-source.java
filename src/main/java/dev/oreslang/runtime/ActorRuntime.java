@@ -1417,6 +1417,35 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Trusted runtime-only publication barrier for a serialized actor turn.
+     * The payload must already be copied into data-only immutable host memory.
+     * The callback runs after TurnExecutor.execute returns (including context
+     * leave), with no actor/thread-local execution authority. It runs before
+     * another physical turn for this actor may be admitted.
+     *
+     * No guest continuation or code-image-bound value may be passed here.
+     */
+    void publishAfterCurrentActorCarrierExit(Runnable publication) {
+        Objects.requireNonNull(publication, "post-carrier publication");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || !currentThreadOwnsActorExecutionLease()) {
+            throw new SecurityException("post-carrier publication requires actor turn ownership");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.stopped.get() || cell.finalized || closed.get()) {
+                throw new IllegalStateException("actor stopped before publication admission");
+            }
+            if (cell.postCarrierPublications.size() >= INTERNAL_CONTINUATION_SLOTS) {
+                throw new RejectedExecutionException("actor post-carrier publication queue full");
+            }
+            cell.postCarrierPublications.add(publication);
+            // The current envelope must exit the physical TurnExecutor before
+            // any following actor work, even if throughput allows more mail.
+            cell.sourceHandoffRequested = true;
+        }
+    }
+
     public ContinuationTarget captureCurrentContinuationTarget() {
         ActorCell<?> cell = currentActor.get();
         if (cell == null) {
@@ -6752,6 +6781,8 @@ public final class ActorRuntime implements AutoCloseable {
          * merely rotate work on the same physical carrier.
          */
         private boolean sourceHandoffRequested;
+        /** Trusted data-only publications waiting for a verified host context exit. */
+        private final ArrayList<Runnable> postCarrierPublications = new ArrayList<>();
         private OresScheduler sourceScheduler;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
@@ -7267,6 +7298,8 @@ public final class ActorRuntime implements AutoCloseable {
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
             boolean reschedule = false;
+            boolean turnExecutorExited = false;
+            List<Runnable> readyPublications = List.of();
             try {
                 synchronized (lifecycleLock) {
                     // Prevent obsolete queued runnables impersonating the
@@ -7335,6 +7368,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor TurnExecutor returned after an invalid or unfinished callback for "
                                     + ref.id());
                 }
+                turnExecutorExited = true;
             } catch (Throwable failure) {
                 fail(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
@@ -7346,15 +7380,40 @@ public final class ActorRuntime implements AutoCloseable {
                         if (carrierEntered) {
                             if (carrierOwnerThread != Thread.currentThread()
                                     || activeTurns != 0) {
-                                // Never release an owner that has not completely
-                                // left guest execution and its Truffle boundary.
                                 throw new IllegalStateException(
                                         "actor carrier release before execution quiesced for " + ref.id());
                             }
                             carrierOwnerThread = null;
                             carrierActive = false;
+                            if (turnExecutorExited && !stopped.get()) {
+                                readyPublications = List.copyOf(postCarrierPublications);
+                            }
+                            // Failure, stop and invalid executors drop queued
+                            // publications; owner-done observers revoke tickets.
+                            postCarrierPublications.clear();
                         }
-                        // A stale replay cannot release a later scheduling
+                    }
+                } finally {
+                    if (carrierEntered) {
+                        if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
+                        else ACTOR_CARRIER.remove();
+                    }
+                }
+                try {
+                    // Retain the scheduled lease until these callbacks return:
+                    // otherwise a newly scheduled turn could enter the same
+                    // code image while an external caller closes its context.
+                    for (Runnable publication : readyPublications) {
+                        publication.run();
+                    }
+                } catch (Throwable publicationFailure) {
+                    fail(publicationFailure);
+                    if (publicationFailure instanceof VirtualMachineError fatal) throw fatal;
+                    if (publicationFailure instanceof ThreadDeath fatal) throw fatal;
+                    if (publicationFailure instanceof LinkageError fatal) throw fatal;
+                } finally {
+                    synchronized (lifecycleLock) {
+                        // A stale replay must not release a later scheduling
                         // identity, even when no carrier is currently active.
                         if (scheduledDispatchToken == dispatchTicket
                                 && (carrierEntered || !carrierActive)) {
@@ -7369,13 +7428,8 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         lifecycleLock.notifyAll();
                     }
-                } finally {
-                    if (carrierEntered) {
-                        if (previousCarrier) ACTOR_CARRIER.set(Boolean.TRUE);
-                        else ACTOR_CARRIER.remove();
-                    }
+                    if (reschedule) schedule();
                 }
-                if (reschedule) schedule();
             }
         }
 
