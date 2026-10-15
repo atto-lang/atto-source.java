@@ -71,6 +71,19 @@ public final class NativeActorTurnKernelStandaloneSmoke {
             kernel.settled(second);
             kernel.retire(second);
         }
+        // JNI two-phase terminal retirement: settlement can fail while a
+        // cleanup ticket remains pending. A trusted retry after ticket closure
+        // must not repeat a successful one-shot settlement witness.
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(32)) {
+            var suspended = kernel.register(9, 1);
+            var pending = kernel.issueCleanup(suspended);
+            kernel.stop();
+            rejects(() -> kernel.settleAndRetire(suspended));
+            rejects(() -> kernel.settleAndRetire(suspended));
+            kernel.cancelCleanup(pending);
+            kernel.settleAndRetire(suspended);
+            rejects(() -> kernel.settleAndRetire(suspended));
+        }
         System.out.println("NATIVE_ACTOR_TURN_JNI_STANDALONE_OK");
     }
 }
