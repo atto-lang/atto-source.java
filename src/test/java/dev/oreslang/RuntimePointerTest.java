@@ -24,6 +24,19 @@ final class RuntimePointerTest {
         assertTrue(error.getMessage().contains(message), error.getMessage());
     }
 
+    @Test void runtimeHandlesCannotNestOrContainNull() {
+        Object pointee = new Object();
+        var pointer = new dev.oreslang.runtime.OresPointer(pointee);
+        // Dereference borrows the existing object: it does not clone the pointee.
+        assertSame(pointee, pointer.target());
+        assertSame(pointer.target(), pointer.target());
+        assertThrows(NullPointerException.class,
+                () -> new dev.oreslang.runtime.OresPointer(null));
+        var nested = assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.runtime.OresPointer(pointer));
+        assertTrue(nested.getMessage().contains("nested Pointer<T>"), nested.getMessage());
+    }
+
     @Test void namedAndFreshTargetsHaveCheckedRoundTrips() {
         for (String access : new String[] {"unref", "deref"}) {
             check("const Pointer<Box> p = rt ref new Box(); const Box view = rt " + access + " p; stdio.println(view.value);");
