@@ -32,6 +32,9 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
+    # Proposed CI destination: requires independent protected-branch
+    # approval AND a separate committed allowlist entry before use.
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
 
