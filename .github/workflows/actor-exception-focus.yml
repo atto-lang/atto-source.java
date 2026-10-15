@@ -52,10 +52,12 @@ jobs:
           echo "source_sha=${GITHUB_SHA}"
           java --version
           mvn --version
-      - name: Exercise 100k CONTROL retries against checked-out production class
+      - name: Exercise 100k CONTROL retries against immutable Git tree blob
         run: |
-          git hash-object -- src/main/java/dev/oreslang/runtime/ControlWakeRetryQueue.java
-          bash scripts/verify_actor_control_retry_standalone.sh
+          # Compare the compiler input to the pinned checkout's Git object.
+          # Detects an accidentally modified source file before compiling.
+          ORESLANG_EXPECTED_RETRY_BLOB_SHA="$(git rev-parse HEAD:src/main/java/dev/oreslang/runtime/ControlWakeRetryQueue.java)" \
+            bash scripts/verify_actor_control_retry_standalone.sh
       - name: Test clean and stale source SHA admission (mock toolchains)
         run: python3 -m unittest discover -s tests -p 'test_actor_ci_checkout_proof.py' -v
       - name: Check private-source transfer policy
