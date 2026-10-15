@@ -318,15 +318,22 @@ public final class NativeHttp implements AutoCloseable {
             if (drained != null) return drained;
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
-            io.execute(() -> {
-                try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
-                finally {
-                    synchronized (this) { transportStopped = true; }
-                    for (State state : active) state.abort(503);
-                    servers.remove(this);
-                    completeDrain();
-                }
-            });
+            try {
+                io.execute(() -> {
+                    try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
+                    finally {
+                        synchronized (this) { transportStopped = true; }
+                        for (State state : active) state.abort(503);
+                        servers.remove(this);
+                        completeDrain();
+                    }
+                });
+            } catch (RejectedExecutionException unavailable) {
+                // The HTTP executor can close after the drain Future is
+                // published but before the transport-stop task is admitted.
+                // Never strand awaiters on a stop operation that cannot run.
+                drained.failFromRuntime(unavailable);
+            }
             return drained;
         }
         private synchronized void completeDrain() {
