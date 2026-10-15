@@ -49,6 +49,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        self.publisher_checkout = patch.object(pub, "require_trusted_publisher_checkout",
+                                               return_value=A)
+        self.publisher_checkout.start()
+        self.addCleanup(self.publisher_checkout.stop)
 
     def set_reviewed_snapshot(self, commit=D, tree=None, destination_id=123):
         if tree is None:
@@ -119,6 +123,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_reviewed_local_publisher_checkout_must_precede_source_read(self):
+        with patch.object(pub, "require_trusted_publisher_checkout",
+                          side_effect=pub.Denied("untrusted local checkout")):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read before checkout check")):
+                with self.assertRaisesRegex(pub.Denied, "untrusted local checkout"):
+                    self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_unreviewed_source_tuple_denies_before_source_read_or_upload(self):
         self.reviewed_snapshot = "# no source tuples approved\n"
