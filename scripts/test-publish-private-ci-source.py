@@ -145,6 +145,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 finally:
                     reviews[field] = original
 
+    def test_source_main_bypass_allowance_denied(self):
+        reviews = self.protection_rules["required_pull_request_reviews"]
+        reviews["bypass_pull_request_allowances"] = {
+            "users": [{"login": "unreviewed"}], "teams": [], "apps": []}
+        with self.assertRaisesRegex(pub.Denied, "bypass"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_source_main_protection_revoked_mid_transfer(self):
         original = self.fake_api
         def change_after_blob(route, method="GET", payload=None):
