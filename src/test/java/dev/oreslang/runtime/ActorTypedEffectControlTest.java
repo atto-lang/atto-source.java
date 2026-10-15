@@ -447,6 +447,56 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void cancellationPreventsManualControlPollFromAlreadyRunningParentTurn()
+            throws Exception {
+        CountDownLatch childSpawned = new CountDownLatch(1);
+        CountDownLatch inspectionStarted = new CountDownLatch(1);
+        CountDownLatch releaseInspection = new CountDownLatch(1);
+        CountDownLatch inspectionCompleted = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorFailureNotice> consumed = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> (message, context) -> {
+                        if (message.equals("spawn")) {
+                            ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.set(next);
+                            next.send("fail");
+                            childSpawned.countDown();
+                        } else if (message.equals("inspect")) {
+                            inspectionStarted.countDown();
+                            if (!releaseInspection.await(3, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("inspection gate expired");
+                            }
+                            // The callback began before cancellation, but its
+                            // CONTROL poll must not bypass the cancellation gate.
+                            consumed.set(context.pollChildFailureNotice().orElse(null));
+                            inspectionCompleted.countDown();
+                        }
+                    });
+            parent.send("spawn");
+            assertTrue(childSpawned.await(3, TimeUnit.SECONDS));
+            assertTrue(child.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            parent.send("inspect");
+            assertTrue(inspectionStarted.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(parent.cancel(), "structured cancellation must win");
+            } finally {
+                releaseInspection.countDown();
+            }
+            assertTrue(inspectionCompleted.await(3, TimeUnit.SECONDS));
+            assertNull(consumed.get(),
+                    "cancelled actor must not manually consume supervisor CONTROL");
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            // The host audit notice is independent of the cancelled parent's inbox.
+            assertEquals(child.get().id(),
+                    actors.pollActorFailureNotice().orElseThrow().actorId());
+        }
+    }
+
     @Test void parentConsumesOnlyItsOwnChildControlNoticeOnItsActorTurn() throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
         CountDownLatch parentInspected = new CountDownLatch(1);
