@@ -54,7 +54,7 @@ jobs:
           distribution: graalvm
 
       - name: Typecheck and execute typed Future select plus legacy channel select
-        run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,SelectTypedBindingOwnershipTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest,ChannelMappedSelectionCancellationTest,PrivateCiRunnerWorkflowSecurityTest' test
+        run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,SelectTypedBindingOwnershipTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest,ChannelMappedSelectionCancellationTest,ChannelMappedCancellationStressTest,PrivateCiRunnerWorkflowSecurityTest' test
   full-maven:
     needs: language-contract
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' && (vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha)) }}
