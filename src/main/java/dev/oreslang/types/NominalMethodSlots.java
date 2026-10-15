@@ -132,6 +132,13 @@ public final class NominalMethodSlots {
                 throw new IllegalArgumentException(
                         "generic owner requires substitution before nominal method slot proof");
             }
+            // Actor messages require an independent, sealed message ABI and
+            // single-flight ownership proof. Method overloading must never
+            // reclassify actor entrypoints as ordinary vtable members.
+            if (owner.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor entrypoints cannot enter nominal method slot proof");
+            }
             List<Signature> signatures = new ArrayList<>(candidates.size());
             for (Ast.MethodDecl method : candidates) {
                 if (!method.genericParameters().isEmpty()) {
