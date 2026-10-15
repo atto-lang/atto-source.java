@@ -48,6 +48,18 @@ public final class Lexer {
     public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
+        // Validate ignored comments and string contents as well as tokens.
+        // Embedders can pass malformed UTF-16 without a UTF-8 file decoder.
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
+                    throw new IllegalArgumentException("source contains invalid UTF-16");
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("source contains invalid UTF-16");
+            }
+        }
         while (!isAtEnd()) {
             start = current;
             startColumn = column;
