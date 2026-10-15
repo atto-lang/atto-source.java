@@ -2,6 +2,59 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## Additional 2026-10-14 JNI/JVM hardening: strict compile and non-replayable cleanup failure
+
+**Confirmed Java build blocker fixed.** The new
+`NativeActorTurnKernel.NativeStatusFailure` extends the serializable
+`IllegalStateException`, but originally had no `serialVersionUID`.
+The standalone JNI build uses `javac -Xlint:all -Werror`, which rejects
+that omission. Independently reproduced the warning-as-error behavior
+with OpenJDK 21 and added an explicit `serialVersionUID = 1L` to the
+committed exception class. This reproducer confirms the compiler rule;
+it is NOT a complete recompilation of all JNI/guest source on the
+latest head.
+
+**Non-idempotent trusted callback failure now reported.** Previously,
+if `TaskRunner.onQuiescent` threw after successful native SourceTask
+retirement, `nativeRetirementConfirmed` remained true but
+`nativeQuiescenceCallbackFinished` was false. The task deliberately
+remained live and normal terminal publication stayed blocked, but the
+trusted `retryNativeQuiescentTasks()` method silently skipped it
+as already retired. A subsequent scheduler close could also succeed
+without surfacing this unresolved failure.
+
+The optional scheduler now:
+
+- Records the original trusted quiescence callback exception, counts
+  failures via `nativeQuiescenceFailures()`, and leaves the failed
+  native-backed task in the scheduler's live set.
+- Reports that original cause through a descriptive error from the
+  trusted `retryNativeQuiescentTasks()` path. It does NOT invoke
+  `onQuiescent` a second time: callbacks may have already released
+  some actor-owned resources before throwing.
+- After revoking and notifying all admitted tasks, `close()` reports
+  outstanding trusted callback failures rather than silently claiming
+  shutdown success.
+- Keeps normal terminal Future publication blocked after failed
+  cleanup. Shutdown Future cancellation remains a separate immediate
+  notification and MUST NOT be confused with actor DONE or native
+  SourceTask physical quiescence.
+
+An opt-in JUnit regression verifies a successful guest step followed
+by a throwing trusted quiescence callback: the normal terminal Future
+is not published; retry and close report failure; callback invocation
+count remains exactly one; and the outstanding task stays visible.
+The JNI smoke still requires the same explicit experimental flag.
+
+**Verification boundary:** new JUnit tests are COMMITTED, **NOT YET
+EXECUTED** on this exact head. The source GitHub Actions budget/runner
+blocker has not been resolved; no cross-org private-source transfer is
+authorized. The production ActorRuntime/native STOP and cleanup-only
+continuation bridge, compiled Oreslang guest scenarios, JDK25/GraalVM
+AOT/hybrid, and LLVM parity remain unverified and disabled.
+
+
+
 ## Terminal-publication fail-closed audit — 2026-10-14 (later hardening)
 
 The *optional* JNI-enabled `OresScheduler.TaskRunner` had a concrete
