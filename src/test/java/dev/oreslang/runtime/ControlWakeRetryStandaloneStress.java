@@ -153,6 +153,98 @@ public final class ControlWakeRetryStandaloneStress {
         }
     }
 
+    private static void verifyBoundedMissedEpochHandoff() throws Exception {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        long missedEpoch = queue.epoch();
+        queue.slotReleased();
+        AtomicInteger invoked = new AtomicInteger();
+        Runnable victim = invoked::incrementAndGet;
+        CountDownLatch stalled = new CountDownLatch(2);
+        CountDownLatch resume = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.lang.reflect.Field field =
+                ControlWakeRetryQueue.class.getDeclaredField("retryDispatch");
+        field.setAccessible(true);
+        Object original = field.get(queue);
+        field.set(queue, new ThreadLocal<Object>() {
+            private final ThreadLocal<Integer> calls =
+                    ThreadLocal.withInitial(() -> 0);
+            @Override public Object get() {
+                int count = calls.get() + 1;
+                calls.set(count);
+                if (count == 2) {
+                    stalled.countDown();
+                    try {
+                        if (!resume.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("immediate handoff stalled too long");
+                        }
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(ex);
+                    }
+                }
+                return null;
+            }
+        });
+        Thread[] workers = new Thread[2];
+        for (int i = 0; i < workers.length; ++i) {
+            workers[i] = new Thread(() -> {
+                try {
+                    require(queue.register(victim, missedEpoch),
+                            "initial direct handoff rejected");
+                } catch (Throwable t) {
+                    failure.compareAndSet(null, t);
+                }
+            }, "standalone-immediate-handoff-" + i);
+            workers[i].setDaemon(true);
+            workers[i].start();
+        }
+        try {
+            require(stalled.await(5, TimeUnit.SECONDS),
+                    "immediate retry was not paused after dequeue");
+            require(queue.directHandoffs() == 2,
+                    "stalled handoff quota not accounted");
+            require(!queue.register(victim, missedEpoch),
+                    "direct immediate path bypassed bounded capacity");
+            queue.cancel(victim);
+            require(queue.directHandoffs() == 0,
+                    "cancellation leaked immediate handoff budget");
+        } finally {
+            resume.countDown();
+        }
+        for (Thread worker : workers) {
+            worker.join(5000);
+            require(!worker.isAlive(), "immediate carrier did not finish");
+        }
+        field.set(queue, original);
+        require(failure.get() == null && invoked.get() == 0,
+                "cancelled immediate callback executed: " + failure.get());
+        require(queue.register(victim, missedEpoch),
+                "quota did not recover after cancelling stalled handoffs");
+        require(invoked.get() == 1 && queue.directHandoffs() == 0,
+                "new immediate callback lost or retained after completion");
+
+        // A stale epoch must still bypass ordinary FIFO saturation. The
+        // separate immediate budget is intentional, not an accidental
+        // rejection whenever the normal pending queue is full.
+        ControlWakeRetryQueue blocked = new ControlWakeRetryQueue(1);
+        long prior = blocked.epoch();
+        blocked.slotReleased();
+        AtomicInteger ordinary = new AtomicInteger();
+        AtomicInteger priority = new AtomicInteger();
+        require(blocked.register(ordinary::incrementAndGet, blocked.epoch()),
+                "ordinary pending admission");
+        require(blocked.register(priority::incrementAndGet, prior),
+                "missed-epoch retry wrongly blocked by full ordinary queue");
+        require(priority.get() == 1 && ordinary.get() == 0
+                        && blocked.pending() == 1 && blocked.directHandoffs() == 0,
+                "direct immediate retry did not preserve missed-release priority");
+        blocked.slotReleased();
+        require(ordinary.get() == 1 && blocked.retained() == 0,
+                "ordinary callback lost behind immediate retry");
+    }
+
     private static void verifyDequeueHandoffCancellation() throws Exception {
         // Instrument only the test instance's private ThreadLocal to pause
         // between a real slotReleased() dequeue and callback-start admission.
@@ -412,6 +504,7 @@ public final class ControlWakeRetryStandaloneStress {
         verifyFairnessAndCapacity();
         verifyLifecycleAndEpoch();
         verifyCrossCarrierDeferredCancellation();
+        verifyBoundedMissedEpochHandoff();
         verifyDequeueHandoffCancellation();
         verifyRetainedAdmissionUnderReentry();
         verifyDeepReentrantWakes();
