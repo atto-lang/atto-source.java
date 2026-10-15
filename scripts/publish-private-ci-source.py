@@ -205,6 +205,24 @@ def require_protected_main_policy(approved_policy):
             or valid_sha(metadata.get("sha")) != approved_policy[2]):
         raise Denied("destination policy is not approved on protected source main")
 
+def verify_source_commit(expected_source_commit, expected_source_tree):
+    """Bind the exact private source repository commit to its Git tree.
+
+    A matching arbitrary worktree digest is not independently authenticated
+    source provenance. Refuse before reading or publishing source bytes if the
+    immutable commit is absent, forged, or points to another tree.
+    """
+    valid_sha(expected_source_commit)
+    valid_sha(expected_source_tree)
+    commit = gh_api(
+        f"repos/{SOURCE_REPOSITORY}/git/commits/{expected_source_commit}"
+    )
+    if commit.get("sha") != expected_source_commit:
+        raise Denied("source commit identity differs from pinned immutable SHA")
+    if nested_sha(commit, "tree") != expected_source_tree:
+        raise Denied("source commit tree differs from pinned expected SHA")
+
+
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
 
@@ -377,10 +395,12 @@ def source_tree_sha(files):
 
     return hash_directory(root).hex()
 
-def publish(repository, source, branch, trusted_root, expected_source_tree):
+def publish(repository, source, branch, trusted_root, expected_source_tree,
+            expected_source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
+    valid_sha(expected_source_commit)
     # Approval comes before reading potentially sensitive source files.
     approved_destination_id = require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
@@ -391,6 +411,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     # A PR branch can contain an allowlist entry without security approval.
     # Require the exact policy Git blob to exist on protected source main.
     require_protected_main_policy(approved_policy)
+    verify_source_commit(expected_source_commit, expected_source_tree)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -412,6 +433,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         require_protected_main_policy(approved_policy)
+        verify_source_commit(expected_source_commit, expected_source_tree)
         checked_repo(repository, expected_id=approved_destination_id)
 
     elements = []
@@ -494,12 +516,13 @@ def main(argv=None):
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
     p.add_argument("--expected-source-tree", required=True, help="pinned complete source Git tree SHA")
+    p.add_argument("--expected-source-commit", required=True, help="pinned immutable private source commit SHA")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
         commit, count = publish(args.repository, args.source_dir, args.branch, root,
-                                args.expected_source_tree)
+                                args.expected_source_tree, args.expected_source_commit)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
