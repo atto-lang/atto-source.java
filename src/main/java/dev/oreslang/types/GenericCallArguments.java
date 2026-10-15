@@ -11,6 +11,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Canonical declaration-slot binding for call-site generic type arguments.
@@ -90,6 +93,71 @@ final class GenericCallArguments {
             }
             pending.addAll(next.arguments());
         }
+    }
+
+    /**
+     * One ordered defaults algorithm for type checking and ownership checking.
+     * Both passes infer value types first; this fills only remaining slots.
+     * Explicit inference holes never fall back to a declaration default.
+     *
+     * <p>The two passes keep their own type representations, but neither may
+     * silently publish a default referring to an unresolved generic slot.
+     */
+    static <T> void applyDefaults(
+            List<String> genericNames,
+            List<Ast.GenericParameter> specs,
+            Map<String, T> bindings,
+            Set<String> inferenceHoles,
+            Function<Ast.TypeRef, T> resolve,
+            BiFunction<T, Map<String, T>, T> substitute,
+            Predicate<T> unresolved,
+            String label) {
+        if (specs.isEmpty()) return;
+        if (!specs.stream().map(Ast.GenericParameter::name).toList().equals(genericNames)) {
+            throw new IllegalArgumentException(label + " has inconsistent generic declarations");
+        }
+        // Atomicity matters for callers that retain the original binding map:
+        // a late unresolved dependency cannot publish earlier partial defaults.
+        Map<String, T> staged = new LinkedHashMap<>(bindings);
+        for (Ast.GenericParameter spec : specs) {
+            if (spec.defaultType() == null
+                    || staged.containsKey(spec.name())
+                    || inferenceHoles.contains(spec.name())) continue;
+            T concrete = substitute.apply(resolve.apply(spec.defaultType()), Map.copyOf(staged));
+            if (concrete == null || unresolved.test(concrete)) {
+                throw new IllegalArgumentException("cannot resolve dependent default for generic '"
+                        + spec.name() + "' in " + label);
+            }
+            staged.put(spec.name(), concrete);
+        }
+        bindings.putAll(staged);
+    }
+
+    /** Fail closed after inference/defaults in both TypeChecker and OwnershipChecker. */
+    static void requireBound(
+            List<String> genericNames, Map<String, ?> bindings, String label) {
+        List<String> missing = genericNames.stream()
+                .filter(name -> !bindings.containsKey(name) || bindings.get(name) == null)
+                .distinct().sorted().toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("cannot infer generic parameter(s) "
+                    + missing + " for " + label
+                    + "; specify them explicitly or make them inferable from value arguments");
+        }
+    }
+
+    static boolean containsUnresolvedAstGeneric(Ast.TypeRef ref, Set<String> genericNames) {
+        if (ref == null) return false;
+        Deque<Ast.TypeRef> pending = new ArrayDeque<>();
+        pending.add(ref);
+        while (!pending.isEmpty()) {
+            Ast.TypeRef next = pending.removeLast();
+            if (genericNames.contains(next.name())
+                    || next.name().equals("$infer$")
+                    || next.name().equals("_")) return true;
+            pending.addAll(next.arguments());
+        }
+        return false;
     }
 
     static List<String> canonicalStructuralNames(int arity) {
