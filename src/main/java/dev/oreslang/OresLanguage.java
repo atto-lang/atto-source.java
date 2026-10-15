@@ -111,6 +111,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                         || fn.trapped() || fn.structural() || fn.nonLexical()
                         || !fn.genericParameters().isEmpty()
                         || !fn.annotations().isEmpty()
+                        || !isCheckedI64Identifier(fn.name())
+                        || fn.parameters().size() > 32
+                        || fn.parameters().stream().anyMatch(p ->
+                                !isCheckedI64Identifier(p.name()))
                         || !isCheckedI64Scalar(fn.returnType())
                         || fn.parameters().stream().anyMatch(p ->
                                 p.mutable() || p.structural() || !isCheckedI64Scalar(p.type()))
@@ -228,6 +232,11 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         throw new IllegalArgumentException(
                 "checked-i64-v1 unsupported expression AST kind: "
                 + expr.getClass().getSimpleName());
+    }
+
+    private static boolean isCheckedI64Identifier(String name) {
+        return name != null && name.length() <= 128
+                && name.matches("[A-Za-z_][A-Za-z_0-9]*");
     }
 
     private static boolean isCheckedI64Scalar(Ast.TypeRef type) {
