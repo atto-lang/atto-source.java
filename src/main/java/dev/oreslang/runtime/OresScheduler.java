@@ -610,6 +610,8 @@ public final class OresScheduler implements AutoCloseable {
         private final Runnable onQuiescent;
         /** Never disclosed to the guest or to Future completion callbacks. */
         private NativeActorTurnKernel.SourceTask nativeSource;
+        /** Terminal publication must not outrun successful native retirement. */
+        private final AtomicBoolean nativeRetirementConfirmed = new AtomicBoolean();
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
@@ -1041,15 +1043,20 @@ public final class OresScheduler implements AutoCloseable {
         private void retireWhenQuiescent() {
             if (phase.get() == TERMINAL && !executing.get()
                     && quiescenceNotified.compareAndSet(false, true)) {
-                // Keep the task observable in the scheduler's live set while a
-                // cancelled/failed guest turn is still physically executing.
-                // A terminal Future is not a carrier-exit witness.
-                // Native retirement is witnessed only at the scheduler's
-                // own TERMINAL + physical-carrier-exit barrier; NOT by Future
-                // notification, timeout cancellation, or an idle actor slot.
-                if (nativeSource != null) {
-                    nativeTurnKernel.settled(nativeSource);
-                    nativeTurnKernel.retire(nativeSource);
+                // Keep the task observable until the native terminal witness
+                // and retirement BOTH succeed. A cancelled or completed
+                // Future alone is not proof of native guest quiescence.
+                if (nativeSource != null && !nativeRetirementConfirmed.get()) {
+                    try {
+                        nativeTurnKernel.settleAndRetire(nativeSource);
+                        nativeRetirementConfirmed.set(true);
+                    } catch (RuntimeException | Error failure) {
+                        // A pending cleanup ticket/legacy carrier may keep the
+                        // source BUSY. Permit a later terminal/close retry;
+                        // never publish the terminal Future on this failure.
+                        quiescenceNotified.set(false);
+                        throw failure;
+                    }
                 }
                 tasks.remove(this);
                 cancelWallDeadline();
@@ -1064,6 +1071,9 @@ public final class OresScheduler implements AutoCloseable {
 
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone()) return;
+            // A failed JNI terminal witness is not permission to publish
+            // DONE. Failure retains the task in the scheduler live set.
+            if (nativeSource != null && !nativeRetirementConfirmed.get()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
@@ -1083,7 +1093,12 @@ public final class OresScheduler implements AutoCloseable {
             int observed;
             do {
                 observed = phase.get();
-                if (observed == TERMINAL) return;
+                if (observed == TERMINAL) {
+                    // Retry a previously BUSY native terminal witness on
+                    // scheduler close/cancellation, without double-settling.
+                    retireWhenQuiescent();
+                    return;
+                }
             } while (!phase.compareAndSet(observed, TERMINAL));
             pendingResume.set(null);
             retireWhenQuiescent();
