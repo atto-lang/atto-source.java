@@ -93,6 +93,42 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void concurrentReusableFairSelectCapturesCursorAtAdmission() throws Exception {
+        var first = OresFuture.completed(10);
+        var second = OresFuture.completed(20);
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(first), ChannelRuntime.await(second));
+
+        // Deterministically suspend a selection between construction and
+        // admission, the same window that overlapping host threads can hit.
+        // This private registration is intentionally exercised by reflection
+        // rather than exposing an unsafe test-only runtime entrypoint.
+        var registrationType = Class.forName(
+                "dev.oreslang.runtime.ChannelRuntime$SelectRegistration");
+        var constructor = registrationType.getDeclaredConstructor(
+                ChannelRuntime.SelectSet.class, ChannelRuntime.SelectPolicy.class);
+        constructor.setAccessible(true);
+        Object deferred = constructor.newInstance(
+                set, ChannelRuntime.SelectPolicy.FAIR);
+
+        assertEquals(0, set.trySelect(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().index());
+
+        var start = registrationType.getDeclaredMethod("start", boolean.class);
+        start.setAccessible(true);
+        start.invoke(deferred, true);
+        var futureField = registrationType.getDeclaredField("future");
+        futureField.setAccessible(true);
+        var deferredResult = (OresFuture<ChannelRuntime.SelectResult>)
+                futureField.get(deferred);
+        assertEquals(1, deferredResult.get(5, TimeUnit.SECONDS).index());
+        assertEquals(20, deferredResult.join().value());
+        assertEquals(0, set.trySelect(ChannelRuntime.SelectPolicy.FAIR)
+                .orElseThrow().index());
+    }
+
+    @Test
     void settledFailedFutureIsSelectableButPreservesItsFailure() {
         var failure = new IllegalStateException("upstream failed");
         var future = OresFuture.<Integer>failed(failure);
@@ -114,13 +150,22 @@ final class FutureChannelSelectTest {
                     ChannelRuntime.read(channel), ChannelRuntime.await(producer))
                     .selectAsync(ChannelRuntime.SelectPolicy.FAIR);
             var go = new CountDownLatch(1);
+            var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
             Thread writer = Thread.startVirtualThread(() -> {
-                awaitStart(go);
-                assertTrue(channel.tryWrite(71));
+                try {
+                    awaitStart(go);
+                    assertTrue(channel.tryWrite(71));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
             });
             Thread resolver = Thread.startVirtualThread(() -> {
-                awaitStart(go);
-                assertTrue(producer.completeFromRuntime(82));
+                try {
+                    awaitStart(go);
+                    assertTrue(producer.completeFromRuntime(82));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
             });
 
             go.countDown();
@@ -128,6 +173,10 @@ final class FutureChannelSelectTest {
             resolver.join(5_000);
             assertFalse(writer.isAlive(), "writer stalled in round " + round);
             assertFalse(resolver.isAlive(), "resolver stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("select race worker failed in round " + round,
+                        workerFailure.get());
+            }
             var result = selected.get(5, TimeUnit.SECONDS);
             if (result.index() == 0) {
                 assertEquals(71, result.value());
