@@ -227,11 +227,54 @@ public final class ControlWakeRetryStandaloneStress {
         return deliveredTotal;
     }
 
+    private static void verifyOtherThreadDeferredCancellation() throws Exception {
+        // Exercise the production trampoline without JUnit/Maven. Before
+        // cross-thread registration, cancel() could only inspect its own
+        // ThreadLocal; the deferred wake on another carrier still ran.
+        for (int round = 0; round < 64; ++round) {
+            ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+            CountDownLatch deferred = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger unwanted = new AtomicInteger();
+            Runnable cancelled = unwanted::incrementAndGet;
+            long epoch = queue.epoch();
+            require(queue.register(() -> {
+                queue.slotReleased();
+                deferred.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("carrier gate timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            }, epoch), "outer retry admission");
+            require(queue.register(cancelled, epoch), "deferred retry admission");
+            Thread carrier = new Thread(queue::slotReleased, "retry-cancel-carrier");
+            carrier.setDaemon(true);
+            carrier.start();
+            try {
+                require(deferred.await(5, TimeUnit.SECONDS),
+                        "carrier did not defer second callback");
+                // The main thread differs from the callback's carrier.
+                queue.cancel(cancelled);
+            } finally {
+                release.countDown();
+            }
+            carrier.join(5000);
+            require(!carrier.isAlive(), "deferred callback carrier hung");
+            require(unwanted.get() == 0 && queue.pending() == 0,
+                    "cross-thread cancelled retry escaped its queue");
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         verifyFairnessAndCapacity();
         verifyLifecycleAndEpoch();
         verifyCrossCarrierDeferredCancellation();
         verifyDeepReentrantWakes();
+        verifyOtherThreadDeferredCancellation();
         int delivered = verifyConcurrentRegistrations();
         System.out.println("PASS: 100,000 concurrent registrations, " + delivered
                 + " delivered; no duplicates, missing noncancelled callbacks, "
