@@ -77,6 +77,23 @@ terminal failure following `Result?`, including LIFO deferred cleanup and
 caller-side exception handling. These are pending execution on JDK 25;
 structural presence alone is not passing runtime evidence.
 
+## Cross-carrier continuation handoff audit
+
+Each SourceTask expression and statement completion is now claimed via an
+atomic compare-and-set before invoking its downstream callback. This
+prevents racing carrier callbacks from publishing two outcomes, without
+relying on Java thread-local state. The evaluator also confines
+`try/catch` to *evaluation, join, ownership conversion, invocation
+preparation,* or *guard evaluation*; exceptions from a downstream callback
+must propagate rather than be delivered a second time. Value-match
+arm recursion and selected-arm dispatch likewise occur outside local
+preparation catches.
+
+Regression fixtures now include a channel-suspended match guard followed
+by an ordinary arm failure, plus resumed `Result?` and `Option?` paths.
+These tests still require JDK 25 Maven execution on the exact Git tree;
+a static source review does not establish cancellation/actor-turn parity.
+
 ## Review blocker
 
 The checker also mirrors the evaluator's conservative import rule:
