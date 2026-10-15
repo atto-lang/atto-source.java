@@ -77,6 +77,15 @@ final class RuntimePointerTest {
         reject("const p = new Pointer<Box>();", "rt ref");
     }
 
+    @Test void unsupportedExclusivePointerFormsAreRejectedBeforeTypeChecking() {
+        for (String operation : new String[] {"ref", "unref", "deref"}) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(BOX + "fnc bad(): void { const p = rt " + operation
+                            + " mut value; return; }"));
+            assertTrue(error.getMessage().contains("exclusive Pointer<T>"), error.getMessage());
+        }
+    }
+
     @Test void pointerOperationsRequireCorrectArityAndType() {
         for (String access : new String[] {"ref", "unref", "deref"}) {
             reject("const p = rt " + access + "();", "argument");
