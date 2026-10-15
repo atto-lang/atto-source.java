@@ -1436,6 +1436,48 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     f"scenario={scenario} escaped Git Trees API body exceeded limit"
                 )
 
+    def test_git_tree_hash_rejects_file_directory_collisions_in_both_orders(self):
+        # A file and a directory cannot occupy the same Git tree name.
+        # Earlier versions either erased the directory silently or raised
+        # AttributeError, depending on the order of the source entries.
+        directory_first = [
+            ("nested/child.ores", b"inside", "100644"),
+            ("nested", b"outside", "100644"),
+        ]
+        file_first = list(reversed(directory_first))
+        for entries in (directory_first, file_first):
+            with self.subTest(entries=entries):
+                with self.assertRaisesRegex(pub.Denied, "conflicting"):
+                    pub.source_tree_sha(entries)
+
+    def test_git_tree_hash_rejects_duplicate_and_ambiguous_paths(self):
+        cases = (
+            [("src/a.ores", b"one", "100644"),
+             ("src/a.ores", b"two", "100755")],
+            [("src//a.ores", b"ambiguous", "100644")],
+            [("src/../other.ores", b"traversal", "100644")],
+            [(".git/config", b"untracked", "100644")],
+            [("", b"empty path", "100644")],
+            [("valid.ores", b"ok", "100666")],
+        )
+        for entries in cases:
+            with self.subTest(entries=entries):
+                with self.assertRaises(pub.Denied):
+                    pub.source_tree_sha(entries)
+
+    def test_git_tree_hash_preserves_nested_files_and_executable_modes(self):
+        files = [
+            ("nested/child.ores", b"one", "100644"),
+            ("nested/other.ores", b"two", "100755"),
+            ("root.ores", b"three", "100644"),
+        ]
+        baseline = pub.source_tree_sha(files)
+        self.assertRegex(baseline, r"^[a-f0-9]{40}$")
+        self.assertEqual(baseline, pub.source_tree_sha(list(reversed(files))))
+        self.assertNotEqual(baseline, pub.source_tree_sha([
+            (path, data, "100644") for path, data, _ in files
+        ]))
+
     def test_git_tree_sha_matches_known_git_write_tree_result(self):
         # Verified independently with git init, git add, git write-tree
         # (main.ores contains hello\n; nested/file.ores contains world\n
