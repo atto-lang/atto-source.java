@@ -16,13 +16,16 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     void mainOnlyWorkflowMustRejectUnreviewedTriggersAndHostedFallback() throws Exception {
         String text = Files.readString(WORKFLOW);
 
-        assertTrue(text.contains("on:\n  workflow_dispatch:\n"));
-        assertFalse(text.contains("\n  pull_request:"));
-        assertFalse(text.contains("\n  pull_request_target:"));
-        assertFalse(text.contains("\n  push:"));
-        assertFalse(text.contains("\n  schedule:"));
-        assertTrue(text.contains("permissions:\n  contents: read"));
-        assertTrue(text.contains("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]"));
+        // Presence-only tests can be bypassed by retaining the safe string
+        // inside a comment while changing the actual workflow trigger/guard.
+        String triggers = between(text, "\n  workflow_dispatch:", "\npermissions:");
+        assertEquals("\n  workflow_dispatch:\n", triggers,
+                "workflow_dispatch must be the only event");
+        assertEquals("\npermissions:\n  contents: read\n",
+                between(text, "\npermissions:", "\nconcurrency:"),
+                "the workflow token must be read-only");
+        assertEquals(1, countLines(text, "permissions:"),
+                "job-level permissions cannot override the reviewed token scope");
         assertFalse(text.contains("|| 'ubuntu-24.04'"),
                 "private tests must not silently fall back to hosted jobs");
 
@@ -42,9 +45,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == ''"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}";
-        assertTrue(denial.contains(requiredDenial),
-                "a rejected dispatch must never become a green skipped-job run");
-        assertTrue(denial.contains("runs-on: ubuntu-24.04"));
+        assertEquals(requiredDenial, jobProperty(denial, "if"),
+                "the actual denial condition must match exactly, not a comment");
+        assertEquals("runs-on: ubuntu-24.04", jobProperty(denial, "runs-on"));
         assertTrue(denial.contains("exit 1"));
         assertFalse(denial.contains("actions/checkout@"),
                 "denial must never clone private source");
@@ -63,8 +66,11 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != ''"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}";
-        assertTrue(job.contains(expectedGate),
-                "approval must be an exact, unconditional gate before runner admission");
+        assertEquals(expectedGate, jobProperty(job, "if"),
+                "the actual runner admission condition must match exactly");
+        assertEquals("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]",
+                jobProperty(job, "runs-on"),
+                "no hosted or shared-runner fallback is permitted");
         assertTrue(job.contains("test \"$GITHUB_SHA\" = \"$APPROVED_SHA\""));
         assertTrue(job.contains(
                 "test \"$(git rev-parse HEAD^{tree})\" = \"$APPROVED_TREE\""));
@@ -94,10 +100,31 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }
     }
 
-    private static String section(String text, String from, String until) {
+    /** Extract the actual YAML job property at exactly four-space indentation. */
+    private static String jobProperty(String job, String property) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
+                "(?m)^    " + java.util.regex.Pattern.quote(property) + ": ([^\\r\\n]+)$")
+                .matcher(job);
+        assertTrue(matcher.find(), "missing job property: " + property);
+        String value = matcher.group(1);
+        assertFalse(matcher.find(), "duplicate job property: " + property);
+        return property + ": " + value;
+    }
+
+    private static long countLines(String text, String exact) {
+        return java.util.regex.Pattern.compile(
+                "(?m)^" + java.util.regex.Pattern.quote(exact) + "$")
+                .matcher(text).results().count();
+    }
+
+    private static String between(String text, String from, String until) {
         int start = text.indexOf(from);
         int end = text.indexOf(until, start + from.length());
-        assertTrue(start >= 0 && end > start, "workflow jobs changed unexpectedly");
+        assertTrue(start >= 0 && end > start, "workflow structure changed unexpectedly");
         return text.substring(start, end);
+    }
+
+    private static String section(String text, String from, String until) {
+        return between(text, from, until);
     }
 }
