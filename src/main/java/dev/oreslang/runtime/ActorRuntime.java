@@ -7133,12 +7133,27 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void cancelQueuedScheduleOnShutdown() {
-            synchronized (lifecycleLock) {
-                if (scheduled.get() && !carrierActive) {
-                    scheduledDispatchToken = null;
-                    scheduled.set(false);
-                    if (stopped.get() && activeTurns == 0) finalizeStopLocked();
-                    lifecycleLock.notifyAll();
+            ActorGroupTurnGate.Ticket abandoned = null;
+            try {
+                synchronized (lifecycleLock) {
+                    if (scheduled.get() && !carrierActive) {
+                        scheduledDispatchToken = null;
+                        scheduled.set(false);
+                        abandoned = pendingTurnGateTicket;
+                        pendingTurnGateTicket = null;
+                        if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                        lifecycleLock.notifyAll();
+                    }
+                }
+            } finally {
+                if (abandoned != null) {
+                    // shutdownNow may discard a GRANTED dispatch without ever
+                    // invoking its runnable. Withdraw WAITING tickets or
+                    // release abandoned GRANTED leases exactly once, outside
+                    // lifecycleLock, so teardown cannot leak physical permits.
+                    // A racing executor callback will observe an obsolete
+                    // dispatch identity and cannot execute guest actor code.
+                    if (!abandoned.cancelWaiting()) abandoned.release();
                 }
             }
         }
