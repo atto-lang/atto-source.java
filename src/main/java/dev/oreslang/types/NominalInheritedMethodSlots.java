@@ -251,6 +251,9 @@ public final class NominalInheritedMethodSlots {
                     || old.suspends() != now.suspends()
                     || old.structural() != now.structural()
                     || !Objects.equals(old.explicitReceiverType(), now.explicitReceiverType())
+                    // Annotations may carry capability/effect/ABI contracts.
+                    // Until each is classified, do not silently override them.
+                    || !Objects.equals(old.annotations(), now.annotations())
                     || (now.isAbstract() && !old.isAbstract())) {
                 throw new IllegalArgumentException(
                         "incompatible nominal method override contract for " + old.name());
