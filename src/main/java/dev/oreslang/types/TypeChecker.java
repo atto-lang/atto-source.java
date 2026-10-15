@@ -3529,13 +3529,17 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
-        if (expected instanceof Borrow && expr instanceof Ast.RuntimeCallExpr runtime
-                && runtime.operation().equals("unref")) {
-            // An unwrap is a consuming move, never a temporary borrow.
-            // Diagnose this during type admission before generic argument
-            // assignment can hide the underlying ownership error.
-            throw new IllegalArgumentException(
-                    "cannot borrow consuming rt unref; bind its owned pointee first, then use rt borrow");
+        if (expected instanceof Borrow && expr instanceof Ast.RuntimeCallExpr runtime) {
+            if (runtime.operation().equals("unref")) {
+                // Unref moves the owner, rather than lending a lexical view.
+                throw new IllegalArgumentException(
+                        "cannot borrow consuming rt unref; bind its owned pointee first, then use rt borrow");
+            }
+            if (runtime.operation().equals("deref") && ((Borrow) expected).mutable()) {
+                // A read-only dereference cannot satisfy an exclusive mutable loan.
+                throw new IllegalArgumentException(
+                        "rt deref supplies a read-only borrow; mutable pointer dereference is not admitted");
+            }
         }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
