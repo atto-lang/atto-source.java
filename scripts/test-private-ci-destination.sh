@@ -44,6 +44,10 @@ expect_wrapper_reject() {
   fi
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
+  if grep -q 'usage:' "$work/out"; then
+    echo 'Wrapper rejected obsolete arguments rather than exercising publisher admission' >&2
+    exit 1
+  fi
 }
 expect_ok trusted/ci
 export MOCK_REPOSITORY_ID=456
