@@ -52,9 +52,28 @@ final class ExperimentalHirV1CheckedArithmeticBoundaryMatrixTest {
     @Test
     void intermediateOverflowCannotBeOptimizedAwayByZeroMultiplication() {
         overflow("(9223372036854775807 + 1) * 0");
+        overflow("0 * (9223372036854775807 + 1)");
+        overflow("43 + (9223372036854775807 + 1)");
+        overflow("(9223372036854775807 + 1) + 43");
         overflow("(9223372036854775807 * 2) - (9223372036854775807 * 2)");
         overflow("(-9223372036854775807 - 1) * -1");
         overflow("(-9223372036854775807 - 1) - 1");
+    }
+
+    @Test
+    void checkedCallArgumentsCannotHideOverflowEvenWhenUnused() {
+        String source = HEADER + """
+                pub fnc take_first(int first, int second): int { return first; }
+                pub fnc main(): int {
+                  return take_first(43, 9223372036854775807 + 1);
+                }
+                """;
+        RuntimeException error = assertThrows(RuntimeException.class, () -> run(source));
+        boolean classified = false;
+        for (Throwable cursor = error; cursor != null; cursor = cursor.getCause()) {
+            classified |= String.valueOf(cursor.getMessage()).contains("ORES_I64_OVERFLOW");
+        }
+        assertTrue(classified, "Unused checked call argument must still report overflow");
     }
 
     @Test
