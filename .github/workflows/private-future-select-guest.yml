@@ -12,7 +12,9 @@ concurrency:
 jobs:
   language-contract:
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
-    runs-on: ubuntu-24.04
+    # Opt-in only: dedicated disposable private repo runner; maintainers
+    # must register the ephemeral machine and set the approved repo variable.
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -39,7 +41,9 @@ jobs:
   full-maven:
     needs: language-contract
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
-    runs-on: ubuntu-24.04
+    # Opt-in only: dedicated disposable private repo runner; maintainers
+    # must register the ephemeral machine and set the approved repo variable.
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -66,7 +70,9 @@ jobs:
   compiled-native-future:
     needs: language-contract
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
-    runs-on: ubuntu-24.04
+    # Opt-in only: dedicated disposable private repo runner; maintainers
+    # must register the ephemeral machine and set the approved repo variable.
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
