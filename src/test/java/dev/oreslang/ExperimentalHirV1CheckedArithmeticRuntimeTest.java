@@ -123,6 +123,30 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
     }
 
     @Test
+    void malformedDirectiveCannotSilentlyExecuteWrappingSemantics() {
+        String body = "pub fnc main(): int { return 9223372036854775807 + 1 < 0 ? 43 : 1; }\n";
+        String[] forbidden = {
+            "// oreslang:checked-i64-v1\r\n" + body, // CRLF is not exact LF opt-in
+            " // oreslang:checked-i64-v1\n" + body, // indentation
+            "\n// oreslang:checked-i64-v1\n" + body, // displaced line
+            "// oreslang:checked-i64-v2\n" + body, // unsupported version
+            "// oreslang:checked-i64-v1 extra\n" + body, // trailing text
+            "// oreslang:checked-i64-v1\n// oreslang:checked-i64-v1\n" + body,
+            "\uFEFF// oreslang:checked-i64-v1\n" + body // BOM
+        };
+        for (String source : forbidden) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exit(source), "malformed directive must fail closed");
+            boolean classified = false;
+            for (Throwable e = failure; e != null; e = e.getCause()) {
+                classified |= String.valueOf(e.getMessage()).contains("checked-i64-v1");
+            }
+            assertTrue(classified,
+                    "do not execute legacy wrapping when checked source was requested: " + failure);
+        }
+    }
+
+    @Test
     void unmarkedPotentialOverflowStillFailsHIRAdmission() {
         String legacy = scale(1);
         assertThrows(IllegalArgumentException.class,
