@@ -1,0 +1,125 @@
+package dev.oreslang.types;
+
+import dev.oreslang.ast.Ast;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class GenericCallArgumentsTest {
+    private static Ast.TypeRef type(String name) {
+        return new Ast.TypeRef(name, List.of(), false);
+    }
+
+    private static Ast.TypeRef named(String name, String value) {
+        return Ast.TypeRef.namedParameter(name, type(value));
+    }
+
+    @Test
+    void namesAreMatchedByIdentityNotArgumentOrder() {
+        GenericCallArguments.Bound bound = GenericCallArguments.bind(
+                List.of("A", "B", "C", "D", "E"),
+                List.of(named("D", "bool"), named("A", "int"), named("C", "bool")),
+                "function foo");
+        assertEquals(type("int"), bound.explicitTypes().get("A"));
+        assertEquals(type("bool"), bound.explicitTypes().get("C"));
+        assertEquals(type("bool"), bound.explicitTypes().get("D"));
+        assertFalse(bound.explicitTypes().containsKey("B"));
+        assertTrue(bound.inferenceHoles().isEmpty());
+    }
+
+    @Test
+    void mixedPositionalArgumentsAndHolesKeepTheirSlots() {
+        GenericCallArguments.Bound bound = GenericCallArguments.bind(
+                List.of("A", "B", "C", "D"),
+                List.of(type("int"), type("_"), type("bool"), named("D", "string")),
+                "function foo");
+        assertEquals(type("int"), bound.explicitTypes().get("A"));
+        assertEquals(type("bool"), bound.explicitTypes().get("C"));
+        assertEquals(type("string"), bound.explicitTypes().get("D"));
+        assertEquals(java.util.Set.of("B"), bound.inferenceHoles());
+        assertFalse(bound.explicitTypes().containsKey("B"));
+    }
+
+    @Test
+    void emptyArgumentsPreserveInferenceAndDoNotFabricateAny() {
+        GenericCallArguments.Bound bound = GenericCallArguments.bind(
+                List.of("A", "B"), List.of(), "foo");
+        assertTrue(bound.explicitTypes().isEmpty());
+        assertTrue(bound.inferenceHoles().isEmpty());
+    }
+
+    @Test
+    void malformedCallsFailClosed() {
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "B"), List.of(named("X", "int")), "foo"));
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "B"), List.of(named("A", "int"), named("A", "bool")), "foo"));
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "B"), List.of(type("int"), named("A", "bool")), "foo"));
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "B"), List.of(named("B", "bool"), type("int")), "foo"));
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "B"), List.of(type("int"), type("bool"), type("string")), "foo"));
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "A"), List.of(type("int")), "foo"));
+        assertThrows(IllegalArgumentException.class, () -> GenericCallArguments.bind(
+                List.of("A", "B"), List.of(named("a", "int")), "foo"));
+    }
+
+    @Test
+    void nestedInferenceHoleIsRejectedRatherThanAcceptedAsNominalType() {
+        Ast.TypeRef nested = new Ast.TypeRef("Array", List.of(type("_")), false);
+        Ast.TypeRef deeplyNested = new Ast.TypeRef(
+                "Option", List.of(new Ast.TypeRef("Array", List.of(type("_")), false)), false);
+        Ast.TypeRef synthetic = new Ast.TypeRef(
+                "Result", List.of(type("int"), Ast.TypeRef.inferred()), false);
+        for (Ast.TypeRef value : List.of(nested, deeplyNested, synthetic)) {
+            for (Ast.TypeRef argument : List.of(value, Ast.TypeRef.namedParameter("A", value))) {
+                IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                        () -> GenericCallArguments.bind(
+                                List.of("A"), List.of(argument), "foo"));
+                assertTrue(error.getMessage().contains("nested inference hole"), error.getMessage());
+            }
+        }
+        // The legitimate top-level hole still requests inference.
+        GenericCallArguments.Bound bare = GenericCallArguments.bind(
+                List.of("A"), List.of(type("_")), "foo");
+        assertEquals(java.util.Set.of("A"), bare.inferenceHoles());
+        assertTrue(bare.explicitTypes().isEmpty());
+    }
+
+    @Test
+    void allFiveFactorialNamedArgumentPermutationsHaveIdenticalBindings() {
+        List<String> names = List.of("A", "B", "C", "D", "E");
+        List<Ast.TypeRef> values = List.of(
+                named("A", "int"), named("B", "string"), named("C", "bool"),
+                named("D", "float"), named("E", "Symbol"));
+        int[] count = {0};
+        assertEveryPermutation(names, values, 0, count);
+        assertEquals(120, count[0]);
+    }
+
+    private static void assertEveryPermutation(
+            List<String> names, List<Ast.TypeRef> values, int index, int[] count) {
+        if (index == values.size()) {
+            GenericCallArguments.Bound bound =
+                    GenericCallArguments.bind(names, values, "five-parameter function");
+            for (int i = 0; i < names.size(); i++) {
+                assertEquals(type(List.of("int", "string", "bool", "float", "Symbol").get(i)),
+                        bound.explicitTypes().get(names.get(i)));
+            }
+            assertTrue(bound.inferenceHoles().isEmpty());
+            count[0]++;
+            return;
+        }
+        for (int i = index; i < values.size(); i++) {
+            java.util.ArrayList<Ast.TypeRef> shuffled = new java.util.ArrayList<>(values);
+            Ast.TypeRef tmp = shuffled.get(index);
+            shuffled.set(index, shuffled.get(i));
+            shuffled.set(i, tmp);
+            assertEveryPermutation(names, shuffled, index + 1, count);
+        }
+    }
+}

@@ -74,6 +74,7 @@ public final class TreeShaker {
         private final Map<String, String> uniqueSymbols = new LinkedHashMap<>();
         private final Set<String> ambiguousSymbols = new LinkedHashSet<>();
         private final Set<String> moduleNames = new LinkedHashSet<>();
+        private final Set<String> scannedModuleMetadata = new LinkedHashSet<>();
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
@@ -97,7 +98,10 @@ public final class TreeShaker {
 
             while (!work.isEmpty()) {
                 Symbol symbol = symbols.get(work.removeFirst());
-                if (symbol != null) scanDeclaration(symbol.module(), symbol.declaration());
+                if (symbol != null) {
+                    scanRetainedModuleMetadata(symbol.module());
+                    scanDeclaration(symbol.module(), symbol.declaration());
+                }
             }
 
             Ast.Program pruned = pruneProgram(rewritten);
@@ -173,6 +177,10 @@ public final class TreeShaker {
                     || !function.genericParameters().isEmpty()
                     || function.actorKind() != Ast.ActorKind.NONE
                     || function.async()
+                    // A constant-looking result does not erase a callable's effect contract.
+                    || function.suspends()
+                    || function.generator()
+                    || function.trapped()
                     || function.parameters().size() != arguments.size()
                     || function.body().size() != 1
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
@@ -529,7 +537,7 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
+                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -543,15 +551,18 @@ public final class TreeShaker {
                         function.kind(),
                         function.visibility(),
                         function.async(),
+                        function.suspends(),
                         function.generator(),
                         function.structural(),
                         function.nonLexical(),
+                        function.trapped(),
                         function.actorKind(),
                         function.genericParameters(),
                         function.parameters(),
                         function.returnType(),
                         function.annotations(),
-                        rewriteStatements(function.body(), module, locals));
+                        rewriteStatements(function.body(), module, locals),
+                        function.genericSpecs());
             }
             if (declaration instanceof Ast.FieldDecl field) {
                 Ast.Expr initializer = rewriteExpression(field.initializer(), module, Map.of());
@@ -1083,10 +1094,30 @@ public final class TreeShaker {
             return uniqueSymbols.get(name);
         }
 
+        /**
+         * A retained declaration also retains its enclosing module's public
+         * contract and annotation dependencies. These are module metadata,
+         * not dependencies of any individual function signature.
+         */
+        private void scanRetainedModuleMetadata(String moduleName) {
+            if (!scannedModuleMetadata.add(moduleName)) return;
+            for (Ast.ModuleDecl module : rewritten.modules()) {
+                if (!module.name().equals(moduleName)) continue;
+                for (Ast.TypeRef contract : module.contracts()) scanType(contract);
+                for (Ast.Annotation annotation : module.annotations()) scanAnnotation(annotation);
+                return;
+            }
+        }
+
         private void scanDeclaration(String module, Ast.Decl declaration) {
             if (declaration instanceof Ast.FunctionDecl function) {
                 scanType(function.returnType());
                 for (Ast.Param parameter : function.parameters()) scanType(parameter.type());
+                // Type defaults participate in the public source ABI: a type
+                // referenced only from a default still has to survive pruning.
+                for (Ast.GenericParameter spec : function.genericSpecs()) {
+                    scanType(spec.defaultType());
+                }
                 for (Ast.Annotation annotation : function.annotations()) scanAnnotation(annotation);
                 LinkedHashSet<String> locals = new LinkedHashSet<>();
                 for (Ast.Param parameter : function.parameters()) locals.add(parameter.name());
@@ -1407,7 +1438,7 @@ public final class TreeShaker {
                     }
                 }
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
+                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), module.contracts(), declarations));
                 }
             }
 
