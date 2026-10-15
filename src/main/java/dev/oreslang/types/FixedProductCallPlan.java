@@ -116,8 +116,11 @@ public final class FixedProductCallPlan {
      * callable's stable parameter names. All inputs are fixed/closed products.
      */
     public static FixedProductCallPlan bind(List<String> parameterNames, List<InputSlot> inputs) {
-        Objects.requireNonNull(parameterNames, "parameterNames");
-        Objects.requireNonNull(inputs, "inputs");
+        // Freeze the caller's collections before arity checks and slot binding.
+        // Otherwise a mutable/custom List can change between the name-map and
+        // source-slot traversals, producing a plan for no coherent call shape.
+        parameterNames = List.copyOf(Objects.requireNonNull(parameterNames, "parameterNames"));
+        inputs = List.copyOf(Objects.requireNonNull(inputs, "inputs"));
         Map<String, Integer> parameterIndexByName = new HashMap<>();
         for (int i = 0; i < parameterNames.size(); i++) {
             String name = Objects.requireNonNull(parameterNames.get(i), "parameter name");
