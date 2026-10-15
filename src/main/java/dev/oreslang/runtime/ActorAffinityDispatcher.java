@@ -19,6 +19,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final Semaphore queueSlots;
     /** Bounded, physically reserved admission for supervisor CONTROL turns. */
     private final Semaphore controlQueueSlots;
+    private final ControlWakeRetryQueue controlRetries;
     private final AtomicInteger nextLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -35,6 +36,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
         this.queueSlots = new Semaphore(capacity);
         this.controlQueueSlots = new Semaphore(controlCapacity);
+        this.controlRetries = new ControlWakeRetryQueue(capacity);
         var created = new ArrayList<ExecutorService>();
         try {
             for (int i = 0; i < parallelism; i++) created.add(Objects.requireNonNull(factory.apply(i)));
@@ -48,6 +50,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
+    long controlRetryEpoch() { return controlRetries.epoch(); }
+    boolean registerControlRetry(Runnable callback, long epoch) {
+        return controlRetries.register(callback, epoch);
+    }
+    void cancelControlRetry(Runnable callback) { controlRetries.cancel(callback); }
 
     void executeOnLane(int lane, Runnable command) {
         executeOnLane(lane, command, queueSlots);
@@ -70,7 +77,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
             lanes.get(lane).execute(task);
         } catch (RuntimeException | Error failure) {
-            task.releaseSlot();
+            task.releaseSlot(false);
             throw failure;
         }
     }
@@ -83,9 +90,16 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             this.command = command;
             this.permits = permits;
         }
-        private void releaseSlot() { if (released.compareAndSet(false, true)) permits.release(); }
+        private void releaseSlot(boolean started) {
+            if (released.compareAndSet(false, true)) {
+                permits.release();
+                // Failed submissions do not free a physical queue slot.
+                // Signalling them could recursively resubmit the same retry.
+                if (started) controlRetries.slotReleased();
+            }
+        }
         @Override public void run() {
-            releaseSlot();
+            releaseSlot(true);
             command.run();
         }
     }
@@ -94,10 +108,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     @Override public void shutdown() { shutdownNow(); }
     @Override public List<Runnable> shutdownNow() {
         closed.set(true);
+        controlRetries.close();
         var abandoned = new ArrayList<Runnable>();
         for (var lane : lanes) for (var pending : lane.shutdownNow()) {
             if (pending instanceof QueuedTurn task) {
-                task.releaseSlot();
+                task.releaseSlot(false);
                 abandoned.add(task.command);
             } else {
                 // A host-supplied lane may return a foreign pending task.
