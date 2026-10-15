@@ -41,6 +41,7 @@ public final class ChannelRuntime {
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     /** Global cap on pending selections, independent of per-channel arm limits. */
     private static final int MAX_PENDING_SELECTS = 4_096;
+    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 4_096;
     /** Global retained descriptor count. Only accessed under COORDINATOR. */
     private static int activeArmRegistrations;
     private static long nextTicket;
@@ -727,13 +728,21 @@ public final class ChannelRuntime {
                                     "channel pending registration budget exhausted")));
                 }
 
-                if (!decided && !immediateOnly && activeArmRegistrations > MAX_PENDING_SELECTS) {
+                if (!decided && !immediateOnly && activeArmRegistrations > MAX_PENDING_SELECT_ARM_REGISTRATIONS) {
                     // Ready operations have already been given a chance to commit.
                     decided = true;
                     unregisterLocked(this, completions);
                     completions.add(() -> future.failFromRuntime(
                             new SelectAdmissionException(
                                     "pending select arm registration quota exceeded")));
+                }
+
+                if (!decided && !immediateOnly && ACTIVE.size() > MAX_PENDING_SELECTS) {
+                    decided = true;
+                    unregisterLocked(this, completions);
+                    completions.add(() -> future.failFromRuntime(
+                            new SelectAdmissionException(
+                                    "pending select registration quota exceeded")));
                 }
 
                 if (!decided && immediateOnly) {
@@ -1115,13 +1124,31 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // Peer preference must make the same stable observation of repeated
+        // Future arms as primary arbitration. A producer can settle outside
+        // COORDINATOR while we probe aliases of that producer: without an
+        // identity snapshot, an earlier alias can see PENDING while a later
+        // alias sees READY in the very same PRIORITY/FAIR preference pass.
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
+                new java.util.IdentityHashMap<>();
+
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
                     findRegistration(selection, index);
-            if (registration != null && basicReadyLocked(registration)) {
+            if (registration == null) continue;
+
+            if (selectCase instanceof FutureCase<?> futureCase) {
+                OresFuture<?> producer = futureCase.future();
+                Boolean ready = observedFutureReadiness.get(producer);
+                if (ready == null) {
+                    ready = producer.runtimeSelectReadyStateOrNull() != null;
+                    observedFutureReadiness.put(producer, ready);
+                }
+                if (ready) return registration;
+            } else if (basicReadyLocked(registration)) {
                 return registration;
             }
         }
@@ -1275,7 +1302,7 @@ public final class ChannelRuntime {
                 "default select case has no channel");
     }
 
-    private static <T> OresFuture<T> mapSelection(
+    static <T> OresFuture<T> mapSelection(
             OresFuture<SelectResult> source,
             Function<SelectResult, T> mapper) {
         OresFuture<T> result = new OresFuture<>(

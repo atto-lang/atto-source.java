@@ -49,7 +49,14 @@ public final class OresMain {
     /** Testable CLI boundary: syntax/configuration failures never masquerade as success. */
     static int exitStatusForArgs(String[] args) {
         try {
-            return runForExitStatus(args);
+            int status = runForExitStatus(args);
+            // PrintStream records failed writes instead of throwing IOException.
+            // Flush and inspect both CLI streams before publishing success.
+            if (status == 0 && (System.out.checkError() || System.err.checkError())) {
+                System.err.println("oreslang: failed to publish CLI output");
+                return 1;
+            }
+            return status;
         } catch (UsageException failure) {
             System.err.println("oreslang: " + failure.getMessage());
             return 2;
