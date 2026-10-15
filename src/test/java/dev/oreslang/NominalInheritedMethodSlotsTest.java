@@ -115,6 +115,21 @@ final class NominalInheritedMethodSlotsTest {
     }
 
     @Test
+    void privateAncestorCannotLeakIntoInheritedNominalVtable() {
+        String classes = """
+                define class Base as
+                    private pick(Color x): int { return 1; }
+                end
+                define class Child extends Base as
+                end
+                """;
+        IllegalArgumentException denied = rejectProof(
+                classes, "Child", Domain.INSTANCE, "pick", 1);
+        assertTrue(denied.getMessage().contains("private ancestor method"),
+                denied.getMessage());
+    }
+
+    @Test
     void diamondRequiresExplicitCompatibleOverrideForSameSlot() {
         String parents = """
                 define class Left as
