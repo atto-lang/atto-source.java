@@ -30,7 +30,8 @@ directory, and a new isolated CI branch:
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
   --branch ci/oreslang-verified-20261013 \
-  --expected-source-tree '<trusted full 40-hex Git tree SHA>'
+  --expected-source-tree '<trusted full 40-hex Git tree SHA>' \
+  --expected-source-commit '<trusted immutable 40-hex source commit SHA>'
 ```
 
 A matching policy Git blob on `main` is not authorization by itself. The
@@ -43,8 +44,18 @@ is a necessary fail-closed check, **not** proof that branch rules enforce
 independent reviews or required exact-tree tests: see issues #904 and #962.
 Approval must remain disabled until those independent rules are verified.
 
-The checked-in policy file must explicitly list the destination. The
-publisher checks the live GitHub identity and `visibility=private` /
+The protected-main **destination** policy must explicitly approve the exact
+private repository name and numeric ID. Separately,
+`.github/private-ci-approved-source-snapshots.txt` on protected source
+`main` must include a security-reviewed `commitSHA treeSHA destinationNumericID`
+tuple for this one transfer. Approving a destination alone does **not**
+authorize arbitrary private actor branches or source snapshots. The publisher
+checks this tuple before reading any source, validates its Git blob against
+the served bytes, and rechecks the approved tuple and unchanged policy SHA
+before each write. A missing, unmerged, altered, or revoked tuple denies
+publication; authorization cannot come from the working PR branch.
+
+The publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility
 immediately before each write. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
