@@ -2,10 +2,12 @@
 
 ## Status
 
-This change introduces an **immutable host-side policy type**, not executable
-guest-language CPU/GPU affinity. The only admitted value for now is
-`ActorGroupPlacementPolicy.unrestricted()`. Unsupported options are rejected
-**before** group creation and membership registration.
+The baseline policy type is immutable and host-side. This stacked stage
+adds **runtime-enforced `maxParallelTurns` limits** through a bounded FIFO
+nonparking group gate for lifecycle-owned actors. `CpuAffinity.ANY` with
+`Accelerator.CPU_ONLY` admits either bounded or unrestricted turn capacity.
+GPU or physical/NUMA locality claims still fail closed **before** group
+creation. Source-language group placement remains unavailable.
 
 The backend's existing multi-carrier actor scheduling remains active. These
 rules do not enable source `cpu {}` / `gpu {}` blocks, a GPU driver,
@@ -35,7 +37,10 @@ Stealing must never cross PRIVATE/SHARED/UNTRUSTED/CONTROL boundaries.
   rejected until scheduler topology-aware placement is effective.
 - `maxParallelTurns`: number of **simultaneous physical actor turns**, not
   actors, memberships, mailbox messages or OS threads. Values below
-  `Integer.MAX_VALUE` are rejected until nonblocking bounded permits exist.
+  `Integer.MAX_VALUE` are admitted by the runtime-owned `ActorGroupTurnGate`
+  and enforced before dispatch. A permit is released after the entire
+  physical turn exits its TurnExecutor/Truffle boundary. A suspended source
+  continuation releases its carrier only after that same physical exit.
 - `Accelerator.CPU_ONLY`: default.
 - `GPU_PREFERRED` / `GPU_REQUIRED`: require a validated device ID plus a
   positive in-flight limit, but remain rejected at group admission until
@@ -50,10 +55,13 @@ Stealing must never cross PRIVATE/SHARED/UNTRUSTED/CONTROL boundaries.
    topology change. Respect macOS limitations and Linux allowed CPU masks.
 2. Coordinate shared/private/untrusted carrier budgets against the process-wide
    CPU allowance, rather than scaling each domain independently without bounds.
-3. Add scheduler-owned bounded permit accounting for an owner's group. An actor
-   denied a turn releases its carrier immediately and waits in a bounded fair
-   queue; cancellation, close and release must reclaim queued reservations
-   exactly once. No sleeping/busy-spinning workers.
+3. The current scheduler-owned gate admits `maxParallelTurns` without
+   creating any group threads. Waiting work stays in a bounded FIFO queue,
+   and cancellation/close withdraw queued tickets exactly once. Do not allow
+   **retroactive adoption of a scheduled/active actor** into a limited group.
+   Dynamic `releaseWorker` on bounded groups remains unsupported until
+   atomic queued-ticket migration is implemented. No sleeping/busy-spinning
+   workers. Continue hardening admission and cancellation race tests.
 4. Prefer same-core/LLC/NUMA locality for placement and steals, with guaranteed
    age-based fallback; a hot group cannot starve an older actor.
 5. Attribute CPU budgets to actors/source tasks across `await` and
@@ -125,3 +133,25 @@ work around when runners are unavailable.
 Local `javac` smoke tests may verify the immutable policy code but **cannot**
 substitute for exact-tree ActorRuntime JUnit, Graal or native CI. Keep this PR
 draft until those tests run under an approved mechanism.
+
+## Stage-2 implementation and remaining gates
+
+The Java host runtime now routes a managed actor's scheduled mailbox batch
+through `ActorGroupTurnGate` before submitting to its unchanged domain
+executor. Permit release follows the complete `runBatch` / `TurnExecutor`
+exit; the queue cannot directly execute actor code. Single-winner ticket
+cancellation and group close are handled without blocking carriers, and
+actor-owned groups inherit their parent's lifecycle ownership.
+
+The new `ActorRuntimeGroupParallelismTest` verifies limits of one and two
+physical turns, plus rejection of retroactive adoption and unsafe worker
+transfer. `ActorGroupTurnGateTest` exercises FIFO, queue bounds, close,
+cancellation races, and rejected downstream submissions. These tests
+**must run against a real exact-source Java/Graal CI job before promotion**;
+standalone smoke tests are not evidence of complete runtime conformance.
+
+Remaining: implement safe quiescent worker migration / transfer, eliminate
+underlying carrier oversubscription across domains, exercise cancellation
+under native Thread/Truffle context exit, measure fairness under sustained
+hot actors, and prove cross-backend LLVM parity. Device placement, soft core
+affinity and guest-source lowering are still rejected.
