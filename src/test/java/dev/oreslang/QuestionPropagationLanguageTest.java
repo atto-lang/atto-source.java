@@ -233,6 +233,53 @@ final class QuestionPropagationLanguageTest {
     }
 
     @Test
+    void asyncOptionQuestionRunsNestedCleanupOnceOnFailureAndSuccess() throws Exception {
+        String program = """
+                async fnc read_missing(): Option<int> {
+                  return None;
+                }
+
+                async fnc read_present(): Option<int> {
+                  return Some(5);
+                }
+
+                async fnc attempt_missing(): Option<int> {
+                  defer stdio.stdout.write("outer:");
+                  try {
+                    defer stdio.stdout.write("inner:");
+                    val int item = (await read_missing())?;
+                    stdio.stdout.write("UNEXPECTED:");
+                    return Some(item);
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                }
+
+                async fnc attempt_present(): Option<int> {
+                  defer stdio.stdout.write("outer:");
+                  try {
+                    defer stdio.stdout.write("inner:");
+                    val int item = (await read_present())?;
+                    return Some(item + 1);
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                }
+
+                pub fnc main(): void {
+                  val Option<int> missing = await attempt_missing();
+                  stdio.stdout.write(missing.is_none());
+                  stdio.stdout.write(":");
+                  val Option<int> present = await attempt_present();
+                  stdio.stdout.write(present.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("inner:finally:outer:true:inner:finally:outer:6", run(program));
+    }
+
+    @Test
     void asyncQuestionOnlyAcceptsDirectBindingInitializer() {
         reject("""
                 async fnc invalid(Option<int> input): Option<int> {
