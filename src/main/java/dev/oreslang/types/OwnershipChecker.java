@@ -2396,6 +2396,8 @@ public final class OwnershipChecker {
         int previousLoopDepth = loopDepth;
         boolean previousDiscard = discardingSelectReturn;
         Ast.ClassDecl previousInitializingClass = initializingClass;
+        Ast.TypeRef previousQuestionReturn = currentQuestionReturn;
+        currentQuestionReturn = null; // A lambda is its own return boundary.
         loopDepth = 0;
         discardingSelectReturn = false;
         // Closures may execute after the class constructor returns; their
@@ -2418,6 +2420,7 @@ public final class OwnershipChecker {
             loopDepth = previousLoopDepth;
             discardingSelectReturn = previousDiscard;
             initializingClass = previousInitializingClass;
+            currentQuestionReturn = previousQuestionReturn;
             closure.close();
         }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
