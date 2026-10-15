@@ -977,6 +977,17 @@ public final class OwnershipChecker {
                             ownershipRoot(place.owner()));
                 }
                 case "take" -> {
+                    // Ordinary record field access is an aliasing read.
+                    // Explicit rt take instead promises an ownership transfer;
+                    // its per-field/element moved-bit and drop glue have not
+                    // been lowered on all exits. Reject before creating a
+                    // second owner or losing the original destructor.
+                    if (!(argument instanceof Ast.NameExpr)
+                            && isRootedAtRecordProjection(argument, scope)) {
+                        throw error("rt take from a record field/index requires "
+                                + "tracked partial moves and exactly-once drop; "
+                                + "take the whole record instead");
+                    }
                     if (argument instanceof Ast.MemberExpr member) {
                         Ast.ClassDecl ownerClass = classOfReceiver(member.receiver(), scope);
                         if (ownerClass != null) {
@@ -1310,7 +1321,7 @@ public final class OwnershipChecker {
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
-            Ast.TypeRef type = object.inferredStruct()
+            Ast.TypeRef type = (object.inferredStruct() || object.recordLiteral())
                     ? Ast.TypeRef.readonlyRecordType(members)
                     : Ast.TypeRef.recordType(members);
             return new ValueInfo(type, ValueKind.MOVE_ONLY, null);
@@ -1350,6 +1361,19 @@ public final class OwnershipChecker {
                         && runtime.arguments().getFirst() instanceof Ast.NameExpr name
                         && name.name().equals("self")) {
                     throw error("constructor cannot borrow partially initialized self for a call");
+                }
+            }
+        }
+        // Independently of overload resolution, no call surface may turn a
+        // borrowed non-Copy aggregate into owned spread arguments. This must
+        // also cover unresolved/host/function-value fallbacks, which do not
+        // enter checkArguments().
+        for (Ast.Expr argument : call.arguments()) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow() && !isCopyType(type.borrowedTarget())) {
+                    throw error("cannot spread non-Copy elements from a borrowed tuple; "
+                            + "pass owned values explicitly");
                 }
             }
         }
@@ -1842,13 +1866,87 @@ public final class OwnershipChecker {
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
         int parameterIndex = 0;
+        List<Ast.Param> sourceParameters = params;
+        List<FixedProductCallPlan.InputSlot> inputs = new ArrayList<>();
+        for (Ast.Expr argument : arguments) {
+            if (argument instanceof Ast.SpreadExpr spread) {
+                Ast.TypeRef type = syntacticType(spread.expression(), scope);
+                if (type.isBorrow()) type = type.borrowedTarget();
+                if (type.isReadonlyRecordType()) {
+                    for (String name : type.recordMembers().keySet()) {
+                        inputs.add(FixedProductCallPlan.InputSlot.named(name));
+                    }
+                } else if (type.isTupleType()) {
+                    for (int i = 0; i < type.arguments().size(); i++) {
+                        inputs.add(FixedProductCallPlan.InputSlot.positional());
+                    }
+                } else {
+                    // TypeChecker retains the authoritative diagnostic for
+                    // unbounded and unresolved spread operands.
+                    inputs.add(FixedProductCallPlan.InputSlot.positional());
+                }
+            } else {
+                inputs.add(FixedProductCallPlan.InputSlot.positional());
+            }
+        }
+        // Arity and the complete source-slot shape must be proved here too,
+        // not delegated to TypeChecker. In particular, the ownership pass
+        // must never silently skip trailing arguments (and their moves/loans)
+        // when a forged or independently checked AST has extra spread slots.
+        if (inputs.size() != params.size()) {
+            throw error(callable + " expanded argument arity mismatch: expected "
+                    + params.size() + ", got " + inputs.size());
+        }
+        if (inputs.stream().anyMatch(input -> input.label() != null)) {
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(), inputs);
+            List<Ast.Param> reordered = new ArrayList<>(params.size());
+            for (FixedProductCallPlan.BoundSlot slot : plan.sourceOrder()) {
+                reordered.add(params.get(slot.parameterIndex()));
+            }
+            sourceParameters = List.copyOf(reordered);
+        }
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
         try {
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
-                    if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
+                    if (spreadType.isBorrow()) {
+                        Ast.TypeRef referent = spreadType.borrowedTarget();
+                        // Spreading a loan may Copy scalar elements, but it
+                        // must never manufacture owned parameters by projecting
+                        // move-only values out of a borrowed tuple. Field-level
+                        // transfer provenance is not implemented yet.
+                        if (!isCopyType(referent)) {
+                            throw error(callable + " cannot spread non-Copy elements from a borrowed tuple; "
+                                    + "pass owned values explicitly");
+                        }
+                        spreadType = referent;
+                    }
+                    if (spreadType.isReadonlyRecordType()) {
+                        Map<String, Ast.TypeRef> fields = spreadType.recordMembers();
+                        if (fields.isEmpty()) {
+                            throw error(callable + " record spread requires a nonempty closed pack");
+                        }
+                        if (parameterIndex + fields.size() > sourceParameters.size()) {
+                            throw error(callable + " record spread exceeds checked parameter arity");
+                        }
+                        for (int i = 0; i < fields.size(); i++) {
+                            Ast.Param target = sourceParameters.get(parameterIndex + i);
+                            if (target.structural() || target.type().isBorrow()) {
+                                throw error(callable + " record spread cannot bind structural/borrowed parameters");
+                            }
+                        }
+                        ValueInfo aggregate = checkExpr(spread.expression(), scope, false);
+                        if (!aggregate.type.isReadonlyRecordType()
+                                || aggregate.type.recordMembers().values().stream().anyMatch(t -> !isCopyType(t))
+                                || containsMutexGuardType(aggregate.type)) {
+                            throw error(callable + " record spread must remain closed and Copy-only");
+                        }
+                        parameterIndex += fields.size();
+                        continue;
+                    }
                     if (!spreadType.isTupleType()) {
                         throw error(callable
                                 + " spread requires a statically known tuple; runtime-length collections "
@@ -1856,9 +1954,11 @@ public final class OwnershipChecker {
                     }
 
                     int width = spreadType.arguments().size();
-                    if (parameterIndex + width > params.size()) return; // TypeChecker reports arity.
+                    if (parameterIndex + width > sourceParameters.size()) {
+                        throw error(callable + " tuple spread exceeds checked parameter arity");
+                    }
                     for (int i = 0; i < width; i++) {
-                        Ast.Param target = params.get(parameterIndex + i);
+                        Ast.Param target = sourceParameters.get(parameterIndex + i);
                         if (target.structural() || target.type().isBorrow()) {
                             throw error(callable + " argument " + (parameterIndex + i + 1)
                                     + " cannot currently receive tuple spread into a structural/borrowed parameter; "
@@ -1874,8 +1974,10 @@ public final class OwnershipChecker {
                     continue;
                 }
 
-                if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                if (parameterIndex >= sourceParameters.size()) {
+                    throw error(callable + " supplied an argument beyond checked parameter arity");
+                }
+                Ast.Param param = sourceParameters.get(parameterIndex);
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
@@ -1908,6 +2010,9 @@ public final class OwnershipChecker {
                     invocationLoans.put(loanOwner, mutable);
                 }
                 parameterIndex++;
+            }
+            if (parameterIndex != sourceParameters.size()) {
+                throw error(callable + " did not bind every checked argument slot");
             }
         } finally {
             // Restore the parent scope on every path: successful call,
@@ -2935,6 +3040,13 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.TupleExpr tuple) {
             return Ast.TypeRef.tupleType(tuple.elements().stream().map(item -> syntacticType(item, scope)).toList());
         }
+        if (expr instanceof Ast.ObjectExpr record && record.recordLiteral()) {
+            LinkedHashMap<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            for (Ast.ObjectField field : record.fields()) {
+                fields.put(field.name(), syntacticType(field.value(), scope));
+            }
+            return Ast.TypeRef.readonlyRecordType(fields);
+        }
         if (expr instanceof Ast.ListExpr list && !list.elements().isEmpty()) {
             return new Ast.TypeRef("Array", List.of(syntacticType(list.elements().getFirst(), scope)), false);
         }
@@ -2973,6 +3085,8 @@ public final class OwnershipChecker {
                 if (spreadType.isBorrow()) spreadType = spreadType.borrowedTarget();
                 if (spreadType.isTupleType()) {
                     result.addAll(spreadType.arguments());
+                } else if (spreadType.isReadonlyRecordType()) {
+                    result.addAll(spreadType.recordMembers().values());
                 } else {
                     result.add(Ast.TypeRef.inferred());
                 }
@@ -3205,6 +3319,93 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    /**
+     * Product values have no tracked partial-move bitmap or per-slot drop
+     * glue. Reject explicit rt take from any known record projection, not
+     * only records whose outermost root is a local name. A temporary record,
+     * a record stored inside a class, and a record nested in a tuple must
+     * obey the same exactly-once ownership rule.
+     */
+    private boolean isRootedAtRecordProjection(Ast.Expr expr, Scope scope) {
+        Ast.Expr current = expr;
+        while (true) {
+            Ast.Expr receiver;
+            if (current instanceof Ast.MemberExpr member) {
+                receiver = member.receiver();
+            } else if (current instanceof Ast.IndexExpr indexed) {
+                receiver = indexed.receiver();
+            } else {
+                return false;
+            }
+            Ast.TypeRef type = projectionType(receiver, scope);
+            if (type != null && type.isBorrow()) type = type.borrowedTarget();
+            if (type != null && type.isRecordType()) return true;
+            if (type != null && type.isTupleType()
+                    && type.arguments().stream().anyMatch(Ast.TypeRef::isRecordType)) {
+                // Dynamic indexing cannot prove which tuple slot is selected.
+                // Fail closed whenever any slot would require partial drops.
+                return true;
+            }
+            current = receiver;
+        }
+    }
+
+    /**
+     * Side-effect-free shape resolution used only by the rt take safety gate.
+     * It must not execute guest expressions or change the checker scope.
+     */
+    private Ast.TypeRef projectionType(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.ObjectExpr object) {
+            LinkedHashMap<String, Ast.TypeRef> fields = new LinkedHashMap<>();
+            if (object.explicitStruct()) {
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    fields.put(field.name(), field.type());
+                }
+            } else {
+                for (Ast.ObjectField field : object.fields()) {
+                    fields.put(field.name(), syntacticType(field.value(), scope));
+                }
+            }
+            return object.explicitStruct()
+                    ? Ast.TypeRef.recordType(fields)
+                    : Ast.TypeRef.readonlyRecordType(fields);
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            Ast.TypeRef receiver = projectionType(member.receiver(), scope);
+            if (receiver == null) return Ast.TypeRef.inferred();
+            if (receiver.isBorrow()) receiver = receiver.borrowedTarget();
+            if (receiver.isRecordType()) {
+                return receiver.recordMembers().getOrDefault(
+                        member.member(), Ast.TypeRef.inferred());
+            }
+            Ast.ClassDecl klass = findClass(receiver.name());
+            if (klass != null) {
+                ResolvedField field = findFieldTarget(
+                        klass, receiver, member.member(), new LinkedHashSet<>());
+                if (field != null) {
+                    return substituteType(ownershipFieldType(field.field()),
+                            genericBindings(field.owner().genericParameters(),
+                                    field.ownerType().arguments()));
+                }
+            }
+            return Ast.TypeRef.inferred();
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            Ast.TypeRef receiver = projectionType(indexed.receiver(), scope);
+            if (receiver == null) return Ast.TypeRef.inferred();
+            if (receiver.isBorrow()) receiver = receiver.borrowedTarget();
+            if (receiver.isTupleType()
+                    && indexed.index() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Integer slot
+                    && slot >= 0 && slot < receiver.arguments().size()) {
+                return receiver.arguments().get(slot);
+            }
+            return collectionElementType(receiver);
+        }
+        if (expr instanceof Ast.CastExpr cast) return cast.targetType();
+        return syntacticType(expr, scope);
     }
 
     private boolean isRootedAtActorSelf(Ast.Expr expr, Scope scope) {
