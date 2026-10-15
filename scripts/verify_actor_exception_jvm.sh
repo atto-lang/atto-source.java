@@ -25,5 +25,5 @@ if (($# != 0)); then
 fi
 
 exec mvn -B -ntp \
-    '-Dtest=ActorTypedEffectControlTest,SourceActorTypedEffectExecutionTest,SourceActorOnThrowExecutionTest,TypedExceptionalEffectAdmissionTest,GuestThrowSuppressionAuditTest,ReservedControlDispatcherTest,ControlWakeRetryQueueTest,NativeGuestErrorRootTest,TrapFailurePolicyTest' \
+    '-Dtest=ActorTypedEffectControlTest,SourceActorTypedEffectExecutionTest,SourceActorOnThrowExecutionTest,TypedExceptionalEffectAdmissionTest,GuestThrowSuppressionAuditTest,ReservedControlDispatcherTest,ControlWakeRetryQueueTest,ActorIncarnationIdentityTest,NativeGuestErrorRootTest,TrapFailurePolicyTest' \
     test
