@@ -45,6 +45,10 @@ def valid(m, owners, t):
 def invariant(m, owners):
     if sum(a.version for a in m.actors) != len(m.audit):
         return False
+    # The only authorized write toggles the value and increases version.
+    # This catches bare-memory writes that avoid the audited write ledger.
+    if any(a.data != (a.version & 1) for a in m.actors):
+        return False
     if any(owners[t] != a or generation > m.actors[a].epoch
            for a, t, generation in m.audit):
         return False
@@ -135,6 +139,8 @@ def main():
     # Negative control: a write without its authenticated ledger entry.
     mutant = Model((Actor(data=1, version=1),), (Turn(),))
     assert not invariant(mutant, (0,))
+    bare_store = Model((Actor(data=1),), (Turn(),))
+    assert not invariant(bare_store, (0,))
     print("PASS unsafe-write mutant rejected")
 
 
