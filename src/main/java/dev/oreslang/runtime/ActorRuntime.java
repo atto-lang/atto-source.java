@@ -6639,12 +6639,23 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static boolean usesNativeCarriers(ExecutorService executor) {
         return executor instanceof NativeCarrierExecutor
-                || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers();
+                || executor instanceof ActorAffinityDispatcher lanes && lanes.nativeCarriers()
+                || executor instanceof ReservedActorDispatcher reserved
+                        && usesNativeCarriers(reserved.delegate());
     }
 
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
+        // A bounded second budget ensures guest/user admissions cannot consume
+        // all physical queue capacity needed for supervisor CONTROL wakeups.
+        // There are no extra workers; both classes share existing carriers.
+        int controlReserve = Math.min(64, capacity);
+        int physicalCapacity = Math.addExact(capacity, controlReserve);
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
-        if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
+        if (mode.equals("none")) {
+            return new ReservedActorDispatcher(
+                    newDispatcher(parallelism, physicalCapacity, prefix),
+                    capacity, controlReserve);
+        }
         if (!mode.equals("lane") && !mode.equals("cpu")) {
             throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
         }
@@ -6655,8 +6666,8 @@ public final class ActorRuntime implements AutoCloseable {
             cpus = java.util.Arrays.stream(configured.split(",", -1))
                     .map(String::trim).mapToInt(Integer::parseInt).toArray();
         }
-        return new ActorAffinityDispatcher(parallelism, capacity, cpus,
-                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
+        return new ActorAffinityDispatcher(parallelism, capacity, controlReserve, cpus,
+                lane -> newDispatcher(1, physicalCapacity, prefix + "lane-" + lane + "-"));
     }
 
     private static ExecutorService newDispatcher(
@@ -7398,7 +7409,11 @@ public final class ActorRuntime implements AutoCloseable {
                 ExecutorService dispatcher = dispatcherFor(kind);
                 Runnable dispatch = () -> runBatch(dispatchTicket);
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    lanes.executeOnLane(dispatchLane, dispatch);
+                    if (fatalOnRejection) lanes.executeOnLane(dispatchLane, dispatch);
+                    else lanes.executeControlOnLane(dispatchLane, dispatch);
+                } else if (!fatalOnRejection
+                        && dispatcher instanceof ReservedActorDispatcher reserved) {
+                    reserved.executeControl(dispatch);
                 } else {
                     dispatcher.execute(dispatch);
                 }
