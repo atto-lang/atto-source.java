@@ -152,4 +152,20 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
         assertTrue(classified, "Guest must preserve ORES_I64_OVERFLOW");
     }
 
+
+    @Test
+    void checkedProfileFailsClosedForUnsupportedClassAndActorSources() {
+        String classSource = HEADER + """
+                define class Box as end
+                pub fnc main(): int { return 43; }
+                """;
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> exit(classSource));
+        boolean admitted = false;
+        for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+            admitted |= String.valueOf(cursor.getMessage()).contains("checked-i64-v1");
+        }
+        assertTrue(admitted, "Must reject checked class code at runtime admission");
+    }
+
 }
