@@ -187,4 +187,21 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
         assertEquals(1, exit("pub fnc main(): int { return 43 % 2; }"));
     }
 
+    @Test
+    void checkedModeRejectsUnverifiedNumericFallbacks() throws Exception {
+        // Only i64 +, -, *, unary minus have checked-i64-v1 semantics.
+        // Legacy modulo remains available when the header is absent.
+        assertEquals(43, exit("pub fnc main(): int { return 86 % 43 + 43; }"));
+        String[] unsupported = {
+            HEADER + "pub fnc main(): int { return 86 % 43 + 43; }",
+            HEADER + "pub fnc main(): int { return 43 / 1; }",
+            HEADER + "pub fnc main(): int { return 40.0 + 3.0; }",
+            HEADER + "pub fnc main(): int { return -43.0; }",
+        };
+        for (String source : unsupported) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "checked guest must reject non-i64 arithmetic instead of downgrading: " + source);
+        }
+    }
+
 }
