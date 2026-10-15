@@ -14,7 +14,11 @@ import java.util.Objects;
  * it promise zero allocation, concurrent mutation safety, or LLVM parity.
  */
 public final class DecimalMatrix {
-    private static final int MAX_CELLS = 1_000_000;
+    private static final int MAX_CELLS = 65_536;
+    private static final int MAX_DIMENSION = 65_536;
+    private static final int MAX_DIGITS_PER_CELL = 4_096;
+    private static final int MAX_ABSOLUTE_SCALE = 16_384;
+    private static final long MAX_SCALAR_MULTIPLIES = 100_000;
     private final int rows;
     private final int columns;
     private final BigDecimal[] cells;
@@ -38,7 +42,9 @@ public final class DecimalMatrix {
             throw new IllegalArgumentException("matrix cell count mismatches shape");
         }
         for (int i = 0; i < values.length; i++) {
-            matrix.cells[i] = new BigDecimal(Objects.requireNonNull(values[i], "decimal cell"));
+            BigDecimal value = new BigDecimal(Objects.requireNonNull(values[i], "decimal cell"));
+            validateDecimal(value);
+            matrix.cells[i] = value;
         }
         return matrix;
     }
@@ -80,6 +86,9 @@ public final class DecimalMatrix {
                 || output.columns != right.columns) {
             throw new IllegalArgumentException("matrix shape mismatch");
         }
+        if ((long) left.rows * left.columns * right.columns > MAX_SCALAR_MULTIPLIES) {
+            throw new IllegalArgumentException("matrix arithmetic budget exceeded");
+        }
         if (output == left || output == right) {
             throw new IllegalArgumentException("output must not alias inputs");
         }
@@ -90,7 +99,9 @@ public final class DecimalMatrix {
                     BigDecimal product = left.get(row, inner).multiply(right.get(inner, column));
                     sum = sum.add(product);
                 }
-                output.cells[output.index(row, column)] = sum.round(context);
+                BigDecimal rounded = sum.round(context);
+                validateDecimal(rounded);
+                output.cells[output.index(row, column)] = rounded;
             }
         }
     }
@@ -102,9 +113,19 @@ public final class DecimalMatrix {
         return row * columns + column;
     }
 
+    private static void validateDecimal(BigDecimal value) {
+        if (value.precision() > MAX_DIGITS_PER_CELL
+                || Math.abs((long) value.scale()) > MAX_ABSOLUTE_SCALE) {
+            throw new IllegalArgumentException("decimal precision or exponent budget exceeded");
+        }
+    }
+
     private static int checkedCells(int rows, int columns) {
         if (rows < 0 || columns < 0) {
             throw new IllegalArgumentException("negative matrix dimension");
+        }
+        if (rows > MAX_DIMENSION || columns > MAX_DIMENSION) {
+            throw new IllegalArgumentException("matrix dimension budget exceeded");
         }
         if (rows != 0 && columns > MAX_CELLS / rows) {
             throw new IllegalArgumentException("matrix allocation budget exceeded");
