@@ -80,6 +80,51 @@ public final class ControlWakeRetryStandaloneStress {
                 "fatal VM effect was swallowed or misclassified");
     }
 
+    private static void verifyCrossCarrierDeferredCancellation() throws Exception {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        CountDownLatch deferred = new CountDownLatch(1);
+        CountDownLatch unblock = new CountDownLatch(1);
+        AtomicInteger invoked = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<Throwable> error =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Runnable victim = invoked::incrementAndGet;
+        long epoch = queue.epoch();
+        require(queue.register(() -> {
+            queue.slotReleased(); // dequeue victim onto this carrier's trampoline
+            deferred.countDown();
+            try {
+                if (!unblock.await(3, TimeUnit.SECONDS)) {
+                    throw new AssertionError("deferred carrier timeout");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("deferred carrier interrupted", interrupted);
+            }
+        }, epoch), "outer carrier admission");
+        require(queue.register(victim, epoch), "victim admission");
+        Thread carrier = new Thread(() -> {
+            try {
+                queue.slotReleased();
+            } catch (Throwable failure) {
+                error.set(failure);
+            }
+        }, "standalone-deferred-control-carrier");
+        carrier.setDaemon(true);
+        carrier.start();
+        try {
+            require(deferred.await(3, TimeUnit.SECONDS), "carrier did not defer callback");
+            queue.cancel(victim); // a different thread from the carrier
+        } finally {
+            unblock.countDown();
+        }
+        carrier.join(3000);
+        require(!carrier.isAlive(), "carrier never completed");
+        require(error.get() == null, "carrier errored: " + error.get());
+        require(invoked.get() == 0, "foreign carrier cancellation did not revoke wake");
+        require(queue.pending() == 0 && queue.callbacksFailed() == 0,
+                "cross-carrier cancellation leaked or failed");
+    }
+
     private static void verifyDeepReentrantWakes() {
         final int chained = 20_000;
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(chained);
@@ -185,6 +230,7 @@ public final class ControlWakeRetryStandaloneStress {
     public static void main(String[] args) throws Exception {
         verifyFairnessAndCapacity();
         verifyLifecycleAndEpoch();
+        verifyCrossCarrierDeferredCancellation();
         verifyDeepReentrantWakes();
         int delivered = verifyConcurrentRegistrations();
         System.out.println("PASS: 100,000 concurrent registrations, " + delivered
