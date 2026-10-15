@@ -106,6 +106,39 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
+    void deterministicPermutationPropertyRegression() {
+        // A small reproducible fuzzing corpus for CI. Values must be assigned
+        // to ABI indices without reordering lexical source evaluation.
+        var random = new java.util.Random(982L);
+        for (int arity = 0; arity <= 9; arity++) {
+            List<String> names = new java.util.ArrayList<>();
+            for (int i = 0; i < arity; i++) names.add("p" + i);
+            for (int round = 0; round < 1000; round++) {
+                int prefix = random.nextInt(arity + 1);
+                List<Integer> namedTargets = new java.util.ArrayList<>();
+                for (int i = prefix; i < arity; i++) namedTargets.add(i);
+                java.util.Collections.shuffle(namedTargets, random);
+                List<FixedProductCallPlan.InputSlot> inputs = new java.util.ArrayList<>();
+                for (int i = 0; i < prefix; i++) inputs.add(positional());
+                for (int index : namedTargets) inputs.add(named(names.get(index)));
+
+                var plan = FixedProductCallPlan.bind(names, inputs);
+                int[] oracle = new int[arity];
+                for (int i = 0; i < prefix; i++) oracle[i] = i;
+                for (int i = 0; i < namedTargets.size(); i++) {
+                    oracle[namedTargets.get(i)] = prefix + i;
+                }
+                assertEquals(arity, plan.abiToSource().size());
+                for (int i = 0; i < arity; i++) {
+                    assertEquals(oracle[i], plan.abiToSource().get(i),
+                            "arity=" + arity + " round=" + round + " ABI index=" + i);
+                }
+                assertEquals(plan, FixedProductCallPlan.bind(names, inputs));
+            }
+        }
+    }
+
+    @Test
     void labelComparisonIsCaseSensitive() {
         assertRejected("unknown", List.of(named("A"), named("b"), named("c")));
     }
