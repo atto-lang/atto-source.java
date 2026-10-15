@@ -25,6 +25,19 @@ Offline unit tests:
 
     python3 -m unittest discover -s tests -p 'test_ci_private_mirror_preflight.py' -v
 
+The authenticated two-repository gate rejects not only public or archived repositories,
+but also **missing** `archived` / `disabled` metadata, non-boolean status
+values, and malformed pinned ID inputs (including Python booleans). Valid
+metadata must affirmatively report `archived=false` and `disabled=false`
+for both the source and destination.
+
+**Integration limitation:** `scripts/ci_private_mirror_preflight.py` is a
+standalone verifier; its presence alone does not prove the actual snapshot
+publisher invokes it. Until issue #962's independently reviewed publisher
+provenance and both-repository admission are enforced, the protected source
+destination allowlist must remain unapproved and private-source publishing
+must not be treated as authorized.
+
 The gate intentionally has no skip/public override or offline metadata admission mode. GitHub connector-based and other direct API mirroring tools MUST perform equivalent authenticated private/private checks before writes; this utility cannot intercept their calls.
 
 This is a prevention control, not historical object erasure and not approval to merge release PRs.
