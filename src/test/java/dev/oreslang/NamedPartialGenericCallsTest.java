@@ -99,6 +99,16 @@ final class NamedPartialGenericCallsTest {
     }
 
     @Test
+    void bareInferenceHoleCannotBecomeANominalTypeInDeclarations() {
+        for (String declared : java.util.List.of("_", "Array<_>", "Result<int,_>")) {
+            String source = "fnc bad(" + declared + " value): void { return; }";
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), declared);
+            assertTrue(failure.getMessage().contains("inference hole"), failure.getMessage());
+        }
+    }
+
+    @Test
     void comparisonExpressionsRemainUnambiguous() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
