@@ -77,6 +77,64 @@ static void test_settled_task_generation_reuse(void) {
     OK(ores_turn_vm_destroy(vm));
 }
 
+/* Different SourceTasks share one actor carrier but have independent
+ * logical settlement/retirement. A task may finish while a different task
+ * executes, without bypassing actor-wide single-flight admission.
+ */
+static void test_per_source_physical_turn_and_retirement(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(32);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *first = NULL, *second = NULL;
+    ores_turn_lease *turn = NULL, *other = NULL;
+    OK(ores_turn_register(vm, 17, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 1, 1, &first));
+    OK(ores_turn_register_source_task(vm, actor, 2, 1, &second));
+    OK(ores_turn_claim_source(vm, first, &turn));
+    IS(ores_turn_claim_source(vm, second, &other), ORES_TURN_BUSY);
+    assert(other == NULL);
+    IS(ores_turn_note_source_settled(vm, first), ORES_TURN_BUSY);
+    OK(ores_turn_release(vm, turn));
+    IS(ores_turn_retire_source_task(vm, first), ORES_TURN_BUSY);
+    OK(ores_turn_claim_source(vm, second, &turn));
+    /* first is now physically quiescent even though second runs. */
+    OK(ores_turn_note_source_settled(vm, first));
+    OK(ores_turn_retire_source_task(vm, first));
+    IS(ores_turn_claim_source(vm, first, &other), ORES_TURN_STALE);
+    IS(ores_turn_note_source_settled(vm, second), ORES_TURN_BUSY);
+    OK(ores_turn_release(vm, turn));
+    OK(ores_turn_note_source_settled(vm, second));
+    OK(ores_turn_retire_source_task(vm, second));
+    OK(ores_turn_stop(vm, actor));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
+static void test_stop_forbids_source_turn_resume(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(16);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_turn_lease *turn = NULL;
+    OK(ores_turn_register(vm, 18, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 1, 1, &source));
+    OK(ores_turn_claim_source(vm, source, &turn));
+    ores_turn_lease *held = turn;
+    OK(ores_turn_stop(vm, actor));
+    IS(ores_turn_claim_source(vm, source, &turn), ORES_TURN_DENIED);
+    /* Failed claims reset the output, but they cannot steal the lease. */
+    assert(turn == NULL);
+    /* Trusted adapter still needs the original lease for physical release. */
+    /* Don't create a new claim after STOP; settle only from true quiescence. */
+    IS(ores_turn_note_source_settled(vm, source), ORES_TURN_BUSY);
+    /* The STOP pre-claimed lease is released by the original carrier. */
+    OK(ores_turn_release(vm, held));
+    OK(ores_turn_note_source_settled(vm, source));
+    OK(ores_turn_retire_source_task(vm, source));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
 static void test_cleanup_completes_after_injection(void) {
     ores_turn_vm *vm = ores_turn_vm_new(32);
     assert(vm);
@@ -222,6 +280,8 @@ static void test_forked_child_cannot_use_parent_vm(void) {
 
 int main(void) {
     test_suspended_task_retirement_barrier();
+    test_per_source_physical_turn_and_retirement();
+    test_stop_forbids_source_turn_resume();
     test_settled_task_generation_reuse();
     test_cleanup_completes_after_injection();
     test_incomplete_cleanup_requires_force_abort();
