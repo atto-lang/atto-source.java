@@ -212,6 +212,56 @@ class NativeHttpTest {
         }
     }
 
+    @Test void abortNeverCancelsAWorkerSharedByOtherListeners() {
+        // A worker generation can be simultaneously referenced by two HTTP
+        // listeners. Neither a single deadline nor a forced listener shutdown
+        // may cancel that actor; only a fresh per-request actor is owned.
+        for (boolean cancelOwner : new boolean[] {false, true}) {
+            for (boolean pooled : new boolean[] {false, true}) {
+                assertEquals(cancelOwner && !pooled,
+                        NativeHttp.shouldCancelActorForAbort(cancelOwner, pooled),
+                        "cancelOwner=" + cancelOwner + ", pooled=" + pooled);
+            }
+        }
+        assertFalse(NativeHttp.shouldCancelActorForAbort(true, true),
+                "aborting listener A must not cancel the worker for listener B");
+        assertTrue(NativeHttp.shouldCancelActorForAbort(true, false),
+                "aborting a fresh actor must still request cancellation");
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(100)
+    void cancellationFailureStillClosesTransportAndReleasesAdmission() {
+        var calls = new java.util.ArrayList<String>();
+        var cancelFailure = new IllegalStateException("actor cancellation failed");
+        var closeFailure = new IllegalStateException("socket closure failed");
+
+        assertSame(cancelFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> { calls.add("cancel"); throw cancelFailure; },
+                        () -> calls.add("release"))));
+        assertEquals(List.of("cancel", "release"), calls);
+        calls.clear();
+
+        assertSame(cancelFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> { calls.add("cancel"); throw cancelFailure; },
+                        () -> { calls.add("release"); throw closeFailure; })));
+        assertEquals(List.of("cancel", "release"), calls);
+        assertArrayEquals(new Throwable[] {closeFailure}, cancelFailure.getSuppressed());
+        calls.clear();
+
+        assertSame(closeFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> calls.add("cancel"),
+                        () -> { calls.add("release"); throw closeFailure; })));
+        assertEquals(List.of("cancel", "release"), calls);
+        calls.clear();
+
+        NativeHttp.runCancellationThenCleanup(
+                () -> calls.add("cancel"), () -> calls.add("release"));
+        assertEquals(List.of("cancel", "release"), calls);
+    }
+
     @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
         var order = new java.util.ArrayList<String>();
         var closeFailure = new IllegalStateException("socket close failed");
