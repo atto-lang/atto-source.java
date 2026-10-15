@@ -1682,6 +1682,9 @@ public final class ActorRuntime implements AutoCloseable {
                         || cell.finalized) {
                     throw terminated(cell.ref);
                 }
+                if (cell.forceRevoked) {
+                    throw terminated(cell.ref);
+                }
                 if (cell.forceKillFenced) {
                     throw new IllegalStateException(
                             "actor " + cell.ref.id()
@@ -6639,7 +6642,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void schedule() {
             if ((stopped.get() && !hasSourceCleanup())
-                    || forceKillFenced || closed.get()) return;
+                    || forceKillFenced || forceRevoked || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
@@ -6671,7 +6674,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (!scheduled.get()) return;
 
                     if ((stopped.get() && !hasSourceCleanup())
-                            || closed.get() || forceKillFenced) {
+                            || closed.get() || forceKillFenced || forceRevoked) {
                         scheduled.set(false);
                         if (activeTurns == 0 && stopped.get()) finalizeStopLocked();
                         lifecycleLock.notifyAll();
@@ -6698,6 +6701,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (stopped.get() && activeTurns == 0) finalizeStopLocked();
                         reschedule = (!stopped.get() || hasSourceCleanup())
                                 && !forceKillFenced
+                                && !forceRevoked
                                 && !closed.get()
                                 && !finalized
                                 && hasQueuedWorkLocked();
@@ -6779,7 +6783,7 @@ public final class ActorRuntime implements AutoCloseable {
                         behavior = created;
                     }
                     synchronized (lifecycleLock) {
-                        if (stopped.get() || forceKillFenced) {
+                        if (stopped.get() || forceKillFenced || forceRevoked) {
                             ref.readyFuture.failFromRuntime(terminated(ref));
                         } else {
                             ref.readyFuture.completeFromRuntime(null);
@@ -6789,11 +6793,13 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput()
+                        && !forceRevoked
                         && (!stopped.get() || hasSourceCleanup())) {
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
                         // Stop closes the user mailbox under this same lock.
-                        if (finalized || (stopped.get() && !hasSourceCleanup())) break;
+                        if (finalized || forceRevoked
+                                || (stopped.get() && !hasSourceCleanup())) break;
 
                         // Continuations always outrank user mail. While a
                         // source receive is suspended, user mail is not runnable.
@@ -6819,7 +6825,7 @@ public final class ActorRuntime implements AutoCloseable {
                          * normal scheduler safepoints.
                          */
                         synchronized (lifecycleLock) {
-                            if (finalized) break;
+                            if (finalized || forceRevoked) break;
                             if (stopped.get()
                                     && (!activeEnvelope.isContinuation()
                                         || !authorizedCleanupContinuation(
@@ -7057,7 +7063,7 @@ public final class ActorRuntime implements AutoCloseable {
                 else mailbox.close(cause);
                 lexicalCleanup = List.copyOf(sourceCleanupTasks);
                 sourceCancellationPending = !lexicalCleanup.isEmpty()
-                        && !forceKillFenced && !closed.get();
+                        && !forceKillFenced && !forceRevoked && !closed.get();
                 if (!sourceCancellationPending) {
                     continuationMailbox.close(cause);
                     drainMailboxReservations();
