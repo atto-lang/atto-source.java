@@ -193,6 +193,26 @@ final class NominalInheritedMethodSlotsTest {
     }
 
     @Test
+    void reusedClassAstCannotClaimTwoModuleOwnerIdentities() {
+        Ast.Program parsed = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub pick(Color x): int { return 1; }
+                end
+                """);
+        Ast.ClassDecl shared = parsed.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+        Ast.Program forged = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(shared)),
+                new Ast.ModuleDecl("beta", List.of(shared))));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.prove(
+                        forged, "alpha.Picker", Domain.INSTANCE, "pick", 1));
+        assertTrue(denied.getMessage().contains("reused under distinct module identities"),
+                denied.getMessage());
+    }
+
+    @Test
     void unresolvedParentsAndGenericOwnersDoNotInventNominalIdentities() {
         assertTrue(rejectProof("""
                 define class Child extends Missing as
