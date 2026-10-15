@@ -66,6 +66,29 @@ final class DecimalMatrixReferenceTest {
     }
 
     @Test
+    void arithmeticFailureDoesNotPublishPartialOutput() {
+        DecimalMatrix input = DecimalMatrix.fromStrings(2, 1, "1", "1e-10000");
+        DecimalMatrix factor = DecimalMatrix.fromStrings(1, 1, "1e-10000");
+        DecimalMatrix output = DecimalMatrix.fromStrings(2, 1, "7", "8");
+        assertThrows(IllegalArgumentException.class,
+                () -> DecimalMatrix.multiplyInto(output, input, factor, MathContext.UNLIMITED));
+        equalDecimal("7", output.get(0, 0));
+        equalDecimal("8", output.get(1, 0));
+    }
+
+    @Test
+    void matrixWorkAndDecimalMagnitudeBudgetsAreEnforced() {
+        assertThrows(IllegalArgumentException.class, () ->
+                DecimalMatrix.multiply(DecimalMatrix.zeros(100, 100),
+                        DecimalMatrix.zeros(100, 20), MathContext.UNLIMITED));
+        assertThrows(IllegalArgumentException.class, () ->
+                DecimalMatrix.fromStrings(1, 1, "9".repeat(4097)));
+        assertThrows(IllegalArgumentException.class, () ->
+                DecimalMatrix.fromStrings(1, 1, "1e1000000"));
+        assertThrows(IllegalArgumentException.class, () -> DecimalMatrix.zeros(65537, 0));
+    }
+
+    @Test
     void rejectMismatchesAliasesAndUnboundedAllocations() {
         DecimalMatrix left = DecimalMatrix.fromStrings(1, 2, "1", "2");
         DecimalMatrix wrong = DecimalMatrix.fromStrings(1, 2, "3", "4");
