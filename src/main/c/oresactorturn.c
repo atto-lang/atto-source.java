@@ -30,7 +30,7 @@ struct ores_source_task_cap {
     struct ores_actor_cap *actor;
     uint64_t task_id, generation;
     bool retired, ticket_issued, ticket_closed, ticket_claimed;
-    bool terminal_injected, terminal_aborted;
+    bool terminal_injected, cleanup_completed, terminal_aborted;
 };
 struct ores_cleanup_cap {
     struct ores_cleanup_cap *next;
@@ -298,7 +298,7 @@ ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
         if (source->actor->active || (source->ticket_issued
                                          && !source->ticket_closed)
                 || (source->ticket_claimed
-                    && !source->terminal_injected
+                    && !source->cleanup_completed
                     && !source->terminal_aborted))
             status = ORES_TURN_BUSY;
         else {
@@ -432,6 +432,33 @@ ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
     return status;
 }
 
+/* VM-only acknowledgement that the guest's actual cleanup has finished.
+ * This call is not made at cancellation-injection time, nor implicitly when
+ * a lease is released. The same physical carrier must still own the turn.
+ */
+ores_turn_status ores_turn_complete_cleanup(ores_turn_vm *vm,
+                                             ores_turn_lease *lease,
+                                             ores_source_task_cap *source) {
+    if (!vm) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = ORES_TURN_INVALID;
+    if (known_lease(vm, lease) && known_source(vm, source)) {
+        status = require_live_source(vm, source);
+        if (status == ORES_TURN_OK) {
+            if (lease->released || lease->actor->active != lease
+                    || lease->source != source || !lease->actor->stopped
+                    || lease->actor->revoked || !source->terminal_injected
+                    || source->cleanup_completed || source->terminal_aborted)
+                status = ORES_TURN_DENIED;
+            else if (current_carrier_token() != lease->carrier_token)
+                status = ORES_TURN_WRONG_CARRIER;
+            else source->cleanup_completed = true;
+        }
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
 ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm, ores_actor_cap *actor) {
     if (!vm) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
@@ -441,13 +468,13 @@ ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm, ores_actor_cap *actor)
         else {
             actor->stopped = true;
             actor->revoked = true;
-            /* A consumed cleanup ticket without actual terminal injection
-             * remains a retirement barrier until explicit force-abort.
-             * Force does NOT preempt an outstanding physical carrier lease.
+            /* All claimed but unfinished cleanup is abandoned by FORCE,
+             * including tasks whose terminal signal was already injected.
+             * It may not publish DONE until the physical carrier exits.
              */
             for (ores_source_task_cap *s = vm->sources; s; s = s->next) {
                 if (s->actor == actor && s->ticket_claimed
-                        && !s->terminal_injected)
+                        && !s->cleanup_completed)
                     s->terminal_aborted = true;
             }
             for (ores_cleanup_cap *t = vm->tickets; t; t = t->next) {
