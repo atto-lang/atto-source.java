@@ -274,6 +274,31 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void serializedScopedRulesRequireExplicitPolicyMarker() {
+        IsolatePolicy coarse = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+        // The legacy embedding bridge accepts *no* policy arguments, but a
+        // partially transmitted scoped policy must never be accepted.
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(new String[]{
+                        "--ores-permission-net-allow=*"
+                }, coarse));
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(new String[]{
+                        "--ores-permission-net-deny=api.example.com",
+                        "--ores-permission-net-allow=*"
+                }, coarse));
+        RuntimePermissions marked = RuntimePermissions.fromApplicationArguments(new String[]{
+                "--ores-permission-net-allow=api.example.com:443",
+                "--ores-permission-explicit=true"
+        }, coarse);
+        assertTrue(marked.allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"));
+        assertFalse(marked.allows(RuntimePermissions.Permission.NET,
+                "another.example.com:443"));
+    }
+
+    @Test
     void duplicateSerializedAuthorityEntriesFailClosed() {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.NETWORK);
