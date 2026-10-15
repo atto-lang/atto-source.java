@@ -7472,6 +7472,33 @@ public final class ActorRuntime implements AutoCloseable {
                                                 "actor middleware cannot forge mailbox recipient, sender or sequence");
                                     }
                                     validateMessageGraph(prepared.value());
+                                    if (prepared.value() != sourceMail.value()) {
+                                        // First implementation permits immutable scalar
+                                        // normalization only. Arbitrary object/tensor
+                                        // replacement requires a versioned actor-owned
+                                        // memory loan and lifetime transfer; mere
+                                        // graph traversal is insufficient.
+                                        if (!isScalar(prepared.value())) {
+                                            throw new SecurityException(
+                                                    "source middleware may replace only immutable scalar payloads "
+                                                            + "until checked actor-owned aggregate transfers are available");
+                                        }
+                                        long runtimeRemaining = Math.max(
+                                                0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+                                        if (kind == ActorKind.SHARED) {
+                                            requireOwnedSharedHandles(
+                                                    prepared.value(), new IdentityHashMap<>(), 0);
+                                            long actorRemaining = Math.max(
+                                                    0L, policy.maxHeapBytes() - sharedMailboxBytes.get());
+                                            estimateSharedTransportBytes(
+                                                    prepared.value(), new IdentityHashMap<>(), 0,
+                                                    Math.min(actorRemaining, runtimeRemaining));
+                                        } else {
+                                            estimatePrivateTransportBytes(
+                                                    prepared.value(), new IdentityHashMap<>(), 0,
+                                                    Math.min(memorySlice.remainingBytes(), runtimeRemaining));
+                                        }
+                                    }
                                     if (kind == ActorKind.UNTRUSTED) {
                                         rejectUntrustedInboundCapabilities(
                                                 prepared.value(), new IdentityHashMap<>(), 0);
