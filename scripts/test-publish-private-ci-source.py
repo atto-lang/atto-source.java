@@ -104,6 +104,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    def test_publish_calls_source_identity_function_before_source_walk(self):
+        # A local path variable named checked_source previously shadowed the
+        # identity-check function, making every authorized publish fail with
+        # UnboundLocalError before any GitHub upload.
+        original = pub.checked_source
+        with patch.object(pub, "checked_source", wraps=original) as verify:
+            self.publish()
+        self.assertGreaterEqual(verify.call_count, 2)
+
+    def test_missing_archived_or_disabled_metadata_fails_closed(self):
+        for route_to_break in ("source", "destination"):
+            for missing in ("archived", "disabled"):
+                with self.subTest(repo=route_to_break, field=missing):
+                    self.route_calls.clear()
+                    original = self.fake_api
+
+                    def incomplete(route, method="GET", payload=None):
+                        response = original(route, method, payload)
+                        target = (route == "repos/" + pub.SOURCE_REPOSITORY
+                                  if route_to_break == "source"
+                                  else route == "repos/trusted/ci")
+                        if target:
+                            response.pop(missing)
+                        return response
+
+                    with patch.object(pub, "gh_api", side_effect=incomplete):
+                        with self.assertRaisesRegex(pub.Denied, "identity"):
+                            pub.publish("trusted/ci", self.source,
+                                        "ci/oreslang-test", self.root)
+                    self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_same_slug_but_different_destination_id_aborts_before_upload(self):
         self.destination_ids = [987654321]
         with self.assertRaisesRegex(pub.Denied, "numeric identity"):
