@@ -51,7 +51,14 @@ checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
 filesystem objects. Directory enumeration is bounded to 4,096 entries,
-1,024 directories and a maximum depth of 64. It verifies every uploaded
+1,024 directories and a maximum depth of 64. A source snapshot must be
+quiescent: the collector verifies opened directory and file inode identity
+against the prior inspection, rejects changes in file size, mode, or
+nanosecond modification/change timestamps during reads, rejects incomplete
+reads, and detects directory metadata changes during traversal. These are
+fail-closed race mitigations, not an atomic filesystem snapshot; use a
+trusted immutable source checkout and verify the final destination subtree
+SHA against its recorded source Git tree. It verifies every uploaded
 Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
