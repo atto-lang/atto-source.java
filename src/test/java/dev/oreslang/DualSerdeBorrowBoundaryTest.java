@@ -80,10 +80,10 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void moduleQualifiedCodecTypeCannotBypassActorDataPolicy() {
         for (String type : new String[]{
-                "NetworkCodec<int>",
-                "ActorMessageCodec<int>",
-                "Option<NetworkCodec<int>>",
-                "Result<ActorMessageCodec<int>, String>"
+                "CodecBox.NetworkCodec<int>",
+                "CodecBox.ActorMessageCodec<int>",
+                "Option<CodecBox.NetworkCodec<int>>",
+                "Result<CodecBox.ActorMessageCodec<int>, String>"
         }) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
@@ -91,7 +91,7 @@ final class DualSerdeBorrowBoundaryTest {
                               pub define interface NetworkCodec<T> as end
                               pub define interface ActorMessageCodec<T> as end
                             end
-                            actor fnc bad(CodecBox.%s value): void { return; }
+                            actor fnc bad(%s value): void { return; }
                             """.formatted(type))), type);
             assertTrue(failure.getMessage().contains("cannot transport"),
                     () -> type + ": " + failure.getMessage());
