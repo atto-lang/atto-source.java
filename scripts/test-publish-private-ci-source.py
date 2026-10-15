@@ -27,16 +27,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.approval.write_text("trusted/ci\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
-        self.visibility = ["private"] * 100
+        self.visibility = ["private"] * 200
+        self.destination_ids = [123456789] * 200
+        self.source_ids = [pub.SOURCE_REPOSITORY_ID] * 200
+        # Unit-test-only identity. The production pinned destination list is
+        # unchanged and cannot authorize this synthetic trusted/ci carrier.
+        pinned = patch.dict(pub.PINNED_DESTINATION_IDS, {"trusted/ci": 123456789})
+        pinned.start()
+        self.addCleanup(pinned.stop)
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == "repos/" + pub.SOURCE_REPOSITORY:
+            return dict(id=self.source_ids.pop(0),
+                        full_name=pub.SOURCE_REPOSITORY, visibility="private",
+                        private=True, archived=False, disabled=False)
         if route == "repos/trusted/ci":
-            return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main")
+            return dict(id=self.destination_ids.pop(0),
+                        full_name="trusted/ci", visibility=self.visibility.pop(0),
+                        private=True, default_branch="main",
+                        archived=False, disabled=False)
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -91,6 +104,48 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    def test_same_slug_but_different_destination_id_aborts_before_upload(self):
+        self.destination_ids = [987654321]
+        with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_id_flip_aborts_before_later_writes(self):
+        self.destination_ids = [123456789, 123456789, 123456789, 987654321]
+        with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_unknown_or_malformed_destination_id_denied(self):
+        for identity in (None, "123456789", False):
+            with self.subTest(identity=identity):
+                self.route_calls.clear()
+                self.destination_ids = [identity]
+                with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_repo_id_mismatch_refuses_private_export(self):
+        self.source_ids = [987654321]
+        with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_repo_identity_change_stops_before_next_write(self):
+        self.source_ids = [pub.SOURCE_REPOSITORY_ID,
+                           pub.SOURCE_REPOSITORY_ID, 987654321]
+        with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+            self.publish()
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_unlisted_destination_id_denied_even_if_policy_mentions_slug(self):
+        with patch.dict(pub.PINNED_DESTINATION_IDS, {}, clear=True):
+            with self.assertRaisesRegex(pub.Denied, "not approved"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
         with self.assertRaises(pub.Denied):
@@ -98,7 +153,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_visibility_flip_aborts_before_next_write(self):
-        self.visibility = ["private", "private", "public"]
+        # Initial admission, base metadata and first blob must be private.
+        # The fourth identity recheck rejects before constructing a root tree.
+        self.visibility = ["private", "private", "private", "public"]
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
