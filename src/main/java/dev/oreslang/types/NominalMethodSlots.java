@@ -27,6 +27,10 @@ import java.util.HexFormat;
 public final class NominalMethodSlots {
     private NominalMethodSlots() { }
 
+    public static final int MAX_LOCAL_METHOD_DECLARATIONS = 4096;
+    public static final int MAX_METHOD_NAME_BYTES = 256;
+    public static final int MAX_METHOD_OWNER_BYTES = 1024;
+
     /** Dispatch domains are intentionally separate even for the same name. */
     public enum Domain { INSTANCE, STATIC }
 
@@ -39,6 +43,9 @@ public final class NominalMethodSlots {
             Objects.requireNonNull(positions, "method positions");
             if (name.isBlank()) throw new IllegalArgumentException("blank method name");
             requireValidUtf16(name);
+            if (name.getBytes(StandardCharsets.UTF_8).length > MAX_METHOD_NAME_BYTES) {
+                throw new IllegalArgumentException("nominal method name size bound exceeded");
+            }
             positions = List.copyOf(positions);
             if (positions.size() > NominalEnumOverloads.MAX_OVERLOAD_ARITY)
                 throw new IllegalArgumentException("nominal method slot arity bound exceeded");
@@ -52,6 +59,9 @@ public final class NominalMethodSlots {
             Objects.requireNonNull(ownerId, "owner ID");
             if (ownerId.isBlank()) throw new IllegalArgumentException("blank method owner ID");
             requireValidUtf16(ownerId);
+            if (ownerId.getBytes(StandardCharsets.UTF_8).length > MAX_METHOD_OWNER_BYTES) {
+                throw new IllegalArgumentException("nominal method owner size bound exceeded");
+            }
             StringBuilder out = new StringBuilder("$methodoverload$v1$");
             append(out, ownerId);
             append(out, domain.name());
@@ -114,11 +124,21 @@ public final class NominalMethodSlots {
         }
         Map<String, String> eligibleEnumSymbols =
                 NominalEnumOverloads.eligibleEnumSymbols(program);
+        if (owner.methods().size() > MAX_LOCAL_METHOD_DECLARATIONS) {
+            throw new IllegalArgumentException("nominal class method declaration limit exceeded");
+        }
         Map<FamilyKey, List<Ast.MethodDecl>> families = new LinkedHashMap<>();
         for (Ast.MethodDecl method : owner.methods()) {
             FamilyKey key = new FamilyKey(method.isStatic() ? Domain.STATIC : Domain.INSTANCE,
                     method.name(), method.arity());
-            families.computeIfAbsent(key, ignored -> new ArrayList<>()).add(method);
+            List<Ast.MethodDecl> family =
+                    families.computeIfAbsent(key, ignored -> new ArrayList<>());
+            // Enforce before a pathological family grows without bounds.
+            if (family.size() >= NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES) {
+                throw new IllegalArgumentException(
+                        "nominal method family candidate bound exceeded");
+            }
+            family.add(method);
         }
 
         Map<Slot, Ast.MethodDecl> accepted = new HashMap<>();
