@@ -170,6 +170,15 @@ public final class NominalInheritedMethodSlots {
                     Ast.ClassDecl parent = resolve(parentRef.name(), owner);
                     for (Map.Entry<Slot, Target> entry :
                             collect(parent, domain, name, arity, visiting).entrySet()) {
+                        // A private ancestor method is not an inheritable
+                        // virtual slot. Conservatively reject until the
+                        // visibility-aware linker can distinguish hiding,
+                        // replacement, and accessible override origins.
+                        if (entry.getValue().method().visibility()
+                                != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException(
+                                    "private ancestor method cannot enter nominal inherited vtable proof");
+                        }
                         List<Target> contributions =
                                 inherited.computeIfAbsent(entry.getKey(),
                                         ignored -> new ArrayList<>());
