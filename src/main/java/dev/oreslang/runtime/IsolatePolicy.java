@@ -273,7 +273,14 @@ public record IsolatePolicy(
         if (className.startsWith("java.io.")
                 || className.startsWith("java.nio.file.")
                 || className.startsWith("java.net.")
-                || className.startsWith("java.nio.channels.")) {
+                || className.startsWith("java.nio.channels.")
+                // Public constructors/static helpers outside the usual I/O
+                // packages can still open arbitrary files by name.
+                || className.equals("java.util.Scanner")
+                || className.equals("java.util.Formatter")
+                || className.equals("java.util.zip.ZipFile")
+                || className.equals("java.util.jar.JarFile")
+                || className.equals("javax.imageio.ImageIO")) {
             throw new SecurityException(
                     "direct Java host I/O is blocked from class-level interop; "
                             + "use Oreslang fs/network/http APIs: " + className);
