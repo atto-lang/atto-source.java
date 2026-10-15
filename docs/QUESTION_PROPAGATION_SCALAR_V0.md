@@ -40,6 +40,13 @@ Use parentheses around adjacent `?` before infix operators:
 
 ## Review blocker
 
+The static checker now additionally rejects `?` from an enclosing callable
+when its body can reach a potentially suspending SourceTask path, including
+ordinary source functions whose called functions contain `await`, blocking
+channels, or selects. Callbacks/lambdas are not yet eligible for `?`.
+This detection is conservative and must be checked against runtime scheduling
+before ready/merge; unresolved imported dispatch remains a blocker.
+
 The runtime uses its existing `ReturnSignal` for early sum return,
 so static source-level admission **must prove** the surrounding
 callable uses the non-suspending execution path. Awaitable source
