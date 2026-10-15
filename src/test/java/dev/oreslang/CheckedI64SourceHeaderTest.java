@@ -31,6 +31,9 @@ final class CheckedI64SourceHeaderTest {
         assertFalse(CheckedI64SourceHeader.isEnabled(
                 "/*\n// oreslang:checked-i64-v1\n*/\n" + MAIN));
         assertFalse(CheckedI64SourceHeader.isEnabled(
+                "/*\n//  oreslang:checked-i64-v1\n*/\n" + MAIN));
+
+        assertFalse(CheckedI64SourceHeader.isEnabled(
                 "/* outer /* nested\n// oreslang:checked-i64-v2\n"
                 + "*/ still outer */\n" + MAIN));
         assertFalse(CheckedI64SourceHeader.isEnabled(
@@ -54,6 +57,13 @@ final class CheckedI64SourceHeaderTest {
                 "\t" + DIRECTIVE + MAIN,
                 "\uFEFF" + DIRECTIVE + MAIN,
                 "// oreslang:checked-i64-v1\r\n" + MAIN,
+                "//oreslang:checked-i64-v1\n" + MAIN,
+                "//  oreslang:checked-i64-v1\n" + MAIN,
+                "//\toreslang:checked-i64-v1\n" + MAIN,
+                "// \toreslang:checked-i64-v1\n" + MAIN,
+                "//\roreslang:checked-i64-v1\n" + MAIN,
+                "//\u000Boreslang:checked-i64-v1\n" + MAIN,
+                "//\foreslang:checked-i64-v1\n" + MAIN,
                 "// oreslang:checked-i64-v2\n" + MAIN,
                 "// oreslang:checked-i64-v1 trailing\n" + MAIN,
                 DIRECTIVE + DIRECTIVE + MAIN,
