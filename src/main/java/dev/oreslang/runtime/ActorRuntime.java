@@ -457,6 +457,13 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    /**
+     * Host-only handoff for external completion subscribers. It deliberately
+     * never executes guest code and never uses the actor's physical carrier.
+     * Caller-runs rejection is forbidden: a blocked external subscriber must
+     * not pin an actor scheduler lease or a TruffleContext.
+     */
+    private final ThreadPoolExecutor postCarrierPublicationExecutor;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
@@ -531,6 +538,11 @@ public final class ActorRuntime implements AutoCloseable {
         this.privateDispatcher = privatePool;
         this.sharedDispatcher = sharedPool;
         this.untrustedDispatcher = untrustedPool;
+        this.postCarrierPublicationExecutor = new ThreadPoolExecutor(
+                2, 2, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(INTERNAL_CONTINUATION_SLOTS * 4),
+                namedFactory("ores-external-reply-publisher-"),
+                new ThreadPoolExecutor.AbortPolicy());
         CorePerf.end(CorePerf.ACTOR_POOLS_STARTUP, poolsPerf);
         if (CoreDebug.enabled()) {
             CoreDebug.event(CoreDebug.ACTOR_POOLS_CREATED, dispatcherConfig.privateParallelism());
@@ -1421,9 +1433,12 @@ public final class ActorRuntime implements AutoCloseable {
      * Trusted runtime-only publication barrier for a serialized actor turn.
      * The payload must already be copied into data-only immutable host memory.
      * The callback runs after TurnExecutor.execute returns (including context
-     * leave), with no actor/thread-local execution authority. It runs before
-     * another physical turn for this actor may be admitted.
+     * leave), on a bounded host-only executor with no actor execution
+     * authority. A subscriber may block waiting for a later actor turn;
+     * publishing must therefore NOT retain the actor scheduling lease.
      *
+     * This hands out immutable data, NOT authority to close a still-live
+     * shared TruffleContext. Context destruction requires actor finalization.
      * No guest continuation or code-image-bound value may be passed here.
      */
     void publishAfterCurrentActorCarrierExit(Runnable publication) {
@@ -6538,6 +6553,9 @@ public final class ActorRuntime implements AutoCloseable {
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
             untrustedDispatcher.shutdownNow();
+            // Discard queued external publications only after actor STOP
+            // has armed owner-done revocation for outstanding reply tickets.
+            postCarrierPublicationExecutor.shutdownNow();
 
             // shutdownNow() removes queued tasks without invoking runBatch().
             // Clear those cells' scheduled bits only when no carrier actually
@@ -7400,17 +7418,20 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 try {
-                    // Retain the scheduled lease until these callbacks return:
-                    // otherwise a newly scheduled turn could enter the same
-                    // code image while an external caller closes its context.
+                    // Submission, never subscriber execution, happens while
+                    // the old dispatch identity is still owned. The worker
+                    // sees only already-frozen host values and cannot enter
+                    // the actor execution domain.
                     for (Runnable publication : readyPublications) {
-                        publication.run();
+                        try {
+                            postCarrierPublicationExecutor.execute(publication);
+                        } catch (RejectedExecutionException rejected) {
+                            // No caller-runs fallback: fail-stop and revoke
+                            // unresolved tickets through the owner-done barrier.
+                            fail(rejected);
+                            break;
+                        }
                     }
-                } catch (Throwable publicationFailure) {
-                    fail(publicationFailure);
-                    if (publicationFailure instanceof VirtualMachineError fatal) throw fatal;
-                    if (publicationFailure instanceof ThreadDeath fatal) throw fatal;
-                    if (publicationFailure instanceof LinkageError fatal) throw fatal;
                 } finally {
                     synchronized (lifecycleLock) {
                         // A stale replay must not release a later scheduling
