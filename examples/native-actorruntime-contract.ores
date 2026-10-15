@@ -293,6 +293,28 @@ pub routine main(): void {
     rt fail("state retired with corrupt negative STOP refund accounting");
   fi
 
+  // DONE needs all three committed lifecycle witnesses, never just the
+  // output/supervisor signals. STOP itself is necessary for state retirement.
+  if actorruntime.can_publish_done(false, true, true); do
+    rt fail("DONE published without committed actor state retirement");
+  fi
+  if actorruntime.can_retire_state(
+    false, false, 0, false, false, 0, false, 0, 0, 0, true
+  ); do
+    rt fail("actor state retired without STOP");
+  fi
+  if actorruntime.can_retire_state(
+    true, true, 0, false, false, 0, false, 0, 0, 0, true
+  ); do
+    rt fail("FINALIZED actor retired its state twice");
+  fi
+  if actorruntime.admit_terminal_delivery(true, true, false); do
+    rt fail("closed scheduler delivered post-STOP terminal continuation");
+  fi
+  if actorruntime.allow_cleanup_effects(false, true, true); do
+    rt fail("injected signal alone granted unapproved cleanup effects");
+  fi
+
   if actorruntime.can_publish_done(true, false, true); do
     rt fail("DONE published before output stream closure");
   fi
