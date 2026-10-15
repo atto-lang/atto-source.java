@@ -54,6 +54,56 @@ final class EnumFrontendMainRebaseTest {
     }
 
     @Test
+    void enumAndNamedPatternWithinNamedModuleRetainLexicalOwnership() {
+        Ast.Program parsed = Parser.parse("""
+                define module Colors as
+                    define enum Color as
+                        Red
+                        Blue
+                    end
+                    define match pattern Important as
+                        Color.Red
+                    end
+                end
+                define module Modes as
+                    define enum Mode as
+                        Fast
+                    end
+                    define pattern AllModes as
+                        ...Mode
+                    end
+                end
+                """);
+        assertEquals(List.of("Colors", "Modes"),
+                parsed.modules().stream().map(Ast.ModuleDecl::name).toList());
+        assertEquals(List.of("Color", "Important"),
+                parsed.modules().getFirst().declarations().stream()
+                        .map(d -> d instanceof Ast.EnumDecl e ? e.name()
+                                : ((Ast.PatternDecl) d).name()).toList());
+        assertEquals(List.of("Mode", "AllModes"),
+                parsed.modules().get(1).declarations().stream()
+                        .map(d -> d instanceof Ast.EnumDecl e ? e.name()
+                                : ((Ast.PatternDecl) d).name()).toList());
+        IllegalArgumentException blocked = assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(parsed));
+        assertTrue(blocked.getMessage().contains("syntax-only"),
+                blocked.getMessage());
+    }
+
+    @Test
+    void malformedModuleEnumModifiersCannotBypassGlobalAdmission() {
+        for (String member : List.of(
+                "define suspend enum Color as Red end",
+                "@Serializable define enum Color as Red end",
+                "define async match pattern P as Color.Red end")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("define module Work as\\n"
+                            + member + "\\nend".replace("\\\\n", "\\n")), member);
+        }
+    }
+
+    @Test
     void explicitMaxIntWireTagIsAcceptedWithoutImplicitOverflow() {
         Ast.EnumDecl en = assertInstanceOf(Ast.EnumDecl.class,
                 Parser.parse("define enum Boundary as Last = 2147483647 end")
