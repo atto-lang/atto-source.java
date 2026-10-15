@@ -26,7 +26,24 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         assertFalse(text.contains("|| 'ubuntu-24.04'"),
                 "private tests must not silently fall back to hosted jobs");
 
+        String jobs = text.substring(text.indexOf("\njobs:\n") + "\njobs:\n".length());
+        long declaredJobs = java.util.regex.Pattern
+                .compile("(?m)^  [a-z][a-z0-9-]*:$")
+                .matcher(jobs).results().count();
+        assertEquals(2L, declaredJobs,
+                "new unguarded jobs must require explicit security review");
+
         String denial = section(text, "  deny-unapproved:", "  validate-exact-main:");
+        String requiredDenial =
+                "if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java'"
+                + " || github.event.repository.private != true"
+                + " || github.ref != 'refs/heads/main'"
+                + " || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'"
+                + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == ''"
+                + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha"
+                + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}";
+        assertTrue(denial.contains(requiredDenial),
+                "a rejected dispatch must never become a green skipped-job run");
         assertTrue(denial.contains("runs-on: ubuntu-24.04"));
         assertTrue(denial.contains("exit 1"));
         assertFalse(denial.contains("actions/checkout@"),
