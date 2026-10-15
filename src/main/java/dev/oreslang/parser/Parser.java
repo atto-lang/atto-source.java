@@ -22,6 +22,9 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // A match guard's outer '->' delimits an arm, not a lambda that happens
+    // to follow a parenthesized guard expression.
+    private int matchGuardStartToken = -1;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -2839,7 +2842,16 @@ public final class Parser {
                 pattern = parsePattern();
             }
 
-            Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
+            Ast.Expr guard = null;
+            if (matchWhenKeyword()) {
+                int previousGuardStart = matchGuardStartToken;
+                matchGuardStartToken = current;
+                try {
+                    guard = parseExpression();
+                } finally {
+                    matchGuardStartToken = previousGuardStart;
+                }
+            }
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
@@ -3723,6 +3735,31 @@ public final class Parser {
     }
 
     private boolean looksLikeLambda() {
+        if (matchGuardStartToken >= 0 && current >= matchGuardStartToken) {
+            // At the guard's own lexical depth a following '->' belongs to
+            // the match arm. Preserve real nested lambdas in calls/groups:
+            // their parentheses are at positive depth from the guard start.
+            int depth = 0;
+            for (int i = matchGuardStartToken; i < current; i++) {
+                Token.Type type = tokens.get(i).type();
+                if (type == LPAREN || type == LBRACKET || type == LBRACE) depth++;
+                else if (type == RPAREN || type == RBRACKET || type == RBRACE) depth--;
+            }
+            if (depth == 0) return false;
+        }
+        // An arm's slim arrow may follow a parenthesized expression, e.g.
+        // 'when await (nb readch gate) -> { ... }'. A closing ')' followed
+        // by '->' is not sufficient evidence of a lambda declaration:
+        // lambda parameters require declaration syntax, never these
+        // expression-only prefix operators.
+        if (current + 1 < tokens.size()) {
+            Token.Type first = tokens.get(current + 1).type();
+            if (first == NB || first == AWAIT || first == READCH
+                    || first == WRITECH || first == RT || first == TRAP
+                    || first == TRY || first == SELECT || first == BANG) {
+                return false;
+            }
+        }
         int depth = 0;
         for (int i = current; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
