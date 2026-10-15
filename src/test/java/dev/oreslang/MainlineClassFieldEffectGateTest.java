@@ -317,6 +317,32 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectDefaultedGenericScalarHelpersDuringEagerInitialization() {
+        // Current main supports defaulted generic parameters and omitted
+        // type-argument markers. Neither form is a proof that constructing
+        // a generic callable is transitive-effect-free.
+        for (String call : java.util.List.of(
+                "forty()",
+                "forty<int>()",
+                "forty<>()")) {
+            String source = """
+                    fnc forty<T=int>(): int { return 40; }
+                    define class Unsafe as
+                      final int first: 1;
+                      final int second: %s;
+                    end
+                    """.formatted(call);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)),
+                    "generic constructor helper must not bypass the scalar proof: " + call);
+            assertTrue(failure.getMessage().contains(
+                            "without a proven transitive effect bound"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
     void rejectStaticHelperWhenModuleShadowsClassName() {
         // Runtime NameExpr resolves module namespaces ahead of classes.
         // A literal-only static helper in a same-named class must not
