@@ -237,6 +237,73 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void automaticChildControlHandlerWaitsForExitHookBarrier()
+            throws Exception {
+        CountDownLatch exitHookEntered = new CountDownLatch(1);
+        CountDownLatch releaseExitHook = new CountDownLatch(1);
+        CountDownLatch delivered = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean childCleanupDone =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            actors.setActorExitHook(domain -> {
+                exitHookEntered.countDown();
+                try {
+                    if (!releaseExitHook.await(3, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test exit hook timed out");
+                    }
+                    childCleanupDone.set(true);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override
+                        public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.set(next);
+                            next.send("fail");
+                        }
+
+                        @Override
+                        public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            try {
+                                assertTrue(childCleanupDone.get(),
+                                        "CONTROL callback ran before child's exit hook finished");
+                                assertTrue(actors.currentThreadOwnsActorExecutionLease(),
+                                        "parent CONTROL must run inside serialized actor turn");
+                                assertEquals(child.get().id(), notice.actorId());
+                            } catch (Throwable error) {
+                                callbackFailure.set(error);
+                            } finally {
+                                delivered.countDown();
+                            }
+                        }
+                    });
+            try {
+                parent.send("spawn");
+                assertTrue(exitHookEntered.await(3, TimeUnit.SECONDS));
+                assertEquals(1L, delivered.getCount(),
+                        "parent handler must remain blocked until child exit");
+            } finally {
+                releaseExitHook.countDown();
+            }
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(),
+                    () -> "supervision violated teardown barrier: " + callbackFailure.get());
+            assertTrue(child.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void retiredParentCountsUnconsumedControlNoticesForHostAudit()
             throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
