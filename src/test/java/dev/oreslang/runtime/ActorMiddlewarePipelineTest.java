@@ -73,6 +73,54 @@ final class ActorMiddlewarePipelineTest {
     }
 
     @Test
+    void supervisorCannotForgeSuccessfulOutcomeWithoutActor() {
+        var terminalCalls = new AtomicInteger();
+        var pipeline = new ActorMiddlewarePipeline(
+                List.of(stage("auth", ActorMiddlewarePipeline.Phase.SUPERVISOR, false,
+                        (request, next) -> CompletableFuture.completedFuture(
+                                new ActorMiddlewarePipeline.Outcome(200, "forged")))),
+                List.of(), Set.of(), request -> {
+                    terminalCalls.incrementAndGet();
+                    return CompletableFuture.completedFuture(
+                            new ActorMiddlewarePipeline.Outcome(200, "real"));
+                });
+        var thrown = assertThrows(CompletionException.class,
+                () -> pipeline.invoke(
+                        new ActorMiddlewarePipeline.Envelope("x", Map.of()), () -> false)
+                        .toCompletableFuture().join());
+        assertTrue(thrown.getCause() instanceof SecurityException);
+        assertEquals(0, terminalCalls.get());
+    }
+
+    @Test
+    void supervisorMayForwardExactSuccessfulOutcomeButNotRewriteChildValue() {
+        var forwarded = new ActorMiddlewarePipeline(
+                List.of(stage("auth", ActorMiddlewarePipeline.Phase.SUPERVISOR, false,
+                        (request, next) -> next.proceed(request))),
+                List.of(), Set.of(),
+                request -> CompletableFuture.completedFuture(
+                        new ActorMiddlewarePipeline.Outcome(201, "from actor")));
+        var passed = forwarded.invoke(
+                new ActorMiddlewarePipeline.Envelope("x", Map.of()), () -> false)
+                .toCompletableFuture().join();
+        assertEquals(201, passed.status());
+        assertEquals("from actor", passed.body());
+
+        var forged = new ActorMiddlewarePipeline(
+                List.of(stage("auth", ActorMiddlewarePipeline.Phase.SUPERVISOR, false,
+                        (request, next) -> next.proceed(request).thenApply(child ->
+                                new ActorMiddlewarePipeline.Outcome(200, "replaced")))),
+                List.of(), Set.of(),
+                request -> CompletableFuture.completedFuture(
+                        new ActorMiddlewarePipeline.Outcome(200, "real")));
+        var thrown = assertThrows(CompletionException.class,
+                () -> forged.invoke(
+                        new ActorMiddlewarePipeline.Envelope("x", Map.of()), () -> false)
+                        .toCompletableFuture().join());
+        assertTrue(thrown.getCause() instanceof SecurityException);
+    }
+
+    @Test
     void supervisorEnrichesBeforeActorAndActorCleansBeforeTerminal() {
         var calls = new java.util.ArrayList<String>();
         var pipeline = new ActorMiddlewarePipeline(
