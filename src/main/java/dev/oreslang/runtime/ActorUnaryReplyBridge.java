@@ -122,7 +122,11 @@ public final class ActorUnaryReplyBridge<R> {
                     runtime.captureCurrentContinuationTarget(),
                     (outcome, failure) ->
                             settle(actor, generation, responseTo, ticket, outcome, failure));
-        } catch (Throwable failure) {
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            // Guest-fatal conditions remain fatal for the actor runtime.
+            // Actor finalization revokes any outstanding reply ticket.
+            throw fatal;
+        } catch (RuntimeException failure) {
             ticket.reject(actor, generation, responseTo, failure);
         }
         return ticket.result();
