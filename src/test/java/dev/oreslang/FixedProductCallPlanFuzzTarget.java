@@ -27,6 +27,11 @@ public final class FixedProductCallPlanFuzzTarget {
         if (bytes.length == 129) {
             throw new IllegalArgumentException("fuzz input exceeds 128 bytes");
         }
+        verify(bytes);
+    }
+
+    /** Shared with deterministic JUnit smoke cases and the stdin fuzz target. */
+    static void verify(byte[] bytes) {
         int mode = at(bytes, 1) % 6;
         int arity = at(bytes, 0) % 12;
         if (mode != 0 && arity < 2) arity = 2;
