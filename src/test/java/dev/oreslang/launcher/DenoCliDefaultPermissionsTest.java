@@ -129,6 +129,74 @@ final class DenoCliDefaultPermissionsTest {
         }
     }
 
+    @Test
+    void rawCsvControlCharactersCannotBecomeUnrestrictedGrants() {
+        String[] poisonedScopes = new String[]{
+                "*" + (char) 0,
+                (char) 0 + "*",
+                "*" + "\n",
+                "\r" + "*",
+                "PATH" + (char) 0,
+                "\t" + "PATH",
+                "PATH" + "\r"
+        };
+        for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+            for (String malformed : poisonedScopes) {
+                RuntimePermissions.Builder allow = new RuntimePermissions.Builder();
+                assertThrows(IllegalArgumentException.class,
+                        () -> allow.allowCsv(permission, malformed),
+                        "raw invalid allow CSV scope accepted for " + permission);
+                assertFalse(allow.build().grantsAnything(permission),
+                        "rejected CSV must not create a grant for " + permission);
+
+                RuntimePermissions.Builder deny = new RuntimePermissions.Builder()
+                        .allowAll(permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> deny.denyCsv(permission, malformed),
+                        "raw invalid deny CSV scope accepted for " + permission);
+                assertTrue(deny.build().allows(permission, "PATH"),
+                        "rejected deny CSV must leave earlier authority unchanged");
+            }
+        }
+    }
+
+    @Test
+    void malformedLaterCsvWildcardCannotCommitEarlierValidScope() {
+        for (String malformed : new String[]{
+                "PATH,*" + (char) 0, "PATH,*" + "\n",
+                "PATH,HOME" + (char) 0}) {
+            RuntimePermissions.Builder allow = new RuntimePermissions.Builder();
+            assertThrows(IllegalArgumentException.class,
+                    () -> allow.allowCsv(RuntimePermissions.Permission.ENV, malformed));
+            assertFalse(allow.build().allows(RuntimePermissions.Permission.ENV, "PATH"),
+                    "failed preflight cannot commit the earlier PATH grant");
+
+            RuntimePermissions.Builder deny = new RuntimePermissions.Builder()
+                    .allowAll(RuntimePermissions.Permission.ENV);
+            assertThrows(IllegalArgumentException.class,
+                    () -> deny.denyCsv(RuntimePermissions.Permission.ENV, malformed));
+            assertTrue(deny.build().allows(RuntimePermissions.Permission.ENV, "PATH"),
+                    "failed preflight cannot commit the earlier PATH denial");
+        }
+    }
+
+    @Test
+    void controlPaddedCsvPermissionFlagsProduceUsageErrors() throws Exception {
+        Path source = sourceReadingEnvironment();
+        for (String option : new String[]{
+                "--allow-env=*" + (char) 0,
+                "--allow-env=" + (char) 0 + "*",
+                "--allow-env=*" + "\n",
+                "--deny-env=*" + (char) 0,
+                "--allow-env=PATH" + (char) 0,
+                "--deny-env=PATH" + "\r",
+                "--allow-env=PATH,*" + (char) 0}) {
+            assertEquals(2, OresMain.exitStatusForArgs(new String[]{
+                    option, source.toString()
+            }), "control-padded permission flag must not silently grant: " + option);
+        }
+    }
+
     private Path sourceReadingEnvironment() throws Exception {
         Path source = temp.resolve("permission-env.ores");
         Files.writeString(source, """
