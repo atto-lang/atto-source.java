@@ -55,6 +55,154 @@ final class FutureChannelSelectTest {
         assertEquals("mail", selected.join().value());
     }
 
+
+    @Test
+    void cancellingWhileFutureAttachmentIsPausedEventuallyDetachesLateWaiter()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var attached = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var selectedRef = new java.util.concurrent.atomic.AtomicReference<
+                OresFuture<ChannelRuntime.SelectResult>>();
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var selection = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer), ChannelRuntime.read(channel));
+
+        Thread worker = Thread.startVirtualThread(() -> {
+            try {
+                selection.selectAsyncForTesting(
+                        ChannelRuntime.SelectPolicy.PRIORITY,
+                        selectedRef::set,
+                        () -> {
+                            attached.countDown();
+                            awaitStart(release);
+                        });
+            } catch (Throwable failure) {
+                workerFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(attached.await(5, TimeUnit.SECONDS),
+                    "listener was never attached");
+            var selected = selectedRef.get();
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            assertTrue(selected.cancel(false));
+            assertTrue(selected.isCancelled());
+            assertEquals(0, channel.pendingRegistrations());
+            // Cancellation must not consume a channel message or cancel the
+            // independently-owned producer, even while cleanup is in flight.
+            assertTrue(channel.tryWrite(31));
+            assertFalse(producer.isDone());
+        } finally {
+            release.countDown();
+            worker.join(5_000);
+        }
+        assertFalse(worker.isAlive(), "listener attachment failed to drain");
+        if (workerFailure.get() != null) {
+            throw new AssertionError("listener attachment failed", workerFailure.get());
+        }
+        // Cancellation may become observable before in-flight attachments
+        // return; late handles must be detached before that thread exits.
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, channel.pendingRegistrations());
+        assertEquals(31, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void committedChannelWinnerIsNotPublishedBeforeLateWaiterDetaches()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var attached = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var selectedRef = new java.util.concurrent.atomic.AtomicReference<
+                OresFuture<ChannelRuntime.SelectResult>>();
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var selection = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer), ChannelRuntime.read(channel));
+
+        Thread worker = Thread.startVirtualThread(() -> {
+            try {
+                selection.selectAsyncForTesting(
+                        ChannelRuntime.SelectPolicy.PRIORITY,
+                        selectedRef::set,
+                        () -> {
+                            attached.countDown();
+                            awaitStart(release);
+                        });
+            } catch (Throwable failure) {
+                workerFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(attached.await(5, TimeUnit.SECONDS),
+                    "listener was never attached");
+            var selected = selectedRef.get();
+            assertEquals(1, producer.pendingRuntimeWaiterCount());
+            assertTrue(channel.tryWrite(42));
+            assertFalse(selected.isDone(),
+                    "winner published before late waiter was detached");
+            assertFalse(producer.isDone());
+        } finally {
+            release.countDown();
+            worker.join(5_000);
+        }
+        assertFalse(worker.isAlive(), "listener attachment failed to drain");
+        if (workerFailure.get() != null) {
+            throw new AssertionError("listener attachment failed", workerFailure.get());
+        }
+        var winner = selectedRef.get().get(5, TimeUnit.SECONDS);
+        assertEquals(1, winner.index());
+        assertEquals(42, winner.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void producerSettlementDuringPausedAttachmentRejectsLateCancellation()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var attached = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var selectedRef = new java.util.concurrent.atomic.AtomicReference<
+                OresFuture<ChannelRuntime.SelectResult>>();
+        var workerFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var selection = ChannelRuntime.SelectSet.of(ChannelRuntime.await(producer));
+        Thread worker = Thread.startVirtualThread(() -> {
+            try {
+                selection.selectAsyncForTesting(
+                        ChannelRuntime.SelectPolicy.PRIORITY,
+                        selectedRef::set,
+                        () -> {
+                            attached.countDown();
+                            awaitStart(release);
+                        });
+            } catch (Throwable failure) {
+                workerFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(attached.await(5, TimeUnit.SECONDS));
+            assertTrue(producer.completeFromRuntime(77));
+            assertFalse(selectedRef.get().isDone(),
+                    "terminal result overtook listener attachment");
+            assertFalse(selectedRef.get().cancel(false),
+                    "committed producer winner must reject cancellation");
+        } finally {
+            release.countDown();
+            worker.join(5_000);
+        }
+        assertFalse(worker.isAlive(), "listener attachment failed to drain");
+        if (workerFailure.get() != null) {
+            throw new AssertionError("listener attachment failed", workerFailure.get());
+        }
+        var winner = selectedRef.get().get(5, TimeUnit.SECONDS);
+        assertEquals(0, winner.index());
+        assertEquals(77, winner.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
     @Test
     void cancelledSelectionDetachesAllFutureWaitersWithoutCancellingSources() {
         var first = new OresFuture<Integer>();

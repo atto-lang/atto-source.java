@@ -453,6 +453,24 @@ public final class ChannelRuntime {
             return registration.future;
         }
 
+        /**
+         * Package-private deterministic race seam for runtime regression tests.
+         * Observers run only in explicitly opted-in test selections; the normal
+         * select path never executes injected callbacks.
+         */
+        OresFuture<SelectResult> selectAsyncForTesting(
+                SelectPolicy policy,
+                java.util.function.Consumer<OresFuture<SelectResult>> onCreated,
+                Runnable afterWaiterAttached) {
+            SelectRegistration registration =
+                    new SelectRegistration(this,
+                            Objects.requireNonNull(policy, "policy"),
+                            Objects.requireNonNull(afterWaiterAttached, "afterWaiterAttached"));
+            Objects.requireNonNull(onCreated, "onCreated").accept(registration.future);
+            registration.start(false);
+            return registration.future;
+        }
+
         public Optional<SelectResult> trySelect() {
             return trySelect(SelectPolicy.FAIR);
         }
@@ -614,6 +632,7 @@ public final class ChannelRuntime {
                 new ArrayList<>();
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
+        private final Runnable afterWaiterAttachedForTesting;
         private boolean decided;
         private boolean registered;
         /** Registrations that may still return after a winner is chosen. */
@@ -622,8 +641,14 @@ public final class ChannelRuntime {
         private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
+            this(set, policy, null);
+        }
+
+        private SelectRegistration(SelectSet set, SelectPolicy policy,
+                Runnable afterWaiterAttachedForTesting) {
             this.set = set;
             this.policy = policy;
+            this.afterWaiterAttachedForTesting = afterWaiterAttachedForTesting;
             this.order = set.initialOrder(policy);
             this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
@@ -646,6 +671,10 @@ public final class ChannelRuntime {
             try {
                 if (decided) return false;
                 decided = true;
+                // Attached waiters are reclaimed before cancellation settles.
+                // A registration still in flight cannot be detached until its
+                // handle is returned; attachFutureWaiters() reclaims that
+                // late handle in its finally block outside COORDINATOR.
                 unregisterLocked(this, cleanups);
                 return true;
             } finally {
@@ -735,6 +764,9 @@ public final class ChannelRuntime {
                 try {
                     waiter = candidate.future().whenCompleteRuntimeCancellable(
                             (ignored, failure) -> futureBecameReady());
+                    if (afterWaiterAttachedForTesting != null) {
+                        afterWaiterAttachedForTesting.run();
+                    }
                 } finally {
                     boolean lost;
                     COORDINATOR.lock();
