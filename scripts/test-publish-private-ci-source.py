@@ -692,6 +692,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_undecodable_source_name_denied_before_git_writes(self):
+        import os
+        if os.name != "posix":
+            self.skipTest("requires POSIX raw-byte file names")
+        encoded_dir = os.fsencode(self.source)
+        bad_file = os.path.join(encoded_dir, b"bad-\\xff.ores")
+        fd = os.open(bad_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        with self.assertRaisesRegex(pub.Denied, "non-UTF-8 name"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_git_metadata_directory_rejected(self):
         (self.source / ".git").mkdir()
         with self.assertRaises(pub.Denied):
