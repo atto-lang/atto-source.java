@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ExperimentalHirV1ExporterTest {
     private static final String SIMPLE = """
             pub fnc counter_response(int count): int {
-                return count * 43;
+                return count;
             }
             pub fnc main(): int {
                 return counter_response(1);
@@ -52,6 +52,22 @@ final class ExperimentalHirV1ExporterTest {
         assertThrows(RuntimeException.class, () -> ExperimentalHirV1Exporter.fromSource(
                 "pub fnc main(): int { return true; }"));
     }
+    @Test
+    void rejectsPotentialRuntimeOverflowButAdmitsUniversallySafeArithmetic() {
+        assertThrows(IllegalArgumentException.class, () -> ExperimentalHirV1Exporter.fromSource("""
+                pub fnc scale(int count): int { return count * 43; }
+                pub fnc main(): int { return scale(1); }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> ExperimentalHirV1Exporter.fromSource("""
+                pub fnc main(): int { return 9223372036854775807 + 1; }
+                """));
+        String safe = ExperimentalHirV1Exporter.fromSource("""
+                pub fnc identity(int value): int { return value + 0; }
+                pub fnc main(): int { return identity(40 + 3); }
+                """);
+        assertTrue(safe.contains("\"op\":\"add\""));
+    }
+
     @Test
     void rejectsRecursiveFunctionsAtExperimentalContractBoundary() {
         assertThrows(RuntimeException.class, () -> ExperimentalHirV1Exporter.fromSource("""
