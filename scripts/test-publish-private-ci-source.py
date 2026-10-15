@@ -35,7 +35,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
                 "required_approving_review_count": 1},
-            "required_status_checks": {"strict": True, "contexts": ["private-ci-policy"]},
+            "required_status_checks": {"strict": True, "contexts": ["preflight-regressions"]},
             "enforce_admins": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False}}
@@ -144,6 +144,31 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
                 finally:
                     reviews[field] = original
+
+    def test_unrelated_required_checks_cannot_replace_private_ci_gate(self):
+        checks = self.protection_rules["required_status_checks"]
+        for contexts, apps in [
+            (["unrelated-lint"], []),
+            ([], [{"context": "unrelated-lint", "app_id": 1234}]),
+            ([], [{"context": "preflight-regressions", "app_id": -1}]),
+            (["preflight-regressions"],
+             [{"context": "preflight-regressions", "app_id": -1}]),
+            ([], [{"context": "preflight-regressions"}]),
+        ]:
+            with self.subTest(contexts=contexts, apps=apps):
+                self.route_calls.clear()
+                checks["contexts"] = contexts
+                checks["checks"] = apps
+                with self.assertRaises(pub.Denied):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_private_ci_check_pinned_to_an_app_is_accepted(self):
+        checks = self.protection_rules["required_status_checks"]
+        checks["contexts"] = []
+        checks["checks"] = [{"context": "preflight-regressions", "app_id": 15368}]
+        self.publish()
+        self.assertTrue(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_source_main_bypass_allowance_denied(self):
         reviews = self.protection_rules["required_pull_request_reviews"]
