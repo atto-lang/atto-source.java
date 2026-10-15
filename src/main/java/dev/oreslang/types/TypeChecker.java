@@ -4945,16 +4945,17 @@ public final class TypeChecker {
         // qualification to bypass the non-data-capability admission list.
         String actorBoundarySimpleName = named.name().substring(named.name().lastIndexOf('.') + 1);
         if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
-                "Observable").contains(actorBoundarySimpleName)) {
+                "Observable", "ActorRef", "ActorGroup", "ProxyActor",
+                "SupervisorControlCodec", "ControlCodec", "Mailman",
+                "EventBus").contains(actorBoundarySimpleName)) {
             throw new IllegalArgumentException(where + " cannot transport "
                     + named.name() + " across an actor boundary; encode owned data with "
                     + "an independently admitted ActorMessageCodec<T>");
         }
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
-                || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+        if (Set.of("TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
+                "Mutex", "MutexGuard", "Future", "Channel", "SelectCase",
+                "SelectSet", "SelectResult", "Iterator", "AsyncIterator")
+                .contains(actorBoundarySimpleName)) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
@@ -5036,10 +5037,13 @@ public final class TypeChecker {
 
         String sharedSafetySimpleName = named.name().substring(named.name().lastIndexOf('.') + 1);
         if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
-                "Observable").contains(sharedSafetySimpleName)) return false;
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+                "Observable", "ActorRef", "ActorGroup", "ProxyActor",
+                "SupervisorControlCodec", "ControlCodec", "Mailman", "EventBus")
+                .contains(sharedSafetySimpleName)) return false;
+        if (Set.of("Mutex", "MutexGuard", "Future", "Iterator",
+                "AsyncIterator", "SharedMutex", "TcpConnection", "HttpExchange",
+                "HttpServer", "HttpHandler", "Channel", "SelectCase",
+                "SelectSet", "SelectResult").contains(sharedSafetySimpleName)) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
