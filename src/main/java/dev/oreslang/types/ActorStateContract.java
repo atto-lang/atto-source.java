@@ -339,16 +339,16 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state-backed rt copy requires verified snapshot lowering");
         }
+        // Unknown ownership/pointer intrinsics cannot silently gain direct
+        // state references as their argument. The only trusted access path
+        // remains compiler-lowered scoped read/write.
         if (node instanceof Ast.RuntimeCallExpr op && activeAccess != null
-                && (op.operation().equals("borrow") || op.operation().equals("borrow_mut")
-                    || op.operation().equals("borrowMut") || op.operation().equals("take")
-                    || op.operation().equals("share"))
                 && referencesAccess(op.arguments(), activeAccess)) {
             // A borrowed state projection cannot be moved out of the map or
             // published as Shared<T>. A primitive copy is permitted, but
             // ownership-changing operations need a proven snapshot lowering.
             throw new IllegalArgumentException(
-                    "actor state-backed borrow/take/share cannot escape its lexical loan");
+                    "actor state-backed runtime ownership/pointer operation lacks verified scoped lowering");
         }
         if (node instanceof Map<?, ?> entries) {
             for (Object value : entries.values())
