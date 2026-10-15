@@ -267,9 +267,16 @@ it does not skip any per-write authorization. GitHub Actions minutes and GitHub
 REST API budgets are separate constraints.
 
 For a source snapshot with `N` files, UTF-8 content of up to 128 KiB per file
-may be sent inside isolated tree POSTs when `N >= 16`; otherwise files use
-individually verified blob uploads. Batches are bounded to at most 64 entries
-and 256 KiB of accounted input bytes. Non-UTF-8, NUL-containing, and larger
+may be sent inside isolated tree POSTs when `N >= 16` **and their
+serialized JSON representation fits the request budget**; otherwise files
+use individually verified blob uploads. Batches are bounded to at most 64
+entries and 256 KiB of conservatively accounted JSON request bytes. Quoted,
+backslash-heavy, control-byte and non-ASCII contents may expand during
+JSON escaping by several times their original UTF-8 size. The publisher
+counts the serialized `json.dumps()` representation for both file content
+and path before batching; oversized inline text falls back to an individually
+verified blob. This keeps every submitted tree request under the intended
+bound, including singleton batches. Non-UTF-8, NUL-containing, and larger
 files use separate Git blob POSTs with SHA-1 verification. The first isolated
 source tree is constructed without a base tree; subsequent partial trees
 use only the *prior isolated tree* as a base. The completed source tree must
@@ -330,3 +337,18 @@ measure the batching algorithm, not all security checks in the private
 publisher. The protected-source approvals and independent security review
 requirements still apply and the full Python/Bash exporter suites remain
 unexecuted.
+
+
+On October 15, a follow-up source-free [Benefactor run #38771723972](https://github.com/benefactor-cc/backend.rs/actions/runs/38771723972)
+verified the JSON-escaping fix on a private GitHub-hosted runner. It passed
+three executed steps with **554 synthetic files**, including 100,000 control
+characters (which serialize much larger than their raw bytes), one original
+binary file and executable mode bits. Nine JSON-bounded isolated-tree POSTs
+plus two separately verified blob POSTs produced Git tree
+`5fbd663e02b096ca8288cab3bb71ac1634edc76a`, exactly matching independent
+`git write-tree`. **11** Git-object writes were executed, without creating a
+carrier branch or transferring any private Oreslang source. The full
+production publisher would also need its separately authorized root-tree,
+commit and temporary-ref writes. This is targeted synthetic testing, not
+proof that the 125 checked-in Python publisher methods or Bash suite passed.
+The source organization's Actions still fails before running job steps.
