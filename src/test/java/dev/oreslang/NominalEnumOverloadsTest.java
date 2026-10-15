@@ -152,6 +152,34 @@ final class NominalEnumOverloadsTest {
     }
 
     @Test
+    void ineligibleEnumCannotHideQualifiedDuplicateOrAmbiguousShortAlias() {
+        Ast.EnumDecl eligible = new Ast.EnumDecl("Mode",
+                List.of(new Ast.EnumCase("Ready", null, 1)));
+        Ast.EnumDecl ineligible = new Ast.EnumDecl("Mode",
+                List.of(new Ast.EnumCase("Bad", Ast.TypeRef.simple("Any"), 2)));
+
+        // Distinct qualified declarations coexist, but the short name must
+        // NOT pretend it identifies a unique eligible enum.
+        Ast.Program separateOwners = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(eligible)),
+                new Ast.ModuleDecl("beta", List.of(ineligible))));
+        Map<String, String> names =
+                NominalEnumOverloads.eligibleEnumSymbols(separateOwners);
+        assertFalse(names.containsKey("Mode"));
+        assertEquals("alpha::Mode", names.get("alpha::Mode"));
+        assertFalse(names.containsKey("beta::Mode"));
+
+        // The same canonical declaration cannot be repeated just because
+        // one copy has a payload layout disallowed for overloading.
+        Ast.Program duplicateOwner = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(eligible, ineligible))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumOverloads.eligibleEnumSymbols(duplicateOwner));
+        assertTrue(error.getMessage().contains("duplicate nominal enum overload declaration"),
+                error.getMessage());
+    }
+
+    @Test
     void directEnumFncsAdmitOnlyPairwiseDistinctNominalSignatures() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
                 fnc go(Color c): int { return 1; }
