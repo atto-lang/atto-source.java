@@ -58,6 +58,28 @@ final class SealedPermitsHierarchyTest {
     }
 
     @Test
+    void sealedInterfaceExtensionMustRemainClosedTransitively() {
+        assertDoesNotThrow(() -> checked("""
+                define sealed interface Event permits TypedEvent as end
+                define sealed interface TypedEvent extends Event permits Click as end
+                define final class Click implements TypedEvent as end
+                """));
+        rejects("""
+                define sealed interface Event permits TypedEvent as end
+                define interface TypedEvent extends Event as end
+                """, "must be sealed or final");
+    }
+
+    @Test
+    void finalSubclassCannotBeReopenedBehindASealedRoot() {
+        rejects("""
+                define sealed class Root permits Leaf as end
+                define final class Leaf extends Root as end
+                define class Grandchild extends Leaf as end
+                """, "cannot be extended");
+    }
+
+    @Test
     void rejectingAnUnauthorizedSubclassCannotFallBackToOrdinaryInheritance() {
         rejects("""
                 define sealed class Root permits Good as end
