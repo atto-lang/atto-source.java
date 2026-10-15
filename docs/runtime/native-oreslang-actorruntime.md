@@ -266,6 +266,52 @@ after `fork()`. **These new tests have not yet executed on a runner.** The most 
 failed before executing any steps, so neither compilation nor test failure
 can be inferred from that run.
 
+### Suspended SourceTask settlement barrier (subsequent hardening)
+
+The original native retirement check relied on an empty actor physical turn,
+a resolved/cancelled cleanup ticket and a completed-or-forced cleanup claim.
+That condition is **not sufficient** for a SourceTask suspended on `await`,
+`select`, a channel, I/O or cooperation: it may own no physical lease while
+its logical lifetime remains in progress. An early `retire_source_task`
+could thereby let actor retirement or DONE proceed without the suspended
+SourceTask's terminal callback.
+
+The kernel now requires a separate, one-shot
+`ores_turn_note_source_settled(vm, source)` witness. The trusted scheduler
+must deliver this only after the real SourceTask reaches its terminal and
+quiescent state, independently of Future notification or an idle actor.
+Source retirement refuses with `ORES_TURN_BUSY` before that witness.
+The witness itself refuses while an actor carrier is executing, while
+its cleanup ticket remains open, or while claimed cleanup has neither
+actually completed nor been force-aborted. A settled SourceTask cannot mint
+another cleanup ticket. Second settlement is rejected; retired handles
+remain stale and task IDs require strictly increasing generation on reuse.
+
+**Adapter caveat:** this VM-private C kernel cannot itself inspect or prove
+that `OresScheduler.TaskRunner` truly settled. A privileged native caller
+could still falsely acknowledge settlement. Bind this operation exclusively
+to real scheduler terminal/quiescence events before granting production
+authority. Do not expose the C pointers or witness APIs to guest code.
+
+The regression fixtures now cover physically idle but still-live SourceTasks,
+double settlement, closed cleanup obligations, immediate retirement refusal,
+and stale/recycled task IDs. The original 15-function C regression suite
+was updated to explicitly supply the new witness at each successful source
+retirement. That original full suite has **not** been executed in the local
+audit yet; these passing results apply to the scheduler-boundary fixture.
+
+Verified local exact-blob matrix for the revised kernel and new fixture:
+GCC and Clang at `-O0` and `-O2`, with and without ASan/UBSan (8/8),
+plus GCC `-O1` ThreadSanitizer (1/1), for **9/9 passing native fixture
+executions**, 1,000 FORCE-versus-cleanup races per run, and generation/
+suspension/fork regressions. Hashes:
+`oresactorturn.c` `b760870dcab0d635ce62b7d84c7794d57ebdc2c9`,
+`oresactorturn.h` `27f94d5a600882967d878d79d79cd18b3d3e2ddf`,
+`oresactorturn_scheduler_boundary_test.c`
+`3d562d31481d984df83e81ff5788a61484b10e21`.
+These results establish native prototype behavior only, **not** Java
+SourceTask integration or LLVM guest parity.
+
 ### Exact-blob local native execution (2026-10-14)
 
 The experimental native kernel was compiled and run **locally** against
