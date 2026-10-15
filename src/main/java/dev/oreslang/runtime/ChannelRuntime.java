@@ -616,6 +616,10 @@ public final class ChannelRuntime {
         private final OresFuture<SelectResult> future;
         private boolean decided;
         private boolean registered;
+        /** Registrations that can still return after a selection was committed. */
+        private int attachingFutureWaiters;
+        /** Completion publication is held until in-flight listener attachments detach. */
+        private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
@@ -711,30 +715,54 @@ public final class ChannelRuntime {
             }
             for (CaseRegistration registration : pending) {
                 if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
-                // Registration can settle while we are attaching an earlier
-                // Future listener. Do not execute guest-controlled callback
-                // registration for operations that have already lost.
+                // Claim the attachment lifetime before leaving the coordinator.
+                // Committed results cannot be published while this claim lives.
                 COORDINATOR.lock();
                 try {
                     if (decided) return;
+                    attachingFutureWaiters++;
                 } finally {
                     COORDINATOR.unlock();
                 }
-                OresFuture.RuntimeWaiterRegistration<?> waiter =
-                        candidate.future().whenCompleteRuntimeCancellable(
-                                (ignored, failure) -> futureBecameReady());
-                boolean lost;
-                COORDINATOR.lock();
+                OresFuture.RuntimeWaiterRegistration<?> waiter = null;
+                ArrayList<Runnable> readyToPublish = new ArrayList<>();
                 try {
-                    lost = decided;
-                    if (!lost) futureWaiters.add(waiter);
+                    waiter = candidate.future().whenCompleteRuntimeCancellable(
+                            (ignored, failure) -> futureBecameReady());
                 } finally {
-                    COORDINATOR.unlock();
+                    boolean lost;
+                    COORDINATOR.lock();
+                    try {
+                        lost = decided;
+                        if (!lost && waiter != null) futureWaiters.add(waiter);
+                        attachingFutureWaiters--;
+                        if (attachingFutureWaiters == 0 && !deferredPublication.isEmpty()) {
+                            readyToPublish.addAll(deferredPublication);
+                            deferredPublication.clear();
+                        }
+                    } finally {
+                        COORDINATOR.unlock();
+                    }
+                    // Release the losing registration outside the coordinator,
+                    // before the previously committed result becomes visible.
+                    if (lost && waiter != null) waiter.detach();
+                    runCompletions(readyToPublish);
                 }
-                // Dequeue outside the global lock, including a just-settled
-                // Future whose synchronous callback already selected a winner.
-                if (lost) waiter.detach();
             }
+        }
+
+        /** Publish a selected result only after every in-flight attachment has settled. */
+        private void publishAfterAttachment(Runnable action) {
+            COORDINATOR.lock();
+            try {
+                if (attachingFutureWaiters > 0) {
+                    deferredPublication.add(action);
+                    return;
+                }
+            } finally {
+                COORDINATOR.unlock();
+            }
+            action.run();
         }
 
         private void futureBecameReady() {
@@ -1124,10 +1152,10 @@ public final class ChannelRuntime {
                 SelectOperation.WRITE,
                 null);
 
-        completions.add(() ->
-                reader.selection.future.completeFromRuntime(readResult));
-        completions.add(() ->
-                writer.selection.future.completeFromRuntime(writeResult));
+        completions.add(() -> reader.selection.publishAfterAttachment(
+                () -> reader.selection.future.completeFromRuntime(readResult)));
+        completions.add(() -> writer.selection.publishAfterAttachment(
+                () -> writer.selection.future.completeFromRuntime(writeResult)));
     }
 
     private static void commitSingleLocked(
@@ -1140,8 +1168,8 @@ public final class ChannelRuntime {
         selection.decided = true;
         selection.set.selected(result.index(), selection.policy);
         unregisterLocked(selection, completions);
-        completions.add(() ->
-                selection.future.completeFromRuntime(result));
+        completions.add(() -> selection.publishAfterAttachment(
+                () -> selection.future.completeFromRuntime(result)));
     }
 
     private static void commitFailureLocked(
@@ -1157,8 +1185,8 @@ public final class ChannelRuntime {
         selection.decided = true;
         selection.set.selected(registration.index, selection.policy);
         unregisterLocked(selection, completions);
-        completions.add(() ->
-                selection.future.failFromRuntime(failure));
+        completions.add(() -> selection.publishAfterAttachment(
+                () -> selection.future.failFromRuntime(failure)));
     }
 
     private static Channel<?> channelOf(SelectCase selectCase) {
