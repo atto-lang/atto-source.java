@@ -1739,9 +1739,16 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(target.actorId());
         if (cell == null || !ownFuture(cell, future)) return;
 
+        // The Future itself is normally single-terminal, but the actor
+        // admission boundary must also claim exactly one notification. A
+        // duplicate callback must never enqueue a second guest continuation.
+        // Only the mailbox enqueue runs on the completing/producer thread;
+        // the user continuation runs later under the actor's carrier lease.
+        OneShotCompletionGate completionClaim = new OneShotCompletionGate();
         future.whenCompleteRuntime(
                 (value, failure) ->
-                        target.enqueue(() -> continuation.accept(value, failure)));
+                        completionClaim.deliver(() ->
+                                target.enqueue(() -> continuation.accept(value, failure))));
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
