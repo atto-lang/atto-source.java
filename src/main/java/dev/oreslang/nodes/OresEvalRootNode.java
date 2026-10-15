@@ -3890,14 +3890,16 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                // Join may fail; once the value is published, however, any
+                // downstream failure must not become a second delivery.
+                Object settled;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
+                    settled = future.join();
                 } catch (RuntimeException | Error failure) {
                     continuation.accept(task, null, failure);
+                    return;
                 }
+                continuation.accept(task, settled, null);
                 return;
             }
 
@@ -4323,46 +4325,39 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            // Catch only guest invocation failures, not errors raised by an
+            // already-invoked downstream continuation. Reporting those as a
+            // second failure would violate once-only SourceTask completion.
+            Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
-                        return;
-                    }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
             }
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // An already-settled Future is a value, not a suspension.
+                if (future.isDone()) {
+                    Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completedFailure) {
+                        continuation.accept(task, null, completedFailure);
+                        return;
+                    }
+                    continuation.accept(task, completed, null);
+                    return;
+                }
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                task.suspend(future, (t, value, failure) ->
+                        continuation.accept(t, value, failure));
+                return;
+            }
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
