@@ -106,7 +106,8 @@ final class DualSerdeBorrowBoundaryTest {
                           receive(ActorMail<RuntimeBox.SharedMutex<int>> mail): void { return; }
                         end
                         """)));
-        assertTrue(failure.getMessage().contains("SharedMutex"));
+        assertTrue(failure.getMessage().contains("cannot use SharedMutex"),
+                () -> failure.getMessage());
     }
 
     @Test
