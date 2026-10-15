@@ -8570,6 +8570,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object numeric(Object left, Object right, char op) {
+            // The checked profile has only signed-i64 add/sub/mul. Do not
+            // silently run its arithmetic in the floating-point, complex or
+            // legacy remainder/division paths when the frontend misses a
+            // type or expression admission case.
+            if (experimentalCheckedI64) {
+                if (op != '+' && op != '-' && op != '*') {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 rejects arithmetic operator " + op);
+                }
+                if (!(left instanceof Number a && isIntegral(a))
+                        || !(right instanceof Number b && isIntegral(b))) {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 requires signed i64 operands");
+                }
+            }
             if (left instanceof Complex || right instanceof Complex) {
                 Complex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
@@ -8615,6 +8630,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object negate(Object value) {
+            if (experimentalCheckedI64
+                    && !(value instanceof Byte || value instanceof Short
+                            || value instanceof Integer || value instanceof Long)) {
+                throw new IllegalArgumentException(
+                        "checked-i64-v1 requires a signed i64 negation operand");
+            }
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
                 long x = ((Number) value).longValue();
