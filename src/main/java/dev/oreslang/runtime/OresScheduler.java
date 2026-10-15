@@ -633,7 +633,7 @@ public final class OresScheduler implements AutoCloseable {
         // arbitrary waiter may block. A blocked subscriber for task A must
         // not prevent task B's await registration from being detached, or
         // prevent B from retaining only live physical execution resources.
-        NativeActorTurnKernel.NativeStatusFailure nativeShutdownFailure = null;
+        RuntimeException nativeShutdownFailure = null;
         for (TaskRunner<?> task : admitted) {
             try {
                 task.revokeFromSchedulerClose();
@@ -678,10 +678,23 @@ public final class OresScheduler implements AutoCloseable {
                 }
             }
         }
-        // The native witness has NOT retired: report this after revoking
-        // every admitted task and shutting down the physical executor.
-        // An authorized host may close its pending cleanup ticket and call
-        // retryNativeQuiescentTasks(); this does not rerun guest code.
+        // A trusted quiescence callback can fail after the source's C
+        // retirement already succeeded. Retrying it blindly could double
+        // release guest resources. Report it rather than silently returning
+        // from close() as if cleanup had completed successfully.
+        if (nativeTurnKernel != null) {
+            for (TaskRunner<?> task : admitted) {
+                Throwable failed = task.nativeQuiescenceCallbackFailure.get();
+                if (failed == null) continue;
+                var blocked = new IllegalStateException(
+                        "trusted native quiescence callback failed during shutdown", failed);
+                if (nativeShutdownFailure == null) nativeShutdownFailure = blocked;
+                else nativeShutdownFailure.addSuppressed(blocked);
+            }
+        }
+        // All admitted tasks were revoked before reporting native failure.
+        // An authorized host may close its pending cleanup ticket and retry
+        // native retirement; it must NOT re-run a failed cleanup callback.
         if (nativeShutdownFailure != null) throw nativeShutdownFailure;
     }
 
