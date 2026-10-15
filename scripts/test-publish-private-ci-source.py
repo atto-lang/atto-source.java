@@ -842,6 +842,65 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.assertEqual(base64.b64decode(blob_writes[0]["content"]),
                              b"private data")
 
+    def test_distinct_candidate_with_real_git_tree_and_mocked_api(self):
+        # Integration-style offline proof: trusted policy root and separate
+        # real Git candidate, complete committed tree, authenticated mocked
+        # source commit, and exact Git-tree payload at destination.
+        with tempfile.TemporaryDirectory() as external:
+            candidate = Path(external)
+            (candidate / "worker.ores").write_text("define actor Worker as\\nend\\n")
+            subprocess.run(["git", "init", "-q", str(candidate)],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(candidate), "add", "--all"],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(candidate),
+                            "-c", "user.name=CI",
+                            "-c", "user.email=ci@example.invalid",
+                            "commit", "-qm", "synthetic actor"],
+                           check=True, capture_output=True)
+            commit = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True).stdout.strip()
+            tree = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "HEAD^{tree}"],
+                check=True, capture_output=True, text=True).stdout.strip()
+            original_api = self.fake_api
+
+            def authenticated_synthetic_api(route, method="GET", payload=None):
+                if route == ("repos/" + pub.SOURCE_REPOSITORY
+                             + "/git/commits/" + commit):
+                    self.route_calls.append((method, route, payload))
+                    return {"sha": commit, "tree": {"sha": tree}}
+                if (route == "repos/trusted/ci/git/trees"
+                        and method == "POST"
+                        and isinstance(payload, dict)
+                        and "base_tree" not in payload):
+                    self.route_calls.append((method, route, payload))
+                    return {"sha": tree}
+                return original_api(route, method, payload)
+
+            with patch.object(pub, "require_source_tree_match",
+                              wraps=self.real_tree_gate) as verifier:
+                with patch.object(pub, "gh_api",
+                                  side_effect=authenticated_synthetic_api):
+                    result = pub.publish("trusted/ci", candidate,
+                                         "ci/oreslang-test", self.root)
+                    self.assertEqual(result, (A, 1))
+                self.assertEqual(verifier.call_count, 1)
+
+            # Changing the source after its commit is rejected before export.
+            self.route_calls.clear()
+            (candidate / "worker.ores").write_text("dirty source\\n")
+            with patch.object(pub, "require_source_tree_match",
+                              wraps=self.real_tree_gate):
+                with patch.object(pub, "gh_api",
+                                  side_effect=authenticated_synthetic_api):
+                    with self.assertRaisesRegex(pub.Denied, "differs"):
+                        pub.publish("trusted/ci", candidate,
+                                    "ci/oreslang-test", self.root)
+            self.assertFalse(any(method == "POST"
+                                 for method, _, _ in self.route_calls))
+
     def test_candidate_checkout_cannot_self_approve_private_export(self):
         # Attacker-controlled candidate policy/script must not authorize itself.
         with tempfile.TemporaryDirectory() as external:
