@@ -346,8 +346,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.FunctionDecl first, Ast.FunctionDecl second) {
             if (!first.genericParameters().isEmpty() || !second.genericParameters().isEmpty()
                     || first.actorKind() != Ast.ActorKind.NONE
-                    || second.actorKind() != Ast.ActorKind.NONE
-                    || first.kind() != second.kind()) return false;
+                    || second.actorKind() != Ast.ActorKind.NONE) return false;
             try {
                 var enums = NominalEnumOverloads.eligibleEnumSymbols(program);
                 return NominalEnumOverloads.compare(
