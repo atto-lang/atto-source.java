@@ -58,6 +58,20 @@ final class HighPrecisionDecimalTest {
     }
 
     @Test
+    void integerWideningIntoDecimalLocalsAndParametersPreservesDigits() throws Exception {
+        assertEquals("9007199254740993|9007199254740993", eval("""
+                fnc identity(decimal x): decimal { return x; }
+                pub routine main(): void {
+                  val decimal local = 9007199254740993;
+                  stdio.stdout.write(local);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(identity(9007199254740993));
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void binaryFloatAndDecimalCannotMixImplicitly() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -91,6 +105,21 @@ final class HighPrecisionDecimalTest {
     }
 
     @Test
+    void infinityAndSignedZeroFollowIeeeEqualityAndOrder() throws Exception {
+        assertEquals("true|true|false", eval("""
+                pub routine main(): void {
+                  val float infinity = 1.0 / 0.0;
+                  stdio.stdout.write(infinity == infinity);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(-0.0 == 0.0);
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(-0.0 < 0.0);
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void pureSourceDecimalAndMatrixModulesMultiplyWithoutPrecisionLoss() throws Exception {
         Path entry = Files.createTempFile("ores-decimal-matrix-", ".ores");
         try {
@@ -115,6 +144,8 @@ final class HighPrecisionDecimalTest {
                       stdio.stdout.write(result.get(3));
                       stdio.stdout.write("|");
                       stdio.stdout.write(decimal.sum(result));
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(matrix.multiply(0, 2, 2, a, b).is_err());
                       return;
                     }
                     """);
@@ -125,7 +156,7 @@ final class HighPrecisionDecimalTest {
                     out, err);
             assertTrue(run.units().containsKey("@std/decimal.ores"));
             assertTrue(run.units().containsKey("@std/matrix.ores"));
-            assertEquals("0.7|1.0|1.5|2.2|5.4", out.toString(StandardCharsets.UTF_8),
+            assertEquals("0.7|1.0|1.5|2.2|5.4|true", out.toString(StandardCharsets.UTF_8),
                     () -> "guest stderr: " + err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);
