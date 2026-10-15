@@ -55,6 +55,10 @@ java -version
 javac -version
 mvn -version
 
+# Prove the immutable-source gate rejects common adversarial source and
+# identity substitutions before executing any guest or native test workload.
+sh scripts/test-native-actor-ci-preflight.sh
+
 # The immutable source check must precede every build, and stale native
 # objects and Maven reports must never satisfy a current-head test.
 mvn -B -ntp clean
