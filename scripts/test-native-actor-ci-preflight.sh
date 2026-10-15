@@ -67,7 +67,15 @@ deny untracked-source "modified or untracked inputs" \
       ORES_CI_EXPECTED_TREE_SHA="$tree" sh "$gate"
 rm "$fixture/src/main/c/injected.c"
 
+# Non-Java project inputs are still part of the reviewed Git tree.
+# Never accept an untracked .mvn, resource, stdlib, or root-level overlay.
+printf 'untrusted Maven configuration\n' > "$fixture/.mvn-injected"
+deny untracked-project-input "modified or untracked inputs" \
+  env ORES_CI_EXPECTED_COMMIT_SHA="$sha" \
+      ORES_CI_EXPECTED_TREE_SHA="$tree" sh "$gate"
+rm "$fixture/.mvn-injected"
+
 deny absent-maven "Maven is required" \
   env PATH="$temp/min-path" ORES_CI_EXPECTED_COMMIT_SHA="$sha" \
       ORES_CI_EXPECTED_TREE_SHA="$tree" /bin/sh "$gate"
-echo "NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=7"
+echo "NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=8"
