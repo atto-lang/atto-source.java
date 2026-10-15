@@ -69,6 +69,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_conversations = [True] * 100
         self.carrier_review_count = [1] * 100
         self.carrier_codeowner = [True] * 100
+        self.carrier_codeowners_text = (
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/workflows/ @ORESoftware\n"
+        )
+        self.carrier_codeowners_sha = None
+        self.carrier_codeowners_errors = []
+        self.carrier_security_permission = "write"
         self.carrier_stale_review_dismissal = [True] * 100
         self.carrier_review_bypass = [False] * 100
         self.carrier_branch_commits = [A] * 100
@@ -172,6 +179,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "bypass_pull_request_allowances": {
                         "users": ["bypasser"] if self.carrier_review_bypass.pop(0) else [],
                         "teams": [], "apps": []}}
+        if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=main":
+            raw = self.carrier_codeowners_text.encode("utf-8")
+            sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_codeowners_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == "repos/trusted/ci/codeowners/errors?ref=main":
+            return {"errors": self.carrier_codeowners_errors}
+        if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
+            return {"permission": self.carrier_security_permission,
+                    "user": {"login": "ORESoftware", "type": "User"}}
         mapping = {
             "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
@@ -325,6 +344,52 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         finally:
             self.preflight.start()
 
+    def test_carrier_workflow_codeowners_must_cover_every_workflow(self):
+        for policy in ("",
+                       "/.github/CODEOWNERS @ORESoftware\n",
+                       "/.github/workflows/ @ORESoftware\n/.github/CODEOWNERS @ORESoftware\n",
+                       "/.github/CODEOWNERS @ORESoftware\n/.github/workflows/ @ORESoftware\n"
+                       "* @another-reviewer\n"):
+            with self.subTest(policy=policy):
+                self.route_calls.clear()
+                self.carrier_codeowners_text = policy
+                with self.assertRaisesRegex(pub.Denied, "terminal security CODEOWNER coverage"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_codeowners_text = (
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/workflows/ @ORESoftware\n"
+        )
+
+    def test_carrier_codeowner_digest_validation_and_permission_fail_closed(self):
+        self.carrier_codeowners_sha = "f" * 40
+        with self.assertRaisesRegex(pub.Denied, "blob integrity"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_codeowners_sha = None
+        self.carrier_codeowners_errors = [{"line": 2, "message": "unknown owner"}]
+        with self.assertRaisesRegex(pub.Denied, "validation errors"):
+            self.publish()
+        self.carrier_codeowners_errors = []
+        self.carrier_security_permission = "read"
+        with self.assertRaisesRegex(pub.Denied, "lacks write permission"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_security_owner_revocation_aborts_after_first_blob(self):
+        original = self.fake_api
+        def revoke(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.carrier_security_permission = "read"
+            return response
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaisesRegex(pub.Denied, "lacks write permission"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
     def test_carrier_default_branch_must_be_trusted_main_before_source_read(self):
         self.carrier_default_branches = ["unreviewed-feature"] * 100
         with patch.object(pub, "collect_source",
@@ -381,7 +446,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     api.assert_called_once_with("rate_limit")
 
     def test_core_api_budget_denies_before_creating_git_objects(self):
-        for remaining in (0, 100, 143, None, "15000", True, -1):
+        for remaining in (0, 100, 183, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
                 self.route_calls.clear()
                 self.api_core_remaining = remaining
@@ -391,8 +456,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.api_core_remaining = 15000
 
     def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
-        # One source file: 16 * 1 + 128 == 144 API requests reserved.
-        self.api_core_remaining = 144
+        # One source file: 24 * 1 + 160 == 184 API requests reserved.
+        self.api_core_remaining = 184
         self.publish()
         self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
 
@@ -1125,7 +1190,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         files = pub.collect_source(self.source, self.root)
         planned = pub.prepare_source_tree_batches(files)
         self.assertGreater(len(planned), 1)
-        self.api_core_remaining = 16 * max(1, len(planned) - 1) + 128
+        self.api_core_remaining = 24 * max(1, len(planned) - 1) + 160
         partial = []
         original = self.fake_api
 
