@@ -116,6 +116,83 @@ final class ActorRuntimeGroupParallelismTest {
     }
 
     @Test
+    void stoppingQueuedActorReclaimsGateReservationBeforeOtherTurnExits()
+            throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch firstDone = new CountDownLatch(1);
+        AtomicInteger secondRuns = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(2, 2, 8, 16))) {
+            var group = runtime.createActorGroup(limit(1));
+            var first = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        firstEntered.countDown();
+                        try {
+                            if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                                throw new AssertionError("test release timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        } finally {
+                            firstDone.countDown();
+                        }
+                    }));
+            var second = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(), factory -> (message, ctx) ->
+                            secondRuns.incrementAndGet()));
+            try {
+                first.send(1);
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+                second.send(1); // WAITING for first actor's physical gate lease
+                second.stop();
+                assertTrue(second.awaitTermination(5, TimeUnit.SECONDS),
+                        "cancelled queued actor must finalize without its own carrier");
+                assertEquals(0, secondRuns.get(),
+                        "queued actor must never enter guest execution after stop");
+            } finally {
+                releaseFirst.countDown();
+            }
+            assertTrue(firstDone.await(5, TimeUnit.SECONDS));
+            group.close();
+            assertTrue(first.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            releaseFirst.countDown();
+        }
+    }
+
+    @Test
+    void failingQueueObserverDoesNotAbortActorGroupMembershipAndWorkerTeardown()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup(limit(1));
+            var worker = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> { }));
+            // Internal failure injection: the gate is deliberately not exposed
+            // as a guest capability. Java host regression inspects it solely
+            // to model a failed cancellation callback during group shutdown.
+            var field = group.getClass().getDeclaredField("turnGate");
+            field.setAccessible(true);
+            var gate = (ActorGroupTurnGate) field.get(group);
+            var active = gate.submit(permit -> { }, () -> fail("active cancelled"));
+            gate.submit(permit -> fail("cancelled ticket executed"), () -> {
+                throw new IllegalStateException("synthetic cancellation observer failure");
+            });
+            try {
+                assertThrows(IllegalStateException.class, group::close);
+                assertTrue(group.closed());
+                assertEquals(0, runtime.actorGroupCount(),
+                        "failed observer must not prevent registry removal");
+                assertTrue(worker.awaitTermination(5, TimeUnit.SECONDS),
+                        "failed observer must not prevent cancellation of owned worker");
+            } finally {
+                assertTrue(active.release());
+            }
+        }
+    }
+
+    @Test
     void activeActorCannotBeRetrofittedIntoBoundedGroupAndTransferFailsClosed()
             throws Exception {
         CountDownLatch seen = new CountDownLatch(1);
