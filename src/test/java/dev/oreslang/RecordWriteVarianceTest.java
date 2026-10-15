@@ -94,6 +94,21 @@ final class RecordWriteVarianceTest {
     }
 
     @Test
+    void structuralPatternStillReadsInferredReadonlyRecord() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc read(): string {
+                  const value = infer struct{bar: "ok"};
+                  match value over
+                    on structural { bar: string } narrowed -> {
+                      return narrowed.bar;
+                    }
+                    on _ -> { return "missing"; }
+                  end
+                }
+                """)));
+    }
+
+    @Test
     void structuralParameterStillPermitsReadOnlyWidthSubtyping() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define interface Position
