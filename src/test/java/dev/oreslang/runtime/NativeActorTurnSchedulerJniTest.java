@@ -241,6 +241,51 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeCloseFromTrustedQuiescenceCannotClaimCleanupCompleted() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel);
+            var callbackInvoked = new CountDownLatch(1);
+            var callbackError = new AtomicReference<Throwable>();
+            OresFuture<Integer> result = scheduler.start(
+                    resume -> OresScheduler.done(314),
+                    () -> {
+                        try {
+                            var stillCleaning = assertThrows(IllegalStateException.class,
+                                    scheduler::close);
+                            assertTrue(stillCleaning.getMessage().contains(
+                                    "unresolved SourceTasks"),
+                                    "close must not claim success from its own callback");
+                        } catch (Throwable testFailure) {
+                            callbackError.set(testFailure);
+                        } finally {
+                            callbackInvoked.countDown();
+                        }
+                    });
+            assertTrue(callbackInvoked.await(5, TimeUnit.SECONDS));
+            if (callbackError.get() != null) throw new AssertionError(callbackError.get());
+            // The first close was invoked from the quiescence carrier and may
+            // cancel the public Future. That notification is not actor DONE.
+            assertTrue(result.isDone());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            boolean fullyClosed = false;
+            while (System.nanoTime() < deadline && !fullyClosed) {
+                try {
+                    scheduler.close();
+                    fullyClosed = true;
+                } catch (IllegalStateException unresolved) {
+                    if (!unresolved.getMessage().contains("unresolved SourceTasks")) {
+                        throw unresolved;
+                    }
+                    Thread.sleep(2);
+                }
+            }
+            assertTrue(fullyClosed, "native scheduler never completed quiescence");
+            kernel.stop();
+        }
+    }
+
+    @Test
     void nativeRetryMustNotReportIdleForSuspendedLiveSourceTask() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
