@@ -34,14 +34,27 @@ final class EngineeringLogPublishedSnippetTest {
                 .digest(LOG_007_EXACT.getBytes(StandardCharsets.UTF_8));
         assertEquals("26d17ee717f453a1c6d08d53a14e05b262cfe3cbc98c919b0c907f3dea5fe175",
                 HexFormat.of().formatHex(digest));
+        // HTML publishing intentionally strips exactly one final newline.
+        // Any edit must invalidate the public/private provenance pair.
+        assertFalse(LOG_007_EXACT.endsWith("\n"), "Canonical snippet unexpectedly includes a newline");
+        assertEquals(3, LOG_007_EXACT.lines().count(), "Published snippet line count changed");
+        assertNotEquals(HexFormat.of().formatHex(digest),
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                        .digest(LOG_007_EXACT.replace("x * 2", "x * 3").getBytes(StandardCharsets.UTF_8))));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(LOG_007_EXACT)));
     }
 
     @Test
     void logSevenSampleExecutesThroughRealGuestRuntime() {
+        // Execute actual guest calls, including the zero and negative paths.
+        // This proves only the JVM/Truffle profile, not LLVM or native guest AOT.
         String program = LOG_007_EXACT + "\n" + """
                 pub fnc main(): void {
                     stdio.stdout.write(calculate(21));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(calculate(0));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(calculate(-7));
                     return;
                 }
                 """;
@@ -55,6 +68,6 @@ final class EngineeringLogPublishedSnippetTest {
                 .build()) {
             assertDoesNotThrow(() -> context.eval(source));
         }
-        assertEquals("42", stdout.toString(StandardCharsets.UTF_8));
+        assertEquals("42|0|-14", stdout.toString(StandardCharsets.UTF_8));
     }
 }
