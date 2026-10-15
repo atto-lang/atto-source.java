@@ -568,21 +568,33 @@ public final class NativeHttp implements AutoCloseable {
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
             if (alreadyClosed && poolWorker != null) { release(); return; }
-            if (actor != null && cancelOwner) actor.cancel();
-            if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) {
-                // No I/O worker remains to close this aborted transport.
-                // Merely invoking release() here is ineffective because it
-                // refuses to reclaim an exchange with transportClosed=false.
-                // Close as an emergency host fallback, always retire the
-                // admission slot, and never leave server.shutdown() waiting
-                // forever for an impossible executor task.
-                retireRejectedAbort(raw::close, () -> {
-                    synchronized (this) { transportClosed = true; }
-                    release();
-                });
-            }
+            // A pooled actor can serve unrelated listeners and concurrent
+            // requests. Aborting one exchange must NEVER cancel that worker.
+            // Fresh per-request actors, however, are owned by the exchange.
+            // Always close/release the socket even if cancellation fails.
+            runCancellationThenCleanup(
+                    () -> {
+                        if (actor != null && shouldCancelActorForAbort(
+                                cancelOwner, poolWorker != null)) actor.cancel();
+                    },
+                    () -> {
+                        if (alreadyClosed) { release(); return; }
+                        try {
+                            io.execute(() -> {
+                                try { if (send) reject(raw, status); else raw.close(); }
+                                finally {
+                                    synchronized (this) { transportClosed = true; }
+                                    release();
+                                }
+                            });
+                        } catch (RejectedExecutionException closed) {
+                            // An executor rejection must not strand admission.
+                            retireRejectedAbort(raw::close, () -> {
+                                synchronized (this) { transportClosed = true; }
+                                release();
+                            });
+                        }
+                    });
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
@@ -840,6 +852,31 @@ public final class NativeHttp implements AutoCloseable {
     static boolean readyForCarrierBarrier(
             boolean transportStopped, boolean activeEmpty, int releasesInProgress) {
         return transportStopped && activeEmpty && releasesInProgress == 0;
+    }
+
+    /** A pooled worker is shared ownership: one aborted HTTP exchange cannot cancel it. */
+    static boolean shouldCancelActorForAbort(boolean cancelOwner, boolean pooledWorker) {
+        return cancelOwner && !pooledWorker;
+    }
+
+    /**
+     * Even a failing actor cancellation must not strand the socket and request
+     * admission. Preserve cancellation failure and suppress cleanup failure.
+     */
+    static void runCancellationThenCleanup(Runnable cancel, Runnable cleanup) {
+        Objects.requireNonNull(cancel, "cancel");
+        Objects.requireNonNull(cleanup, "cleanup");
+        RuntimeException cancellationFailure = null;
+        try { cancel.run(); }
+        catch (RuntimeException failure) { cancellationFailure = failure; }
+        try { cleanup.run(); }
+        catch (RuntimeException cleanupFailure) {
+            if (cancellationFailure == null) throw cleanupFailure;
+            if (cancellationFailure != cleanupFailure) {
+                cancellationFailure.addSuppressed(cleanupFailure);
+            }
+        }
+        if (cancellationFailure != null) throw cancellationFailure;
     }
 
     /** Only an active runtime/listener can admit a new actor transfer. */
