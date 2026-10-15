@@ -308,3 +308,25 @@ to independently computed `git write-tree`. This does **not** authorize
 private Oreslang source transfers or replace the exporter regression suite.
 The Benefactor `main` branch currently remains unprotected and lacks the
 required effective CODEOWNERS entry, so it is **not** an approved carrier.
+
+
+The follow-up source-free [Benefactor run #38768616381](https://github.com/benefactor-cc/backend.rs/actions/runs/38768616381)
+also passed with **three executed job steps** on its exact synthetic workflow
+revision `08ab4a1e77966971042cda94861f6604fc6c91fb`. It built a
+**554-file** tree (553 short UTF-8 files, one binary; one executable mode),
+using **nine** incremental Git-tree requests plus **one** binary-blob POST.
+The resulting SHA `87ee19c8299b43ccb9032b856f1f89f3c713d5ef`
+matched local `git write-tree`. The live test performed **10** Git-object
+POSTs to create the isolated source subtree; it deliberately did **not**
+create the final destination root tree, commit, or CI ref. The production
+publisher would require three additional writes, for an expected **13**
+writes in this specific synthetic example. Its modeled admission reserve
+is `24 * (1 + 9 - 1) + 160 = 376` core requests; this is not an
+observed measurement of rate-limit consumption.
+
+A separate source-free local test script exercised 2,500 deterministic
+randomized batching scenarios and nine file-count boundary cases. These
+measure the batching algorithm, not all security checks in the private
+publisher. The protected-source approvals and independent security review
+requirements still apply and the full Python/Bash exporter suites remain
+unexecuted.
