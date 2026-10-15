@@ -38,7 +38,7 @@ final class StrictSuspensionEffectTest {
                         @StrictSuspension
                         fnc bad(Channel<int> ch): void {
                             select {
-                                when readch ch -> { return; }
+                                when readch ch: { return; }
                             }
                             return;
                         }
