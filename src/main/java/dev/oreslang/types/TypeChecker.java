@@ -103,6 +103,7 @@ public final class TypeChecker {
     // Scoped to the nearest callable, never a parent callback/actor turn.
     private Type questionPropagationReturn;
     private boolean checkingTrapOperand;
+    private boolean questionSeenInCallable;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -672,16 +673,24 @@ public final class TypeChecker {
         boolean previousMaySuspend = currentMaySuspend;
         currentMaySuspend = fn.async() || fn.suspends();
         Type previousQuestionReturn = questionPropagationReturn;
+        boolean previousQuestionSeen = questionSeenInCallable;
+        questionSeenInCallable = false;
         questionPropagationReturn = fn.async() || fn.suspends() || fn.generator()
                 || fn.actorKind() != Ast.ActorKind.NONE ? null : returns;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
+            if (questionSeenInCallable && questionSourceTaskRisk(fn.body())) {
+                throw new IllegalArgumentException(
+                        "postfix ? requires proven synchronous execution; "
+                        + "the enclosing callable can execute on a SourceTask continuation");
+            }
         } finally {
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
             questionPropagationReturn = previousQuestionReturn;
+            questionSeenInCallable = previousQuestionSeen;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -1466,16 +1475,24 @@ public final class TypeChecker {
             boolean previousMaySuspend = currentMaySuspend;
             currentMaySuspend = method.async() || method.suspends();
             Type previousQuestionReturn = questionPropagationReturn;
+            boolean previousQuestionSeen = questionSeenInCallable;
+            questionSeenInCallable = false;
             questionPropagationReturn = method.async() || method.suspends()
                     || currentActorKind != Ast.ActorKind.NONE ? null : returns;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
+                if (questionSeenInCallable && questionSourceTaskRisk(method.body())) {
+                    throw new IllegalArgumentException(
+                            "postfix ? requires proven synchronous execution; "
+                            + "the enclosing method can execute on a SourceTask continuation");
+                }
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
                 questionPropagationReturn = previousQuestionReturn;
+                questionSeenInCallable = previousQuestionSeen;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -2292,6 +2309,7 @@ public final class TypeChecker {
                             "postfix ? Result error type must exactly match the enclosing Result; "
                             + "use map_err<E>() to convert explicitly");
                 }
+                questionSeenInCallable = true;
                 return sum.arguments().getFirst();
             }
             if (unary.operator().equals("&")) {
@@ -4608,7 +4626,10 @@ public final class TypeChecker {
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
         Type previousQuestionReturn = questionPropagationReturn;
-        questionPropagationReturn = currentMaySuspend ? null : expected.result();
+        // A lambda may run later (Future/Observable/Channel callback) even
+        // when the surrounding callable is synchronous. Until its private
+        // continuation/return frame is proven, a ? inside it is unsafe.
+        questionPropagationReturn = null;
         try {
             validateLambdaAgainstExpectedScoped(lambda, expected, parent, generics, self);
         } finally {
@@ -6054,6 +6075,148 @@ public final class TypeChecker {
                 : new Named("Result", List.of(
                         member.equals("map_err") ? receiver.arguments().getFirst() : output,
                         member.equals("map_err") ? output : unchanged));
+    }
+
+    /**
+     * SourceTask admission preflight for the narrow synchronous ? prototype.
+     * Mirrors the evaluator's potential-suspension discovery conservatively:
+     * if the checker cannot prove that this body stays in the direct evaluator,
+     * refuse ? instead of letting ReturnSignal enter a continuation as failure.
+     */
+    private boolean questionSourceTaskRisk(List<Ast.Stmt> body) {
+        Set<Object> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        return body.stream().anyMatch(stmt -> questionStmtMaySuspend(stmt, seen));
+    }
+
+    private boolean questionStmtMaySuspend(Ast.Stmt stmt, Set<Object> seen) {
+        if (stmt instanceof Ast.SelectStmt selected) {
+            if (selected.mode() != Ast.WaitMode.IMMEDIATE) return true;
+            return selected.arms().stream().anyMatch(arm ->
+                    arm.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen)));
+        }
+        if (stmt instanceof Ast.BindingStmt v) return questionExprMaySuspend(v.initializer(), seen);
+        if (stmt instanceof Ast.DestructureStmt v) return questionExprMaySuspend(v.initializer(), seen);
+        if (stmt instanceof Ast.ReturnStmt v) return questionExprMaySuspend(v.value(), seen);
+        if (stmt instanceof Ast.ExprStmt v) return questionExprMaySuspend(v.expression(), seen);
+        if (stmt instanceof Ast.DeferStmt v) return questionExprMaySuspend(v.expression(), seen);
+        if (stmt instanceof Ast.BlockStmt v)
+            return v.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        if (stmt instanceof Ast.IfStmt v) {
+            return v.branches().stream().anyMatch(b ->
+                    questionExprMaySuspend(b.condition(), seen)
+                    || b.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen)))
+                    || v.elseBody().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        }
+        if (stmt instanceof Ast.TryStmt v) {
+            return v.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen))
+                    || v.catchBody().stream().anyMatch(n -> questionStmtMaySuspend(n, seen))
+                    || v.finallyBody().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        }
+        if (stmt instanceof Ast.MatchStmt v) {
+            return questionExprMaySuspend(v.subject(), seen)
+                    || v.arms().stream().anyMatch(arm ->
+                        questionExprMaySuspend(arm.guard(), seen)
+                        || arm.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen)));
+        }
+        if (stmt instanceof Ast.SwitchStmt v) {
+            return questionExprMaySuspend(v.subject(), seen)
+                    || v.cases().stream().anyMatch(arm ->
+                        arm.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen)))
+                    || v.defaultBody().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        }
+        if (stmt instanceof Ast.ForOfStmt v)
+            return v.asyncIteration() || questionExprMaySuspend(v.iterable(), seen)
+                    || v.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        if (stmt instanceof Ast.ForOfDestructureStmt v)
+            return v.asyncIteration() || questionExprMaySuspend(v.iterable(), seen)
+                    || v.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        if (stmt instanceof Ast.ForStmt v) {
+            return v.initializer() != null && questionStmtMaySuspend(v.initializer(), seen)
+                    || questionExprMaySuspend(v.condition(), seen)
+                    || questionExprMaySuspend(v.update(), seen)
+                    || v.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        }
+        if (stmt instanceof Ast.LoopStmt v)
+            return v.body().stream().anyMatch(n -> questionStmtMaySuspend(n, seen));
+        // Refuse unrecognized source control forms rather than assume no suspend.
+        return true;
+    }
+
+    private boolean questionExprMaySuspend(Ast.Expr expr, Set<Object> seen) {
+        if (expr == null) return false;
+        if (expr instanceof Ast.AwaitExpr) return true;
+        if (expr instanceof Ast.ChannelOpExpr v)
+            return v.mode() == Ast.WaitMode.BLOCKING;
+        if (expr instanceof Ast.DynamicSelectExpr v)
+            return v.mode() == Ast.WaitMode.BLOCKING;
+        if (expr instanceof Ast.RuntimeCallExpr v)
+            return v.operation().equals("cooperate")
+                    || v.arguments().stream().anyMatch(a -> questionExprMaySuspend(a, seen));
+        if (expr instanceof Ast.CallExpr call) {
+            if (call.arguments().stream().anyMatch(a -> questionExprMaySuspend(a, seen))
+                    || questionExprMaySuspend(call.callee(), seen)) return true;
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                Set<Ast.ClassDecl> visited = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                for (Ast.ClassDecl klass : classes.values()) {
+                    if (!visited.add(klass)) continue;
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        if (method.name().equals(member.member())
+                                && method.arity() == call.arguments().size()
+                                && seen.add(method)) {
+                            if (method.async() || method.suspends()
+                                    || method.body().stream().anyMatch(a -> questionStmtMaySuspend(a, seen)))
+                                return true;
+                        }
+                    }
+                }
+                // Unknown imports cannot prove a callable is synchronous.
+                return !importedValues.isEmpty();
+            }
+            if (call.callee() instanceof Ast.NameExpr name) {
+                Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
+                if (target != null) {
+                    if (target.generator()) return false;
+                    if (target.async() || target.suspends()
+                            || target.actorKind() != Ast.ActorKind.NONE) return true;
+                    return seen.add(target) && target.body().stream().anyMatch(
+                            a -> questionStmtMaySuspend(a, seen));
+                }
+            }
+            return false;
+        }
+        if (expr instanceof Ast.MatchExpr v) {
+            return questionExprMaySuspend(v.subject(), seen)
+                    || v.arms().stream().anyMatch(arm ->
+                        questionExprMaySuspend(arm.guard(), seen)
+                        || questionExprMaySuspend(arm.value(), seen));
+        }
+        if (expr instanceof Ast.TrapExpr v) return questionExprMaySuspend(v.expression(), seen);
+        if (expr instanceof Ast.UnaryExpr v) return questionExprMaySuspend(v.operand(), seen);
+        if (expr instanceof Ast.BinaryExpr v)
+            return questionExprMaySuspend(v.left(), seen) || questionExprMaySuspend(v.right(), seen);
+        if (expr instanceof Ast.AssignExpr v)
+            return questionExprMaySuspend(v.target(), seen) || questionExprMaySuspend(v.value(), seen);
+        if (expr instanceof Ast.ConditionalExpr v)
+            return questionExprMaySuspend(v.condition(), seen)
+                    || questionExprMaySuspend(v.whenTrue(), seen)
+                    || questionExprMaySuspend(v.whenFalse(), seen);
+        if (expr instanceof Ast.TypeTestExpr v) return questionExprMaySuspend(v.value(), seen);
+        if (expr instanceof Ast.PatternTestExpr v) return questionExprMaySuspend(v.value(), seen);
+        if (expr instanceof Ast.CastExpr v) return questionExprMaySuspend(v.value(), seen);
+        if (expr instanceof Ast.MemberExpr v) return questionExprMaySuspend(v.receiver(), seen);
+        if (expr instanceof Ast.IndexExpr v)
+            return questionExprMaySuspend(v.receiver(), seen) || questionExprMaySuspend(v.index(), seen);
+        if (expr instanceof Ast.NewExpr v)
+            return v.arguments().stream().anyMatch(a -> questionExprMaySuspend(a, seen));
+        if (expr instanceof Ast.ListExpr v)
+            return v.elements().stream().anyMatch(a -> questionExprMaySuspend(a, seen));
+        if (expr instanceof Ast.TupleExpr v)
+            return v.elements().stream().anyMatch(a -> questionExprMaySuspend(a, seen));
+        if (expr instanceof Ast.ObjectExpr v)
+            return v.fields().stream().anyMatch(a -> questionExprMaySuspend(a.value(), seen));
+        // A literal/name/lambda is not itself a suspension; lambda bodies
+        // remain non-admitted for ? until their invocation lifetime is proven.
+        return false;
     }
 
     private boolean questionOperandHasExplicitSuspension(Ast.Expr expr) {
