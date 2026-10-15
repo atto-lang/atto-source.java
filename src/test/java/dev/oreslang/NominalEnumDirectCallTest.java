@@ -194,4 +194,25 @@ final class NominalEnumDirectCallTest {
         assertTrue(failure.getMessage().contains("rebinding callable IDs"),
                 failure.getMessage());
     }
+
+    @Test
+    void fncAndRoutineShareNominalEnumOverloadFamilyInBothOrders() throws Exception {
+        String output = run(ENUMS + """
+                fnc answer(Color c): int { return 13; }
+                routine answer(Mode m): int { return 17; }
+                routine reverse(Color c): int { return 19; }
+                fnc reverse(Mode m): int { return 23; }
+
+                pub routine main(): void {
+                    stdio.stdout.write(answer(Color.Red()));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(answer(Mode.Fast(5)));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(reverse(Color.Blue()));
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(reverse(Mode.Fast(7)));
+                }
+                """);
+        assertEquals("13:17:19:23", output);
+    }
 }
