@@ -3548,8 +3548,13 @@ public final class Parser {
         if (lexeme.length() > 16_384) {
             throw error(token, "decimal literal exceeds 16384 source characters");
         }
+        validateNumericSeparators(token);
         try {
-            return new java.math.BigDecimal(lexeme.substring(0, lexeme.length() - 1).replace("_", ""));
+            java.math.BigDecimal value = new java.math.BigDecimal(lexeme.substring(0, lexeme.length() - 1).replace("_", ""));
+            if (Math.abs((long) value.scale()) > 100_000L) {
+                throw error(token, "decimal literal exponent exceeds supported scale range: " + lexeme);
+            }
+            return value;
         } catch (NumberFormatException invalid) {
             throw error(token, "malformed exact decimal literal: " + lexeme);
         }
@@ -3558,12 +3563,26 @@ public final class Parser {
     /** An overflowing float literal must not silently become infinity. */
     private double parseFiniteF64(Token token) {
         String lexeme = token.lexeme();
+        validateNumericSeparators(token);
         try {
             double value = Double.parseDouble(lexeme.replace("_", ""));
             if (!Double.isFinite(value)) throw error(token, "floating-point literal overflows binary64: " + lexeme);
             return value;
         } catch (NumberFormatException invalid) {
             throw error(token, "malformed floating-point literal: " + lexeme);
+        }
+    }
+
+    /** Underscores only separate digits, never decimal points or exponents. */
+    private void validateNumericSeparators(Token token) {
+        String literal = token.lexeme();
+        for (int i = 0; i < literal.length(); i++) {
+            if (literal.charAt(i) != '_') continue;
+            if (i == 0 || i + 1 >= literal.length()
+                    || !Character.isDigit(literal.charAt(i - 1))
+                    || !Character.isDigit(literal.charAt(i + 1))) {
+                throw error(token, "malformed numeric separator: " + literal);
+            }
         }
     }
 
