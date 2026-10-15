@@ -4936,6 +4936,17 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        // Serialization codec objects and pointer/stream handles are
+        // executable or lifetime-bearing capabilities, never mailbox data.
+        // In particular a NetworkCodec<T> may not grant actor-message
+        // authority merely by serializing its own implementation object.
+        if (named.name().equals("Pointer") || named.name().equals("NetworkCodec")
+                || named.name().equals("ActorMessageCodec") || named.name().equals("Stream")
+                || named.name().equals("Observable")) {
+            throw new IllegalArgumentException(where + " cannot transport "
+                    + named.name() + " across an actor boundary; encode owned data with "
+                    + "an independently admitted ActorMessageCodec<T>");
+        }
         if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
                 || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
                 || named.name().equals("Channel") || named.name().equals("SelectCase")
@@ -5020,6 +5031,9 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("Pointer") || named.name().equals("NetworkCodec")
+                || named.name().equals("ActorMessageCodec") || named.name().equals("Stream")
+                || named.name().equals("Observable")) return false;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
