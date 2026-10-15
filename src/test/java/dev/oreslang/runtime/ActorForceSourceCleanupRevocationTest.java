@@ -234,4 +234,108 @@ final class ActorForceSourceCleanupRevocationTest {
                     "denied force kill must not replace graceful self.end");
         }
     }
+    @Test
+    void deniedForceRevocationReplaysQueuedCleanupOnlyAfterFenceClears()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            OresFuture<Integer> abandonedProducer = new OresFuture<>();
+            OresFuture<Integer> cleanupProducer = new OresFuture<>();
+            CountDownLatch taskEntered = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            CountDownLatch cleanupFinished = new CountDownLatch(1);
+            CountDownLatch revokerEntered = new CountDownLatch(1);
+            CountDownLatch releaseRevoker = new CountDownLatch(1);
+            AtomicInteger cleanupResumes = new AtomicInteger();
+            AtomicReference<OresFuture<Void>> taskRef = new AtomicReference<>();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                taskRef.set(context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int pc;
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                assertTrue(ActorRuntime.inActorExecution());
+                                if (pc++ == 0) {
+                                    taskEntered.countDown();
+                                    return OresScheduler.await(abandonedProducer);
+                                }
+                                if (pc == 2) {
+                                    assertInstanceOf(CancellationException.class,
+                                            resume.failure());
+                                    cleanupEntered.countDown();
+                                    return OresScheduler.await(cleanupProducer);
+                                }
+                                assertEquals(91, resume.value());
+                                cleanupResumes.incrementAndGet();
+                                cleanupFinished.countDown();
+                                return OresScheduler.done(null);
+                            }
+                        }));
+            });
+
+            actor.send("start");
+            assertTrue(taskEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+
+            // Do not race the source task's armAwait registration.
+            long registeredBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (cleanupProducer.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < registeredBy) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, cleanupProducer.pendingRuntimeWaiterCount());
+
+            runtime.setForceCancellationTreeHook(request -> {
+                revokerEntered.countDown();
+                try {
+                    assertTrue(releaseRevoker.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return false;
+            });
+            AtomicReference<Throwable> killFailure = new AtomicReference<>();
+            Thread revoker = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.forceCancel();
+                    killFailure.set(new AssertionError(
+                            "force revoker returned false, but kill succeeded"));
+                } catch (IllegalStateException expected) {
+                    // Failed revocation must restore the suspended STOP lane.
+                } catch (Throwable unexpected) {
+                    killFailure.set(unexpected);
+                }
+            });
+            try {
+                assertTrue(revokerEntered.await(5, TimeUnit.SECONDS));
+                cleanupProducer.completeFromRuntime(91);
+                assertEquals(0, cleanupResumes.get(),
+                        "guest cleanup must not run while the host revoker is fenced");
+                assertFalse(taskRef.get().isDone(),
+                        "a queued cleanup turn must not settle before it runs");
+                assertFalse(actor.awaitTermination(50, TimeUnit.MILLISECONDS));
+            } finally {
+                releaseRevoker.countDown();
+            }
+            revoker.join(5_000);
+            assertFalse(revoker.isAlive());
+            if (killFailure.get() != null) throw new AssertionError(killFailure.get());
+
+            assertTrue(cleanupFinished.await(5, TimeUnit.SECONDS),
+                    "failed revocation must restore already-queued source cleanup");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, cleanupResumes.get());
+            assertEquals(0, abandonedProducer.pendingRuntimeWaiterCount());
+            assertEquals(0, cleanupProducer.pendingRuntimeWaiterCount());
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    actor.failure().orElseThrow());
+            assertThrows(CancellationException.class,
+                    () -> taskRef.get().get(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
