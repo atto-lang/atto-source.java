@@ -4804,7 +4804,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // lexical cleanup has finished. Its Future / get_done()
                 // carries the physical-quiescence barrier; the cleanup
                 // deadline separately bounds incomplete shutdown.
-                if (cell.hasSourceCleanup() || cell.sourceCancellationPending) return;
+                if (cell.hasSourceCleanup() || cell.sourceCancellationPending
+                        || (cell.forceKillFenced && !cell.sourceCleanupTasks.isEmpty())) return;
             }
             throw new IllegalStateException(
                     "actor " + ref.id()
@@ -7877,8 +7878,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 lexicalCleanup = List.copyOf(sourceCleanupTasks);
+                // The force fence is provisional until the isolation revoker accepts.
+                // Preserve STOP cancellation injection while the revoker is pending.
                 sourceCancellationPending = !lexicalCleanup.isEmpty()
-                        && !forceKillFenced && !closed.get();
+                        && !sourceCleanupRevoked && !closed.get();
                 if (sourceCancellationPending) {
                     pruneStoppedContinuationQueueLocked();
                     drainStoppedUserMailbox();
@@ -7899,6 +7902,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             boolean cleanupActive;
+            boolean cleanupDeadlineRequired;
             try {
                 // Actor dispatch remains fenced until every live source task
                 // receives its cancellation request and gains its permit.
@@ -7908,11 +7912,15 @@ public final class ActorRuntime implements AutoCloseable {
                 synchronized (lifecycleLock) {
                     sourceCancellationPending = false;
                     cleanupActive = hasSourceCleanup();
+                    // A tentative force fence must not silently skip the
+                    // bounded STOP deadline when external revocation fails.
+                    cleanupDeadlineRequired = !sourceCleanupRevoked
+                            && !sourceCleanupTasks.isEmpty() && !closed.get();
                     finalizeStopLocked();
                     lifecycleLock.notifyAll();
                 }
-                if (cleanupActive) {
-                    schedule();
+                if (cleanupActive) schedule();
+                if (cleanupDeadlineRequired) {
                     CompletableFuture.delayedExecutor(
                             SOURCE_STOP_CLEANUP_GRACE_MILLIS, TimeUnit.MILLISECONDS)
                             .execute(this::expireSourceCleanup);
