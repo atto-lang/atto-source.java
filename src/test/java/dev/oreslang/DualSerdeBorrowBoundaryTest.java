@@ -13,6 +13,24 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class DualSerdeBorrowBoundaryTest {
     @Test
+    void serializerAnnotationsCannotSilentlyGrantCrossDomainAuthority() {
+        for (String annotation : new String[]{
+                "Serializable", "NetworkCodec", "ActorMessageCodec",
+                "SupervisorControlCodec"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse("""
+                            @%s
+                            define class Payload as
+                              pub val int value = 7;
+                            end
+                            """.formatted(annotation)));
+            assertTrue(failure.getMessage().contains("requires compile-time"),
+                    () -> annotation + ": " + failure.getMessage());
+        }
+    }
+
+    @Test
     void separateGenericCodecInterfacesParseWithReadLoansAndOwnedResults() {
         Ast.Program program = assertDoesNotThrow(() -> Parser.parse("""
                 define interface NetworkCodec<T> as
