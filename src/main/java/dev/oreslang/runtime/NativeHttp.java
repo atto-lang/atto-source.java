@@ -381,10 +381,14 @@ public final class NativeHttp implements AutoCloseable {
                         // settle drained successfully before this thread
                         // reports the failure.
                         if (stopFailure != null) drained.failFromRuntime(stopFailure);
-                        synchronized (this) { transportStopped = true; }
+                        // Do not publish transportStopped until every accepted
+                        // exchange has been visited by abort cleanup. Otherwise
+                        // an asynchronous State.release() can finish a successful
+                        // shutdown while a later abort still reports failure.
                         try {
                             abortAllActiveOnShutdown();
                         } finally {
+                            synchronized (this) { transportStopped = true; }
                             servers.remove(this);
                             completeDrain();
                         }
@@ -489,10 +493,10 @@ public final class NativeHttp implements AutoCloseable {
             try {
                 transport.stop(0);
             } finally {
-                synchronized (this) { transportStopped = true; }
                 try {
                     abortAllActiveOnShutdown();
                 } finally {
+                    synchronized (this) { transportStopped = true; }
                     // The listener must release its bidirectional references
                     // even when stop or an abort fails exceptionally.
                     for (Handler.Worker worker : List.copyOf(pooledWorkers)) {
