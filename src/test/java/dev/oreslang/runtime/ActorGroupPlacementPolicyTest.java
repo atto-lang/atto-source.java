@@ -100,6 +100,93 @@ final class ActorGroupPlacementPolicyTest {
     }
 
     @Test
+    void concurrentUnsupportedAdmissionsCannotConsumeAnyGroupSlots() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var forbidden = new ActorGroupPlacementPolicy(
+                    ActorGroupPlacementPolicy.CpuAffinity.ANY, 1,
+                    ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0);
+            final int workers = 12;
+            final int attemptsPerWorker = 64;
+            CountDownLatch ready = new CountDownLatch(workers);
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(workers);
+            java.util.concurrent.atomic.AtomicInteger rejected =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            java.util.List<Thread> threads = new java.util.ArrayList<>();
+            for (int i = 0; i < workers; i++) {
+                Thread worker = new Thread(() -> {
+                    ready.countDown();
+                    try {
+                        if (!start.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("admission start timed out");
+                        }
+                        for (int j = 0; j < attemptsPerWorker; j++) {
+                            try {
+                                runtime.createActorGroup(forbidden);
+                                throw new AssertionError("unsupported policy admitted");
+                            } catch (UnsupportedOperationException expected) {
+                                rejected.incrementAndGet();
+                            }
+                        }
+                    } catch (Throwable failure) {
+                        unexpected.compareAndSet(null, failure);
+                    } finally {
+                        done.countDown();
+                    }
+                }, "group-policy-admission-" + i);
+                threads.add(worker);
+                worker.start();
+            }
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            for (Thread worker : threads) worker.join(2_000);
+            assertNull(unexpected.get(), "unexpected concurrent policy admission result");
+            assertEquals(workers * attemptsPerWorker, rejected.get());
+            assertEquals(0, runtime.actorGroupCount());
+            var valid = runtime.createActorGroup();
+            assertEquals(1, runtime.actorGroupCount());
+            valid.close();
+            assertEquals(0, runtime.actorGroupCount());
+        }
+    }
+
+    @Test
+    void placementInspectionIsMemberOrSupervisorOnly() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var group = runtime.createActorGroup();
+            var join = group.joinCapability();
+            var expected = ActorGroupPlacementPolicy.unrestricted();
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+            var actor = runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    factoryContext -> (message, context) -> {
+                        try {
+                            assertThrows(SecurityException.class, group::placementPolicy);
+                            join.join();
+                            assertEquals(expected, group.placementPolicy());
+                            group.leaveCurrent();
+                            assertThrows(SecurityException.class, group::placementPolicy);
+                        } catch (Throwable failure) {
+                            unexpected.set(failure);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(unexpected.get());
+            assertEquals(expected, group.placementPolicy(),
+                    "trusted host supervisor can inspect policy");
+            group.close();
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void groupMembershipRemainsOrthogonalToImmutablePlacementPolicy() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var groupA = runtime.createActorGroup(ActorGroupPlacementPolicy.unrestricted());
