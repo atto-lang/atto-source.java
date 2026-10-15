@@ -2262,11 +2262,18 @@ public final class TypeChecker {
                             "postfix ? requires a synchronous local Result/Option callable; "
                             + "not admitted in async, suspending, detached, trap, or actor contexts yet");
                 }
-                if (!(operand instanceof Named sum) || !(questionPropagationReturn instanceof Named destination)
-                        || (sum.name().equals("Option") && destination.name().equals("Option")
-                            && sum.arguments().size() == 1 && destination.arguments().size() == 1)
-                        == false && (sum.name().equals("Result") && destination.name().equals("Result")
-                            && sum.arguments().size() == 2 && destination.arguments().size() == 2) == false) {
+                if (!(operand instanceof Named sum) || !(questionPropagationReturn instanceof Named destination)) {
+                    throw new IllegalArgumentException(
+                            "postfix ? requires matching Result<T,E> or Option<T> "
+                            + "and an enclosing callable returning the same sum kind");
+                }
+                boolean matchingOption = sum.name().equals("Option")
+                        && destination.name().equals("Option")
+                        && sum.arguments().size() == 1 && destination.arguments().size() == 1;
+                boolean matchingResult = sum.name().equals("Result")
+                        && destination.name().equals("Result")
+                        && sum.arguments().size() == 2 && destination.arguments().size() == 2;
+                if (!matchingOption && !matchingResult) {
                     throw new IllegalArgumentException(
                             "postfix ? requires matching Result<T,E> or Option<T> "
                             + "and an enclosing callable returning the same sum kind");
