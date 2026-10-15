@@ -31,7 +31,24 @@ public final class ActorStateContract {
 
     public static Ast.TypeRef keySchema(Ast.FieldDecl field) {
         Ast.TypeRef type = field.type();
-        if (type.name().equals("$actor_state_map$")) return type.arguments().get(1);
+        if (type.name().equals("$actor_state_map$")) {
+            // A later AST producer must not forge a closed schema while
+            // substituting an unverified dynamic-map substrate. Reject
+            // malformed wrappers with a controlled semantic diagnostic.
+            if (type.inferArguments() || type.arguments().size() != 2) {
+                throw new IllegalArgumentException("malformed sealed actor state map layout");
+            }
+            Ast.TypeRef mapType = type.arguments().get(0);
+            Ast.TypeRef schema = type.arguments().get(1);
+            if (!mapType.name().equals("Map") || mapType.inferArguments()
+                    || mapType.arguments().size() != 2
+                    || !(mapType.arguments().get(0).name().equals("string")
+                         || mapType.arguments().get(0).name().equals("String"))
+                    || !schema.name().equals("$record$") || schema.inferArguments()) {
+                throw new IllegalArgumentException("noncanonical sealed actor state map schema");
+            }
+            return schema;
+        }
         // A completely dynamic homogeneous Map has no statically named keys.
         // It remains sealed; its dynamic get/set operations need separate lowering.
         if (type.name().equals("Map")) return Ast.TypeRef.recordType(Map.of());
