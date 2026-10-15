@@ -7,8 +7,14 @@ case "$(uname -s)" in
 esac
 mkdir -p target/native
 sanitizers=""
+if [ "${ORES_NATIVE_SANITIZE:-0}" = 1 ] && [ "${ORES_NATIVE_TSAN:-0}" = 1 ]; then
+  echo "Cannot combine AddressSanitizer and ThreadSanitizer in one test executable" >&2
+  exit 1
+fi
 if [ "${ORES_NATIVE_SANITIZE:-0}" = 1 ]; then
   sanitizers="-fsanitize=address,undefined -fno-omit-frame-pointer"
+elif [ "${ORES_NATIVE_TSAN:-0}" = 1 ]; then
+  sanitizers="-fsanitize=thread -fno-omit-frame-pointer"
 fi
 for opt in 0 2; do
   for suite in oresactorturn_test oresactorturn_scheduler_boundary_test; do
