@@ -333,6 +333,9 @@ public final class OresScheduler implements AutoCloseable {
      *
      * Failed retries remain in the live set; other terminal tasks are still
      * attempted, rather than one BUSY source starving their retirement.
+     * A zero result is meaningful only with no remaining live native tasks;
+     * an active, not-yet-terminal, or in-progress terminal SourceTask is
+     * explicitly reported as a failed barrier, not silently skipped.
      */
     int retryNativeQuiescentTasks() {
         if (nativeTurnKernel == null) {
@@ -342,6 +345,13 @@ public final class OresScheduler implements AutoCloseable {
         RuntimeException failure = null;
         for (TaskRunner<?> task : Set.copyOf(tasks)) {
             if (task.phase.get() != TaskRunner.TERMINAL || task.executing.get()) {
+                // The method is a *barrier query* as well as a retry. A
+                // zero count must not suggest native DONE when the live set
+                // still has a source executing or awaiting completion.
+                var pending = new IllegalStateException(
+                        "native SourceTask is not terminal and physically quiescent");
+                if (failure == null) failure = pending;
+                else failure.addSuppressed(pending);
                 continue;
             }
             Throwable callbackError = task.nativeQuiescenceCallbackFailure.get();
@@ -371,7 +381,19 @@ public final class OresScheduler implements AutoCloseable {
             try {
                 task.retireWhenQuiescent();
                 task.publishTerminalIfReady();
-                if (task.nativeRetirementConfirmed.get()) retired++;
+                if (!task.nativeRetirementConfirmed.get()
+                        || !task.nativeQuiescenceCallbackFinished.get()) {
+                    // Another host thread may have won the one-shot
+                    // quiescence CAS and still be inside JNI settlement or
+                    // trusted callback. Never equate losing that CAS with
+                    // an already-completed native retirement.
+                    var pending = new IllegalStateException(
+                            "native SourceTask terminal retirement is still in progress");
+                    if (failure == null) failure = pending;
+                    else failure.addSuppressed(pending);
+                } else {
+                    retired++;
+                }
             } catch (RuntimeException e) {
                 if (failure == null) failure = e;
                 else failure.addSuppressed(e);
