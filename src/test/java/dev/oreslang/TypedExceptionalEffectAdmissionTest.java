@@ -40,6 +40,40 @@ final class TypedExceptionalEffectAdmissionTest {
     }
 
     @Test
+    void sourceActorSupervisionHooksRemainFailClosedUntilCheckedDispatchExists() {
+        // Merely spelling a lifecycle method must never silently install a
+        // guest callback before Error ownership and CONTROL dispatch work.
+        for (String hook : List.of(
+                "on_throw", "on_throws", "on_raise", "on_panic", "on_recover")) {
+            for (String modifier : List.of("", "method ", "pub ")) {
+                String source = """
+                        define actor Worker as
+                            HANDLER(Error err): void { return; }
+                            receive(ActorMail<String> mail): void { return; }
+                        end
+                        """.replace("HANDLER", modifier + hook);
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> Parser.parse(source), modifier + hook);
+                assertTrue(failure.getMessage().contains("source handlers are not yet enabled"),
+                        failure::getMessage);
+            }
+        }
+        // Both source-level recovery and its aliases remain unavailable
+        // inside actors as well as inside ordinary functions.
+        IllegalArgumentException recovery = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse("""
+                        define actor Worker as
+                            receive(ActorMail<String> mail): void {
+                                recover 1;
+                            }
+                        end
+                        """));
+        assertTrue(recovery.getMessage().contains("not yet enabled"),
+                recovery::getMessage);
+    }
+
+    @Test
     void typedThrowParsesButRequiresCompilerCheckedCatchAndGuestError() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class TaskError extends Error as
