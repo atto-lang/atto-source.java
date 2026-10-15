@@ -97,6 +97,11 @@ jobs:
         run: |
           java --version
           native-image --version
+      # This job was admitted when the separate JUnit job could not start.
+      # Run the actual parser and HIR regression classes with JUnit5 before
+      # the expensive native-image build, on this repository's own runner.
+      - name: Checked-i64 source negotiation and real-parser HIR JUnit regressions
+        run: mvn -B -ntp -Dtest=CheckedI64SourceHeaderTest,ExperimentalHirV1ExporterTest -DfailIfNoTests=true test
       - name: Build AOT host with guest JIT
         run: mvn -B -ntp -Pnative-hybrid -DskipTests package
       - name: Run hybrid image
