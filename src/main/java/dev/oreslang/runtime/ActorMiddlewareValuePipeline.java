@@ -17,11 +17,42 @@ public final class ActorMiddlewareValuePipeline<T> {
     public sealed interface Decision<R> permits Continue, Reply, Reject {}
     public sealed interface Outcome<R> permits Reply, Reject {}
 
-    public record Continue<R>(ActorMiddlewarePipeline.Envelope request) implements Decision<R> {
-        public Continue { Objects.requireNonNull(request); }
+    /**
+     * Immutable HTTP reply *metadata*, not an HttpResponseWriter. No headers
+     * or status are committed until the single trusted terminal owner encodes
+     * the typed reply. A generic ActorMail adapter may ignore HTTP options.
+     */
+    public record ResponseDraft(int status, Map<String, String> headers) {
+        public ResponseDraft {
+            if (status < 200 || status > 599 || status == 204 || status == 205
+                    || status == 304) throw new IllegalArgumentException("status cannot carry a typed reply");
+            headers = new ActorMiddlewarePipeline.Envelope("", headers).headers();
+        }
+        public static ResponseDraft defaults() { return new ResponseDraft(200, Map.of()); }
+        public ResponseDraft withStatus(int value) { return new ResponseDraft(value, headers); }
+        public ResponseDraft withHeader(String name, String value) {
+            var changed = new HashMap<>(headers);
+            changed.put(name, value);
+            return new ResponseDraft(status, changed);
+        }
     }
-    public record Reply<R>(R value) implements Decision<R>, Outcome<R> {
-        public Reply { Objects.requireNonNull(value, "reply must be nonvoid"); }
+
+    public record Continue<R>(ActorMiddlewarePipeline.Envelope request, ResponseDraft response)
+            implements Decision<R> {
+        public Continue {
+            Objects.requireNonNull(request);
+            Objects.requireNonNull(response);
+        }
+        public Continue(ActorMiddlewarePipeline.Envelope request) {
+            this(request, ResponseDraft.defaults());
+        }
+    }
+    public record Reply<R>(R value, ResponseDraft response) implements Decision<R>, Outcome<R> {
+        public Reply {
+            Objects.requireNonNull(value, "reply must be nonvoid");
+            Objects.requireNonNull(response);
+        }
+        public Reply(R value) { this(value, ResponseDraft.defaults()); }
     }
     public record Reject<R>(int status, String reason) implements Decision<R>, Outcome<R> {
         public Reject {
@@ -31,13 +62,19 @@ public final class ActorMiddlewareValuePipeline<T> {
     }
 
     @FunctionalInterface public interface Next<R> {
-        CompletionStage<Outcome<R>> proceed(ActorMiddlewarePipeline.Envelope request);
+        CompletionStage<Outcome<R>> proceed(
+                ActorMiddlewarePipeline.Envelope request, ResponseDraft response);
+        default CompletionStage<Outcome<R>> proceed(ActorMiddlewarePipeline.Envelope request) {
+            return proceed(request, ResponseDraft.defaults());
+        }
     }
     @FunctionalInterface public interface ValueHook<R> {
-        CompletionStage<Decision<R>> nextVal(ActorMiddlewarePipeline.Envelope request);
+        CompletionStage<Decision<R>> nextVal(
+                ActorMiddlewarePipeline.Envelope request, ResponseDraft response);
     }
     @FunctionalInterface public interface AroundHook<R> {
-        CompletionStage<Outcome<R>> next(ActorMiddlewarePipeline.Envelope request, Next<R> next);
+        CompletionStage<Outcome<R>> next(
+                ActorMiddlewarePipeline.Envelope request, ResponseDraft response, Next<R> next);
     }
     @FunctionalInterface public interface Terminal<R> {
         CompletionStage<R> run(ActorMiddlewarePipeline.Envelope request);
