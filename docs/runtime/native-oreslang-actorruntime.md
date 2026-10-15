@@ -2,6 +2,32 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-15 — parallel scheduler claims: executable regression committed
+
+The duplicate-owner regressions previously proved sequential exclusion but
+did not test simultaneous factory callers. Two new tests now rendezvous two
+platform threads against the same native actor VM, require exactly **one**
+successful owner claim and one `already bound` denial, then execute a real
+native-backed SourceTask through the winning scheduler. They also check that
+the VM cannot be rebound after the winner closes.
+
+- Standalone JNI smoke: `concurrentNativeSchedulerClaimsHaveOneWinner`;
+  six distinct scenarios per iteration, default **72 planned executions**.
+- Opt-in JUnit: `concurrentNativeKernelOwnerClaimsAreExclusive`.
+  The opt-in suite now defines **14 JUnit cases**.
+
+**Execution status:** neither new regression has executed. The source-org
+GitHub Actions native ABI workflow automatically started for the new commit,
+but again reported failure before recording any executable steps. Do not
+count those failures as test assertions or as source regressions. No private
+repository tree was transferred to an unapproved external CI carrier.
+
+The existing JNI standalone smoke exercises native STOP, terminal injection,
+cleanup-effect revocation, cleanup completion and source retirement. That is
+**not** a compiled guest-Oreslang STOP → cleanup → DONE demonstration, and
+the feature remains experimental/default-off until those independent runtime
+gates pass on a trusted runner.
+
 ## 2026-10-15 — one native actor kernel, one Java scheduler owner
 
 **Found and fixed a real SourceTask namespace/carry-lane mismatch.**
@@ -26,8 +52,8 @@ Both the opt-in `NativeActorTurnSchedulerJniTest` and the Maven-free
 real-scheduler/JNI smoke now exercise duplicate-owner refusal, continued
 successful operation of the original owner, and refusal to silently
 reassign a previously bound kernel. With the new regression, the
-standalone smoke defines **five scenarios per native VM iteration**,
-12 iterations by default (60 executions *when the suite runs*). 
+standalone smoke defines **six scenarios per native VM iteration**,
+12 iterations by default (72 executions *when the suite runs*). 
 These tests are committed but have **not** been executed on the
 current full Java/native source tree.
 
