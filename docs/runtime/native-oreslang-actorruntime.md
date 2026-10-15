@@ -2,6 +2,54 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-15 audit — physical-park test barriers and reentrant close
+
+**Test fidelity.** The JDK21 dependency-light real-scheduler JNI smoke
+used a `started` CountDownLatch to trigger STOP and cleanup-ticket
+races. That latch fires *inside* guest code and does not prove that the
+guest's `await` has returned, the scheduler is in `WAITING`, or its
+native physical carrier lease has exited. The smoke now waits until the
+actual TaskRunner has `phase == WAITING` and `executing == false`
+before those interventions. The four lifecycle scenarios run for 12
+fresh native actor VMs by default (48 scenario executions **when run**),
+with a bounded `ores.native.actor.turn.smoke.iterations` override.
+These are proposed workload counts, not reported passing results.
+
+**Reentrant native shutdown.** The JNI-enabled scheduler previously
+allowed an `onQuiescent` callback to call `close()` from the
+scheduler's own **physical** carrier, even though `CURRENT` guest-task
+identity had already been cleared. That path could mark the scheduler
+closed and call `shutdownNow()` on its own carrier while the trusted
+callback was still running. With native witness enabled, close now
+refuses that attempt *before setting the closed flag* if
+`CURRENT_CARRIER_SCHEDULER` identifies the same scheduler. An
+outside/root owner must initiate shutdown after the physical carrier
+has returned. Ordinary schedulers without a native witness retain
+their historical behavior.
+
+The standalone smoke and opt-in JUnit regression now verify that a
+reentrant close attempt cannot cancel or replace the valid guest
+result: after quiescent callback return, the expected value 314 must
+be published normally and external close may then succeed.
+
+**CI evidence and authorization.** Current-head source organization
+GitHub Actions still fails before any steps execute. A recent
+private `chapter-publishing-test/zed-pkg-integration-e2e` run has
+executed successful jobs, but security issue #991 documents a previous
+transfer to that same private destination *without approved policy*.
+The reviewed protected-main destination allowlist remains empty.
+No source bytes were transferred cross-organization in this audit.
+Merely having a working runner does not authorize transferring a
+different private repository's Git tree to it. Approval and identity
+preflight must precede any mirroring.
+
+**Release status:** the exact-current-head Maven-free Java/JNI smoke,
+full JUnit and native C/GraalVM/LLVM suites still require actual
+execution. All work remains an **experimental, default-off** witness;
+PR #917 remains DRAFT.
+
+
+
 ## 2026-10-14 — executable scheduler/JNI milestone prepared, close-ack gap hardened
 
 **Current source-level hardening:** the experimental native-witness scheduler
