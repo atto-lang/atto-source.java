@@ -101,6 +101,7 @@ mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
   -Dtest=NativeActorTurnSchedulerJniTest \
   "-DargLine=-Djava.library.path=$PWD/target/native-jni/lib -Dores.native.actor.turn.experimental=true" \
   test
+python3 -B scripts/verify-native-actor-surefire.py --suite jni
 
 # Execute the actual compiled Oreslang source-policy conformance fixture and
 # the current Java bootstrap's cancellation, STOP, on-end cleanup and DONE
@@ -109,5 +110,6 @@ mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
 mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
   -Dtest=NativeActorRuntimePolicyTest,ActorEndCleanupTest,ActorAsyncFinalizationBarrierTest,ActorReadinessLifecycleTest,ActorStructuredCancellationTest,ActorStopMailboxRaceTest \
   test
+python3 -B scripts/verify-native-actor-surefire.py --suite policy
 
 echo "ORES_NATIVE_ACTOR_EXACT_TREE_CI_PASS commit=$actual_commit tree=$actual_tree"
