@@ -10,7 +10,9 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** HTTP/1.1 transport. Guest code sees revocable exchange capabilities, never sockets. */
 public final class NativeHttp implements AutoCloseable {
@@ -136,6 +138,10 @@ public final class NativeHttp implements AutoCloseable {
                     synchronized (exchange.state) {
                         exchange.state.poolWorker = worker;
                         worker.requests.add(exchange.state);
+                        // Response transport may finish before the receive
+                        // exits TurnExecutor. Remember each pooled incarnation
+                        // that ran mail for this particular listener.
+                        exchange.state.server.pooledActors.add(worker.actor);
                         // Reused workers have no per-request startup. Do not retain
                         // one actor.done callback per completed request.
                         exchange.state.readyNanos = exchange.state.spawnNanos;
@@ -200,8 +206,9 @@ public final class NativeHttp implements AutoCloseable {
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
+        private final Set<ActorRuntime.ActorRef<?>> pooledActors = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
-        private boolean stopped, transportStopped;
+        private boolean stopped, transportStopped, pooledBarrierStarted;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
 
@@ -307,7 +314,57 @@ public final class NativeHttp implements AutoCloseable {
             return drained;
         }
         private synchronized void completeDrain() {
-            if (transportStopped && active.isEmpty() && drained != null) drained.completeFromRuntime(null);
+            if (!transportStopped || !active.isEmpty() || drained == null || pooledBarrierStarted) {
+                return;
+            }
+            pooledBarrierStarted = true;
+            // A transport-complete response is not an actor-carrier-exit proof.
+            // Snapshot the workers used by THIS server. Never cancel a shared
+            // handler pool simply because one of its listeners is stopping.
+            List<ActorRuntime.ActorRef<?>> actors = List.copyOf(pooledActors);
+            pooledActors.clear();
+            if (actors.isEmpty()) {
+                drained.completeFromRuntime(null);
+                return;
+            }
+            // The runtime processes a bounded HTTP deadline, but a user actor
+            // may keep executing after the response. Fail explicitly rather
+            // than falsely reporting shutdown and racing Context.close().
+            long waitMillis = Math.max(1_000L,
+                    Math.min(30_000L, Math.max((long) deadlineMillis, 0L)));
+            final ScheduledFuture<?> timeout;
+            try {
+                timeout = timers.schedule(() -> drained.failFromRuntime(
+                        new TimeoutException("HTTP pooled actor carrier did not quiesce")),
+                        waitMillis, TimeUnit.MILLISECONDS);
+                drained.whenCompleteRuntime((ignored, failure) -> timeout.cancel(false));
+                io.execute(() -> {
+                    AtomicInteger pending = new AtomicInteger(actors.size());
+                    AtomicReference<Throwable> firstError = new AtomicReference<>();
+                    for (ActorRuntime.ActorRef<?> actor : actors) {
+                        try {
+                            context.actors().quiesceAcceptedMessages(actor)
+                                    .whenCompleteRuntime((ignored, failure) -> {
+                                if (failure != null) {
+                                    firstError.compareAndSet(null, OresFuture.unwrap(failure));
+                                }
+                                if (pending.decrementAndGet() == 0) {
+                                    Throwable error = firstError.get();
+                                    if (error == null) drained.completeFromRuntime(null);
+                                    else drained.failFromRuntime(error);
+                                }
+                            });
+                        } catch (RuntimeException failure) {
+                            firstError.compareAndSet(null, failure);
+                            if (pending.decrementAndGet() == 0) {
+                                drained.failFromRuntime(firstError.get());
+                            }
+                        }
+                    }
+                });
+            } catch (RejectedExecutionException unavailable) {
+                drained.failFromRuntime(unavailable);
+            }
         }
         private synchronized void stopAccepting() {
             stopped = true;
