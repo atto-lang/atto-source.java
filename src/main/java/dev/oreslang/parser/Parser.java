@@ -3319,6 +3319,15 @@ public final class Parser {
             return new Ast.RuntimeCallExpr("cooperate", List.of());
         }
 
+        // These names are reserved for the compiler-owned Pointer<T> feature.
+        // Do not accept them on main until borrowed lifetime/drop and LLVM
+        // parity gates are integrated; historical draft #443 is not current.
+        if (name.equals("ref") || name.equals("unref") || name.equals("deref")) {
+            throw error(operation, "rt " + name
+                    + " is reserved for Pointer<T> but is not enabled; "
+                    + "see docs/POINTER_BORROW_AND_ZERO_COPY.md");
+        }
+
         if (!name.equals("copy") && !name.equals("take")
                 && !name.equals("borrow") && !name.equals("share") && !name.equals("fail")) {
             throw error(operation,
