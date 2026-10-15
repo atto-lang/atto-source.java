@@ -685,7 +685,7 @@ def prepare_source_tree_batches(files):
     size = 0
     for rel, data, mode in files:
         as_text = None
-        if allow_inline and len(data) <= TREE_INLINE_MAX_BYTES and b"\\x00" not in data:
+        if allow_inline and len(data) <= TREE_INLINE_MAX_BYTES and b"\x00" not in data:
             try:
                 as_text = data.decode("utf-8")
             except UnicodeDecodeError:
