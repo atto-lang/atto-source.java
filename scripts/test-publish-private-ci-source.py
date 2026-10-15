@@ -309,6 +309,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(swapped[0])
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_directory_entry_added_during_snapshot_is_rejected(self):
+        # Even a new regular file that was not in the first scandir listing
+        # must invalidate the snapshot rather than being silently omitted.
+        raw_open = pub.os.open
+        changed = [False]
+
+        def add_file_during_read(name, flags, *args, **kwargs):
+            if name == "hello.ores" and kwargs.get("dir_fd") is not None and not changed[0]:
+                changed[0] = True
+                (self.source / "injected.ores").write_text("added after directory scan")
+            return raw_open(name, flags, *args, **kwargs)
+
+        with patch.object(pub.os, "open", side_effect=add_file_during_read):
+            with self.assertRaisesRegex(pub.Denied, "source directory changed"):
+                self.publish()
+        self.assertTrue(changed[0])
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_directory_replacement_between_stat_and_open_is_rejected(self):
         # A non-symlink directory swap must not redirect reads to a new inode.
         nested = self.source / "nested"
