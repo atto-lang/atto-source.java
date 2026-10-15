@@ -83,4 +83,21 @@ final class ActorSealedStateAdmissionHardeningTest {
         Ast.Program parsed = Parser.parse(src);
         assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(parsed));
     }
+    @Test void duplicateLoweredStateDefaultsAreDenied() {
+        Ast.Program parsed = source("0");
+        Ast.ClassDecl actor = (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+        Ast.FieldDecl original = actor.fields().getFirst();
+        Ast.ObjectExpr duplicated = new Ast.ObjectExpr(List.of(
+                Ast.ObjectField.named("value", new Ast.LiteralExpr(0L)),
+                Ast.ObjectField.named("value", new Ast.LiteralExpr(1L))));
+        Ast.FieldDecl changed = new Ast.FieldDecl(original.name(), original.visibility(),
+                original.bindingKind(), original.type(), original.annotations(),
+                duplicated, original.mutableReferent());
+        Ast.ClassDecl rewritten = new Ast.ClassDecl(
+                actor.name(), actor.visibility(), actor.isAbstract(), actor.actorKind(),
+                actor.genericParameters(), actor.parents(), actor.interfaces(), List.of(changed),
+                actor.constructor(), actor.methods(), actor.serial());
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(replaceActor(parsed, rewritten)));
+    }
 }
