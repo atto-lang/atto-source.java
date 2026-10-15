@@ -233,6 +233,40 @@ final class QuestionPropagationLanguageTest {
     }
 
     @Test
+    void questionCannotReplacePendingFinallyOrDeferCompletion() {
+        reject("""
+                fnc illegal_finally(Option<int> input): Option<int> {
+                  try {
+                    return Some(9);
+                  } catch (failure) {
+                    return Some(4);
+                  } finally {
+                    val int item = input?;
+                  }
+                }
+                """, "cannot exit from defer or finally cleanup");
+
+        reject("""
+                fnc illegal_defer(Option<int> input): Option<int> {
+                  defer input?;
+                  return Some(1);
+                }
+                """, "cannot exit from defer or finally cleanup");
+
+        reject("""
+                async fnc illegal_async_finally(Option<int> input): Option<int> {
+                  try {
+                    return Some(9);
+                  } catch (failure) {
+                    return Some(4);
+                  } finally {
+                    val int item = input?;
+                  }
+                }
+                """, "cannot exit from defer or finally cleanup");
+    }
+
+    @Test
     void asyncOptionQuestionRunsNestedCleanupOnceOnFailureAndSuccess() throws Exception {
         String program = """
                 async fnc read_missing(): Option<int> {
