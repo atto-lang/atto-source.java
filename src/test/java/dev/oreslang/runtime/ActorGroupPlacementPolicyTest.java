@@ -340,4 +340,49 @@ final class ActorGroupPlacementPolicyTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void runtimeAdmissionMatrixRejectsEveryUnsupportedCombination() {
+        // Exercise the *public runtime entry point*, not just the policy's
+        // package-private preflight. This catches any future admission bypass.
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            int admitted = 0;
+            int rejected = 0;
+            for (var affinity : ActorGroupPlacementPolicy.CpuAffinity.values()) {
+                for (var accelerator : ActorGroupPlacementPolicy.Accelerator.values()) {
+                    for (int parallelism : new int[] { 1, 2, 64, Integer.MAX_VALUE }) {
+                        String device = accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY
+                                ? null : "gpu:0";
+                        int gpuInFlight = accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY
+                                ? 0 : 4;
+                        var policy = new ActorGroupPlacementPolicy(
+                                affinity, parallelism, accelerator, device, gpuInFlight);
+                        boolean unrestricted =
+                                affinity == ActorGroupPlacementPolicy.CpuAffinity.ANY
+                                && accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY
+                                && parallelism == Integer.MAX_VALUE;
+                        if (unrestricted) {
+                            var group = runtime.createActorGroup(policy);
+                            try {
+                                assertEquals(policy, group.placementPolicy());
+                                assertEquals(1, runtime.actorGroupCount());
+                            } finally {
+                                group.close();
+                            }
+                            admitted++;
+                        } else {
+                            assertThrows(UnsupportedOperationException.class,
+                                    () -> runtime.createActorGroup(policy),
+                                    "unsupported policy admitted: " + policy);
+                            rejected++;
+                        }
+                        assertEquals(0, runtime.actorGroupCount(),
+                                "admission must not retain or leak an ActorGroup");
+                    }
+                }
+            }
+            assertEquals(1, admitted, "only unrestricted placement is implemented");
+            assertEquals(35, rejected, "all other runtime admission combinations reject");
+        }
+    }
+
 }
