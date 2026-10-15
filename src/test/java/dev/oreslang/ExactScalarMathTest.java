@@ -48,6 +48,9 @@ final class ExactScalarMathTest {
         assertThrows(ArithmeticException.class, () -> ExactScalarMath.divide(
                 BigDecimal.ONE, new BigDecimal("3"), new MathContext(10, RoundingMode.UNNECESSARY)));
         assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.divide(
+                BigDecimal.ONE, new BigDecimal("3"),
+                new MathContext(1_000_000, RoundingMode.HALF_EVEN)));
+        assertThrows(IllegalArgumentException.class, () -> ExactScalarMath.divide(
                 BigDecimal.ONE, new BigDecimal("3"), MathContext.UNLIMITED));
     }
 
