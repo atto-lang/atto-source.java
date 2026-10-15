@@ -540,6 +540,32 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, second.pending());
     }
 
+    @Test void fatalErrorClearsDeferredWakesAndNextCarrierAdmissionStillRuns() {
+        // A fatal host effect must escape; it cannot leave the recursive
+        // trampoline marked active or retain a deferred scheduler callback
+        // that fires on an unrelated later actor turn.
+        for (int round = 0; round < 100; ++round) {
+            ControlWakeRetryQueue queue = new ControlWakeRetryQueue(3);
+            AtomicInteger invoked = new AtomicInteger();
+            long epoch = queue.epoch();
+            assertTrue(queue.register(() -> {
+                queue.slotReleased();
+                throw new InternalError("synthetic fatal CONTROL callback");
+            }, epoch));
+            assertTrue(queue.register(invoked::incrementAndGet, epoch));
+            assertThrows(InternalError.class, queue::slotReleased);
+            assertEquals(0, invoked.get(), "fatal turn replayed deferred callback");
+            assertEquals(0, queue.pending());
+            assertEquals(0L, queue.callbacksFailed(),
+                    "fatal VM errors must not enter nonfatal retry telemetry");
+            // Exercises the same host queue after the exceptional exit.
+            assertTrue(queue.register(invoked::incrementAndGet, queue.epoch()));
+            queue.slotReleased();
+            assertEquals(1, invoked.get(),
+                    "fatal exit stranded the next CONTROL callback");
+        }
+    }
+
     @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         assertTrue(queue.register(() -> {
