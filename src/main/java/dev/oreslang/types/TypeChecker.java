@@ -1166,7 +1166,7 @@ public final class TypeChecker {
             resolve(parent, classGenerics, self);
             Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
             if (resolvedParent != null && klass.actorKind() != resolvedParent.actorKind()) {
-                throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: 
+                throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
