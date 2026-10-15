@@ -172,6 +172,69 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void parentConsumesOnlyItsOwnChildControlNoticeOnItsActorTurn() throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        CountDownLatch parentInspected = new CountDownLatch(1);
+        CountDownLatch siblingInspected = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorFailureNotice> observed = new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorFailureNotice> siblingObserved =
+                new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            // Host code cannot drain a parent's actor-owned CONTROL inbox.
+            assertThrows(IllegalStateException.class,
+                    actors::pollCurrentActorChildFailureNotice);
+            assertThrows(IllegalStateException.class,
+                    actors::currentActorChildFailureNoticesDropped);
+
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> (message, context) -> {
+                        if (message.equals("spawn")) {
+                            ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                    childContext -> (mail, c) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.set(next);
+                            next.send("boom");
+                            childCreated.countDown();
+                        } else if (message.equals("inspect")) {
+                            observed.set(context.pollChildFailureNotice().orElse(null));
+                            assertEquals(0L, context.childFailureNoticesDropped());
+                            parentInspected.countDown();
+                        }
+                    });
+            ActorRuntime.ActorRef<String> sibling = actors.spawnShared(
+                    () -> (message, context) -> {
+                        siblingObserved.set(context.pollChildFailureNotice().orElse(null));
+                        siblingInspected.countDown();
+                    });
+            parent.send("spawn");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            ActorRuntime.ActorHandle<String> handle = child.get();
+            assertNotNull(handle);
+            assertTrue(handle.awaitTermination(3, TimeUnit.SECONDS));
+
+            sibling.send("inspect");
+            assertTrue(siblingInspected.await(3, TimeUnit.SECONDS));
+            assertNull(siblingObserved.get(), "sibling cannot steal parent's notice");
+
+            parent.send("inspect");
+            assertTrue(parentInspected.await(3, TimeUnit.SECONDS));
+            ActorRuntime.ActorFailureNotice notice = observed.get();
+            assertNotNull(notice, "parent receives a terminal CONTROL notice");
+            assertEquals(parent.id(), notice.supervisorId());
+            assertEquals(handle.id(), notice.actorId());
+            assertEquals(GuestActorEffectSignal.Kind.RAISE, notice.effect());
+            // Host auditing and actor-owned delivery are independently visible.
+            assertEquals(handle.id(), actors.pollActorFailureNotice()
+                    .orElseThrow().actorId());
+            parent.stop();
+            sibling.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(sibling.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void controlNoticeRejectsSourceSuppliedDiagnosticsAndMismatchedEffects() {
         try (ActorRuntime actors = new ActorRuntime()) {
             ActorRuntime.ActorRef<String> actor = actors.spawnShared(
