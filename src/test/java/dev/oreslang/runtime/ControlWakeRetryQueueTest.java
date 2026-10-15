@@ -443,6 +443,60 @@ final class ControlWakeRetryQueueTest {
         assertFalse(queue.register(unwanted::incrementAndGet, queue.epoch()));
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void cancellationFromAnotherCarrierRevokesDeferredControlWake() throws Exception {
+        // The first callback runs on carrier A, where a nested release
+        // dequeues the second callback into A's trampoline. Cancellation
+        // happens on carrier B, so B's ThreadLocal cannot see that callback.
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        java.util.concurrent.CountDownLatch deferred =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release =
+                new java.util.concurrent.CountDownLatch(1);
+        AtomicInteger staleWakeups = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Runnable cancelled = staleWakeups::incrementAndGet;
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            queue.slotReleased();
+            deferred.countDown();
+            try {
+                if (!release.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new AssertionError("cross-carrier cancellation gate timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("carrier interrupted", interrupted);
+            }
+        }, epoch));
+        assertTrue(queue.register(cancelled, epoch));
+        Thread carrier = new Thread(() -> {
+            try {
+                queue.slotReleased();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        }, "deferred-control-wake-carrier");
+        carrier.setDaemon(true);
+        carrier.start();
+        try {
+            assertTrue(deferred.await(3, java.util.concurrent.TimeUnit.SECONDS),
+                    "second wake was not deferred by carrier A");
+            queue.cancel(cancelled);
+        } finally {
+            release.countDown();
+        }
+        carrier.join(3000);
+        assertFalse(carrier.isAlive(), "carrier did not finish after cancellation");
+        assertNull(failure.get(), () -> "carrier callback failed: " + failure.get());
+        assertEquals(0, staleWakeups.get(),
+                "cancellation from a different carrier must revoke deferred wake");
+        assertEquals(0, queue.pending());
+        assertEquals(0, queue.callbacksFailed());
+    }
+
     @Test void nonfatalReentrantFailureCannotLoseSubsequentWake() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         AtomicInteger delivered = new AtomicInteger();
