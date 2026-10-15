@@ -107,20 +107,22 @@ final class ActorRaceInstrumentationTest {
         Object sharedMemory = new Object();
         Object firstActor = new Object();
         Object secondActor = new Object();
-        CountDownLatch written = new CountDownLatch(1);
+        CountDownLatch start = new CountDownLatch(1);
         Thread writer = Thread.ofPlatform().start(() -> {
+            try {
+                if (!start.await(3, TimeUnit.SECONDS)) throw new AssertionError("start timeout");
+            } catch (InterruptedException error) { throw new AssertionError(error); }
             probe.enterActor(firstActor);
             try {
                 probe.write(sharedMemory, "counter");
             } finally {
                 probe.exitActor(firstActor);
-                written.countDown();
             }
         });
         Thread reader = Thread.ofPlatform().start(() -> {
             try {
-                if (!written.await(3, TimeUnit.SECONDS)) {
-                    throw new AssertionError("write did not occur");
+                if (!start.await(3, TimeUnit.SECONDS)) {
+                    throw new AssertionError("start timeout");
                 }
             } catch (InterruptedException e) {
                 throw new AssertionError(e);
@@ -132,10 +134,11 @@ final class ActorRaceInstrumentationTest {
                 probe.exitActor(secondActor);
             }
         });
+        start.countDown();
         writer.join(5000);
         reader.join(5000);
         assertEquals(1, probe.snapshot().memoryRaces(),
-                "actor serialization of distinct actors does not create a shared-state edge");
+                "distinct actor turn leases do not synchronize shared memory");
     }
 
     @Test
