@@ -1867,10 +1867,10 @@ public final class OresEvalRootNode extends RootNode {
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
             if (earlier != null && (isUnmaskableFailure(earlier)
                     || cleanupFailure instanceof ProcessExitSignal)) {
-                earlier.addSuppressed(cleanupFailure);
+                earlier.addSuppressed(safeSuppressedFailure(cleanupFailure));
                 return currentFlow;
             }
-            if (earlier != null) cleanupFailure.addSuppressed(earlier);
+            if (earlier != null) cleanupFailure.addSuppressed(safeSuppressedFailure(earlier));
             return SourceFlow.throwing(cleanupFailure);
         }
 
@@ -1886,7 +1886,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (isUnmaskableFailure(earlier)) {
                     if (finallyFlow.kind() == SourceFlowKind.THROW
                             && earlier != finallyFlow.failure()) {
-                        earlier.addSuppressed(finallyFlow.failure());
+                        earlier.addSuppressed(safeSuppressedFailure(finallyFlow.failure()));
                     }
                     return pending;
                 }
@@ -4832,6 +4832,24 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        // A guest throw retains its owning OresObject for actor-local catch.
+        // Suppressing it on a process exit, cancellation, host exception or
+        // cleanup failure would export that object into host diagnostics.
+        // The singleton marker is stackless, immutable and payload-free.
+        private static final class RedactedGuestThrow extends RuntimeException {
+            private RedactedGuestThrow() {
+                super("suppressed guest Error (payload omitted)", null, false, false);
+            }
+        }
+
+        private static final RedactedGuestThrow REDACTED_GUEST_THROW =
+                new RedactedGuestThrow();
+
+        private static Throwable safeSuppressedFailure(Throwable failure) {
+            return failure instanceof GuestThrowSignal
+                    ? REDACTED_GUEST_THROW : failure;
+        }
+
         private boolean isGuestCatchableFailure(Throwable failure) {
             if (failure instanceof GuestThrowSignal) return true;
             if (failure instanceof dev.oreslang.runtime.GuestActorEffectSignal) return false;
@@ -4989,21 +5007,21 @@ public final class OresEvalRootNode extends RootNode {
                             if (isUnmaskableFailure(failure)) {
                                 pendingFailure = failure;
                             } else if (failure != pendingFailure) {
-                                pendingFailure.addSuppressed(failure);
+                                pendingFailure.addSuppressed(safeSuppressedFailure(failure));
                             }
                         } else if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
                             // Never let a deferred ordinary failure replace a panic,
                             // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) pendingFailure.addSuppressed(safeSuppressedFailure(failure));
                         } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                             // A deferred exit(0) must not convert an earlier
                             // unhandled failure into a successful process exit.
                             // Keep the original failure authoritative; the exit
                             // attempt is diagnostic only.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                            if (failure != pendingFailure) pendingFailure.addSuppressed(safeSuppressedFailure(failure));
                         } else {
                             if (pendingFailure != null && pendingFailure != failure) {
-                                failure.addSuppressed(pendingFailure);
+                                failure.addSuppressed(safeSuppressedFailure(pendingFailure));
                             }
                             pendingFailure = failure;
                         }
@@ -5016,17 +5034,17 @@ public final class OresEvalRootNode extends RootNode {
                         if (isUnmaskableFailure(failure)) {
                             pendingFailure = failure;
                         } else if (failure != pendingFailure) {
-                            pendingFailure.addSuppressed(failure);
+                            pendingFailure.addSuppressed(safeSuppressedFailure(failure));
                         }
                     } else if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) pendingFailure.addSuppressed(safeSuppressedFailure(failure));
                     } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
                         // Mutex cleanup cannot downgrade an already failing
                         // root task into successful exit(0).
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
+                        if (failure != pendingFailure) pendingFailure.addSuppressed(safeSuppressedFailure(failure));
                     } else {
                         if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
+                            failure.addSuppressed(safeSuppressedFailure(pendingFailure));
                         }
                         pendingFailure = failure;
                     }
@@ -5302,11 +5320,11 @@ public final class OresEvalRootNode extends RootNode {
                                 && (isUnmaskableFailure(pendingTryFailure)
                                         || cleanupFailure instanceof ProcessExitSignal)) {
                             if (pendingTryFailure != cleanupFailure) {
-                                pendingTryFailure.addSuppressed(cleanupFailure);
+                                pendingTryFailure.addSuppressed(safeSuppressedFailure(cleanupFailure));
                             }
                         } else {
                             if (pendingTryFailure != null && pendingTryFailure != cleanupFailure) {
-                                cleanupFailure.addSuppressed(pendingTryFailure);
+                                cleanupFailure.addSuppressed(safeSuppressedFailure(pendingTryFailure));
                             }
                             throw cleanupFailure;
                         }
