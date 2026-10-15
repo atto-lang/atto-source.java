@@ -1962,7 +1962,7 @@ public final class Parser {
                 }
                 match(ARROW);
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires '-> { ... }' or legacy '{ ... }'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -2023,7 +2023,7 @@ public final class Parser {
         if (isBindingKind(peek().type())) {
             kind = parseBindingKind();
             mutable = parseReferentMutability(kind);
-            if (check(IDENT) && checkNext(LBRACE)) {
+            if (check(IDENT) && (checkNext(LBRACE) || checkNext(ARROW) || checkNext(FAT_ARROW))) {
                 String name = advance().lexeme();
                 return new SelectReadBinding(kind, name, null, mutable);
             }
