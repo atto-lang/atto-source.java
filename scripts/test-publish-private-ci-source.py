@@ -401,6 +401,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 git("update-index", undo, "--", protected[2])
                 git("reset", "--hard", "HEAD")
                 self.assertEqual(self.real_publisher_checkout(root, commit), commit)
+            guard = root / protected[2]
+            guard.unlink()
+            guard.symlink_to(root / protected[0])
+            with self.assertRaisesRegex(pub.Denied, "cannot be opened without following links"):
+                self.real_publisher_checkout(root, commit)
+            guard.unlink()
+            git("checkout", "HEAD", "--", protected[2])
+            guard.chmod(0o755)
+            with self.assertRaisesRegex(pub.Denied, "permissions or size"):
+                self.real_publisher_checkout(root, commit)
+            guard.chmod(0o644)
+            self.assertEqual(self.real_publisher_checkout(root, commit), commit)
             with self.assertRaisesRegex(pub.Denied, "not executing reviewed"):
                 self.real_publisher_checkout(root, "0" * 40)
             script = root / protected[0]
