@@ -1327,7 +1327,12 @@ public final class OwnershipChecker {
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
                 }
-                if (!object.explicitStruct()) members.put(field.name(), info.type);
+                if (!object.explicitStruct()
+                        && members.putIfAbsent(field.name(), info.type) != null) {
+                    // A standalone ownership pass may see a transformed AST;
+                    // never collapse duplicate fields into a valid closed pack.
+                    throw error("duplicate record or inferred struct field '" + field.name() + "'");
+                }
             }
             Ast.TypeRef type = (object.inferredStruct() || object.recordLiteral())
                     ? Ast.TypeRef.readonlyRecordType(members)
