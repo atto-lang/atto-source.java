@@ -735,18 +735,29 @@ public final class ChannelRuntime {
                     try {
                         lost = decided;
                         if (!lost && waiter != null) futureWaiters.add(waiter);
-                        attachingFutureWaiters--;
-                        if (attachingFutureWaiters == 0 && !deferredPublication.isEmpty()) {
-                            readyToPublish.addAll(deferredPublication);
-                            deferredPublication.clear();
-                        }
                     } finally {
                         COORDINATOR.unlock();
                     }
-                    // Release the losing registration outside the coordinator,
-                    // before the previously committed result becomes visible.
-                    if (lost && waiter != null) waiter.detach();
-                    runCompletions(readyToPublish);
+                    try {
+                        // Detachment can scan a large producer waiter queue.
+                        // Leave the attachment claim live until AFTER removal:
+                        // a concurrent publisher must not observe count == 0
+                        // while this losing registration remains linked.
+                        if (lost && waiter != null) waiter.detach();
+                    } finally {
+                        COORDINATOR.lock();
+                        try {
+                            attachingFutureWaiters--;
+                            if (attachingFutureWaiters == 0
+                                    && !deferredPublication.isEmpty()) {
+                                readyToPublish.addAll(deferredPublication);
+                                deferredPublication.clear();
+                            }
+                        } finally {
+                            COORDINATOR.unlock();
+                        }
+                        runCompletions(readyToPublish);
+                    }
                 }
             }
         }
