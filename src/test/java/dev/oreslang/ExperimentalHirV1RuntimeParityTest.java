@@ -26,7 +26,7 @@ final class ExperimentalHirV1RuntimeParityTest {
                 return count;
             }
             pub fnc main(): int {
-                return counter_response(1);
+                return counter_response(43);
             }
             """;
 
