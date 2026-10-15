@@ -30,6 +30,9 @@ public final class Lexer {
         KEYWORDS.put("panic", PANIC); KEYWORDS.put("recover", RECOVER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("mut", MUT); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
+        // Accelerator/host execution domains are reserved even before backend lowering.
+        // They must not be interpreted as ordinary CPU-side identifiers or calls.
+        KEYWORDS.put("gpu", GPU); KEYWORDS.put("cpu", CPU); KEYWORDS.put("quantum", QUANTUM);
     }
 
     private final String source;
@@ -43,6 +46,18 @@ public final class Lexer {
     public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
+        // Validate ignored comments and string contents as well as tokens.
+        // Embedders can pass malformed UTF-16 without a UTF-8 file decoder.
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '\0') throw new IllegalArgumentException("source contains NUL byte");
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= source.length() || !Character.isLowSurrogate(source.charAt(i)))
+                    throw new IllegalArgumentException("source contains invalid UTF-16");
+            } else if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("source contains invalid UTF-16");
+            }
+        }
         while (!isAtEnd()) {
             start = current;
             startColumn = column;
@@ -63,7 +78,7 @@ public final class Lexer {
                     add(ELLIPSIS);
                 } else add(DOT);
             }
-            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(match(':') ? DOUBLE_COLON : COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
@@ -78,12 +93,68 @@ public final class Lexer {
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
+            case '#' -> symbol();
             default -> {
                 if (isDigit(c)) number();
                 else if (isIdentStart(c)) identifier();
                 else throw error("unexpected character '" + c + "'");
             }
         }
+    }
+
+    /** Hash only introduces Symbol literals; colon remains a field/type separator. */
+    private void symbol() {
+        if (peek() == '"' || peek() == '\'') {
+            symbolQuoted(advance());
+            return;
+        }
+        if (!asciiSymbolStart(peek())) {
+            throw error("expected Symbol name immediately after '#'");
+        }
+        int nameStart = current;
+        do {
+            advance();
+        } while (asciiSymbolPart(peek()));
+        if (current - nameStart > 128) {
+            throw error("unquoted Symbol literal exceeds 128 ASCII bytes");
+        }
+        tokens.add(new Token(SYMBOL_LITERAL, source.substring(nameStart, current), line, startColumn));
+    }
+
+    /** Quoted Symbol escapes are strict, unlike legacy ordinary string escapes. */
+    private void symbolQuoted(char quote) {
+        StringBuilder value = new StringBuilder();
+        while (!isAtEnd() && peek() != quote) {
+            char ch = advance();
+            if (ch == '\n' || ch == '\r') {
+                throw error("raw newline in quoted Symbol literal");
+            }
+            if (ch == '\\') {
+                if (isAtEnd()) throw error("unterminated quoted Symbol escape");
+                char escaped = advance();
+                ch = switch (escaped) {
+                    case 'u' -> unicodeEscape();
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    case '"', '\'', '\\' -> escaped;
+                    default -> throw error("invalid quoted Symbol escape");
+                };
+            }
+            value.append(ch);
+        }
+        if (isAtEnd()) throw error("unterminated quoted Symbol literal");
+        advance();
+        String key = dev.oreslang.runtime.OresSymbol.normalizeAndValidate(value.toString());
+        tokens.add(new Token(SYMBOL_LITERAL, key, line, startColumn));
+    }
+
+    private static boolean asciiSymbolStart(char c) {
+        return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z';
+    }
+
+    private static boolean asciiSymbolPart(char c) {
+        return asciiSymbolStart(c) || c >= '0' && c <= '9';
     }
 
     private void blockComment() {
@@ -150,6 +221,22 @@ public final class Lexer {
     private void identifier() {
         while (isIdentPart(peek())) advance();
         String text = source.substring(start, current);
+
+        // Both 'nb' and 'select' are already reserved, so this spelling cannot
+        // change the meaning of a legal subtraction expression. Critical and
+        // pipeline compounds are instead recognized only in declaration
+        // context by the parser: both halves may be ordinary variable names.
+        if (text.equals("nb") && source.startsWith("-select", current)
+                && (current + 7 == source.length()
+                    || (source.charAt(current + 7) != '-'
+                        && !isIdentPart(source.charAt(current + 7))))) {
+            add(NB);
+            advance(); // ASCII hyphen-minus, U+002D
+            int keywordColumn = column;
+            for (int i = 0; i < 6; i++) advance();
+            tokens.add(new Token(SELECT, "select", line, keywordColumn));
+            return;
+        }
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 

@@ -71,6 +71,7 @@ class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_par
                   "as" { class_member } "end" ;
 
 class_member    = field_decl
+                | type_first_class_field_decl
                 | constructor_decl
                 | method_decl
                 | static_function_decl ;
@@ -83,6 +84,14 @@ field_decl      = { annotation } visibility
                   ( binding_kind type_ref IDENT [ "=" expression ]
                   | IDENT ":" type_ref [ "=" expression ] )
                   stmt_terminator ;
+type_first_class_field_decl
+                = { annotation } visibility [ "final" ] [ "mut" ] type_ref IDENT
+                  ( ":" | "=" ) expression stmt_terminator ;
+(* In class bodies, type-first field declarations canonically use ':' for
+   initializers; '=' is accepted for source compatibility. 'final' is contextual
+   and fixes the field slot without implying deep immutability. The formatter
+   rewrites only eligible field initializers, never assignment expressions,
+   map/struct entries, labels, return types, or named type annotations. *)
 
 method_decl     = { annotation } visibility { method_modifier } [ "fnc" | "method" ] method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
@@ -184,14 +193,14 @@ block_stmt      = "block" block ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 loop_stmt       = "loop" block ;
-while_stmt      = "while" ( "(" condition ")" | condition ) [ ";" ] loop_body ;
+while_stmt      = "while" ( "(" condition_head ")" | condition_head ) [ ";" ] loop_body ;
 
-if_stmt         = "if" condition
+if_stmt         = "if" condition_head
                   ( block
-                    { conditional_branch condition block }
+                    { conditional_branch condition_head block }
                     [ "else" block ]
                   | [ ";" ] ( "then" | deprecated_if_do ) { statement }
-                    { conditional_branch condition [ ";" ] ( "then" | deprecated_if_do ) { statement } }
+                    { conditional_branch condition_head [ ";" ] ( "then" | deprecated_if_do ) { statement } }
                     [ "else" { statement } ]
                   )
                   "fi" ;
@@ -201,10 +210,13 @@ conditional_branch
                 | "else" "if" ;            (* accepted alias; one fi closes the chain *)
 deprecated_if_do
                 = "do" ;                   (* accepted for migration; canonical spelling is then *)
+condition_head  = condition
+                | logic_or "as" "let" IDENT "when" condition
+                | "(" logic_or "as" "let" IDENT "when" condition ")" ;
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
-match_stmt      = "match" [ "first" ] expression [ ";" ]
+match_stmt      = [ "do" ] "match" [ "first" ] expression [ ";" ]
                   match_arm { match_arm } "end" ;
 match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
 pattern         = "_"
@@ -213,7 +225,7 @@ pattern         = "_"
                 | IDENT "(" [ pattern { "," pattern } ] ")"
                 | "is" type_ref [ IDENT ] ;
 
-switch_stmt     = "switch" expression [ ";" ]
+switch_stmt     = [ "do" ] "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
 switch_case     = "case" expression { "," expression } "->" block ;
 switch_default  = "default" "->" block ;
@@ -398,19 +410,21 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 
    Semantic restrictions:
    - Channel/select waiting has three distinct modes. Plain readch/writech/select
-     is suspending; nb registers and returns a Future/arms a detached static
-     select continuation; try probes once without leaving a waiter. "do select"
-     and "do nb select" mark static, no-result dispatch explicitly; dynamic
-     "select from" remains an Option-valued expression, and dynamic "nb select
-     from" remains Future<Option<SelectResult>>. "cb select" and "nb cb select"
-     are rejected; nb cb writech retains its separate literal callback syntax.
-     Static
-     select defaults to deterministic fair rotation. "select first" is strict
-     lexical priority and "select random" is explicit opt-in randomness.
-     Static nb-select arms are detached void continuation scopes: return exits
-     only the selected arm and break/continue cannot target an already-
-     continued outer loop. Dynamic selection uses "select from cases" and
-     lowers to the same SelectSet primitive as static select.
+     is suspending; nb registers and returns a Future or arms a legacy detached
+     static continuation; try probes once without leaving a waiter.
+     Blocking "do select" is procedural: a selected arm's return exits the
+     containing callable and a valid break/continue targets its outer loop.
+     Legacy "do nb select" instead runs in a detached continuation scope:
+     arm returns cannot escape the caller, which has already continued.
+     Static result-producing select and Future<T> lowering remain distinct
+     unimplemented milestones. Dynamic "select from" remains an Option-valued
+     expression, and dynamic "nb select from" returns Future<Option<SelectResult>>.
+     "cb select" and "nb cb select" are rejected; nb cb writech retains
+     its separate literal callback syntax. Static select defaults to deterministic
+     fair rotation. "select first" is strict lexical priority and "select random"
+     is explicit opt-in randomness. Nonblocking arms cannot break/continue
+     an already-continued enclosing loop. Dynamic selection uses the same
+     runtime SelectSet primitive as static selection.
    - In collection type syntax, '[...]' describes element/sequence shape,
      '<name=value>' describes compile-time type/storage metadata, and '(...)'
      remains runtime construction/instance state. Named metadata parameters are
@@ -645,3 +659,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Class fields declared val/const are immutable; field mutation requires let
      plus mutable owner access.
 *)
+
+(* Inline condition bindings lower to scoped BindingStmt + IfStmt/ForStmt.
+   Initializers evaluate once per reached test; when requires bool. While
+   rebinds before every test, including after continue. If bindings cover
+   their predicate and remaining branch chain, but do not escape the if.
+   See VALUE_BOUNDARIES.md for aggregate ordering and unsupported surfaces. *)

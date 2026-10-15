@@ -33,6 +33,20 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    // Keep the stage-one default-type allowlist consistent with concrete
+    // compiler-known scalar and nominal constructors. Do not allocate it per
+    // recursive validation node or admit arbitrary unresolved nominal names.
+    private static final Set<String> GENERIC_DEFAULT_BUILTINS = Set.of(
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+            "int", "uint", "bigint", "f32", "f64", "float",
+            "decimal", "complex64", "complex128", "complex",
+            "bool", "Bool", "string", "String", "void", "null",
+            "Symbol", "Array", "List", "Vector", "Slice",
+            "Tuple", "FixedArray", "FixedList",
+            "ActorId", "ActorKind", "ActorMail", "ActorOutput",
+            "ActorOutputStream", "Option", "Result", "Mutex",
+            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -69,6 +83,15 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
+    // Only an actual constructor may initialize an otherwise fixed, initially
+    // absent class field. Class methods never inherit constructor privileges.
+    private Ast.ClassDecl currentConstructorOwner;
+    // Conservative constructor-initialization ledger. A fixed field without
+    // a declaration initializer may be assigned syntactically at most once
+    // in a constructor, even across alternative CFG arms. Until this ledger
+    // is promoted to a path-sensitive may-initialize lattice, reject
+    // ambiguous multi-write constructors rather than permit double writes.
+    private Set<String> constructorFixedFieldWrites;
     // Unlike private-member access, declaration origin must survive nlex.
     private Ast.ClassDecl lexicalClassOrigin;
     // Source modules have their own lexical value namespace. File-level
@@ -168,7 +191,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -300,7 +323,10 @@ public final class TypeChecker {
             String category;
             if (decl instanceof Ast.FunctionDecl fn) {
                 name = fn.name();
-                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+                // FNC and ROUTINE share the same name+arity callable family.
+                // Their kinds affect whether a value can be reified, not the slot key.
+                // putFunctionSlot has already rejected any duplicate arity.
+                category = "callable";
             } else if (decl instanceof Ast.ClassDecl klass) {
                 name = klass.name();
                 category = "class";
@@ -571,6 +597,7 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        validateFunctionGenericDefaults(fn);
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
@@ -913,6 +940,161 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Ordinary class construction is synchronous. Reject suspension anywhere
+     * in an eager initializer expression, including nested call operands,
+     * collection elements and branches. A stored lambda is not executed
+     * during construction; directly invoking a lambda initializer remains
+     * rejected until its body has a verified non-suspending effect bound.
+     */
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+        if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.AssignExpr) return true;
+        if (expr instanceof Ast.RuntimeCallExpr) {
+            // All runtime intrinsics carry semantics beyond an ordinary
+            // scalar expression. In particular rt fail may unwind after
+            // earlier fields have acquired resources, rt take can move
+            // storage, and borrow/share/copy need an initializer-specific
+            // lifetime or ownership proof. Such proofs and failure cleanup
+            // are not established here, so do not infer safety from the
+            // operands alone. This also rejects new intrinsics by default.
+            return true;
+        }
+        if (expr instanceof Ast.BinaryExpr op) {
+            // Division/remainder can fail (notably integer remainder by
+            // zero) even when both operands were evaluated without effects.
+            // Failure cleanup of a partially built instance is not proven.
+            // Keep them outside eager initialization until that proof exists.
+            if (op.operator().equals("/") || op.operator().equals("%")) return true;
+            return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
+        }
+        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand());
+        if (expr instanceof Ast.ConditionalExpr op) {
+            return fieldInitializerMaySuspend(op.condition())
+                    || fieldInitializerMaySuspend(op.whenTrue())
+                    || fieldInitializerMaySuspend(op.whenFalse());
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            // Constructor-safe calls must resolve to a statically known,
+            // synchronous zero-argument function whose *entire* body is one
+            // return of a primitive scalar expression. No user callbacks,
+            // mutations, dynamic dispatch, suspension or partial-self escape.
+            return !isConstructorSafeScalarCall(call);
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            // Nested construction is itself a transitive initialization
+            // effect. Until class-constructor effect summaries exist, permit
+            // only zero-argument ctorless objects with literal-only fields:
+            // no methods execute, no owned resources are acquired, and no
+            // partially initialized child can escape into user callbacks.
+            if (created.type().name().equals("Array") && created.arguments().isEmpty()
+                    && findClass("Array") == null)
+                return false; // built-in zero-arg allocator, never a shadowing guest class
+            if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
+                return true;
+            Ast.ClassDecl nested = findClass(created.type().name());
+            if (nested == null || nested.constructor() != null || !nested.parents().isEmpty()
+                    || nested.actorKind() != Ast.ActorKind.NONE) return true;
+            return nested.fields().stream().anyMatch(field ->
+                    !(field.initializer() instanceof Ast.LiteralExpr));
+        }
+        if (expr instanceof Ast.MemberExpr member)
+            return fieldInitializerMaySuspend(member.receiver());
+        if (expr instanceof Ast.IndexExpr) {
+            // Even pure operands do not establish a safe indexing operation.
+            // Bounds failure (and any future index dispatch) may unwind after
+            // earlier fields have acquired resources. Partial-construction
+            // failure cleanup is not proven, so reject indexing by default.
+            return true;
+        }
+        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.CastExpr) {
+            // Checked casts can fail independently of their source expression;
+            // permitting one could unwind a partially constructed instance.
+            return true;
+        }
+        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream().anyMatch(field ->
+                    fieldInitializerMaySuspend(field.value()));
+        // These are the only effect-free leaf expressions. In particular a
+        // lambda is stored, not invoked, and the initializer environment has
+        // no self or reference-valued constructor arguments to capture.
+        // New expression AST variants are unsafe until reviewed explicitly.
+        return !(expr instanceof Ast.LiteralExpr
+                || expr instanceof Ast.NameExpr
+                || expr instanceof Ast.LambdaExpr);
+    }
+
+    /**
+     * Narrow constructor-effect proof: a known zero-argument function may
+     * initialize a scalar only when its complete body is a single primitive
+     * return expression. This is independent of the function's name or
+     * visibility; it never assumes that a routine is pure by default.
+     */
+    private boolean isConstructorSafeScalarCall(Ast.CallExpr call) {
+        if (!call.arguments().isEmpty() || call.typeArgumentsPresent()) return false;
+        List<Ast.Stmt> body = null;
+        Ast.TypeRef returnType = null;
+        if (call.callee() instanceof Ast.NameExpr name) {
+            Ast.FunctionDecl fn = findFunction(name.name(), 0);
+            // A literal-looking body is not enough if the callable's
+            // invocation contract is trapped or actor-dispatched. Keep the
+            // initializer proof restricted to ordinary synchronous callables.
+            if (fn == null || fn.trapped() || fn.actorKind() != Ast.ActorKind.NONE
+                    || fn.async() || fn.suspends() || fn.generator()
+                    || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()) return false;
+            body = fn.body();
+            returnType = fn.returnType();
+        } else if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name) {
+            Ast.ClassDecl owner = findClass(name.name());
+            if (owner == null) return false;
+            Ast.MethodDecl candidate = null;
+            for (Ast.MethodDecl method : owner.methods()) {
+                if (!method.isStatic() || !method.name().equals(member.member())
+                        || !method.parameters().isEmpty()) continue;
+                if (candidate != null) return false;
+                candidate = method;
+            }
+            if (candidate == null || candidate.isAbstract()
+                    || candidate.async() || candidate.suspends()
+                    || !candidate.genericParameters().isEmpty()) return false;
+            body = candidate.body();
+            returnType = candidate.returnType();
+        } else {
+            return false;
+        }
+        if (returnType == null || returnType.isBorrow()
+                || !returnType.arguments().isEmpty()
+                || !(returnType.name().equals("int") || returnType.name().equals("bool")
+                        || returnType.name().equals("float")
+                        || returnType.name().equals("string")
+                        || returnType.name().equals("String"))) return false;
+        return body.size() == 1 && body.getFirst() instanceof Ast.ReturnStmt returned
+                && constructorSafeScalarExpression(returned.value());
+    }
+
+    private boolean constructorSafeScalarExpression(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return (unary.operator().equals("-") || unary.operator().equals("+"))
+                    && constructorSafeScalarExpression(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return (binary.operator().equals("+") || binary.operator().equals("-")
+                        || binary.operator().equals("*"))
+                    && constructorSafeScalarExpression(binary.left())
+                    && constructorSafeScalarExpression(binary.right());
+        return false;
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -970,7 +1152,45 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        // Declaration-site initialization may read constructor arguments in
+        // the declaring class. Unlike constructor-body assignment, the
+        // initialized final slot becomes immutable before any body executes.
+        // This scope is local to klass; inherited initializers are validated
+        // against their own declaring class and cannot capture child params.
+        Ast.ConstructorDecl constructor = klass.constructor();
+        Env fieldInitializerEnv = new Env(null);
+        if (constructor != null) {
+            // The field-initializer ownership checker does not yet prove
+            // moves, borrows or alias lifetime across the constructor boundary.
+            // Admit only independent scalar argument values here. In
+            // particular, never expose the implicit `arguments` tuple:
+            // it can contain an unchecked reference-valued constructor arg.
+            for (Ast.Param param : constructor.parameters()) {
+                Ast.TypeRef paramRef = param.type();
+                String paramName = paramRef.name();
+                boolean scalar = !paramRef.isBorrow()
+                        && paramRef.arguments().isEmpty()
+                        && !param.structural()
+                        && (paramName.equals("int") || paramName.equals("bool")
+                                || paramName.equals("float") || paramName.equals("string"));
+                if (scalar) {
+                    Type parameterType = resolveParam(param, classGenerics, self);
+                    fieldInitializerEnv.define(
+                            param.name(), parameterType,
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+        }
+
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() == Ast.ActorKind.NONE
+                    && field.initializer() != null
+                    && fieldInitializerMaySuspend(field.initializer())) {
+                throw new IllegalArgumentException("class field initializer '"
+                        + klass.name() + "." + field.name()
+                        + "' cannot await, select, call, or suspend during object construction "
+                        + "without a proven transitive effect bound");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -982,7 +1202,7 @@ public final class TypeChecker {
                 currentClassOwner = klass;
                 lexicalClassOrigin = klass;
                 try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                    Type actual = typeOf(field.initializer(), fieldInitializerEnv, classGenerics, self);
                     requireReadonlyCapabilityPreserved(
                             actual,
                             fieldType,
@@ -999,7 +1219,6 @@ public final class TypeChecker {
             }
         }
 
-        Ast.ConstructorDecl constructor = klass.constructor();
         if (constructor != null) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -1028,14 +1247,20 @@ public final class TypeChecker {
             Ast.ActorKind previousActorKind = currentActorKind;
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
+            Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            Set<String> previousFixedWrites = constructorFixedFieldWrites;
             currentActorKind = Ast.ActorKind.NONE;
             currentClassOwner = klass;
+            currentConstructorOwner = klass;
+            constructorFixedFieldWrites = new HashSet<>();
             lexicalClassOrigin = klass;
             try {
                 checkBlock(constructor.body(), constructorEnv, classGenerics, Primitive.VOID, self);
             } finally {
                 currentActorKind = previousActorKind;
                 currentClassOwner = previousClassOwner;
+                currentConstructorOwner = previousConstructorOwner;
+                constructorFixedFieldWrites = previousFixedWrites;
                 lexicalClassOrigin = previousLexicalClass;
             }
         }
@@ -1563,8 +1788,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: legacy do nb select return; exits only the detached arm"
+                        : "W-SELECT-RETURN: legacy do nb select return value is arm-local and discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1700,27 +1925,47 @@ public final class TypeChecker {
                         ? new Env(env, env.descendantsNonLexical(), true)
                         : new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
-                    Type element = channelElementType(
-                            typeOf(arm.channel(), env, generics, self),
-                            "select " + arm.operation().name().toLowerCase());
+                    Type source = typeOf(arm.channel(), env, generics, self);
+                    Type element;
+                    if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                        if (!(source instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "when await requires Future<T>, got " + source);
+                        }
+                        element = future.arguments().getFirst();
+                    } else {
+                        element = channelElementType(
+                                source, "select " + arm.operation().name().toLowerCase());
+                    }
                     if (arm.operation() == Ast.ChannelOperation.WRITE) {
                         requireAssignable(
                                 typeOf(arm.value(), env, generics, self),
-                                element,
-                                "writech select value");
+                                element, "writech select value");
                     } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            bound = resolve(arm.bindingType(), generics, self);
+                            // A type annotation cannot strip the readonly
+                            // capability of a selected infer-struct event.
+                            // Apply the same capability check used for
+                            // assignments, parameters and return values.
+                            requireReadonlyCapabilityPreserved(
+                                    element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                            requireAssignable(element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                        }
                         requireMutableReferentCompatible(
-                                element, arm.mutableReferent(),
+                                bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
+                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Legacy detached do-nb-select arms cannot return from an
+                    // already-continued enclosing callable.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
@@ -1815,6 +2060,15 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
+                // Userland identities need tenant-scoped exports before an untrusted
+                // actor may compile a reference to them. Never silently intern them.
+                if (currentActorKind == Ast.ActorKind.UNTRUSTED
+                        && !symbol.publicToUntrustedCoreV1()) {
+                    throw new SecurityException("Symbol is not exported to untrusted actor");
+                }
+                return new Named("$builtin$Symbol", List.of());
+            }
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
@@ -1883,6 +2137,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
+            List<Type> dynamicFixedSlots = List.of();
             String where;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
@@ -1898,7 +2153,22 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                else if (receiver instanceof Tuple tuple) {
+                    // Constant reads preserve individual slot types, so
+                    // writes must retain the same invariant.
+                    Long constant = constantTupleIndex(indexed.index());
+                    if (tuple.elements().isEmpty() || (constant != null
+                            && (constant < 0 || constant >= tuple.elements().size()))) {
+                        throw new IllegalArgumentException("fixed collection index outside arity "
+                                + tuple.elements().size());
+                    }
+                    if (constant != null) {
+                        targetType = tuple.elements().get(constant.intValue());
+                    } else {
+                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                        dynamicFixedSlots = tuple.elements();
+                    }
+                }
                 else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
@@ -1906,6 +2176,10 @@ public final class TypeChecker {
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
+            for (Type slot : dynamicFixedSlots) {
+                requireReadonlyCapabilityPreserved(value, slot, "dynamic fixed collection slot assignment");
+                requireAssignable(value, slot, "dynamic fixed collection slot assignment");
+            }
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), member.member());
@@ -1952,6 +2226,13 @@ public final class TypeChecker {
             return cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Named("Option", List.of(narrowed))
                     : narrowed;
+        }
+        if (expr instanceof Ast.TrapExpr trapped) {
+            Type inner = typeOf(trapped.expression(), env, generics, self);
+            if (inner instanceof Borrow)
+                throw new IllegalArgumentException(
+                        "trap cannot wrap a borrowed value without a proven Option loan lifetime");
+            return new Named("Option", List.of(inner));
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
@@ -2161,7 +2442,9 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label, target.genericSpecs(),
+                            GenericCallArguments.bind(
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -2199,7 +2482,9 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label, target.genericSpecs(),
+                            GenericCallArguments.bind(
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -2219,7 +2504,15 @@ public final class TypeChecker {
                         typeOf(call.arguments().getFirst(), env, generics, self),
                         Primitive.INT,
                         "Channel.new capacity");
-                Type element = resolve(call.typeArguments().getFirst(), generics, self);
+                Ast.TypeRef channelArgument = call.typeArguments().getFirst();
+                if (channelArgument.isNamedParameter()
+                        || (channelArgument.name().equals("_")
+                                && channelArgument.arguments().isEmpty()
+                                && !channelArgument.inferArguments())) {
+                    throw new IllegalArgumentException(
+                            "Channel.new<T> requires one positional concrete payload type");
+                }
+                Type element = resolve(channelArgument, generics, self);
                 validateChannelPayloadType(element, "Channel.new");
                 return new Named("Channel", List.of(element));
             }
@@ -2253,6 +2546,19 @@ public final class TypeChecker {
                                 typeOf(call.arguments().get(1), env, generics, self),
                                 element,
                                 "SelectCase.write value");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "future" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase.future expects one Future<T>");
+                        }
+                        Type pending = typeOf(call.arguments().getFirst(), env, generics, self);
+                        if (!(pending instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.future requires Future<T>, got " + pending);
+                        }
                         yield new Named("SelectCase", List.of());
                     }
                     case "default" -> {
@@ -2335,6 +2641,12 @@ public final class TypeChecker {
                     && (name.name().equals("Some") || name.name().equals("Ok") || name.name().equals("Err"))) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException(name.name() + " does not accept call-site type arguments");
+                }
+                // Zero-payload Ok() is legal only when the expected T is
+                // void. Its inferred type remains Result<void, Unknown>,
+                // so a Result<int,E> target rejects it without coercion.
+                if (name.name().equals("Ok") && call.arguments().isEmpty()) {
+                    return new Named("Result", List.of(Primitive.VOID, Unknown.INSTANCE));
                 }
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException(name.name() + " expects exactly one value");
@@ -2604,31 +2916,24 @@ public final class TypeChecker {
                         Function fn = (Function) bindReceiverSelf(rawFunction, receiverValueType);
 
                         String label = "structural method " + member.member();
-                        Set<String> canonicalGenerics = new LinkedHashSet<>();
-                        for (int i = 0; i < genericArity; i++) {
-                            canonicalGenerics.add("$callable" + i);
-                        }
-
-                        Map<String, Type> bindings = new HashMap<>();
-                        Set<String> fixedBindings = new HashSet<>();
-                        if (call.typeArgumentsPresent() && !call.typeArguments().isEmpty()) {
-                            if (call.typeArguments().size() != genericArity) {
-                                throw new IllegalArgumentException(
-                                        label + " expects " + genericArity
-                                                + " explicit type argument(s), got "
-                                                + call.typeArguments().size());
-                            }
-                            for (int i = 0; i < genericArity; i++) {
-                                String genericName = "$callable" + i;
-                                bindings.put(
-                                        genericName,
-                                        resolve(call.typeArguments().get(i), generics, self));
-                                fixedBindings.add(genericName);
-                            }
-                        } else if (call.typeArgumentsPresent() && genericArity == 0) {
+                        List<String> canonicalNames =
+                                GenericCallArguments.canonicalStructuralNames(genericArity);
+                        Set<String> canonicalGenerics = new LinkedHashSet<>(canonicalNames);
+                        // Structural callable contracts retain only alpha-normalized
+                        // generic slots, not their original source names. Never
+                        // interpret caller-provided named arguments as these slots.
+                        if (call.typeArguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) {
                             throw new IllegalArgumentException(
-                                    label + " is not generic and cannot be called with <>");
+                                    label + " cannot use named generic arguments because structural "
+                                            + "method contracts do not preserve source parameter names");
                         }
+                        if (call.typeArgumentsPresent() && genericArity == 0) {
+                            throw new IllegalArgumentException(
+                                    label + " is not generic and cannot be called with <...> or <>");
+                        }
+                        Map<String, Type> bindings = explicitGenericBindings(
+                                canonicalNames, call.typeArguments(), generics, self, label);
+                        Set<String> fixedBindings = new HashSet<>(bindings.keySet());
 
                         List<Type> actuals = new ArrayList<>(structuralArguments.size());
                         for (int i = 0; i < structuralArguments.size(); i++) {
@@ -2647,6 +2952,10 @@ public final class TypeChecker {
 
                         Set<String> unbound = new HashSet<>(canonicalGenerics);
                         unbound.removeAll(bindings.keySet());
+                        if (!unbound.isEmpty()) {
+                            throw new IllegalArgumentException("cannot infer generic parameter(s) "
+                                    + unbound.stream().sorted().toList() + " for " + label);
+                        }
                         for (int i = 0; i < structuralArguments.size(); i++) {
                             Type expected = substituteGenerics(fn.parameters().get(i), bindings);
                             if (containsGenericNamed(expected, unbound)) {
@@ -3044,6 +3353,10 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
+            if (sumReceiver instanceof Function) {
+                throw new IllegalArgumentException("unknown function member '" + member.member()
+                        + "'; invoke directly or spread a statically known tuple with f(...args)");
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
@@ -3193,7 +3506,7 @@ public final class TypeChecker {
                     return member;
                 }
                 if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return record.members().values().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return indexedElementUnion(record.members().values());
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -3206,12 +3519,17 @@ public final class TypeChecker {
                     }
                     return tuple.elements().get(constant.intValue());
                 }
-                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
         }
         if (expr instanceof Ast.NewExpr created) {
+            // Guest Symbols are immutable keys, not fresh reference capabilities.
+            // Do not silently reinterpret the historical STABLE constructor.
+            if (created.type().name().equals("Symbol") && findClass("Symbol") == null) {
+                throw new IllegalArgumentException("new Symbol(...) is not supported; use #name or Symbol.stable(uuid)");
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
                         "DynamicStruct has been removed; use infer struct{...}, "
@@ -3361,6 +3679,72 @@ public final class TypeChecker {
                 case IMMEDIATE -> new Named("Option", List.of(element));
             };
         }
+        if (expr instanceof Ast.MatchExpr valueMatch) {
+            Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            Type declaredResult = valueMatch.resultType() == null ? null
+                    : resolve(valueMatch.resultType(), generics, self);
+            if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "value match result parameter must be a known, non-void value type");
+            }
+            if (declaredResult instanceof Borrow) {
+                // Inferred value matches already reject branch-local loan escape.
+                // An explicit type must not circumvent that check by erasing &T.
+                throw new IllegalArgumentException(
+                        "value match cannot produce an explicit borrowed result until loan escape is proven");
+            }
+            Type result = declaredResult;
+            List<Ast.MatchArm> proofArms = new ArrayList<>();
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            try {
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    env.restoreInitialization(before);
+                    Env armEnv = new Env(env);
+                    checkPattern(arm.pattern(), subject, armEnv, generics, self);
+                    if (arm.guard() != null) {
+                        requireAssignable(
+                                typeOfCondition(arm.guard(), armEnv, generics, self),
+                                Primitive.BOOL,
+                                "value match guard");
+                    }
+                    Type actual = declaredResult == null
+                            ? typeOf(arm.value(), armEnv, generics, self)
+                            : typeOfAgainstExpected(arm.value(), declaredResult, armEnv, generics, self);
+                    if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "value match arms must return a statically known non-void value");
+                    }
+                    if (declaredResult != null) {
+                        // An explicit result type constrains each arm, but
+                        // cannot erase readonly/ownership capabilities.
+                        requireReadonlyCapabilityPreserved(actual, declaredResult, "value match arm");
+                        requireAssignable(actual, declaredResult, "value match arm");
+                    } else if (result == null) {
+                        result = actual;
+                    } else {
+                        // Preserve the existing invariant inference contract
+                        // when no result parameter was supplied.
+                        requireReadonlyCapabilityPreserved(actual, result, "value match arm");
+                        requireAssignable(actual, result, "value match arm");
+                        requireAssignable(result, actual, "value match arm");
+                    }
+                    proofArms.add(new Ast.MatchArm(
+                            arm.pattern(), arm.guard(),
+                            List.of(new Ast.ReturnStmt(arm.value()))));
+                }
+                // Reuse the canonical finite-domain reachability and
+                // exhaustive-pattern checker. These arm returns are checked
+                // against MatchExpr's result, not the enclosing function.
+                checkMatch(
+                        new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
+                        subject, env, generics, result, self);
+                return result;
+            } finally {
+                // Only the selected arm executes at runtime. Type-checking
+                // all branches cannot establish outer definite-init facts.
+                env.restoreInitialization(before);
+            }
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -3458,8 +3842,13 @@ public final class TypeChecker {
             }
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
+            Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
+            // A lambda checked within a constructor runs on invocation, not
+            // necessarily during initialization. It must never inherit the
+            // constructor's one-time fixed-field initialization privilege.
+            currentConstructorOwner = null;
             Type result;
             try {
                 if (lambda.expressionBody() != null) {
@@ -3474,6 +3863,7 @@ public final class TypeChecker {
                 // for the enclosing flow merely because the closure exists.
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
+                currentConstructorOwner = previousConstructorOwner;
             }
             return new Function(parameters, result);
         }
@@ -4126,7 +4516,9 @@ public final class TypeChecker {
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4137,6 +4529,7 @@ public final class TypeChecker {
             }
         } finally {
             currentClassOwner = previousClassOwner;
+            currentConstructorOwner = previousConstructorOwner;
         }
     }
 
@@ -4170,7 +4563,9 @@ public final class TypeChecker {
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
+        Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
@@ -4185,6 +4580,7 @@ public final class TypeChecker {
             }
         } finally {
             currentClassOwner = previousClassOwner;
+            currentConstructorOwner = previousConstructorOwner;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
@@ -4368,6 +4764,8 @@ public final class TypeChecker {
             };
             case "HttpHandler" -> switch (name) {
                 case "isolated" -> Primitive.BOOL;
+                case "created", "reused" -> Primitive.INT;
+                case "pooled" -> new Function(List.of(Primitive.INT), new Named("HttpHandler", List.of()));
                 case "dispatch" -> new Function(List.of(new Borrow(exchange, true)), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown HTTP handler member " + name);
             };
@@ -4446,6 +4844,28 @@ public final class TypeChecker {
                 if (field != null) {
                     requireClassMemberVisible(
                             field.field().visibility(), field.owner(), "field", field.field().name());
+                    if (writing && field.field().bindingKind() != Ast.BindingKind.LET) {
+                        // Preserve the pre-existing constructor assignment path
+                        // for fields declared without an initializer. A field
+                        // initialized in its declaration is NEVER writable
+                        // through that exception (including new 'final' fields).
+                        boolean initializingInConstructor =
+                                currentConstructorOwner == klass
+                                && field.field().initializer() == null
+                                && member.receiver() instanceof Ast.NameExpr root
+                                && root.name().equals("self");
+                        if (!initializingInConstructor) {
+                            throw new IllegalArgumentException(
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; cannot reassign fixed class field");
+                        }
+                        if (constructorFixedFieldWrites == null
+                                || !constructorFixedFieldWrites.add(field.field().name())) {
+                            throw new IllegalArgumentException(
+                                    "field '" + field.owner().name() + "." + field.field().name()
+                                            + "' is immutable/final; constructor must initialize it at most once");
+                        }
+                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
@@ -4704,6 +5124,20 @@ public final class TypeChecker {
         for (int i = 0; i < arms.size(); i++) {
             Ast.MatchArm arm = arms.get(i);
 
+            // Multiple earlier arms may collectively cover the domain even
+            // when no single arm subsumes this one (e.g. true, false, then _).
+            // Guards do not count toward unconditional reachability.
+            if (i > 0 && patternsProvablyExhaustive(
+                    arms.subList(0, i).stream()
+                            .filter(previous -> previous.guard() == null)
+                            .map(Ast.MatchArm::pattern)
+                            .toList(),
+                    subject, generics, self, 0)) {
+                throw new IllegalArgumentException(
+                        "unreachable match arm " + (i + 1)
+                                + ": earlier arms already exhaust " + subject);
+            }
+
             Env armEnv = new Env(env);
             checkPattern(arm.pattern(), subject, armEnv, generics, self);
             if (arm.guard() != null) {
@@ -4748,6 +5182,20 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
+            requireKnownRuntimePatternTarget(typed.type(), new LinkedHashSet<>());
+            if (typed.type().isComplement()) {
+                Type excluded = deref(resolve(typed.type().complementedType(), generics, self));
+                if (runtimeValueTypeCovered(subject, excluded, 0)) {
+                    throw new IllegalArgumentException(
+                            "unreachable negative type pattern: " + subject + " is contained in " + excluded);
+                }
+                if (typed.binding() != null) {
+                    // A negative test does not prove a concrete positive
+                    // nominal type; retain the subject's static capabilities.
+                    bindings.define(typed.binding(), subject, Ast.BindingKind.VAL);
+                }
+                return;
+            }
             Type target = deref(resolve(typed.type(), generics, self));
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
@@ -4814,7 +5262,9 @@ public final class TypeChecker {
                 case "None" -> named.name().equals("Option") && named.arguments().size() == 1
                         ? List.of() : null;
                 case "Ok" -> named.name().equals("Result") && named.arguments().size() == 2
-                        ? List.of(named.arguments().get(0)) : null;
+                        ? (named.arguments().get(0) == Primitive.VOID
+                                ? List.of() : List.of(named.arguments().get(0)))
+                        : null;
                 case "Err" -> named.name().equals("Result") && named.arguments().size() == 2
                         ? List.of(named.arguments().get(1)) : null;
                 default -> null;
@@ -4915,6 +5365,42 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Keep static literal subsumption consistent with valueEquals in the
+     * evaluator. In particular, do not collapse large integral literals to
+     * double: 2^53+1 is not equal to the rounded float 2^53.
+     */
+    private boolean literalPatternRuntimeEquals(Object left, Object right) {
+        if (left instanceof Number a && right instanceof Number b) {
+            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+                try {
+                    return new java.math.BigDecimal(a.toString())
+                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
+                } catch (NumberFormatException ignored) {
+                    return a.doubleValue() == b.doubleValue();
+                }
+            }
+            boolean integralA = isRuntimeIntegralNumber(a);
+            boolean integralB = isRuntimeIntegralNumber(b);
+            if (integralA && integralB) return a.longValue() == b.longValue();
+            if (integralA != integralB) {
+                Number integer = integralA ? a : b;
+                Number floating = integralA ? b : a;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
+            return a.doubleValue() == b.doubleValue();
+        }
+        return java.util.Objects.equals(left, right);
+    }
+
+    private boolean isRuntimeIntegralNumber(Number value) {
+        return value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -4925,18 +5411,21 @@ public final class TypeChecker {
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
-            return java.util.Objects.equals(a.value(), b.value());
+            // Runtime patterns use numeric value equality, not Java boxed
+            // identity: 1 and 1.0 match the same input. A second literal
+            // representing the same runtime value is unreachable.
+            return literalPatternRuntimeEquals(a.value(), b.value());
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
             Type earlierType = deref(resolve(a.type(), generics, self));
             Type laterType = deref(resolve(b.type(), generics, self));
-            return assignable(laterType, earlierType);
+            return runtimeValueTypeCovered(laterType, earlierType, 0);
         }
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.LiteralPattern b) {
             Type earlierType = deref(resolve(a.type(), generics, self));
             Type literalType = typeOf(new Ast.LiteralExpr(b.value()), new Env(null), generics, self);
-            return assignable(literalType, earlierType);
+            return runtimeValueTypeCovered(literalType, earlierType, 0);
         }
 
         if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.StructuralPattern b) {
@@ -4944,13 +5433,14 @@ public final class TypeChecker {
             Type br = deref(resolve(b.target(), generics, self));
             Record earlierShape = structuralPatternShape(a.target(), ar, generics);
             Record laterShape = structuralPatternShape(b.target(), br, generics);
-            return structuralRecordAssignable(laterShape, earlierShape);
+            return runtimeRecordShapeCovered(laterShape, earlierShape);
         }
         if (earlier instanceof Ast.StructuralPattern a && later instanceof Ast.TypePattern b) {
             Type ar = deref(resolve(a.target(), generics, self));
             Record earlierShape = structuralPatternShape(a.target(), ar, generics);
             Type laterType = deref(resolve(b.type(), generics, self));
-            return assignable(laterType, earlierShape);
+            return laterType instanceof Record laterRecord
+                    && runtimeRecordShapeCovered(laterRecord, earlierShape);
         }
 
         if (earlier instanceof Ast.TuplePattern a && later instanceof Ast.TuplePattern b) {
@@ -4990,7 +5480,9 @@ public final class TypeChecker {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
-            return !java.util.Objects.equals(a.value(), b.value());
+            // Do not certify 1 and 1.0 as disjoint: runtime equality
+            // intentionally permits equal values across numeric types.
+            return !literalPatternRuntimeEquals(a.value(), b.value());
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
@@ -5045,47 +5537,95 @@ public final class TypeChecker {
 
     private boolean matchProvablyExhaustive(
             List<Ast.MatchArm> arms, Type subject, Set<String> generics, Type self) {
-        for (Ast.MatchArm arm : arms) {
-            if (arm.guard() == null
-                    && patternCoversType(arm.pattern(), subject, generics, self)) {
-                return true;
+        // A constructor name does not cover its entire variant when the
+        // payload pattern is refutable: Some(0) + None leaves Some(1).
+        // Guards never contribute to an exhaustiveness proof.
+        List<Ast.Pattern> unguarded = arms.stream()
+                .filter(arm -> arm.guard() == null)
+                .map(Ast.MatchArm::pattern)
+                .toList();
+        return patternsProvablyExhaustive(unguarded, subject, generics, self, 0);
+    }
+
+    private boolean patternsProvablyExhaustive(
+            List<Ast.Pattern> patterns,
+            Type subject,
+            Set<String> generics,
+            Type self,
+            int depth) {
+        // Recursive user-defined types must not exhaust the checker stack.
+        // A failed proof is a compile-time rejection, never runtime coverage.
+        if (depth >= 32) return false;
+        for (Ast.Pattern pattern : patterns) {
+            if (patternCoversType(pattern, subject, generics, self)) return true;
+        }
+        // Every runtime value either satisfies a reifiable type predicate or
+        // its exact complement. The caller filtered guarded arms already.
+        // Matching TypeRef identities here avoids unsound subtype guesses.
+        for (Ast.Pattern a : patterns) {
+            if (!(a instanceof Ast.TypePattern positive) || positive.type().isComplement()) continue;
+            for (Ast.Pattern b : patterns) {
+                if (b instanceof Ast.TypePattern negative
+                        && negative.type().isComplement()
+                        && negative.type().complementedType().equals(positive.type())) {
+                    return true;
+                }
             }
         }
 
-        // Finite unions are exhaustively covered when every alternative is
-        // completely covered by at least one unguarded arm.
         if (subject instanceof Union union) {
             return union.options().stream().allMatch(option ->
-                    arms.stream().anyMatch(arm ->
-                            arm.guard() == null
-                                    && patternCoversType(
-                                            arm.pattern(), option, generics, self)));
+                    patternsProvablyExhaustive(patterns, option, generics, self, depth + 1));
         }
 
         if (subject == Primitive.BOOL) {
             boolean yes = false, no = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.LiteralPattern literal) {
-                if (Boolean.TRUE.equals(literal.value())) yes = true;
-                if (Boolean.FALSE.equals(literal.value())) no = true;
+            for (Ast.Pattern pattern : patterns) {
+                if (pattern instanceof Ast.LiteralPattern literal) {
+                    if (Boolean.TRUE.equals(literal.value())) yes = true;
+                    if (Boolean.FALSE.equals(literal.value())) no = true;
+                }
             }
             return yes && no;
         }
-        if (subject instanceof Named named && named.name().equals("Option")) {
-            boolean some = false, none = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                some |= c.constructor().equals("Some");
-                none |= c.constructor().equals("None");
+
+        if (subject instanceof Named named
+                && named.name().equals("Option") && named.arguments().size() == 1) {
+            boolean none = false;
+            List<Ast.Pattern> somePayloads = new ArrayList<>();
+            for (Ast.Pattern pattern : patterns) {
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)) continue;
+                if (ctor.constructor().equals("None") && ctor.arguments().isEmpty()) none = true;
+                if (ctor.constructor().equals("Some") && ctor.arguments().size() == 1) {
+                    somePayloads.add(ctor.arguments().getFirst());
+                }
             }
-            return some && none;
+            return none && patternsProvablyExhaustive(
+                    somePayloads, named.arguments().getFirst(), generics, self, depth + 1);
         }
-        if (subject instanceof Named named && named.name().equals("Result")) {
-            boolean ok = false, err = false;
-            for (Ast.MatchArm arm : arms) if (arm.guard() == null && arm.pattern() instanceof Ast.ConstructorPattern c) {
-                ok |= c.constructor().equals("Ok");
-                err |= c.constructor().equals("Err");
+
+        if (subject instanceof Named named
+                && named.name().equals("Result") && named.arguments().size() == 2) {
+            List<Ast.Pattern> okPayloads = new ArrayList<>();
+            List<Ast.Pattern> errPayloads = new ArrayList<>();
+            boolean unitOk = false;
+            for (Ast.Pattern pattern : patterns) {
+                if (!(pattern instanceof Ast.ConstructorPattern ctor)) continue;
+                if (ctor.constructor().equals("Ok") && ctor.arguments().isEmpty()
+                        && named.arguments().get(0) == Primitive.VOID) unitOk = true;
+                if (ctor.arguments().size() != 1) continue;
+                if (ctor.constructor().equals("Ok")) okPayloads.add(ctor.arguments().getFirst());
+                if (ctor.constructor().equals("Err")) errPayloads.add(ctor.arguments().getFirst());
             }
-            return ok && err;
+            return (named.arguments().get(0) == Primitive.VOID ? unitOk : patternsProvablyExhaustive(
+                    okPayloads, named.arguments().get(0), generics, self, depth + 1))
+                    && patternsProvablyExhaustive(
+                            errPayloads, named.arguments().get(1), generics, self, depth + 1);
         }
+
+        // Open/infinite domains require an irrefutable pattern. More elaborate
+        // coverage proofs (e.g. multiple partially covering tuple rows) can
+        // be added without weakening this soundness boundary.
         return false;
     }
 
@@ -5097,14 +5637,29 @@ public final class TypeChecker {
         if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) {
             return true;
         }
+        // Unknown/generic subjects cannot be exhausted by a particular
+        // nominal or structural type pattern. Assignment compatibility with
+        // Unknown is deliberately permissive, but coverage must not be.
+        if (subject == Unknown.INSTANCE || subject instanceof Generic) return false;
+        // A union is completely covered only if each runtime alternative is
+        // covered. Assignability alone is unsafe here: int can widen to float,
+        // but an int runtime value does not satisfy an 'is float' pattern.
+        if (subject instanceof Union union) {
+            return union.options().stream().allMatch(option ->
+                    patternCoversType(pattern, option, generics, self));
+        }
         if (pattern instanceof Ast.TypePattern typed) {
             Type target = deref(resolve(typed.type(), generics, self));
-            return assignable(subject, target);
+            return typesMayOverlap(subject, target) && assignable(subject, target);
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
             Type resolved = deref(resolve(structural.target(), generics, self));
             Record shape = structuralPatternShape(structural.target(), resolved, generics);
-            return assignable(subject, shape);
+            // Runtime structural patterns check every field with oresTypeMatches,
+            // not assignability. int -> float widening (including nested
+            // record fields) must never prove structural coverage.
+            return subject instanceof Record record
+                    && runtimeRecordShapeCovered(record, shape);
         }
         if (pattern instanceof Ast.TuplePattern tuplePattern
                 && subject instanceof Tuple tuple
@@ -5123,6 +5678,74 @@ public final class TypeChecker {
                 && subject instanceof StringLiteral stringLiteral
                 && literal.value() instanceof String value) {
             return stringLiteral.value().equals(value);
+        }
+        return false;
+    }
+
+    private boolean runtimeRecordShapeCovered(Record source, Record target) {
+        return runtimeRecordShapeCovered(source, target, 0);
+    }
+
+    private boolean runtimeRecordShapeCovered(Record source, Record target, int depth) {
+        if (depth >= 32) return false;
+        for (Map.Entry<String, Type> required : target.members().entrySet()) {
+            Type actual = source.members().get(required.getKey());
+            if (actual == null || !runtimeValueTypeCovered(actual, required.getValue(), depth + 1)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Sufficient (not necessary) condition that every runtime value of source
+     * matches the target field type test. This is intentionally stricter than
+     * assignment compatibility; unknown, generic and callable field shapes
+     * require a fallback unless a future verified runtime descriptor proves
+     * otherwise.
+     */
+    private boolean runtimeValueTypeCovered(Type source, Type target, int depth) {
+        if (depth >= 32) return false;
+        if (source == Unknown.INSTANCE || target == Unknown.INSTANCE
+                || source instanceof Generic || target instanceof Generic) return false;
+        if (source instanceof Union union) {
+            return union.options().stream().allMatch(option -> runtimeValueTypeCovered(option, target, depth + 1));
+        }
+        if (target instanceof Union union) {
+            return union.options().stream().anyMatch(option -> runtimeValueTypeCovered(source, option, depth + 1));
+        }
+        if (source instanceof Primitive left && target instanceof Primitive right) {
+            if (left == Primitive.VOID || left == Primitive.NULL
+                    || right == Primitive.VOID || right == Primitive.NULL) return false;
+            return left == right
+                    || (left == Primitive.FLOAT && right == Primitive.DECIMAL)
+                    || (left == Primitive.DECIMAL && right == Primitive.FLOAT);
+        }
+        if (source instanceof StringLiteral && target == Primitive.STRING) return true;
+        if (source instanceof Record left && target instanceof Record right) {
+            return runtimeRecordShapeCovered(left, right, depth + 1);
+        }
+        if (source instanceof Tuple left && target instanceof Tuple right) {
+            if (left.kind() != TupleKind.TUPLE || right.kind() != TupleKind.TUPLE
+                    || left.elements().size() != right.elements().size()) return false;
+            for (int i = 0; i < left.elements().size(); i++) {
+                if (!runtimeValueTypeCovered(left.elements().get(i), right.elements().get(i), depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Runtime List/Array and Option/Result tests currently erase element
+        // parameters. Reified generic payload predicates are not assumed.
+        if (source instanceof ListType && target instanceof ListType) return true;
+        if (source instanceof Named left && target instanceof Named right) {
+            if (left.name().equals(right.name())) return true;
+            // A proven nominal subtype is also a runtime subtype; unrelated
+            // nominal values cannot be certified from structural assignability.
+            if (findClass(left.name()) != null && (findClass(right.name()) != null
+                    || findInterface(right.name()) != null)) {
+                return assignable(source, target);
+            }
         }
         return false;
     }
@@ -5175,8 +5798,56 @@ public final class TypeChecker {
         return a.equals(b);
     }
 
+    /**
+     * Exhaustiveness may use T and !T as a logical partition only if T has
+     * a concrete runtime predicate. Unknown nominal names and unreified
+     * aliases cannot silently become a predicate that always returns false.
+     */
+    private void requireKnownRuntimePatternTarget(Ast.TypeRef ref, Set<String> aliases) {
+        if (ref.isComplement()) {
+            requireKnownRuntimePatternTarget(ref.complementedType(), aliases);
+            return;
+        }
+        if (ref.isUnion()) {
+            for (Ast.TypeRef member : ref.arguments()) {
+                requireKnownRuntimePatternTarget(member, aliases);
+            }
+            return;
+        }
+        String name = ref.name();
+        if (Set.of(
+                "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
+                "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
+                "Symbol", "complex", "complex64", "complex128",
+                "Option", "Result", "Array", "List", "Generator", "Iterator",
+                "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
+                || findClass(name) != null || findInterface(name) != null) {
+            return;
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(name);
+        if (alias != null && alias.genericParameters().isEmpty()) {
+            if (!aliases.add(name)) {
+                throw new IllegalArgumentException("cyclic type alias in runtime pattern '" + name + "'");
+            }
+            try {
+                requireRuntimeReifiableType(alias.target(), "type pattern alias");
+                requireKnownRuntimePatternTarget(alias.target(), aliases);
+            } finally {
+                aliases.remove(name);
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "type pattern '" + name + "' has no known runtime identity; "
+                        + "declare/import a reifiable nominal type or use a supported scalar");
+    }
+
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
+        if (ref.isComplement()) {
+            requireRuntimeReifiableType(ref.complementedType(), operator);
+            return;
+        }
         if (ref.isUnion()) {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;
@@ -5211,6 +5882,9 @@ public final class TypeChecker {
             return Types.unionOf(union.options().stream()
                     .map(option -> resolveSharedGeneric(option, bindings))
                     .toList());
+        }
+        if (type instanceof Types.Not not) {
+            return Types.notOf(resolveSharedGeneric(not.excluded(), bindings));
         }
         if (type instanceof Function fn) {
             return new Function(
@@ -5297,8 +5971,7 @@ public final class TypeChecker {
             };
         }
         if (receiver instanceof Tuple tuple) {
-            Type element = tuple.elements().stream()
-                    .reduce(Unknown.INSTANCE, this::commonType);
+            Type element = indexedElementUnion(tuple.elements());
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), element);
@@ -5465,6 +6138,11 @@ public final class TypeChecker {
         // Match the newer iterator prototype: for-await also admits synchronous
         // iterables, but execution still crosses the runtime-owned Future boundary.
         return iterableElementType(iterable);
+    }
+
+    private Type indexedElementUnion(java.util.Collection<Type> elements) {
+        return elements.stream().map(this::widenCollectionElement)
+                .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
     /** Folds trivial signed integer literals without performing guest arithmetic. */
@@ -6387,6 +7065,8 @@ public final class TypeChecker {
         } else if (expression instanceof Ast.BinaryExpr binary) {
             rejectStaticClassGenericReferences(binary.left(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(binary.right(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.TrapExpr trapped) {
+            rejectStaticClassGenericReferences(trapped.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.UnaryExpr unary) {
             rejectStaticClassGenericReferences(unary.operand(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ConditionalExpr conditional) {
@@ -6522,16 +7202,72 @@ public final class TypeChecker {
             Set<String> callerGenerics,
             Type callerSelf,
             String label) {
-        if (typeArguments.isEmpty()) return Map.of();
-        if (typeArguments.size() != genericNames.size()) {
-            throw new IllegalArgumentException(label + " expects " + genericNames.size()
-                    + " explicit type argument(s), got " + typeArguments.size());
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(genericNames, typeArguments, label);
+        Map<String, Type> resolved = new HashMap<>();
+        for (Map.Entry<String, Ast.TypeRef> entry : bound.explicitTypes().entrySet()) {
+            resolved.put(entry.getKey(), resolve(entry.getValue(), callerGenerics, callerSelf));
         }
-        Map<String, Type> bindings = new HashMap<>();
-        for (int i = 0; i < genericNames.size(); i++) {
-            bindings.put(genericNames.get(i), resolve(typeArguments.get(i), callerGenerics, callerSelf));
+        return resolved;
+    }
+
+    /** Fail closed on forward references, self references and unsound top defaults. */
+    private void validateFunctionGenericDefaults(Ast.FunctionDecl fn) {
+        Set<String> declared = Set.copyOf(fn.genericParameters());
+        Set<String> previous = new HashSet<>();
+        for (Ast.GenericParameter spec : fn.genericSpecs()) {
+            if (spec.defaultType() != null) {
+                validateGenericDefaultReferences(
+                        spec.defaultType(), declared, previous,
+                        "function " + fn.name() + " generic '" + spec.name() + "'");
+                // Validate declared types even if every call explicitly overrides the default.
+                resolve(spec.defaultType(), declared, null);
+            }
+            previous.add(spec.name());
         }
-        return bindings;
+    }
+
+    private void validateGenericDefaultReferences(
+            Ast.TypeRef ref, Set<String> declared, Set<String> previous, String label) {
+        if (ref.isNamedParameter() || ref.inferArguments()
+                || ref.name().equals("_") || ref.name().equals("$infer$")) {
+            throw new IllegalArgumentException(label
+                    + " has unsupported named/inferred syntax in its default type");
+        }
+        if (ref.name().equals("Unknown") || ref.name().equals("Any")) {
+            throw new IllegalArgumentException(label
+                    + " cannot default to Any/Unknown until safe opaque/dynamic semantics are integrated");
+        }
+        if (declared.contains(ref.name()) && !previous.contains(ref.name())) {
+            throw new IllegalArgumentException(label
+                    + " has a forward or self-referential generic default '" + ref.name() + "'");
+        }
+        // General resolve() deliberately permits open nominal names for other
+        // source contexts. Generic defaults are an ABI promise and must not
+        // turn a misspelling into an apparently concrete, unsafe specialization.
+        // Keep this admission list explicit until the linked type registry
+        // exposes a single authoritative "is declared type" predicate.
+        boolean compilerShape = ref.isBorrow() || ref.isComplement()
+                || ref.isUnion() || ref.isTupleType() || ref.isRecordType()
+                || ref.isSequenceShape() || ref.isRepeatExact() || ref.isRepeatMany()
+                || ref.isStringLiteral() || ref.isIntLiteral() || ref.isBoolLiteral()
+                || (ref.name().startsWith("$field$") && ref.arguments().size() == 1);
+        if (ref.name().startsWith("$") && !compilerShape) {
+            throw new IllegalArgumentException(label
+                    + " contains an invalid synthetic type '" + ref.name() + "'");
+        }
+        if (!ref.name().startsWith("$")
+                && !declared.contains(ref.name())
+                && !GENERIC_DEFAULT_BUILTINS.contains(ref.name())
+                && findClass(ref.name()) == null
+                && findInterface(ref.name()) == null
+                && findTypeAlias(ref.name()) == null) {
+            throw new IllegalArgumentException(label
+                    + " references an unresolved default type '" + ref.name() + "'");
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            validateGenericDefaultReferences(argument, declared, previous, label);
+        }
     }
 
     private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
@@ -6593,6 +7329,24 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
+        return checkGenericCallable(genericNames, params, returnRef, arguments,
+                env, callerGenerics, callerSelf, callableSelf,
+                initialBindings, label, List.of(), Set.of());
+    }
+
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Map<String, Type> initialBindings,
+            String label,
+            List<Ast.GenericParameter> genericSpecs,
+            Set<String> inferenceHoles) {
         List<ExpandedCallArgument> expanded =
                 expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
         if (params.size() != expanded.size()) {
@@ -6610,8 +7364,16 @@ public final class TypeChecker {
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
+        GenericCallArguments.applyDefaults(
+                genericNames, genericSpecs, bindings, inferenceHoles,
+                ref -> resolve(ref, unique, callableSelf),
+                this::substituteGenerics,
+                type -> containsGenericNamed(type, unique),
+                label);
+        GenericCallArguments.requireBound(genericNames, bindings, label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
+
 
         for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
@@ -6698,6 +7460,7 @@ public final class TypeChecker {
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Types.Not not) return Types.notOf(substituteGenerics(not.excluded(), bindings));
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Function fn) return new Function(
                 fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
@@ -6719,6 +7482,7 @@ public final class TypeChecker {
         if (type instanceof ListType list) return containsUnknown(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
+        if (type instanceof Types.Not not) return containsUnknown(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnknown)
                 || containsUnknown(fn.result());
@@ -6734,6 +7498,7 @@ public final class TypeChecker {
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
                 || containsGenericNamed(fn.result(), names);
@@ -7058,7 +7823,21 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (ref.name().equals("_")) {
+            // '_' has meaning only as an entire generic *call* argument.
+            // In ordinary type positions it is neither a type variable nor
+            // an open nominal type; accepting it fabricates a concrete name.
+            throw new IllegalArgumentException(
+                    "bare '_' inference hole is only permitted as a whole generic call type argument");
+        }
+        if (ref.isNamedParameter()) {
+            throw new IllegalArgumentException(
+                    "named generic type arguments in type position are not supported yet; "
+                            + "use positional type arguments");
+        }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
+        if (ref.isBoolLiteral()) return new Types.BoolLiteral(ref.boolLiteralValue());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) {
@@ -7091,7 +7870,13 @@ public final class TypeChecker {
             }
             return new Record(members, ref.isReadonlyRecordType());
         }
-        if (generics.contains(ref.name())) return new Generic(ref.name());
+        if (generics.contains(ref.name())) {
+            if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException(
+                        "generic type variable '" + ref.name() + "' cannot be parameterized");
+            }
+            return new Generic(ref.name());
+        }
         Type scopedType = currentTypeScope == null ? null : currentTypeScope.lookupInferredType(ref.name());
         if (scopedType != null) {
             if (!ref.arguments().isEmpty() || ref.inferArguments()) {
@@ -7138,6 +7923,17 @@ public final class TypeChecker {
             }
         }
 
+        // Primitive and scalar built-in types do not accept higher-kinded
+        // application. Previously e.g. int<string> silently resolved to int.
+        if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint", "f32", "f64", "float", "decimal",
+                "complex64", "complex128", "complex", "string", "String",
+                "void").contains(ref.name())
+                && (ref.inferArguments() || !ref.arguments().isEmpty())) {
+            throw new IllegalArgumentException(
+                    "non-generic built-in type '" + ref.name() + "' cannot accept type arguments");
+        }
+
         return switch (ref.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
@@ -7150,6 +7946,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                yield new Named("$builtin$Symbol", List.of());
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
@@ -7304,6 +8106,9 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // A negative constraint requires positive evidence that values are disjoint.
+        // The generic/Unknown and dynamic compatibility paths below are not evidence.
+        if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())

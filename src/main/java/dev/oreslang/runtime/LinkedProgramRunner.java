@@ -64,7 +64,8 @@ public final class LinkedProgramRunner {
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions);
+        collectImportClosure(entry, units, projectConfig, importResolutions,
+                new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -179,7 +180,8 @@ public final class LinkedProgramRunner {
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
-        collectImportClosure(entry, units, projectConfig, importResolutions);
+        collectImportClosure(entry, units, projectConfig, importResolutions,
+                new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -366,12 +368,18 @@ public final class LinkedProgramRunner {
             Path unit,
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
-            Map<String, Map<String, String>> importResolutions) throws IOException {
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
         Path normalized = unit.toAbsolutePath().normalize();
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
+        // Fail before any file I/O or parsing when import recursion is too deep.
+        budget.checkCanAdmitUnit(depth);
 
-        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, Files.readString(normalized));
+        BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
+        budget.admit(source.byteCount(), depth);
+        MixedSourceUnit mixed = MixedSourceUnit.parse(normalized, source.text());
         units.put(id, mixed);
         if (!mixed.hasOresSource()) return;
 
@@ -383,7 +391,8 @@ public final class LinkedProgramRunner {
             if (CoreLibrarySources.isCoreImport(imported.path())) {
                 String targetId = CoreLibrarySources.unitId(imported.path());
                 recordImportResolution(importResolutions, id, imported.path(), targetId);
-                collectCoreImportClosure(imported.path(), units, importResolutions);
+                collectCoreImportClosure(imported.path(), units, importResolutions,
+                        budget, depth + 1);
                 continue;
             }
 
@@ -407,7 +416,8 @@ public final class LinkedProgramRunner {
 
             String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectImportClosure(resolvedTarget, units, projectConfig, importResolutions);
+            collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
+                    budget, depth + 1);
         }
     }
 
@@ -419,14 +429,19 @@ public final class LinkedProgramRunner {
     private static void collectCoreImportClosure(
             String importPath,
             Map<String, MixedSourceUnit> units,
-            Map<String, Map<String, String>> importResolutions) throws IOException {
+            Map<String, Map<String, String>> importResolutions,
+            SourceAdmissionBudget budget,
+            int depth) throws IOException {
         String id = CoreLibrarySources.unitId(importPath);
         if (units.containsKey(id)) return;
+        budget.checkCanAdmitUnit(depth);
 
+        String coreSource = CoreLibrarySources.source(importPath);
+        budget.admit(coreSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
         MixedSourceUnit mixed = MixedSourceUnit.parse(
                 id,
                 CoreLibrarySources.fileName(importPath),
-                CoreLibrarySources.source(importPath));
+                coreSource);
         if (mixed.hasJavaSource()) {
             throw new SecurityException(
                     "packaged std/* modules must be native Oreslang, not Java source islands: "
@@ -452,7 +467,8 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             String targetId = CoreLibrarySources.unitId(imported.path());
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectCoreImportClosure(imported.path(), units, importResolutions);
+            collectCoreImportClosure(imported.path(), units, importResolutions,
+                    budget, depth + 1);
         }
     }
 
