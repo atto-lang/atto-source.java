@@ -17,6 +17,29 @@
  * same registration, STOP, cleanup, physical-release and retirement sequence
  * that a future real VM scheduler adapter must implement.
  */
+/* Await/yield may leave the actor's physical slot idle while a SourceTask
+ * remains alive. Never retire it merely because no native lease is active.
+ * The scheduler must explicitly witness terminal SourceTask quiescence.
+ */
+static void test_suspended_task_retirement_barrier(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(16);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    OK(ores_turn_register(vm, 9, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 1, 1, &source));
+    IS(ores_turn_retire_source_task(vm, source), ORES_TURN_BUSY);
+    IS(ores_turn_retire(vm, actor), ORES_TURN_DENIED);
+    /* Pretend the real scheduler terminal callback is now complete. */
+    OK(ores_turn_note_source_settled(vm, source));
+    IS(ores_turn_issue_cleanup(vm, source, (ores_cleanup_cap **)&actor),
+       ORES_TURN_DENIED);
+    OK(ores_turn_retire_source_task(vm, source));
+    OK(ores_turn_stop(vm, actor));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
 static void test_cleanup_completes_after_injection(void) {
     ores_turn_vm *vm = ores_turn_vm_new(32);
     assert(vm);
@@ -39,6 +62,9 @@ static void test_cleanup_completes_after_injection(void) {
     IS(ores_turn_complete_cleanup(vm, lease, source), ORES_TURN_DENIED);
     IS(ores_turn_check_cleanup_effects(vm, lease), ORES_TURN_DENIED);
     OK(ores_turn_release(vm, lease));
+    IS(ores_turn_retire_source_task(vm, source), ORES_TURN_BUSY);
+    OK(ores_turn_note_source_settled(vm, source));
+    IS(ores_turn_note_source_settled(vm, source), ORES_TURN_DENIED);
     OK(ores_turn_retire_source_task(vm, source));
     OK(ores_turn_retire(vm, actor));
     OK(ores_turn_vm_destroy(vm));
@@ -61,6 +87,9 @@ static void test_incomplete_cleanup_requires_force_abort(void) {
     IS(ores_turn_retire_source_task(vm, source), ORES_TURN_BUSY);
     IS(ores_turn_retire(vm, actor), ORES_TURN_BUSY);
     OK(ores_turn_force_revoke(vm, actor));
+    IS(ores_turn_retire_source_task(vm, source), ORES_TURN_BUSY);
+    OK(ores_turn_note_source_settled(vm, source));
+    IS(ores_turn_note_source_settled(vm, source), ORES_TURN_DENIED);
     OK(ores_turn_retire_source_task(vm, source));
     OK(ores_turn_retire(vm, actor));
     OK(ores_turn_vm_destroy(vm));
@@ -122,6 +151,9 @@ static void test_force_vs_cleanup_linearization(void) {
                    || r.completion == ORES_TURN_INVALID);
             assert(r.release == ORES_TURN_OK);
         }
+        IS(ores_turn_retire_source_task(vm, source), ORES_TURN_BUSY);
+        OK(ores_turn_note_source_settled(vm, source));
+        IS(ores_turn_note_source_settled(vm, source), ORES_TURN_DENIED);
         OK(ores_turn_retire_source_task(vm, source));
         OK(ores_turn_retire(vm, actor));
         OK(ores_turn_vm_destroy(vm));
@@ -152,6 +184,7 @@ static void test_forked_child_cannot_use_parent_vm(void) {
 }
 
 int main(void) {
+    test_suspended_task_retirement_barrier();
     test_cleanup_completes_after_injection();
     test_incomplete_cleanup_requires_force_abort();
     test_force_vs_cleanup_linearization();
