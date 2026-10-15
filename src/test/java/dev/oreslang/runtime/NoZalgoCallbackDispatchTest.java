@@ -224,6 +224,93 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void failedOrCancelledForeignFutureOnlyResumesOnSerializedActorLane()
+            throws Exception {
+        for (boolean cancellation : new boolean[] {false, true}) {
+            AtomicBoolean insideReceive = new AtomicBoolean();
+            AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
+            AtomicReference<Thread> producerThread = new AtomicReference<>();
+            AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+            AtomicInteger guestCallbacks = new AtomicInteger();
+            CountDownLatch registered = new CountDownLatch(1);
+            CountDownLatch producerCompleted = new CountDownLatch(1);
+            CountDownLatch callbackRan = new CountDownLatch(1);
+            try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    insideReceive.set(true);
+                    try {
+                        var future = new OresFuture<Integer>();
+                        var target = runtime.captureCurrentContinuationTarget();
+                        runtime.enqueueOnCompletion(future, target, (value, failure) -> {
+                            try {
+                                assertFalse(insideReceive.get(),
+                                        "terminal failure reentered active receive");
+                                assertNotSame(producerThread.get(), Thread.currentThread(),
+                                        "producer thread ran an actor continuation");
+                                assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                        "failed/cancelled callback bypassed the actor lane");
+                                assertNull(value);
+                                if (cancellation) {
+                                    assertInstanceOf(
+                                            java.util.concurrent.CancellationException.class,
+                                            failure);
+                                } else {
+                                    assertInstanceOf(IllegalStateException.class, failure);
+                                    assertEquals("producer failed", failure.getMessage());
+                                }
+                                guestCallbacks.incrementAndGet();
+                            } catch (Throwable problem) {
+                                callbackFailure.compareAndSet(null, problem);
+                            } finally {
+                                callbackRan.countDown();
+                            }
+                        });
+                        pending.set(future);
+                        registered.countDown();
+                        assertTrue(producerCompleted.await(5, TimeUnit.SECONDS),
+                                "producer did not settle during the actor receive");
+                        assertEquals(0, guestCallbacks.get(),
+                                "terminal callback ran before receive released its lane");
+                    } finally {
+                        insideReceive.set(false);
+                    }
+                });
+                actor.ready().get(5, TimeUnit.SECONDS);
+                actor.send("register");
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+                Thread producer = Thread.startVirtualThread(() -> {
+                    producerThread.set(Thread.currentThread());
+                    try {
+                        OresFuture<Integer> source = pending.get();
+                        if (cancellation) {
+                            assertTrue(source.cancel(false));
+                        } else {
+                            assertTrue(source.failFromRuntime(
+                                    new IllegalStateException("producer failed")));
+                        }
+                        assertFalse(source.completeFromRuntime(99),
+                                "a terminal Future must reject a late success");
+                    } catch (Throwable problem) {
+                        callbackFailure.compareAndSet(null, problem);
+                    } finally {
+                        producerCompleted.countDown();
+                    }
+                });
+                producer.join(5_000);
+                assertFalse(producer.isAlive(), "producer deadlocked");
+                assertTrue(callbackRan.await(5, TimeUnit.SECONDS),
+                        "failed/cancelled Future lost its actor callback");
+                assertNull(callbackFailure.get(),
+                        () -> String.valueOf(callbackFailure.get()));
+                assertEquals(1, guestCallbacks.get());
+                assertEquals(0, pending.get().pendingRuntimeWaiterCount(),
+                        "settled Future retained runtime waiter registrations");
+                actor.cancel();
+            }
+        }
+    }
+
+    @Test
     void actorCancellationRevokesPendingCompletionAndDropsLateProducer()
             throws Exception {
         AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
