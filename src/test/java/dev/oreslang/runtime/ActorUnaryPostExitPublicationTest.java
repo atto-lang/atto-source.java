@@ -223,4 +223,32 @@ final class ActorUnaryPostExitPublicationTest {
         }
     }
 
+    @Test
+    void boundedPostCarrierQueueRejectsOverflowWithoutRunningInline() throws Exception {
+        var registered = new CountDownLatch(1);
+        var published = new CountDownLatch(1024);
+        var problem = new AtomicReference<Throwable>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                try {
+                    for (int i = 0; i < 1024; i++) {
+                        runtime.publishAfterCurrentActorCarrierExit(published::countDown);
+                    }
+                    assertEquals(1024, published.getCount(), "publisher must never run inline");
+                    assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                            () -> runtime.publishAfterCurrentActorCarrierExit(
+                                    () -> fail("overflow publication")));
+                } catch (Throwable error) {
+                    problem.set(error);
+                } finally {
+                    registered.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(registered.await(3, TimeUnit.SECONDS));
+            assertTrue(published.await(3, TimeUnit.SECONDS));
+            assertNull(problem.get(), () -> String.valueOf(problem.get()));
+        }
+    }
+
 }
