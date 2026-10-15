@@ -13,6 +13,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
 import dev.oreslang.runtime.RuntimePermissions;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -44,7 +45,14 @@ public final class OresMain {
     /** Testable CLI boundary: syntax/configuration failures never masquerade as success. */
     static int exitStatusForArgs(String[] args) {
         try {
-            return runForExitStatus(args);
+            int status = runForExitStatus(args);
+            // PrintStream records failed writes instead of throwing IOException.
+            // Flush and inspect both CLI streams before publishing success.
+            if (status == 0 && (System.out.checkError() || System.err.checkError())) {
+                System.err.println("oreslang: failed to publish CLI output");
+                return 1;
+            }
+            return status;
         } catch (UsageException failure) {
             System.err.println("oreslang: " + failure.getMessage());
             return 2;
@@ -182,7 +190,7 @@ public final class OresMain {
         }
         if (!Files.isRegularFile(path)) throw new IllegalArgumentException("not a file: " + path);
 
-        String directOresSource = filename.endsWith(".ores") ? Files.readString(path) : null;
+        String directOresSource = filename.endsWith(".ores") ? readBoundedOresSource(path) : null;
         if (directOresSource != null) {
             formatSyntaxWarnings(path, directOresSource).forEach(System.err::println);
             formatSelectReturnWarnings(path, directOresSource).forEach(System.err::println);
@@ -216,7 +224,7 @@ public final class OresMain {
             if (!filename.endsWith(".ores")) {
                 throw new UsageException("--build-analysis currently requires a .ores source file");
             }
-            String source = Files.readString(path);
+            String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
                 OresCompiler.validateForIsolate(source, policy);
             }
@@ -263,6 +271,11 @@ public final class OresMain {
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
+    }
+
+    // Share admission policy with the linked-unit loader, including imports.
+    private static String readBoundedOresSource(Path path) throws IOException {
+        return dev.oreslang.runtime.BoundedSourceReader.readUtf8(path);
     }
 
     private static final class UsageException extends IllegalArgumentException {
