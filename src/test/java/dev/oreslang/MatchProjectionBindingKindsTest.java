@@ -426,4 +426,17 @@ final class MatchProjectionBindingKindsTest {
                 failure.getMessage());
     }
 
+    @Test
+    void ordinaryObjectRestRejectsMoveOnlyCapturedFieldsWithoutTransferLowering() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checks("""
+                    fnc invalid({first: int, payload: List<int>} input): void {
+                      const {first, ...remaining} = input;
+                      return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("non-Copy object-rest projection"),
+                failure.getMessage());
+    }
+
 }

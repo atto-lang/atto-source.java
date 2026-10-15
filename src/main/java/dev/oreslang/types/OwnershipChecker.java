@@ -384,6 +384,15 @@ public final class OwnershipChecker {
                         ? binding.declaredType() : inferred;
                 if (binding.rest() && destructure.kind() == Ast.DestructureKind.OBJECT
                         && inferred.isReadonlyRecordType()) {
+                    // The runtime builds a shallow readonly record snapshot.
+                    // Non-Copy nested fields would remain aliases of mutable or
+                    // move-only guest state without a move-from-field / loan
+                    // lowering. Match the selected-channel fail-closed rule.
+                    if (inferred.recordMembers().values().stream()
+                            .anyMatch(memberType -> !isCopyType(memberType))) {
+                        throw error("non-Copy object-rest projection requires "
+                                + "explicit owned-field transfer/loan lowering");
+                    }
                     if (binding.mutableReferent()) {
                         throw error("object-rest snapshot cannot grant mutable referent access");
                     }
