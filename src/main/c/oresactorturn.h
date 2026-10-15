@@ -74,6 +74,17 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                                         ores_turn_lease **out_lease);
 ores_turn_status ores_turn_cancel_cleanup(ores_turn_vm *vm,
                                           ores_cleanup_cap *ticket);
+/* Only the trusted VM adapter may acknowledge that a terminal signal has
+ * physically been injected into the claimed SourceTask's continuation.
+ * Cancellation requested is NOT equivalent to signal injection. Acknowledging
+ * an injection is one-shot and must occur on the original lease carrier.
+ * Cleanup effects are denied until the VM has acknowledged actual injection.
+ */
+ores_turn_status ores_turn_note_terminal_injected(ores_turn_vm *vm,
+                                                 ores_turn_lease *lease,
+                                                 ores_source_task_cap *source);
+ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
+                                                 ores_turn_lease *lease);
 ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm,
                                        ores_actor_cap *actor);
 ores_turn_status ores_turn_release(ores_turn_vm *vm,
