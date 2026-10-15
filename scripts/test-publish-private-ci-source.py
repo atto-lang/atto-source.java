@@ -61,6 +61,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
                 "object": {"sha": C}},
             "repos/trusted/ci/git/trees/"+E: {
+                "truncated": False,
                 "tree": [{"path": pub.PREFIX, "mode": "040000",
                           "type": "tree", "sha": self.expected_tree}]},
         }
@@ -163,6 +164,23 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                             self.root, self.expected_tree)
+
+    def test_truncated_or_unknown_git_tree_readback_is_denied(self):
+        original = self.fake_api
+        for truncated in (True, None, "false"):
+            with self.subTest(truncated=truncated):
+                self.route_calls.clear()
+                def incomplete_tree(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/trees/" + E:
+                        self.route_calls.append((method, route, payload))
+                        return {"truncated": truncated,
+                                "tree": [{"path": pub.PREFIX, "mode": "040000",
+                                          "type": "tree", "sha": self.expected_tree}]}
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=incomplete_tree):
+                    with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree)
 
     def test_committed_subtree_must_not_have_duplicate_entries(self):
         original = self.fake_api
