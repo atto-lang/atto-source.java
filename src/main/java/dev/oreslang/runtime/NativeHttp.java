@@ -419,15 +419,8 @@ public final class NativeHttp implements AutoCloseable {
          * cleanup or make the shutdown Future appear successful.
          */
         private void abortAllActiveOnShutdown() {
-            RuntimeException firstFailure = null;
-            for (State state : List.copyOf(active)) {
-                try {
-                    state.abort(503);
-                } catch (RuntimeException failure) {
-                    if (firstFailure == null) firstFailure = failure;
-                    else if (firstFailure != failure) firstFailure.addSuppressed(failure);
-                }
-            }
+            RuntimeException firstFailure = abortEveryAccepted(
+                    List.copyOf(active), state -> state.abort(503));
             if (firstFailure != null && drained != null) {
                 drained.failFromRuntime(firstFailure);
             }
@@ -515,11 +508,10 @@ public final class NativeHttp implements AutoCloseable {
                 // Close as an emergency host fallback, always retire the
                 // admission slot, and never leave server.shutdown() waiting
                 // forever for an impossible executor task.
-                try { raw.close(); }
-                finally {
+                retireRejectedAbort(raw::close, () -> {
                     synchronized (this) { transportClosed = true; }
                     release();
-                }
+                });
             }
         }
         void finish() {
@@ -750,6 +742,38 @@ public final class NativeHttp implements AutoCloseable {
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
             return result;
         }
+    }
+
+    /**
+     * Terminal fallback for a rejected I/O task. The completion action must
+     * release admission even if the underlying socket close throws.
+     * Package-visible so regression tests exercise the production ordering.
+     */
+    static void retireRejectedAbort(Runnable closeTransport, Runnable finalizeTransport) {
+        Objects.requireNonNull(closeTransport);
+        Objects.requireNonNull(finalizeTransport);
+        try { closeTransport.run(); }
+        finally { finalizeTransport.run(); }
+    }
+
+    /**
+     * Best-effort exhaustive cancellation with first-error precedence.
+     * No failed abort may prevent another previously accepted state from
+     * being visited; subsequent errors are preserved as suppressed.
+     */
+    static <T> RuntimeException abortEveryAccepted(
+            List<T> accepted, java.util.function.Consumer<? super T> abort) {
+        Objects.requireNonNull(accepted);
+        Objects.requireNonNull(abort);
+        RuntimeException first = null;
+        for (T state : accepted) {
+            try { abort.accept(state); }
+            catch (RuntimeException failure) {
+                if (first == null) first = failure;
+                else if (first != failure) first.addSuppressed(failure);
+            }
+        }
+        return first;
     }
 
     private static byte[] byteBuffer(List<?> values, int maximum) {
