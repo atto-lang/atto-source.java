@@ -44,6 +44,21 @@ final class ActorMiddlewareValueSignatureTest {
     }
 
     @Test
+    void streamingAroundOutcomeCannotClaimANonvoidReply() {
+        rejects("""
+                @ActorMiddleware(Clean)
+                define stream actor Worker as
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                define class Clean as
+                    async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<String> {
+                        return null;
+                    }
+                end
+                """, "MiddlewareOutcome<void>");
+    }
+
+    @Test
     void sameClassMayProvideUnaryAndStreamHooksWithoutAutomaticDualDispatch() {
         rejects("""
                 @ActorMiddleware(Clean)
