@@ -106,6 +106,39 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeTerminalPublicationWaitsForTrustedQuiescenceCallback() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var entered = new CountDownLatch(1);
+                var release = new CountDownLatch(1);
+                OresFuture<Integer> result = scheduler.start(
+                        resume -> OresScheduler.done(123),
+                        () -> {
+                            entered.countDown();
+                            try {
+                                if (!release.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("quiescence test callback timed out");
+                                }
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
+                        });
+                try {
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    assertFalse(result.isDone(),
+                            "terminal Future published before trusted quiescence finished");
+                } finally {
+                    release.countDown();
+                }
+                assertEquals(123, result.get(5, TimeUnit.SECONDS));
+                kernel.stop();
+            }
+        }
+    }
+
+    @Test
     void actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
