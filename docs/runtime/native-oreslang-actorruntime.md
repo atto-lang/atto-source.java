@@ -1,5 +1,55 @@
 # Native Oreslang actor runtime migration
 
+## 2026-10-15 — executed offline CI security and focused native C probe
+
+The source organization still reports failed GitHub Actions runs without
+executed job steps; that is **not** a passing hosted CI run and does not prove
+that GitHub Actions minutes were the cause. The protected `main` approved
+private-source destination list remains empty, so **no cross-org source
+transfer was performed**.
+
+**Actual local offline execution**, using source bytes reconstituted from
+GitHub and verified against the exact Git blob SHA before invoking tests:
+
+- `scripts/test-publish-private-ci-source.py`: **41/41 passed** against
+  `scripts/publish-private-ci-source.py` (mocked remote API, adversarial
+  concurrent filesystem races, no GitHub writes).
+- `tests/test_ci_private_mirror_preflight.py`: **14/14 passed**
+  (mocked credentials/repository metadata, no live network request).
+- `scripts/test-verify-native-actor-surefire.py`: **8/8 passed**,
+  including refusal of missing, skipped, fabricated and failed Surefire
+  reports.
+- `scripts/test-private-ci-destination.sh`: passed its Bash approval and
+  fail-closed mock-CLI scenarios.
+- The shared Maven-free `sh scripts/test-private-ci-security-offline.sh`
+  entry point passed end to end on the reconstructed exact-blobs test tree.
+
+**Focused native kernel verification:** the committed
+`src/test/c/oresactorturn_stop_cleanup_done_probe.c` is identical to the
+locally executed probe (blob
+`b104f01fe36288e0a140e2ca1c9ed248bde7a702`).
+It ran **three** C lifecycle scenarios successfully with GCC and Clang
+at both `-O0` and `-O2`, with GCC and Clang ASan+UBSan, and with GCC TSan:
+seven executable configurations, 21 scenario executions. The local
+`oresactorturn.c` kernel and header also matched their GitHub blobs:
+`0c461c22e5466242430a3c38731b0f249b4abdf8` and
+`0c28c259ae31590158aee4066d417867d5b9666e`.
+The exact-source CI native matrix now includes this probe.
+
+**Evidence enforcement:** `scripts/verify-native-actor-surefire.py` is
+now a mandatory check after both Maven runs in the exact-tree runner:
+at least 15 real JNI tests and all six specified guest/Java migration
+regression classes must appear as executed non-skipped testcases. A green
+Maven exit with missing/empty reports cannot produce the final
+`ORES_NATIVE_ACTOR_EXACT_TREE_CI_PASS` marker.
+
+**Still outstanding:** full C boundary suites and 84-scenario standalone
+Java/JNI smoke on an authorized runner, the complete Maven JUnit suite,
+real compiled guest `STOP → defer/finally → state/output/child cleanup →
+DONE`, GraalVM Native Image and LLVM parity. The C probe exercises the
+trusted VM ABI, **not** a compiled Oreslang actor. Keep PR #917 draft and
+native integration default-off until those independent gates pass.
+
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
 ## 2026-10-15 — expanded source-local validation and integrated JNI cleanup barrier
