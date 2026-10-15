@@ -928,6 +928,13 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private static SourceFlow throwing(Throwable failure) {
+                // A checked postfix ? is typed early-return control, not an
+                // exception. Carry it through lexical defer/finally exactly
+                // like an explicit return, including after await/resumption.
+                // try/catch must never observe it as a recoverable failure.
+                if (failure instanceof ReturnSignal returned) {
+                    return returning(returned.value);
+                }
                 return new SourceFlow(
                         SourceFlowKind.THROW,
                         null,
@@ -3219,15 +3226,39 @@ public final class OresEvalRootNode extends RootNode {
                             task,
                             unary.operand(),
                             env,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            failure == null
-                                                    ? unaryValue(
-                                                            unary.operator(),
-                                                            value)
-                                                    : null,
-                                            failure));
+                            (t, value, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                if (unary.operator().equals("?")) {
+                                    // Preserve one evaluation of the operand
+                                    // across pending Future resumptions. Err
+                                    // and None become control-flow, never
+                                    // ordinary guest exceptions or callbacks.
+                                    if (value instanceof OptionValue option) {
+                                        if (!option.present()) {
+                                            continuation.accept(t, null,
+                                                    new ReturnSignal(option));
+                                        } else {
+                                            continuation.accept(t, option.value(), null);
+                                        }
+                                    } else if (value instanceof ResultValue result) {
+                                        if (!result.ok()) {
+                                            continuation.accept(t, null,
+                                                    new ReturnSignal(result));
+                                        } else {
+                                            continuation.accept(t, result.value(), null);
+                                        }
+                                    } else {
+                                        continuation.accept(t, null,
+                                                new IllegalStateException(
+                                                        "postfix ? requires a checked Option/Result value"));
+                                    }
+                                    return;
+                                }
+                                continuation.accept(t, unaryValue(unary.operator(), value), null);
+                            });
                     return;
                 }
 
