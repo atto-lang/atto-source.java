@@ -350,5 +350,30 @@ plus two separately verified blob POSTs produced Git tree
 carrier branch or transferring any private Oreslang source. The full
 production publisher would also need its separately authorized root-tree,
 commit and temporary-ref writes. This is targeted synthetic testing, not
-proof that the 125 checked-in Python publisher methods or Bash suite passed.
+proof that the complete checked-in Python publisher methods or Bash suite passed.
 The source organization's Actions still fails before running job steps.
+
+## 2026-10-15 follow-up: failure injection and deterministic batching tests
+
+The draft exporter regression suite now checks every single-file Git-object
+write before creation of a CI branch, including blob, isolated source tree,
+carrier root tree, and commit. Any simulated API failure must abort without
+issuing a ref-creation POST. A separate ref-creation failure test rejects
+success reporting. For multi-batch UTF-8 uploads, removing the carrier's
+effective CODEOWNER approval after the first tree POST must deny the *next*
+tree POST and leave the CI ref uncreated.
+
+A new fixed-seed adversarial batching test exercises **180** source-free
+scenarios across boundary sizes (1, 15, 16, 17, 63, 64, 65, 97 and 160
+files), NUL/non-UTF-8 bytes, JSON-escaped text, emoji, oversized inputs,
+empty files, and both Git executable modes. Every planned file must appear
+exactly once, with identical source bytes/mode and JSON-serialized payloads
+under the 256-KiB batch cap. The corresponding locally transcribed batch
+planner passed **180/180** scenarios (**9,960** input files across **819**
+planned batches), but this is *not* the full checked-in repository suite.
+The new regression methods are committed yet require execution on the exact
+source branch revision.
+
+The source and carrier branch protections and protected-main approval files
+remain independent prerequisites. No source export, private CI branch
+creation or protected-branch bypass is authorized by these tests.
