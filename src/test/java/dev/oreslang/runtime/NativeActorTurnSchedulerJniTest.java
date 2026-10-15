@@ -89,6 +89,7 @@ final class NativeActorTurnSchedulerJniTest {
                     return OresScheduler.<Integer>await(secondGate);
                 });
                 assertTrue(started.await(5, TimeUnit.SECONDS));
+                awaitSuspendedTasksForTest(scheduler, 2);
                 var failure = assertThrows(IllegalStateException.class,
                         scheduler::close);
                 assertTrue(failure.getMessage().contains("trusted cleanup")
@@ -139,6 +140,35 @@ final class NativeActorTurnSchedulerJniTest {
                 kernel.stop(); // Kernel.close will enforce no live SourceTasks.
             }
         }
+    }
+
+    /**
+     * Await real TaskRunner park+carrier release, not an in-guest latch.
+     * A guest callback can count down before returning Await while still
+     * physically executing on a platform carrier.
+     */
+    private static void awaitSuspendedTasksForTest(OresScheduler scheduler, int expected)
+            throws Exception {
+        var tasksField = OresScheduler.class.getDeclaredField("tasks");
+        tasksField.setAccessible(true);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            var live = (java.util.Set<?>) tasksField.get(scheduler);
+            int parked = 0;
+            for (Object task : live) {
+                var phaseField = task.getClass().getDeclaredField("phase");
+                var executingField = task.getClass().getDeclaredField("executing");
+                phaseField.setAccessible(true);
+                executingField.setAccessible(true);
+                var phase = (java.util.concurrent.atomic.AtomicInteger) phaseField.get(task);
+                var executing = (java.util.concurrent.atomic.AtomicBoolean)
+                        executingField.get(task);
+                if (phase.get() == 3 && !executing.get()) parked++;
+            }
+            if (live.size() == expected && parked == expected) return;
+            Thread.sleep(2);
+        }
+        throw new AssertionError("tasks did not all park and leave their physical carriers");
     }
 
     private static int liveTaskCountForTest(OresScheduler scheduler)
