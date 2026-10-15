@@ -1,12 +1,72 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.ExperimentalHirV1Exporter;
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import java.lang.reflect.InvocationTargetException;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Fail-closed, actual-parser source-to-HIR smoke and rejection fixtures. */
 final class ExperimentalHirV1ExporterTest {
+    // Test-only bypass of typechecking: the HIR adapter must also reject
+    // malformed ASTs at its own serialization boundary.
+    private static String fromParserAstWithoutTypeChecking(String source, boolean checked) {
+        try {
+            var method = ExperimentalHirV1Exporter.class.getDeclaredMethod(
+                    "fromVerifiedAst", Ast.Program.class, boolean.class);
+            method.setAccessible(true);
+            return (String) method.invoke(null, Parser.parse(source), checked);
+        } catch (InvocationTargetException exception) {
+            if (exception.getCause() instanceof RuntimeException failure) throw failure;
+            throw new AssertionError(exception.getCause());
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
+    private static String balancedOverflowTree(int depth) {
+        if (depth == 0) return "9223372036854775807";
+        String child = balancedOverflowTree(depth - 1);
+        return "(" + child + " * " + child + ")";
+    }
+
+    @Test
+    void directHirBoundaryRejectsUnboundVariablesInBothArithmeticProfiles() {
+        for (boolean checked : new boolean[] {false, true}) {
+            IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                    () -> fromParserAstWithoutTypeChecking(
+                            "pub fnc main(): int { return ghost; }", checked));
+            assertTrue(missing.getMessage().contains("unbound or invalid"), missing.getMessage());
+
+            IllegalArgumentException crossFunction = assertThrows(IllegalArgumentException.class,
+                    () -> fromParserAstWithoutTypeChecking("""
+                            pub fnc source(int count): int { return count; }
+                            pub fnc main(): int { return count; }
+                            """, checked));
+            assertTrue(crossFunction.getMessage().contains("unbound or invalid"),
+                    crossFunction.getMessage());
+
+            String valid = fromParserAstWithoutTypeChecking("""
+                    pub fnc identity(int count): int { return count + 0; }
+                    pub fnc main(): int { return identity(43); }
+                    """, checked);
+            assertTrue(valid.contains("\"name\":\"count\""), valid);
+        }
+    }
+
+    @Test
+    void directHirBoundaryEnforcesNodeLimitBeforeArithmeticProof() {
+        String source = "pub fnc main(): int { return " + balancedOverflowTree(11) + "; }";
+        for (boolean checked : new boolean[] {false, true}) {
+            IllegalArgumentException oversized = assertThrows(IllegalArgumentException.class,
+                    () -> fromParserAstWithoutTypeChecking(source, checked));
+            assertTrue(oversized.getMessage().contains("expression depth/size"),
+                    oversized.getMessage());
+        }
+    }
+
     private static final String SIMPLE = """
             pub fnc counter_response(int count): int {
                 return count;
