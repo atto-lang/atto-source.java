@@ -2473,7 +2473,8 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
@@ -4352,6 +4353,16 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private static int sequenceIndex(Object value) {
+            // Dynamic/host values still cross this check. Number.longValue()
+            // would silently truncate floating-point indices (including NaN).
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long)) {
+                throw new IllegalArgumentException("array/list index must be an integer");
+            }
+            return Math.toIntExact(((Number) value).longValue());
+        }
+
         private Object indexValue(Object receiver, Object index) {
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
@@ -4370,11 +4381,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
-            if (!(index instanceof Number number)) {
-                throw new IllegalArgumentException(
-                        "array/list index must be an integer");
-            }
-            int i = Math.toIntExact(number.longValue());
+            int i = sequenceIndex(index);
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
             throw new IllegalArgumentException(
@@ -4438,11 +4445,10 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                if (receiver instanceof List<?> raw
-                        && key instanceof Number number) {
+                if (receiver instanceof List<?> raw) {
                     @SuppressWarnings("unchecked")
                     List<Object> list = (List<Object>) raw;
-                    list.set(Math.toIntExact(number.longValue()), value);
+                    list.set(sequenceIndex(key), value);
                     return value;
                 }
                 throw new IllegalArgumentException(
@@ -5367,6 +5373,14 @@ public final class OresEvalRootNode extends RootNode {
                     case WRITE -> cases.add(ChannelRuntime.write(
                             requireChannel(eval(arm.channel(), env), "writech select case"),
                             eval(arm.value(), env)));
+                    case AWAIT -> {
+                        Object future = eval(arm.channel(), env);
+                        if (!(future instanceof OresFuture<?> typedFuture)) {
+                            throw new IllegalArgumentException(
+                                    "when await requires Oreslang Future<T> (not a host callback)");
+                        }
+                        cases.add(ChannelRuntime.await(typedFuture));
+                    }
                 }
             }
             return new ChannelRuntime.SelectSet(
@@ -5404,7 +5418,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(
                         arm.bindingName(),
@@ -6118,8 +6133,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                    int i = Math.toIntExact(number.longValue());
+                    int i = sequenceIndex(index);
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
@@ -6259,28 +6273,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
-                Object receiver = eval(indexed.receiver(), env);
-                Object index = eval(indexed.index(), env);
-                if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
-                        throw new IllegalArgumentException("indexed map key must be a String or Symbol");
-                    }
-                    Object key = index;
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown struct/map key " + key);
-                    }
-                    Object value = map.get(key);
-                    if (value == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "explicit struct field '" + key + "' is read before initialization");
-                    }
-                    return value;
-                }
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable: " + receiver);
+                return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
@@ -6800,6 +6793,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "read" -> (Invokable) factory::read;
                     case "write" -> (Invokable) factory::write;
+                    case "future" -> (Invokable) factory::future;
                     case "default" -> (Invokable) factory::defaultCase;
                     default -> throw new IllegalArgumentException(
                             "unknown SelectCase factory member " + name);
@@ -7037,11 +7031,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
-                        if (!(index instanceof Number number)) {
-                            throw new IllegalArgumentException(
-                                    "List.get index must be an integer");
-                        }
-                        return rawList.get(Math.toIntExact(number.longValue()));
+                        return rawList.get(sequenceIndex(index));
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
@@ -7056,13 +7046,9 @@ public final class OresEvalRootNode extends RootNode {
                                     "List.set expects exactly 2 argument(s)");
                         }
                         Object index = args.getFirst();
-                        if (!(index instanceof Number number)) {
-                            throw new IllegalArgumentException(
-                                    "List.set index must be an integer");
-                        }
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
-                        list.set(Math.toIntExact(number.longValue()), args.get(1));
+                        list.set(sequenceIndex(index), args.get(1));
                         return null;
                     };
                     default -> throw new IllegalArgumentException(
@@ -9193,6 +9179,15 @@ public final class OresEvalRootNode extends RootNode {
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
                     args.get(1));
+        }
+
+        private Object future(List<Object> args) {
+            requireOne(args, "SelectCase.future");
+            if (!(args.getFirst() instanceof OresFuture<?> pending)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.future requires an Oreslang Future<T>");
+            }
+            return ChannelRuntime.await(pending);
         }
 
         private Object defaultCase(List<Object> args) {

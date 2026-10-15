@@ -468,7 +468,8 @@ public final class Parser {
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
         annotations = structural.annotations();
         String name = consumeCallableName("expected callable name");
-        List<String> generics = parseGenericParameters();
+        List<Ast.GenericParameter> specs = parseGenericParameterSpecs();
+        List<String> generics = specs.stream().map(Ast.GenericParameter::name).toList();
 
         if (match(EQUAL)) {
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
@@ -480,7 +481,7 @@ public final class Parser {
                     : parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body);
+                    generics, params, returnType, annotations, body, specs);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -490,7 +491,7 @@ public final class Parser {
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body);
+                returnType, annotations, body, specs);
     }
 
     private Ast.ClassDecl parseClass(
@@ -1327,6 +1328,22 @@ public final class Parser {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
     }
 
+    private List<Ast.GenericParameter> parseGenericParameterSpecs() {
+        if (!match(LT)) return List.of();
+        List<Ast.GenericParameter> specs = new ArrayList<>();
+        java.util.Set<String> declared = new java.util.HashSet<>();
+        do {
+            String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if (name.equals("_") || !declared.add(name)) {
+                throw error(previous(), "invalid or duplicate generic parameter '" + name + "'");
+            }
+            Ast.TypeRef defaultType = match(EQUAL) ? parseTypeRef() : null;
+            specs.add(new Ast.GenericParameter(name, defaultType));
+        } while (match(COMMA));
+        consume(GT, "expected '>' after generic parameters");
+        return List.copyOf(specs);
+    }
+
     private List<String> parseGenericParameters() {
         if (!match(LT)) return List.of();
         List<String> names = new ArrayList<>();
@@ -1790,11 +1807,20 @@ public final class Parser {
         if (match(WHILE)) {
             // Route the while backedge through the existing source-task
             // ForStmt trampoline: one continuation and one budget mechanism.
-            Ast.Expr condition = check(LPAREN)
-                    ? parseParenthesizedWhileCondition()
-                    : parseCondition();
+            ConditionHead head = parseConditionHead(true);
             match(SEMICOLON);
-            return new Ast.ForStmt(null, condition, null, parseLoopBody());
+            List<Ast.Stmt> body = parseLoopBody();
+            if (head.binding() == null) {
+                return new Ast.ForStmt(null, head.predicate(), null, body);
+            }
+            // Re-enter the binding scope on every test, including after continue.
+            List<Ast.Stmt> turn = new ArrayList<>();
+            turn.add(head.binding());
+            turn.add(new Ast.IfStmt(List.of(new Ast.IfBranch(
+                    new Ast.UnaryExpr("!", head.predicate()),
+                    List.of(new Ast.BreakStmt()))), List.of()));
+            turn.addAll(body);
+            return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
         // Procedural dispatch returns from its enclosing callable. Keep this
@@ -1892,26 +1918,30 @@ public final class Parser {
                 Ast.Expr value = null;
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
+                Ast.TypeRef bindingType = null;
                 boolean mutableReferent = false;
 
-                if (match(READCH)) {
-                    operation = Ast.ChannelOperation.READ;
+                if (match(READCH) || match(AWAIT)) {
+                    Token.Type op = previous().type();
+                    operation = op == READCH ? Ast.ChannelOperation.READ : Ast.ChannelOperation.AWAIT;
                     channel = parseExpression();
-                    consume(COLON, "readch select arm requires ':'");
-                    if (isBindingKind(peek().type())) {
-                        bindingKind = parseBindingKind();
-                        mutableReferent = parseReferentMutability(bindingKind);
-                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
-                        match(SEMICOLON);
-                    }
+                    consume(COLON, (op == READCH ? "readch" : "await") + " select arm requires ':'");
+                    SelectReadBinding binding = parseSelectReadBinding();
+                    bindingKind = binding.kind();
+                    bindingName = binding.name();
+                    bindingType = binding.type();
+                    mutableReferent = binding.mutableReferent();
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
                     channel = parseExpression();
                     consume(COMMA, "writech select arm requires 'channel, value'");
                     value = parseExpression();
                     consume(COLON, "writech select arm requires ':'");
+                    // Typed write arms have no value binding. Arrow is optional
+                    // compatibility syntax and cannot alter send admission.
+                    match(ARROW);
                 } else {
-                    // Binding-first select arm: when [const|val|let] [mut] msg = readch(ch) -> { ... }
+                    // Legacy binding-first: when const msg = readch(input) -> { ... }
                     if (match(MUT)) {
                         bindingKind = Ast.BindingKind.LET;
                         mutableReferent = true;
@@ -1932,8 +1962,16 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // Accept the canonical '->' arm boundary while preserving
+                // legacy arrowless select arms through the formatter migration.
+                // Fat arrows remain reserved for type-level callable signatures.
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select executable arms use the slim arrow '->'; '=>' is not an arm delimiter");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -1943,12 +1981,18 @@ public final class Parser {
                         bindingKind,
                         bindingName,
                         body,
-                        mutableReferent));
+                        mutableReferent,
+                        bindingType));
                 continue;
             }
 
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select default arms use the slim arrow '->'; '=>' is not an arm delimiter");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
@@ -1968,6 +2012,40 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    private record SelectReadBinding(
+            Ast.BindingKind kind, String name, Ast.TypeRef type, boolean mutableReferent) { }
+
+    /**
+     * Typed arrow bindings deliberately require a result type; the legacy
+     * untyped `const name { ... }` form remains source compatible.
+     * This parser never speculatively consumes an event while checking types.
+     */
+    private SelectReadBinding parseSelectReadBinding() {
+        if (check(LBRACE) || match(ARROW)) {
+            // A typed operation can return void; it has no value to bind.
+            return new SelectReadBinding(null, null, null, false);
+        }
+        Ast.BindingKind kind = Ast.BindingKind.CONST;
+        boolean mutable = false;
+        if (isBindingKind(peek().type())) {
+            kind = parseBindingKind();
+            mutable = parseReferentMutability(kind);
+            if (check(IDENT) && (checkNext(LBRACE) || checkNext(ARROW) || checkNext(FAT_ARROW))) {
+                String name = advance().lexeme();
+                return new SelectReadBinding(kind, name, null, mutable);
+            }
+        }
+        Ast.TypeRef type = parseTypeRef();
+        String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
+        if (!match(ARROW)) {
+            if (!check(LBRACE)) {
+                throw error(peek(), "select arm requires a braced body '{ ... }'");
+            }
+            throw error(peek(), "typed select arm requires '->' before its body");
+        }
+        return new SelectReadBinding(kind, name, type, mutable);
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
@@ -2531,23 +2609,28 @@ public final class Parser {
         return token.type() == IDENT && token.lexeme().equals("_");
     }
 
-    private Ast.IfStmt parseIf() {
+    private Ast.Stmt parseIf() {
         List<Ast.IfBranch> branches = new ArrayList<>();
-        Ast.Expr condition = parseCondition();
+        List<Ast.BindingStmt> bindings = new ArrayList<>();
+        ConditionHead head = parseConditionHead(false);
+        bindings.add(head.binding());
+        Ast.Expr condition = head.predicate();
 
         // Brace form still obeys the universal Oreslang invariant: every if closes with fi.
         // Braces delimit branch bodies; they never replace the structural terminator.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
             while (matchConditionalBranch()) {
-                condition = parseCondition();
+                head = parseConditionHead(false);
+                bindings.add(head.binding());
+                condition = head.predicate();
                 branches.add(new Ast.IfBranch(condition, parseBlock()));
             }
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
             consume(FI, "expected 'fi' to close if");
-            return new Ast.IfStmt(branches, elseBody);
+            return lowerConditionBindings(branches, bindings, elseBody);
         }
 
         // Canonical keyword-delimited form:
@@ -2566,7 +2649,9 @@ public final class Parser {
         branches.add(new Ast.IfBranch(condition, body));
 
         while (matchConditionalBranch()) {
-            condition = parseCondition();
+            head = parseConditionHead(false);
+            bindings.add(head.binding());
+            condition = head.predicate();
             match(SEMICOLON);
             consumeConditionalThen("elif");
             body = parseUntil(ELSEIF, ELSE, FI);
@@ -2576,7 +2661,7 @@ public final class Parser {
         List<Ast.Stmt> elseBody = List.of();
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
-        return new Ast.IfStmt(branches, elseBody);
+        return lowerConditionBindings(branches, bindings, elseBody);
     }
 
     private void consumeConditionalThen(String branch) {
@@ -2607,11 +2692,80 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Expr parseParenthesizedWhileCondition() {
-        consume(LPAREN, "expected '(' before while condition");
-        Ast.Expr condition = parseCondition();
-        consume(RPAREN, "expected ')' after while condition");
-        return condition;
+    private record ConditionHead(Ast.BindingStmt binding, Ast.Expr predicate) { }
+
+    private ConditionHead parseConditionHead(boolean whileHead) {
+        boolean wrapped = check(LPAREN) && ((whileHead && wholeConditionParentheses()) || hasParenthesizedConditionBinding());
+        if (wrapped) advance();
+        Ast.Expr value = parseLogicalOr();
+        Ast.BindingStmt binding = null;
+        Ast.Expr predicate;
+        if (check(AS) && checkNext(LET)) {
+            advance();
+            advance();
+            String name = consume(IDENT, "condition binding requires a name").lexeme();
+            if (!matchContextualKeyword("when")) {
+                throw error(peek(), "condition binding requires 'when' and a boolean predicate");
+            }
+            binding = new Ast.BindingStmt(Ast.BindingKind.LET, null, name, value, false);
+            predicate = parseCondition();
+        } else {
+            predicate = normalizeLegacyConditionPipe(value);
+            while (match(COMMA)) {
+                predicate = new Ast.BinaryExpr("&&", predicate,
+                        normalizeLegacyConditionPipe(parseLogicalOr()));
+            }
+        }
+        if (wrapped) consume(RPAREN, "expected ')' after condition");
+        return new ConditionHead(binding, predicate);
+    }
+
+    private boolean wholeConditionParentheses() {
+        int depth = 0;
+        for (int i = current; i + 1 < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            if (type == RPAREN && --depth == 0) {
+                Token.Type next = tokens.get(i + 1).type();
+                // A postfix index/call/member or infix operator continues the
+                // expression; its '(' belongs to that value, not the head.
+                return next == LBRACE || next == DO || next == SEMICOLON;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasParenthesizedConditionBinding() {
+        int depth = 0;
+        int nestedValues = 0;
+        for (int i = current; i + 1 < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            if (type == RPAREN && --depth == 0) return false;
+            if (type == LBRACE || type == LBRACKET) nestedValues++;
+            if (type == RBRACE || type == RBRACKET) nestedValues--;
+            if (depth == 1 && nestedValues == 0 && type == AS
+                    && tokens.get(i + 1).type() == LET) return true;
+        }
+        return false;
+    }
+
+    private Ast.Stmt lowerConditionBindings(List<Ast.IfBranch> branches,
+            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody) {
+        if (bindings.stream().allMatch(java.util.Objects::isNull)) {
+            return new Ast.IfStmt(branches, elseBody);
+        }
+        // A later initializer is evaluated only if every preceding test failed.
+        List<Ast.Stmt> fallback = elseBody;
+        Ast.Stmt result = null;
+        for (int i = branches.size() - 1; i >= 0; i--) {
+            result = new Ast.IfStmt(List.of(branches.get(i)), fallback);
+            if (bindings.get(i) != null) {
+                result = new Ast.BlockStmt(List.of(bindings.get(i), result));
+            }
+            fallback = List.of(result);
+        }
+        return result;
     }
 
     private Ast.Expr parseCondition() {
@@ -3018,6 +3172,9 @@ public final class Parser {
                 expr = new Ast.PatternTestExpr(expr, parsePattern());
                 continue;
             }
+            // In a condition head, `as let name when ...` ends the value.
+            // Other `as T` uses retain ordinary checked-cast precedence.
+            if (check(AS) && checkNext(LET)) break;
             if (!suppressRefinementOperators && match(AS)) {
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
@@ -3240,8 +3397,21 @@ public final class Parser {
     private List<Ast.TypeRef> parseCallTypeArguments() {
         consume(LT, "expected '<' before call type arguments");
         List<Ast.TypeRef> arguments = new ArrayList<>();
+        boolean seenNamed = false;
         if (!check(GT)) {
-            do arguments.add(parseTypeRef()); while (match(COMMA));
+            do {
+                if (check(IDENT) && checkNext(EQUAL)) {
+                    String name = advance().lexeme();
+                    consume(EQUAL, "expected '=' after named generic argument");
+                    arguments.add(Ast.TypeRef.namedParameter(name, parseTypeRef()));
+                    seenNamed = true;
+                } else {
+                    if (seenNamed) {
+                        throw error(peek(), "positional generic arguments must precede named arguments");
+                    }
+                    arguments.add(parseTypeRef());
+                }
+            } while (match(COMMA));
         }
         consume(GT, "expected '>' after call type arguments");
         return List.copyOf(arguments);
@@ -3260,7 +3430,10 @@ public final class Parser {
                 depth--;
                 if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
                 if (depth < 0) return false;
-            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON || type == EOF) {
+            } else if (type == SEMICOLON || type == QUESTION || type == COLON || type == EOF
+                    || (type == EQUAL && (depth == 0 || i == 0
+                            || tokens.get(i - 1).type() != IDENT))) {
+                // '=' is allowed only after a generic parameter name inside <...>.
                 return false;
             }
         }

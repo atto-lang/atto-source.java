@@ -45,6 +45,75 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void concurrentTerminalRegistrationAndDetachmentReclaimsClaimedWaiters()
+            throws Exception {
+        for (int round = 0; round < 64; round++) {
+            var producer = new OresFuture<Integer>();
+            var registered = new java.util.ArrayList<OresFuture.RuntimeWaiterRegistration<Integer>>();
+            var gate = new java.util.concurrent.CountDownLatch(1);
+            var workerFailure = new AtomicReference<Throwable>();
+            Thread settler = Thread.startVirtualThread(() -> {
+                try {
+                    if (!gate.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("settlement gate timed out");
+                    }
+                    assertTrue(producer.completeFromRuntime(43));
+                } catch (Throwable failure) {
+                    workerFailure.compareAndSet(null, failure);
+                }
+            });
+            gate.countDown();
+            for (int i = 0; i < 128; i++) {
+                registered.add(producer.whenCompleteRuntimeCancellable((value, failure) -> {
+                    assertNull(failure);
+                    assertEquals(43, value);
+                }));
+            }
+            settler.join(5_000);
+            assertFalse(settler.isAlive(), "settlement stalled in round " + round);
+            if (workerFailure.get() != null) {
+                throw new AssertionError("settlement worker failed in round " + round,
+                        workerFailure.get());
+            }
+            for (var waiter : registered) waiter.detach();
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "claimed and unclaimed waiter handles must not retain queue nodes");
+            assertEquals(43, producer.get(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void settledWaiterCanReenterRegistrationWithoutLockingOrQueueRetention()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        producer.whenCompleteRuntime((value, failure) -> {
+            assertNull(failure);
+            assertEquals(44, value);
+            producer.whenCompleteRuntime((nested, nestedFailure) -> {
+                assertNull(nestedFailure);
+                assertEquals(44, nested);
+                notifications.incrementAndGet();
+            });
+            notifications.incrementAndGet();
+        });
+        assertTrue(producer.completeFromRuntime(44));
+        assertEquals(2, notifications.get());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        // Re-registering after the terminal drain must never add a waiter.
+        for (int i = 0; i < 256; i++) {
+            var handle = producer.whenCompleteRuntimeCancellable((value, failure) -> {
+                assertNull(failure);
+                assertEquals(44, value);
+                notifications.incrementAndGet();
+            });
+            handle.detach();
+        }
+        assertEquals(258, notifications.get());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void consumerCancellationDropsFirstLateForeignCallbackButStillRejectsDuplicates() {
         AtomicReference<OresFuture.Callback<Integer>> completion = new AtomicReference<>();
 
