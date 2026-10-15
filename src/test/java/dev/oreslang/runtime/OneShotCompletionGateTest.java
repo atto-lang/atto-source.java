@@ -68,6 +68,41 @@ final class OneShotCompletionGateTest {
     }
 
     @Test
+    void racedLateSuccessCannotReplaceClaimedConsumerException() throws Exception {
+        OneShotCompletionGate gate = new OneShotCompletionGate();
+        AtomicInteger observed = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        IllegalStateException original = new IllegalStateException("first-consumer");
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> gate.deliver(() -> {
+                observed.incrementAndGet();
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("interrupted", interrupted);
+                }
+                throw original;
+            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var late = pool.submit(() -> gate.deliver(observed::incrementAndGet));
+            assertFalse(late.get(5, TimeUnit.SECONDS));
+            release.countDown();
+            var caught = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> first.get(5, TimeUnit.SECONDS));
+            assertSame(original, caught.getCause());
+            assertEquals(1, observed.get());
+            assertTrue(gate.delivered());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void concurrentCompletionsRunConsumerAtMostOnce() throws Exception {
         OneShotCompletionGate gate = new OneShotCompletionGate();
         AtomicInteger callbacks = new AtomicInteger();
