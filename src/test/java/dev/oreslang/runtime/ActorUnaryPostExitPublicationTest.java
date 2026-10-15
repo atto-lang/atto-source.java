@@ -133,4 +133,84 @@ final class ActorUnaryPostExitPublicationTest {
                     () -> runtime.publishAfterCurrentActorCarrierExit(() -> fail("off-turn")));
         }
     }
+    @Test
+    void stopAfterGuestTurnButBeforeContextLeaveDropsStagedReply() throws Exception {
+        var owner = new AtomicReference<ActorRuntime.ActorRef<Integer>>();
+        var admitted = new CountDownLatch(1);
+        var external = new AtomicReference<java.util.concurrent.CompletionStage<
+                ActorMiddlewareValuePipeline.Reply<Integer>>>();
+        var bridge = new ActorUnaryReplyBridge<>(
+                new ActorMiddlewareValuePipeline<Integer>(
+                        List.of(), List.of(), Set.of(),
+                        req -> CompletableFuture.completedFuture(17)));
+
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                ActorRuntime.DispatcherConfig.defaults(), turn -> {
+                    turn.run();
+                    // Trigger STOP after the guest callback unwound, but before
+                    // TurnExecutor.execute returned to the actor dispatcher.
+                    var actor = owner.get();
+                    if (actor != null && external.get() != null) actor.stop();
+                })) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                var ticket = new ActorUnaryReplySlot<
+                        ActorMiddlewareValuePipeline.Reply<Integer>>(
+                        context.self().id(), context.self().generation(), UUID.randomUUID());
+                external.set(bridge.dispatchActorOwnedPostExit(
+                        context, ticket, request(), () -> false));
+                admitted.countDown();
+            });
+            owner.set(actor);
+            actor.send(1);
+            assertTrue(admitted.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertThrows(RuntimeException.class, () -> external.get().toCompletableFuture().join());
+        }
+    }
+
+    @Test
+    void completedExternalRequestsDetachShutdownObserversOnLiveActor() throws Exception {
+        var replied = new CountDownLatch(1);
+        var inspected = new CountDownLatch(1);
+        var problem = new AtomicReference<Throwable>();
+        var baseline = new java.util.concurrent.atomic.AtomicInteger(-1);
+        var bridge = new ActorUnaryReplyBridge<>(
+                new ActorMiddlewareValuePipeline<Integer>(
+                        List.of(), List.of(), Set.of(),
+                        req -> CompletableFuture.completedFuture(12)));
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                try {
+                    if (message == 1) {
+                        baseline.set(context.self().getDone().pendingRuntimeWaiterCount());
+                        var ticket = new ActorUnaryReplySlot<
+                                ActorMiddlewareValuePipeline.Reply<Integer>>(
+                                context.self().id(), context.self().generation(), UUID.randomUUID());
+                        bridge.dispatchActorOwnedPostExit(
+                                context, ticket, request(), () -> false)
+                                .whenComplete((reply, failure) -> {
+                                    if (failure != null || reply == null || reply.value() != 12)
+                                        problem.set(new AssertionError("external reply failed", failure));
+                                    replied.countDown();
+                                });
+                    } else {
+                        assertEquals(baseline.get(),
+                                context.self().getDone().pendingRuntimeWaiterCount(),
+                                "external requests must detach owner-done observers");
+                        inspected.countDown();
+                    }
+                } catch (Throwable thrown) {
+                    problem.set(thrown);
+                    inspected.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(replied.await(3, TimeUnit.SECONDS));
+            actor.send(2);
+            assertTrue(inspected.await(3, TimeUnit.SECONDS));
+            assertNull(problem.get(), () -> String.valueOf(problem.get()));
+            assertTrue(actor.isAlive());
+        }
+    }
+
 }
