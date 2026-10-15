@@ -1949,8 +1949,16 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // Accept the canonical '->' arm boundary while preserving
+                // legacy arrowless select arms through the formatter migration.
+                // Fat arrows remain reserved for type-level callable signatures.
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select executable arms use the slim arrow '->'; '=>' is not an arm delimiter");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires '-> { ... }' or legacy '{ ... }'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -1966,6 +1974,11 @@ public final class Parser {
 
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select default arms use the slim arrow '->'; '=>' is not an arm delimiter");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
