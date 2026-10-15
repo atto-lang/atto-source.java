@@ -98,8 +98,8 @@ final class EnumFrontendMainRebaseTest {
                 "@Serializable define enum Color as Red end",
                 "define async match pattern P as Color.Red end")) {
             assertThrows(IllegalArgumentException.class,
-                    () -> Parser.parse("define module Work as\\n"
-                            + member + "\\nend".replace("\\\\n", "\\n")), member);
+                    () -> Parser.parse("define module Work as\n"
+                            + member + "\nend"), member);
         }
     }
 
