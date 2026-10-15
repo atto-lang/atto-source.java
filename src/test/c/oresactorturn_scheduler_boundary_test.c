@@ -172,6 +172,62 @@ static void test_source_turn_carrier_identity(void) {
     OK(ores_turn_vm_destroy(vm));
 }
 
+/* A normal source turn and a retained cleanup turn share a SourceTask ID,
+ * but only the latter owns authority to inject terminal cancellation or run
+ * guest cleanup effects. STOP cannot upgrade a previously issued user lease.
+ */
+static void test_ordinary_source_lease_cannot_impersonate_cleanup(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(24);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_cleanup_cap *ticket = NULL;
+    ores_turn_lease *ordinary = NULL, *cleanup = NULL;
+    OK(ores_turn_register(vm, 21, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 1, 1, &source));
+    OK(ores_turn_issue_cleanup(vm, source, &ticket));
+    OK(ores_turn_claim_source(vm, source, &ordinary));
+    OK(ores_turn_stop(vm, actor));
+    /* A normal lease does not become cleanup-capable merely by STOP. */
+    IS(ores_turn_note_terminal_injected(vm, ordinary, source), ORES_TURN_DENIED);
+    IS(ores_turn_check_cleanup_effects(vm, ordinary), ORES_TURN_DENIED);
+    IS(ores_turn_complete_cleanup(vm, ordinary, source), ORES_TURN_DENIED);
+    IS(ores_turn_claim_cleanup(vm, ticket, &cleanup), ORES_TURN_BUSY);
+    assert(cleanup == NULL);
+    OK(ores_turn_release(vm, ordinary));
+    OK(ores_turn_claim_cleanup(vm, ticket, &cleanup));
+    IS(ores_turn_complete_cleanup(vm, cleanup, source), ORES_TURN_DENIED);
+    OK(ores_turn_note_terminal_injected(vm, cleanup, source));
+    OK(ores_turn_check_cleanup_effects(vm, cleanup));
+    OK(ores_turn_complete_cleanup(vm, cleanup, source));
+    IS(ores_turn_check_cleanup_effects(vm, cleanup), ORES_TURN_DENIED);
+    OK(ores_turn_release(vm, cleanup));
+    OK(ores_turn_note_source_settled(vm, source));
+    OK(ores_turn_retire_source_task(vm, source));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
+static void test_normal_source_without_ticket_has_no_cleanup_authority(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(12);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_turn_lease *lease = NULL;
+    OK(ores_turn_register(vm, 22, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 1, 1, &source));
+    OK(ores_turn_claim_source(vm, source, &lease));
+    OK(ores_turn_stop(vm, actor));
+    IS(ores_turn_note_terminal_injected(vm, lease, source), ORES_TURN_DENIED);
+    IS(ores_turn_check_cleanup_effects(vm, lease), ORES_TURN_DENIED);
+    IS(ores_turn_complete_cleanup(vm, lease, source), ORES_TURN_DENIED);
+    OK(ores_turn_release(vm, lease));
+    OK(ores_turn_note_source_settled(vm, source));
+    OK(ores_turn_retire_source_task(vm, source));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
 static void test_cleanup_completes_after_injection(void) {
     ores_turn_vm *vm = ores_turn_vm_new(32);
     assert(vm);
@@ -321,6 +377,8 @@ int main(void) {
     test_stop_forbids_source_turn_resume();
     test_source_turn_carrier_identity();
     test_settled_task_generation_reuse();
+    test_ordinary_source_lease_cannot_impersonate_cleanup();
+    test_normal_source_without_ticket_has_no_cleanup_authority();
     test_cleanup_completes_after_injection();
     test_incomplete_cleanup_requires_force_abort();
     test_force_vs_cleanup_linearization();
