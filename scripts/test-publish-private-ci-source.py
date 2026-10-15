@@ -369,6 +369,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                         "ci/oreslang-test", self.root)
                     self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_security_sensitive_mirror_files_require_codeowner_review(self):
+        rules = MODULE.parent.parent / ".github" / "CODEOWNERS"
+        entries = {
+            line.split()[0]: line.split()[1:]
+            for line in rules.read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        paths = {
+            "/.github/CODEOWNERS",
+            "/.github/private-ci-approved-repositories.txt",
+            "/.github/workflows/private-ci-mirror-preflight.yml",
+            "/scripts/publish-private-ci-source.py",
+            "/scripts/test-publish-private-ci-source.py",
+            "/scripts/check-private-ci-destination.sh",
+            "/scripts/run-in-private-ci-destination.sh",
+            "/scripts/test-private-ci-destination.sh",
+            "/scripts/ci_private_mirror_preflight.py",
+            "/tests/test_ci_private_mirror_preflight.py",
+            "/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md",
+            "/docs/PRIVATE_CI_MIRRORS.md",
+        }
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIn("@ORESoftware", entries.get(path, []),
+                              "private source export controls need codeowner review")
+
     def test_shell_preflight_pins_match_reviewed_python_publisher(self):
         # A second caller may trust the Bash preflight without invoking the
         # Python publisher. Their immutable destination pins must stay equal.
