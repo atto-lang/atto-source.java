@@ -6255,6 +6255,19 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
+                if (unary.operator().equals("?")) {
+                    // Typed source checker restricts this v0 path to synchronous
+                    // Result/Option frames. This is return control, not throw.
+                    if (value instanceof OptionValue option) {
+                        if (!option.present()) throw new ReturnSignal(option);
+                        return option.value();
+                    }
+                    if (value instanceof ResultValue result) {
+                        if (!result.ok()) throw new ReturnSignal(result);
+                        return result.value();
+                    }
+                    throw new IllegalStateException("postfix ? requires a checked Option/Result value");
+                }
                 return switch (unary.operator()) {
                     case "&", "&mut" -> value;
                     case "!" -> !truth(value);
