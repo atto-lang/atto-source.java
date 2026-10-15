@@ -4653,6 +4653,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (bytes < 0) throw new IllegalArgumentException("shared memory release cannot be negative");
         if (bytes == 0 || closed.get()) return;
         synchronized (memoryBudgetLock) {
+            if (closed.get()) return;
             long current = sharedMemoryBytes.get();
             if (bytes > current) {
                 throw new IllegalStateException(
