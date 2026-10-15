@@ -68,6 +68,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         // Exact opt-in per source unit. Default arithmetic retains legacy semantics.
         boolean experimentalCheckedI64 = text.startsWith("// oreslang:checked-i64-v1\n");
         Ast.Program program = OresCompiler.parseAndTypeCheck(text);
+        if (experimentalCheckedI64) verifyExperimentalCheckedI64Subset(program);
         String codeUnitId = source.getPath();
         if (codeUnitId == null || codeUnitId.isBlank()) {
             codeUnitId = source.getName();
@@ -82,4 +83,43 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId, experimentalCheckedI64).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
+
+    /**
+     * The checked arithmetic experiment has no certified actor, async,
+     * superclass, import or source-level exceptional effect ABI yet.
+     * Reject those source units before creating any executable guest root.
+     * Default/unmarked source has no new admission restrictions.
+     */
+    private static void verifyExperimentalCheckedI64Subset(Ast.Program program) {
+        if (program.namespace() != null || !program.imports().isEmpty()) {
+            throw new IllegalArgumentException("checked-i64-v1 rejects namespace/import boundaries");
+        }
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.FunctionDecl fn)
+                        || fn.kind() != Ast.CallableKind.FNC
+                        || fn.actorKind() != Ast.ActorKind.NONE
+                        || fn.async() || fn.suspends() || fn.generator()
+                        || fn.trapped() || fn.structural() || fn.nonLexical()
+                        || !fn.genericParameters().isEmpty()
+                        || !fn.annotations().isEmpty()
+                        || !isCheckedI64Scalar(fn.returnType())
+                        || fn.parameters().stream().anyMatch(p ->
+                                p.mutable() || p.structural() || !isCheckedI64Scalar(p.type()))
+                        || fn.body().size() != 1
+                        || !(fn.body().getFirst() instanceof Ast.ReturnStmt ret)
+                        || ret.value() == null) {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 requires synchronous scalar functions; "
+                            + "actor, class, import and effect lowering are unsupported");
+                }
+            }
+        }
+    }
+
+    private static boolean isCheckedI64Scalar(Ast.TypeRef type) {
+        return type != null && !type.inferArguments() && type.arguments().isEmpty()
+                && (type.name().equals("int") || type.name().equals("bool"));
+    }
+
 }
