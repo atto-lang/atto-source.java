@@ -220,6 +220,49 @@ class NativeHttpTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(8)
+    @org.junit.jupiter.api.Timeout(30)
+    void freshActorDeadlineDuringDispatchCannotOrphanCarrier() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "ok");
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  // A short deadline deliberately races non-pooled actor
+                  // spawn/ready, exchange transfer and native carrier entry.
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 10);
+                  stdio.println(server.port);
+                  val request = await server.accept();
+                  val completion = request.completion;
+                  http.handler("Worker").dispatch(rt borrow mut request);
+                  await completion;
+                  await server.shutdown(0);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    try {
+                        var response = request(port, "GET", "/", "");
+                        // Either a completed handler or a deadline failure
+                        // is legitimate. Context.close must not race either.
+                        assertTrue(response.statusCode() == 200
+                                || response.statusCode() == 504
+                                || response.statusCode() == 500,
+                                "unexpected HTTP status: " + response.statusCode());
+                    } catch (java.io.IOException deadlineClosedSocket) {
+                        // A timed-out HTTP/1.1 socket can close before headers.
+                    }
+                });
+            assertTrue(output.stripTrailing().endsWith("\n0"), output);
+        }
+    }
+
     @Test void pooledWorkerDeathReleasesRequestAndReplacementServesFollowingRequests() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
