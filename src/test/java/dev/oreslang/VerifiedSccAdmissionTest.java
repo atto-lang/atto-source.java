@@ -141,4 +141,26 @@ final class VerifiedSccAdmissionTest {
                 () -> VerifiedSccAdmission.verifyGraph(changed, headers(), Map.of()));
     }
 
+    @Test void publicAliasOrModuleContractsCannotEscapeRestrictedSccVerification() {
+        var original = cyclicPair();
+        var publicAlias = new Ast.TypeAliasDecl("PublicAlias", Ast.Visibility.PUBLIC,
+                List.of(), Ast.TypeRef.simple("int"));
+        var changed = new LinkedHashMap<>(original);
+        var a = changed.get("a.ores");
+        var function = a.modules().getFirst().declarations().getFirst();
+        changed.put("a.ores", new Ast.Program(a.namespace(), a.imports(),
+                List.of(new Ast.ModuleDecl("api", List.of(function, publicAlias)))));
+        assertThrows(IllegalArgumentException.class,
+                () -> VerifiedSccAdmission.verifySingleScc(changed, headers(), Map.of()));
+
+        var withContract = new LinkedHashMap<>(original);
+        withContract.put("a.ores", new Ast.Program(a.namespace(), a.imports(),
+                List.of(new Ast.ModuleDecl("api", List.of(),
+                        List.of(Ast.TypeRef.simple("UnlinkedContract")),
+                        List.of(function)))));
+        assertThrows(IllegalArgumentException.class,
+                () -> VerifiedSccAdmission.verifySingleScc(withContract, headers(), Map.of()));
+    }
+
+
 }
