@@ -2,6 +2,52 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-14 late audit — native quiescence and repeated-close barriers
+
+**Two experimental JNI-witness false-success conditions were hardened:**
+
+1. A trusted `retryNativeQuiescentTasks()` call could previously
+   return `0` while a live SourceTask was still suspended, actively
+   executing, or held by another thread inside native settlement.
+   The retry now treats all such live-but-not-fully-quiescent cases as
+   incomplete barriers and reports a failure instead of claiming idle.
+   It still never re-enters guest `task.resume()` during retry.
+2. A repeated `OresScheduler.close()` could return normally after the
+   first close had already set the `closed` flag, even when that first
+   shutdown was still processing callbacks or the native live set
+   contained unresolved SourceTasks. Optional native schedulers now
+   distinguish the completion of the cancellation sweep from the
+   presence of outstanding SourceTasks. A repeated close refuses to
+   report success until **both** the sweep has finished and the native
+   live set has been drained. Ordinary non-native close idempotency
+   remains unchanged.
+
+An additional opt-in JUnit regression checks that retry of a physically
+parked, logically WAITING SourceTask fails until the awaited Future
+resumes and completes. Regression coverage also asserts repeated-close
+failure when cleanup tickets or trusted callback failures leave a task
+unresolved, and allows idempotent close after the outstanding cleanup
+ticket is closed and a trusted terminal retry retires its SourceTask.
+
+**Test status:** The new Java scheduler and JUnit source blobs passed
+10/10 *structural* checks, including guard placement, regression
+presence and balanced delimiters. They have **not** passed executable
+Maven/JUnit or GraalVM/LLVM tests on this source revision. Source-org
+native Actions still fail before any steps execute. A different
+organization is not an approved CI destination: protected `main`
+`.github/private-ci-approved-repositories.txt` has no active entries.
+The existing security review issues #962 and #991 require independent
+approval before any private source transfer, and the inspected alternate
+runner canaries were also failing before test steps. No private Git
+objects or source files were transferred during this audit.
+
+**Release decision:** continue to keep PR #917 draft and native guest
+enforcement disabled. A successful JNI compiled-guest actor STOP,
+authenticated cleanup-only turn, `defer`/`finally`, DONE and
+Java/GraalVM-LLVM parity test is still required before activation.
+
+
+
 ## 2026-10-14 continued audit: native-retirement does not mean callback completion
 
 **Finding A — zero retry count while cleanup still runs.**
