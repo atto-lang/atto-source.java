@@ -37,6 +37,7 @@ public final class RaceTraceRecorder implements AutoCloseable {
     private final BufferedWriter out;
     private long bytes;
     private int events;
+    private int accesses;
     private final String runId;
     private boolean closed;
     private boolean broken;
@@ -222,6 +223,7 @@ public final class RaceTraceRecorder implements AutoCloseable {
                     + ",\"mode\":\"" + (write ? "W" : "R") + "\"}";
             writeLine(json);
             events++;
+            accesses++;
         } catch (IOException | RuntimeException failure) {
             broken = true;
             throw failure;
@@ -232,7 +234,7 @@ public final class RaceTraceRecorder implements AutoCloseable {
         if (closed) return;
         closed = true;
         try {
-            if (!broken && (!locks.isEmpty() ||
+            if (!broken && (accesses == 0 || !locks.isEmpty() ||
                     parents.keySet().stream().anyMatch(child -> !joined.contains(child)))) {
                 broken = true;
             }
