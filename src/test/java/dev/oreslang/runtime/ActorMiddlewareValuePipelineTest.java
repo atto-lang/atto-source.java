@@ -20,11 +20,11 @@ final class ActorMiddlewareValuePipelineTest {
     void nextValContinueEnrichesAndReturnsTypedInt() {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("trim"), S,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Continue<>(input.withMessage(input.message().strip()))),
                         false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("enrich"), A,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Continue<>(input.withHeader("X-Actor", "accepted"))),
                         false)),
                 Set.of(),
@@ -43,7 +43,7 @@ final class ActorMiddlewareValuePipelineTest {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("short"), A,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Reply<>(99)),
                         false)),
                 Set.of(), input -> {
@@ -59,7 +59,7 @@ final class ActorMiddlewareValuePipelineTest {
     void supervisorMayRejectButCannotManufactureAnActorReply() {
         var reject = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("auth"), S,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Reject<>(403, "forbidden")), false)),
                 List.of(), Set.of(), input -> { fail("terminal must not run"); return null; });
         var denied = reject.invoke(req("x"), () -> false).toCompletableFuture().join();
@@ -67,7 +67,7 @@ final class ActorMiddlewareValuePipelineTest {
 
         var illegal = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("auth"), S,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Reply<>(8)), false)),
                 List.of(), Set.of(), input -> CompletableFuture.completedFuture(1));
         assertThrows(CompletionException.class,
@@ -80,7 +80,7 @@ final class ActorMiddlewareValuePipelineTest {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("twice"), A,
-                        (request, next) -> {
+                        (request, res, next) -> {
                             next.proceed(request).toCompletableFuture().join();
                             return next.proceed(request);
                         }, false)),
@@ -97,7 +97,7 @@ final class ActorMiddlewareValuePipelineTest {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("early"), A,
-                        (input, next) -> {
+                        (input, res, next) -> {
                             continuation.set(next);
                             return CompletableFuture.completedFuture(
                                     new ActorMiddlewareValuePipeline.Reply<>(11));
@@ -119,10 +119,10 @@ final class ActorMiddlewareValuePipelineTest {
         var shared = key("normalize");
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, S,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Continue<>(input)), false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, A,
-                        input -> {
+                        (input, res) -> {
                             count.incrementAndGet();
                             return CompletableFuture.completedFuture(
                                     new ActorMiddlewareValuePipeline.Continue<>(input));
@@ -133,14 +133,14 @@ final class ActorMiddlewareValuePipelineTest {
 
         var changed = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, S,
-                        input -> CompletableFuture.completedFuture(
+                        (input, res) -> CompletableFuture.completedFuture(
                                 new ActorMiddlewareValuePipeline.Continue<>(input)), false),
                         ActorMiddlewareValuePipeline.Stage.<Integer>value(key("rewrite"), S,
-                                input -> CompletableFuture.completedFuture(
+                                (input, res) -> CompletableFuture.completedFuture(
                                         new ActorMiddlewareValuePipeline.Continue<>(
                                                 input.withMessage(input.message()))), false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, A,
-                        input -> {
+                        (input, res) -> {
                             count.incrementAndGet();
                             return CompletableFuture.completedFuture(
                                     new ActorMiddlewareValuePipeline.Continue<>(input));
@@ -156,7 +156,7 @@ final class ActorMiddlewareValuePipelineTest {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("error"), A,
-                        (request, next) -> {
+                        (request, res, next) -> {
                             next.proceed(request);
                             throw new IllegalStateException("post-next failure");
                         }, false)),
