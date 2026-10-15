@@ -283,9 +283,27 @@ public final class RuntimePermissions {
         if (text.startsWith("[")) {
             int closing = text.indexOf(']');
             if (closing < 3 || text.indexOf('[', 1) >= 0) return null;
-            host = text.substring(0, closing + 1);
-            String literal = host.substring(1, host.length() - 1);
+            String literal = text.substring(1, closing);
+            // Compare IPv6 *addresses*, not textual spellings: [::1] and
+            // [0:0:0:0:0:0:0:1] must share the same allow/deny identity.
+            // Only numeric literals are admitted here (never hostnames or
+            // zone identifiers), and IPv4-mapped forms are rejected instead
+            // of silently crossing the IPv4/IPv6 permission boundary.
             if (!literal.contains(":") || !literal.matches("[0-9a-f:.]+")) return null;
+            try {
+                java.net.InetAddress address = java.net.InetAddress.getByName(literal);
+                if (!(address instanceof java.net.Inet6Address)) return null;
+                byte[] bytes = address.getAddress();
+                StringBuilder canonical = new StringBuilder("[");
+                for (int i = 0; i < bytes.length; i += 2) {
+                    if (i != 0) canonical.append(':');
+                    canonical.append(Integer.toHexString(
+                            ((bytes[i] & 0xff) << 8) | (bytes[i + 1] & 0xff)));
+                }
+                host = canonical.append(']').toString();
+            } catch (java.net.UnknownHostException invalid) {
+                return null;
+            }
             if (closing + 1 < text.length()) {
                 if (text.charAt(closing + 1) != ':') return null;
                 portText = text.substring(closing + 2);
