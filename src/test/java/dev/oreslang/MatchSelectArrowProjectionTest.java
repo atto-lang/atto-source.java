@@ -244,4 +244,23 @@ final class MatchSelectArrowProjectionTest {
         assertEquals("44", run(source));
     }
 
+    @Test
+    void nestedGenericInferenceHoleDoesNotCrossArrowSelectBoundary() {
+        String source = """
+                fnc packed<T>(T value): int { return 7; }
+                fnc invalid(Channel<{v: int}> ch): int {
+                  do select {
+                    when readch ch: const {v} -> {
+                      return packed<Array<_>>(v);
+                    }
+                  }
+                  return 0;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checked(source));
+        assertTrue(failure.getMessage().contains("nested inference hole"),
+                failure.getMessage());
+    }
+
 }
