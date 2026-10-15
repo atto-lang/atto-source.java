@@ -127,6 +127,57 @@ final class FutureSelectAttachmentFailureTest {
         assertEquals(43, channel.tryRead().orElseThrow());
     }
 
+
+    @Test
+    void cancellationOfPausedSelectionDoesNotBlockSecondConsumer()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        OresFuture<ChannelRuntime.SelectResult> cancelled;
+        try (var paused = new PausedAttachment(
+                ChannelRuntime.SelectSet.of(ChannelRuntime.await(producer)))) {
+            cancelled = paused.pendingSelection();
+            var second = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.await(producer))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            assertEquals(2, producer.pendingRuntimeWaiterCount());
+            assertTrue(cancelled.cancel(false));
+            assertFalse(second.isDone());
+            assertTrue(producer.completeFromRuntime(51));
+            assertEquals(51, second.get(5, TimeUnit.SECONDS).value());
+            assertTrue(cancelled.isCancelled());
+        }
+        assertThrows(CancellationException.class, cancelled::join);
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void unpublishedChannelWinnerDoesNotDelayOtherProducerConsumer()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        OresFuture<ChannelRuntime.SelectResult> first;
+        try (var paused = new PausedAttachment(ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer),
+                ChannelRuntime.read(channel)))) {
+            first = paused.pendingSelection();
+            var second = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.await(producer))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            assertEquals(2, producer.pendingRuntimeWaiterCount());
+            assertTrue(channel.tryWrite(17));
+            assertFalse(first.isDone(), "first result overtook pending detach");
+            assertTrue(producer.completeFromRuntime(29));
+            assertEquals(29, second.get(5, TimeUnit.SECONDS).value());
+            assertFalse(first.isDone(),
+                    "independent producer completion released the wrong barrier");
+        }
+        var firstWinner = first.get(5, TimeUnit.SECONDS);
+        assertEquals(1, firstWinner.index());
+        assertEquals(17, firstWinner.value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
     @Test
     void repeatedProducerArmsDoNotPublishUntilFirstAttachmentDrains()
             throws Exception {

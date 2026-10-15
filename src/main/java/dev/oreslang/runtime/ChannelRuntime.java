@@ -759,7 +759,9 @@ public final class ChannelRuntime {
                     COORDINATOR.unlock();
                 }
                 OresFuture.RuntimeWaiterRegistration<?> waiter = null;
-                ArrayList<Runnable> readyToPublish = new ArrayList<>();
+                // Most listeners never defer publication; allocate a drain
+                // snapshot only if a winner really committed mid-attachment.
+                List<Runnable> readyToPublish = null;
                 try {
                     waiter = candidate.future().whenCompleteRuntimeCancellable(
                             (ignored, failure) -> futureBecameReady());
@@ -774,7 +776,7 @@ public final class ChannelRuntime {
                         if (!lost && waiter != null) futureWaiters.add(waiter);
                         attachingFutureWaiters--;
                         if (attachingFutureWaiters == 0 && !deferredPublication.isEmpty()) {
-                            readyToPublish.addAll(deferredPublication);
+                            readyToPublish = List.copyOf(deferredPublication);
                             deferredPublication.clear();
                         }
                     } finally {
@@ -783,7 +785,7 @@ public final class ChannelRuntime {
                     // A decision may have been made by the synchronous callback.
                     // Reclaim the late waiter before making that decision visible.
                     if (lost && waiter != null) waiter.detach();
-                    runCompletions(readyToPublish);
+                    if (readyToPublish != null) runCompletions(readyToPublish);
                 }
             }
         }
