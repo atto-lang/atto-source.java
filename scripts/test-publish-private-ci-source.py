@@ -48,6 +48,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
         self.disabled = [False] * 100
+        self.carrier_main_shas = [A] * 100
+        self.carrier_ref_names = ["refs/heads/main"] * 100
+        self.carrier_ref_types = ["commit"] * 100
+        self.carrier_default_branches = ["main"] * 100
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -98,7 +102,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                              else self.remote_source_tree}}
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main",
+                        private=True, default_branch=self.carrier_default_branches.pop(0),
                         id=self.repository_ids.pop(0),
                         archived=self.archived.pop(0),
                         disabled=self.disabled.pop(0))
@@ -109,8 +113,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else self.expected_tree}
+        if route == "repos/trusted/ci/git/ref/heads/main":
+            return {"ref": self.carrier_ref_names.pop(0),
+                    "object": {"sha": self.carrier_main_shas.pop(0),
+                               "type": self.carrier_ref_types.pop(0)}}
         mapping = {
-            "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
             "repos/trusted/ci/git/commits/"+C: {"tree": {"sha": E}},
@@ -130,6 +137,52 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_carrier_default_branch_must_be_trusted_main_before_source_read(self):
+        self.carrier_default_branches = ["unreviewed-feature"] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source was read too early")):
+            with self.assertRaisesRegex(pub.Denied, "not trusted main"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_ref_must_be_an_exact_commit_before_source_read(self):
+        for name, ref_type, sha in (
+            ("refs/tags/main", "commit", A),
+            ("refs/heads/feature", "commit", A),
+            ("refs/heads/main", "tag", A),
+            ("refs/heads/main", "blob", A),
+        ):
+            with self.subTest(name=name, ref_type=ref_type):
+                self.route_calls.clear()
+                self.carrier_main_shas = [sha] * 100
+                self.carrier_ref_names = [name] * 100
+                self.carrier_ref_types = [ref_type] * 100
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source was read too early")):
+                    with self.assertRaisesRegex(pub.Denied, "not a verified commit"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_moving_during_transfer_prevents_next_write(self):
+        for flip_after in (2, 6):
+            with self.subTest(flip_after=flip_after):
+                self.route_calls.clear()
+                self.carrier_main_shas = [A] * flip_after + [E] * 100
+                with self.assertRaisesRegex(pub.Denied, "main changed during source transfer"):
+                    self.publish()
+                writes = [r for method, r, _ in self.route_calls if method == "POST"]
+                if flip_after == 2:
+                    self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+                else:
+                    self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
+    def test_carrier_default_branch_switch_during_transfer_prevents_ref(self):
+        self.carrier_default_branches = ["main"] * 3 + ["evil"] * 100
+        with self.assertRaisesRegex(pub.Denied, "default branch changed"):
+            self.publish()
+        self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
+                             for method, route, _ in self.route_calls))
 
     def test_real_git_checkout_admission_denies_unreviewed_or_tampered_code(self):
         # No private repo files are needed: initialize a synthetic Git repository
