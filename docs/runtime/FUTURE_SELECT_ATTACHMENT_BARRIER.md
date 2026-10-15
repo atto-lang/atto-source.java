@@ -42,6 +42,15 @@ selected Future's cancellation bit.
   release their registrations.
 - At least 100 cancellation/producer-failure races must leave no retained
   Future waiters or channel admission credits.
+- An opt-in, package-private test observer pauses after an arm has committed
+  but *before* its losing Future listener is detached. While this observer
+  holds that actual detachment window, a committed channel value or close
+  failure must remain unpublished; cancellation may be observable but must
+  revoke channel admission and preserve pending channel values.
+- A throwing detachment observer must not strand the losing waiter: the
+  registration handle is detached in a finally block, followed by release
+  of the attachment claim and any deferred winner publication. Ordinary
+  guest select operations do not invoke this observer.
 
 ## Verification and merge requirements
 
