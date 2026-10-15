@@ -205,6 +205,12 @@ def checked_source_main_protection():
         and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT
         and type(entry.get("app_id")) is int and entry["app_id"] > 0
         for entry in app_checks))
+    if isinstance(app_checks, list) and any(
+            isinstance(entry, dict)
+            and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT
+            and (type(entry.get("app_id")) is not int or entry["app_id"] <= 0)
+            for entry in app_checks):
+        raise Denied("source main private CI check allows an untrusted app")
     if not (trusted_context or trusted_app):
         raise Denied("source main does not require the private CI security check")
     # Explicit bypass allowances negate the code-owner review guarantee.
