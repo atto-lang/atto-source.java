@@ -4431,20 +4431,63 @@ public final class ActorRuntime implements AutoCloseable {
                             + "no logical cancellation/teardown was published");
         }
 
+        // Physical revocation is irreversible. Once the VM revoker confirms
+        // success, an exception from one actor's logical teardown must never
+        // leave another revoked child with live scheduler state or a pending
+        // source-cleanup Future. Reconcile every cell independently while the
+        // entire subtree is still force-fenced.
+        Throwable teardownFailure = null;
         try {
-            attempt.root.cancel(new ActorCancelledException(
-                    ref.id(),
-                    "actor " + ref.id() + " was force-cancelled"));
-            // A force revocation can race a previously initiated structured
-            // STOP. Its idempotent terminateTree() must not leave the old
-            // cleanup lane parked after the physical isolate was revoked.
-            for (ActorCell<?> revokedCell : attempt.cells) {
-                revokedCell.revokeSourceCleanupAfterForceStop();
+            try {
+                attempt.root.cancel(new ActorCancelledException(
+                        ref.id(),
+                        "actor " + ref.id() + " was force-cancelled"));
+            } catch (Throwable failure) {
+                teardownFailure = failure;
             }
-            return true;
+            for (ActorCell<?> revokedCell : attempt.cells) {
+                try {
+                    // Also handles a root teardown that failed before it could
+                    // cascade STOP to its descendants. Already-stopped cells
+                    // are idempotent; none may resume guest work after revocation.
+                    revokedCell.cancel(new ActorCancelledException(
+                            revokedCell.ref.id(),
+                            "actor " + revokedCell.ref.id()
+                                    + " was force-cancelled"));
+                } catch (Throwable failure) {
+                    if (teardownFailure == null) teardownFailure = failure;
+                    else if (teardownFailure != failure
+                            && teardownFailure.getSuppressed().length < 64) {
+                        teardownFailure.addSuppressed(failure);
+                    }
+                } finally {
+                    try {
+                        // Even an incomplete or throwing STOP must close the
+                        // revoked cleanup lane, including parked async defers.
+                        revokedCell.revokeSourceCleanupAfterForceStop();
+                    } catch (Throwable failure) {
+                        if (teardownFailure == null) teardownFailure = failure;
+                        else if (teardownFailure != failure
+                                && teardownFailure.getSuppressed().length < 64) {
+                            teardownFailure.addSuppressed(failure);
+                        }
+                    }
+                }
+            }
         } finally {
             clearForceKillFence(attempt, false);
         }
+        if (teardownFailure instanceof VirtualMachineError fatal) throw fatal;
+        if (teardownFailure instanceof ThreadDeath fatal) throw fatal;
+        if (teardownFailure instanceof LinkageError fatal) throw fatal;
+        if (teardownFailure instanceof RuntimeException failure) throw failure;
+        if (teardownFailure instanceof Error failure) throw failure;
+        if (teardownFailure != null) {
+            throw new IllegalStateException(
+                    "isolation was revoked but actor teardown was incomplete",
+                    teardownFailure);
+        }
+        return true;
     }
 
     private ForceCancellationAttempt fenceForceCancellationSubtree(
