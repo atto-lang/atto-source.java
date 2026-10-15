@@ -1845,9 +1845,12 @@ public final class TypeChecker {
                         "defer cleanup lambda must accept zero parameters");
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
+            Type previousQuestionReturn = currentQuestionReturn;
+            currentQuestionReturn = null; // Deferred cleanup cannot initiate an early return.
             try {
                 typeOf(defer.expression(), env, generics, self);
             } finally {
+                currentQuestionReturn = previousQuestionReturn;
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
                 env.restoreInitialization(beforeDefer);
@@ -1920,7 +1923,13 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
-            checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            Type previousQuestionReturn = currentQuestionReturn;
+            currentQuestionReturn = null; // Finally must not replace pending return with '?'.
+            try {
+                checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            } finally {
+                currentQuestionReturn = previousQuestionReturn;
+            }
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
