@@ -203,10 +203,24 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
     public static void main(String[] args) throws Exception {
         require(Boolean.getBoolean("ores.native.actor.turn.experimental"),
                 "test requires explicit experimental JNI opt-in");
-        ordinarySuspendResume();
-        stopDeniesUserResumption();
-        pendingCleanupBlocksNativeDoneUntilTicketClosed();
-        closeInsideQuiescenceDoesNotClaimDone();
-        System.out.println("NATIVE_ACTOR_TURN_REAL_SCHEDULER_JNI_OK");
+        int iterations = Integer.getInteger(
+                "ores.native.actor.turn.smoke.iterations", 12);
+        require(iterations >= 1 && iterations <= 100,
+                "smoke iterations must be between 1 and 100");
+        for (int iteration = 1; iteration <= iterations; iteration++) {
+            try {
+                ordinarySuspendResume();
+                stopDeniesUserResumption();
+                pendingCleanupBlocksNativeDoneUntilTicketClosed();
+                closeInsideQuiescenceDoesNotClaimDone();
+            } catch (Exception | Error failure) {
+                throw new AssertionError(
+                        "JNI real-scheduler lifecycle iteration " + iteration
+                                + " of " + iterations + " failed",
+                        failure);
+            }
+        }
+        System.out.println("NATIVE_ACTOR_TURN_REAL_SCHEDULER_JNI_OK iterations="
+                + iterations + " scenarios=" + (4 * iterations));
     }
 }
