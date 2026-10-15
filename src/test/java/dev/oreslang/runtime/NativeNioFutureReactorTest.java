@@ -14,12 +14,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class NativeNioFutureReactorTest {
     @Test void oversizedConnectionBudgetIsRefusedBeforeOpeningKernelResources() {
-        assertThrows(IllegalArgumentException.class,
-                () -> NativeNioFutureReactor.loopback(0, 8, Integer.MAX_VALUE, 1));
+        assertThrows(ExecutionException.class,
+                () -> NativeNioFutureReactor.loopbackAsync(0, 8, Integer.MAX_VALUE, 1).get(2, TimeUnit.SECONDS));
     }
 
     @Test void futuresBridgeReadWriteAndPartialPeerTraffic() throws Exception {
-        try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(0, 32, 8, 64)) {
+        try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopbackAsync(0, 32, 8, 64).get(2, TimeUnit.SECONDS)) {
             var accepted = reactor.acceptAsync();
             try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
                 peer.setSoTimeout(2000);
@@ -40,7 +40,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void stalledSocketDoesNotBlockOtherConnectionOrClose() throws Exception {
-        try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(0, 32, 2, 16)) {
+        try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopbackAsync(0, 32, 2, 16).get(2, TimeUnit.SECONDS)) {
             var firstAccept = reactor.acceptAsync();
             try (Socket stalled = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
                 var first = firstAccept.get(2, TimeUnit.SECONDS);
@@ -62,7 +62,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void boundedAcceptanceAndDuplicateReadFailClosed() throws Exception {
-        try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(0, 8, 1, 2)) {
+        try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopbackAsync(0, 8, 1, 2).get(2, TimeUnit.SECONDS)) {
             var firstAccept = reactor.acceptAsync();
             var secondAccept = reactor.acceptAsync();
             var refused = reactor.acceptAsync();
@@ -88,7 +88,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void abruptKernelSelectorLossSettlesEveryAdmittedFuture() throws Exception {
-        var reactor = NativeNioFutureReactor.loopback(0, 4, 2, 32);
+        var reactor = NativeNioFutureReactor.loopbackAsync(0, 4, 2, 32).get(2, TimeUnit.SECONDS);
         try {
             var waiting = new java.util.ArrayList<OresFuture<NativeNioFutureReactor.Connection>>();
             for (int i = 0; i < 16; i++) waiting.add(reactor.acceptAsync());
@@ -111,7 +111,7 @@ final class NativeNioFutureReactorTest {
 
     @Test void concurrentShutdownCannotStrandAdmittedFutures() throws Exception {
         for (int round = 0; round < 40; round++) {
-            var reactor = NativeNioFutureReactor.loopback(0, 4, 2, 16);
+            var reactor = NativeNioFutureReactor.loopbackAsync(0, 4, 2, 16).get(2, TimeUnit.SECONDS);
             try {
                 var admitted = new java.util.concurrent.CopyOnWriteArrayList<OresFuture<?>>();
                 try (ExecutorService submitters = Executors.newFixedThreadPool(2)) {
@@ -137,7 +137,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void cancelledReadCannotConsumeFutureSocketBytes() throws Exception {
-        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
+        try (var reactor = NativeNioFutureReactor.loopbackAsync(0, 8, 1, 8).get(2, TimeUnit.SECONDS)) {
             var admission = reactor.acceptAsync();
             try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
                 var connection = admission.get(2, TimeUnit.SECONDS);
@@ -156,7 +156,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void guestByteArrayFutureCancellationRevokesUnderlyingRead() throws Exception {
-        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
+        try (var reactor = NativeNioFutureReactor.loopbackAsync(0, 8, 1, 8).get(2, TimeUnit.SECONDS)) {
             var accepted = reactor.acceptAsync();
             try (Socket peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
                 var connection = accepted.get(2, TimeUnit.SECONDS);
@@ -174,7 +174,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void cancelledAcceptDoesNotClaimIncomingSocket() throws Exception {
-        try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
+        try (var reactor = NativeNioFutureReactor.loopbackAsync(0, 8, 1, 8).get(2, TimeUnit.SECONDS)) {
             var first = reactor.acceptAsync();
             assertTrue(first.cancel(false));
             var next = reactor.acceptAsync();
@@ -189,7 +189,7 @@ final class NativeNioFutureReactorTest {
 
     @Test void cancelledAcceptAndReadDoNotLeakAdmissionUnderRepeatedRaces() throws Exception {
         for (int round = 0; round < 30; round++) {
-            try (var reactor = NativeNioFutureReactor.loopback(0, 4, 1, 12)) {
+            try (var reactor = NativeNioFutureReactor.loopbackAsync(0, 4, 1, 12).get(2, TimeUnit.SECONDS)) {
                 var cancelled = new java.util.ArrayList<OresFuture<?>>();
                 for (int i = 0; i < 8; i++) {
                     var request = reactor.acceptAsync();
@@ -220,7 +220,7 @@ final class NativeNioFutureReactorTest {
     }
 
     @Test void outstandingAcceptSettlesOnShutdownWithoutBlockingCaller() throws Exception {
-        var reactor = NativeNioFutureReactor.loopback(0, 2, 1, 1);
+        var reactor = NativeNioFutureReactor.loopbackAsync(0, 2, 1, 1).get(2, TimeUnit.SECONDS);
         try {
             var waiting = reactor.acceptAsync();
             assertTrue(waiting.cancel(false), "pending accept cancellation must win before kernel accept");

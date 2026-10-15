@@ -77,7 +77,7 @@ public final class OresMain {
         String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "server";
         PermissionCheckMode permissionCheckMode = PermissionCheckMode.RUNTIME;
-        dev.oreslang.runtime.CoreIoPolicy coreIoPolicy = dev.oreslang.runtime.CoreIoPolicy.LEGACY_BLOCKING;
+        dev.oreslang.runtime.CoreIoPolicy coreIoPolicy = dev.oreslang.runtime.CoreIoPolicy.NATIVE_ASYNC_ONLY;
         boolean ioPolicySpecified = false;
         RuntimePermissions.Builder permissionBuilder = new RuntimePermissions.Builder();
         EnumSet<RuntimePermissions.Permission> touchedPermissions =
@@ -317,7 +317,7 @@ public final class OresMain {
     private static void printUsage() {
         System.err.println(
                 "usage: oreslang-compiler [--check|--build-analysis] "
-                        + "[--core-io=native-async-only|legacy-blocking] [--permission-check=runtime|compile] [--allow-all] "
+                        + "[--core-io=native-async-only] [--permission-check=runtime|compile] [--allow-all] "
                         + "[--allow-read[=PATH,...]] [--deny-read[=PATH,...]] "
                         + "[--allow-write[=PATH,...]] [--deny-write[=PATH,...]] "
                         + "[--allow-net[=HOST[:PORT],...]] [--deny-net[=HOST[:PORT],...]] "

@@ -2,8 +2,8 @@
 // Experimental loopback/supervisor-only initial slice; never Java HTTP.
 define module net_core as
   pub fnc listen_loopback(int port, int backlog, int max_connections,
-                          int max_pending): NioTcpListener {
-    return network.listen_nonblocking("127.0.0.1", port, backlog,
+                          int max_pending): Future<NioTcpListener> {
+    return network.listen_async("127.0.0.1", port, backlog,
                                       max_connections, max_pending);
   }
 

@@ -6526,14 +6526,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof NetworkFacade network) {
                 return switch (name) {
-                    case "listen_nonblocking" -> (Invokable) args -> {
+                    case "listen_async" -> (Invokable) args -> {
                         if (args.size() != 5)
-                            throw new IllegalArgumentException("network.listen_nonblocking(host, port, backlog, max_connections, max_pending)");
+                            throw new IllegalArgumentException("network.listen_async(host, port, backlog, max_connections, max_pending)");
                         String host = requireString(args.get(0), "host");
                         for (int i = 1; i < 5; i++)
                             if (!(args.get(i) instanceof Number))
                                 throw new IllegalArgumentException("nonblocking TCP limits must be integers");
-                        return context.listenNioLoopback(host,
+                        return context.listenNioLoopbackAsync(host,
                                 ((Number) args.get(1)).intValue(),
                                 ((Number) args.get(2)).intValue(),
                                 ((Number) args.get(3)).intValue(),
