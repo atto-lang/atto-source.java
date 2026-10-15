@@ -27,6 +27,7 @@ MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 # The local checkout cannot grant itself a private-source transfer approval.
 # Always confirm the exact same bytes exist on the protected source main ref.
+REQUIRED_PRIVATE_CI_CONTEXT = "preflight-regressions"
 PROTECTED_POLICY_ROUTE = (
     "repos/ores-truffle-oreslang/oreslang-source.java/contents/"
     ".github/private-ci-approved-repositories.txt?ref=main"
@@ -194,6 +195,18 @@ def checked_source_main_protection():
             or not (isinstance(checks.get("contexts"), list) and checks["contexts"]
                     or isinstance(checks.get("checks"), list) and checks["checks"])):
         raise Denied("source main lacks mandatory independent security review and CI")
+    # An arbitrary CI context is insufficient to attest this security gate.
+    # For app-scoped checks, reject app_id=-1, which accepts anyone's status.
+    contexts = checks.get("contexts")
+    app_checks = checks.get("checks")
+    trusted_context = isinstance(contexts, list) and REQUIRED_PRIVATE_CI_CONTEXT in contexts
+    trusted_app = (isinstance(app_checks, list) and any(
+        isinstance(entry, dict)
+        and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT
+        and type(entry.get("app_id")) is int and entry["app_id"] > 0
+        for entry in app_checks))
+    if not (trusted_context or trusted_app):
+        raise Denied("source main does not require the private CI security check")
     # Explicit bypass allowances negate the code-owner review guarantee.
     bypass = reviews.get("bypass_pull_request_allowances")
     if bypass is not None:
