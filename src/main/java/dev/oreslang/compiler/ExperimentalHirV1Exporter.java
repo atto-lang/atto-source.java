@@ -1,6 +1,7 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.CheckedI64SourceHeader;
 import dev.oreslang.parser.Parser;
 
 import java.math.BigInteger;
@@ -33,9 +34,11 @@ public final class ExperimentalHirV1Exporter {
         if (source == null || source.getBytes(StandardCharsets.UTF_8).length > 1_048_576) {
             throw unsupported("source absent or exceeds 1 MiB");
         }
-        // Run the actual compiler front-end, including ownership admission.
-        return fromVerifiedAst(OresCompiler.parseAndTypeCheck(source),
-                source.startsWith("// oreslang:checked-i64-v1\n"));
+        // Use the SAME fail-closed source negotiation as the actual Graal
+        // evaluator. In particular, reject malformed/displaced directives
+        // before parsing rather than advertising HIR for legacy wrapping code.
+        boolean checkedI64Runtime = CheckedI64SourceHeader.isEnabled(source);
+        return fromVerifiedAst(OresCompiler.parseAndTypeCheck(source), checkedI64Runtime);
     }
 
     private static String fromVerifiedAst(Ast.Program program) {
