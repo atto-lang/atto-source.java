@@ -37,6 +37,13 @@ PROTECTED_POLICY_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
     ".github/private-ci-approved-repositories.txt?ref=main"
 )
+REVIEWED_SNAPSHOTS_ROUTE = (
+    SOURCE_METADATA_ROUTE + "/contents/"
+    ".github/private-ci-approved-source-snapshots.txt?ref=main"
+)
+SOURCE_SNAPSHOT_ENTRY = re.compile(r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$")
+PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
+
 
 
 class Denied(RuntimeError):
@@ -221,6 +228,52 @@ def verify_source_commit(expected_source_commit, expected_source_tree):
         raise Denied("source commit identity differs from pinned immutable SHA")
     if nested_sha(commit, "tree") != expected_source_tree:
         raise Denied("source commit tree differs from pinned expected SHA")
+
+
+def require_reviewed_source_snapshot(expected_commit, expected_tree, destination_id,
+                                     reviewed_blob_sha=None):
+    """Require exact immutable source tuple from a protected-main approval file.
+
+    An approved destination is NOT blanket permission to export arbitrary
+    branch contents. The requested source commit/tree must have its own
+    independently code-owner-reviewed entry on protected source main.
+    """
+    valid_sha(expected_commit)
+    valid_sha(expected_tree)
+    if type(destination_id) is not int or destination_id <= 0:
+        raise Denied("expected numeric destination repository ID is invalid")
+    metadata = gh_api(REVIEWED_SNAPSHOTS_ROUTE)
+    if metadata.get("type") != "file" or metadata.get("encoding") != "base64":
+        raise Denied("reviewed source-snapshot policy is absent or malformed")
+    encoded = metadata.get("content")
+    if not isinstance(encoded, str) or len(encoded) > 24 * 1024:
+        raise Denied("reviewed source-snapshot policy is too large")
+    try:
+        raw = base64.b64decode("".join(encoded.splitlines()), validate=True)
+        lines = raw.decode("utf-8").splitlines()
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("reviewed source-snapshot policy is not valid UTF-8/base64") from exc
+    if len(raw) > 16 * 1024 or metadata.get("size") != len(raw):
+        raise Denied("reviewed source-snapshot policy has invalid size")
+    digest = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw).hexdigest()
+    if valid_sha(metadata.get("sha")) != digest:
+        raise Denied("reviewed source-snapshot policy blob SHA does not match its bytes")
+    if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
+        raise Denied("reviewed source-snapshot approval changed during transfer")
+    approved = set()
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        match = SOURCE_SNAPSHOT_ENTRY.fullmatch(line)
+        if match is None:
+            raise Denied("invalid reviewed source-snapshot policy entry")
+        entry = (match.group(1), match.group(2), int(match.group(3)))
+        if entry in approved:
+            raise Denied("duplicate source-snapshot approval")
+        approved.add(entry)
+    if (expected_commit, expected_tree, destination_id) not in approved:
+        raise Denied("immutable source snapshot is not independently approved")
+    return digest
 
 
 def collect_source(root, trusted_root):
