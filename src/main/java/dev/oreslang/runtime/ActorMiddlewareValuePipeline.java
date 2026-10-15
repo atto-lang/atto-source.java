@@ -43,9 +43,6 @@ public final class ActorMiddlewareValuePipeline<T> {
             Objects.requireNonNull(request);
             Objects.requireNonNull(response);
         }
-        public Continue(ActorMiddlewarePipeline.Envelope request) {
-            this(request, ResponseDraft.defaults());
-        }
     }
     public record Reply<R>(R value, ResponseDraft response) implements Decision<R>, Outcome<R> {
         public Reply {
@@ -64,9 +61,6 @@ public final class ActorMiddlewareValuePipeline<T> {
     @FunctionalInterface public interface Next<R> {
         CompletionStage<Outcome<R>> proceed(
                 ActorMiddlewarePipeline.Envelope request, ResponseDraft response);
-        default CompletionStage<Outcome<R>> proceed(ActorMiddlewarePipeline.Envelope request) {
-            return proceed(request, ResponseDraft.defaults());
-        }
     }
     @FunctionalInterface public interface ValueHook<R> {
         CompletionStage<Decision<R>> nextVal(
