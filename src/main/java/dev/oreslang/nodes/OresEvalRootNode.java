@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ActorRaceInstrumentation;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
@@ -555,7 +556,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env initializerEnv =
                         new Env(null, false, fieldOwner, object);
                 initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                fields.put(
+                object.writeField(
                         field.name(),
                         eval(field.initializer(), initializerEnv));
             }
@@ -4300,7 +4301,7 @@ public final class OresEvalRootNode extends RootNode {
                             ownedField.field().visibility(), ownedField.owner(),
                             env.accessClass(), "field", ownedField.field().name());
                 }
-                Object fieldValue = object.fields.get(member.member());
+                Object fieldValue = object.readField(member.member());
                 if (fieldValue == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException("field '" + object.klass.name() + "."
                             + member.member() + "' is read before constructor initialization");
@@ -4418,7 +4419,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "." + member.member()
                                         + "' is immutable");
                     }
-                    object.fields.put(member.member(), value);
+                    object.writeField(member.member(), value);
                     return value;
                 }
                 if (receiver instanceof LinkedHashMap<?, ?> rawRecord) {
@@ -5735,7 +5736,7 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    Object fieldValue = object.fields.get(methodCall.member());
+                    Object fieldValue = object.readField(methodCall.member());
                     if (fieldValue == UNINITIALIZED_FIELD) {
                         throw new IllegalArgumentException(
                                 "field '" + object.klass.name() + "." + methodCall.member()
@@ -6087,7 +6088,7 @@ public final class OresEvalRootNode extends RootNode {
                                 env.accessClass(),
                                 "field",
                                 field.name());
-                        Object currentValue = object.fields.get(target.member());
+                        Object currentValue = object.readField(target.member());
                         boolean constructorInitialization =
                                 env.canInitialize(object)
                                         && currentValue == UNINITIALIZED_FIELD;
@@ -6096,7 +6097,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
                         }
-                        object.fields.put(target.member(), value);
+                        object.writeField(target.member(), value);
                         return value;
                     }
                     // Explicit anonymous structs use this mutable map path.
@@ -7022,7 +7023,7 @@ public final class OresEvalRootNode extends RootNode {
                                 "field",
                                 ownedField.field().name());
                     }
-                    Object value = object.fields.get(name);
+                    Object value = object.readField(name);
                     if (value == UNINITIALIZED_FIELD) {
                         throw new IllegalArgumentException(
                                 "field '" + object.klass.name() + "." + name
@@ -8131,7 +8132,7 @@ public final class OresEvalRootNode extends RootNode {
                         || owned.field().visibility() != Ast.Visibility.PUBLIC) {
                     return Env.MISSING;
                 }
-                Object member = object.fields.get(name);
+                Object member = object.readField(name);
                 return member == null || member == UNINITIALIZED_FIELD
                         ? Env.MISSING
                         : member;
@@ -8816,7 +8817,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (value instanceof OresObject object) {
                 if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
-                Object field = object.fields.get(name);
+                Object field = object.readField(name);
                 if (field == UNINITIALIZED_FIELD) {
                     throw new IllegalArgumentException(
                             "field '" + object.klass.name() + "." + name
@@ -9149,6 +9150,18 @@ public final class OresEvalRootNode extends RootNode {
             this.owner = owner;
             this.klass = klass;
             this.fields = fields;
+        }
+        private Object readField(String slot) {
+            if (ActorRaceInstrumentation.enabled()) {
+                ActorRaceInstrumentation.runtime().read(this, slot);
+            }
+            return fields.get(slot);
+        }
+        private Object writeField(String slot, Object value) {
+            if (ActorRaceInstrumentation.enabled()) {
+                ActorRaceInstrumentation.runtime().write(this, slot);
+            }
+            return fields.put(slot, value);
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString(){
