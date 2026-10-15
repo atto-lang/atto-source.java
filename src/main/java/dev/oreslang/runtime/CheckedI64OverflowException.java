@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.io.Serial;
+
 /**
  * Versioned host-side signal for the experimental checked-i64 source profile.
  *
@@ -12,6 +14,9 @@ package dev.oreslang.runtime;
  * No operand data or host ArithmeticException is retained.
  */
 public final class CheckedI64OverflowException extends IllegalArgumentException {
+    // Host exception serialization is NOT the guest Error wire ABI.
+    @Serial private static final long serialVersionUID = 1L;
+
     public static final String ERROR_CODE = "ORES_I64_OVERFLOW";
     public static final String GUEST_ERROR_NAME = "ArithmeticOverflowError";
     public static final String EFFECT_KIND = "Throw";
