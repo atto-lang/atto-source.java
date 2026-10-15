@@ -209,6 +209,34 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void hostRetryFailureCounterSaturatesAndClampsHistoricalOverflow()
+            throws Exception {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        // Advance the private telemetry state without billions of synthetic
+        // submissions; this is a host-owned field and not guest-visible.
+        java.lang.reflect.Field failures =
+                ControlWakeRetryQueue.class.getDeclaredField("callbacksFailed");
+        failures.setAccessible(true);
+        failures.setLong(queue, Long.MAX_VALUE - 1);
+
+        Runnable throwAssertion = () -> { throw new AssertionError("host retry bug"); };
+        Runnable throwRuntime = () -> { throw new IllegalStateException("retry denied"); };
+        assertTrue(queue.register(throwAssertion, queue.epoch()));
+        queue.slotReleased();
+        assertEquals(Long.MAX_VALUE, queue.callbacksFailed());
+        assertTrue(queue.register(throwRuntime, queue.epoch()));
+        queue.slotReleased();
+        assertEquals(Long.MAX_VALUE, queue.callbacksFailed(),
+                "host CONTROL retry diagnostics must never wrap negative");
+
+        failures.setLong(queue, Long.MIN_VALUE);
+        assertTrue(queue.register(throwRuntime, queue.epoch()));
+        queue.slotReleased();
+        assertEquals(Long.MAX_VALUE, queue.callbacksFailed(),
+                "existing negative telemetry must be clamped, not propagated");
+        assertEquals(0, queue.pending());
+    }
+
     @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         assertTrue(queue.register(() -> {
