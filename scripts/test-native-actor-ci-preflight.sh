@@ -84,7 +84,27 @@ deny ignored-project-input "CI source checkout has ignored untracked inputs" \
       ORES_CI_EXPECTED_TREE_SHA="$tree" sh "$gate"
 rm "$fixture/ignored-compiler-overlay"
 
+# Supply a synthetic architecture probe without requiring a real ARM runner.
+# The correct pin/checkout should advance to the explicit x86_64 guard and
+# reject there, rather than accidentally passing on the host architecture.
+mkdir -p "$temp/arch-path"
+for cmd in git dirname; do
+  ln -s "$(command -v "$cmd")" "$temp/arch-path/$cmd"
+done
+cat > "$temp/arch-path/uname" <<'UNAME'
+#!/bin/sh
+case "$1" in
+  -s) echo Linux ;;
+  -m) echo aarch64 ;;
+  *) exit 1 ;;
+esac
+UNAME
+chmod +x "$temp/arch-path/uname"
+deny wrong-architecture "native JNI exact-tree gate requires x86_64 Linux" \
+  env PATH="$temp/arch-path" ORES_CI_EXPECTED_COMMIT_SHA="$sha" \
+      ORES_CI_EXPECTED_TREE_SHA="$tree" /bin/sh "$gate"
+
 deny absent-maven "Maven is required" \
   env PATH="$temp/min-path" ORES_CI_EXPECTED_COMMIT_SHA="$sha" \
       ORES_CI_EXPECTED_TREE_SHA="$tree" /bin/sh "$gate"
-echo "NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=9"
+echo "NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=10"
