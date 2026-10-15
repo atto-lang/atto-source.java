@@ -81,7 +81,7 @@ final class VerifiedSccSourceIntegrationTest {
     @Test void parsedImportedAliasKeepsTheResolvedProviderSignature() {
         String aliasedA = A.replace(
                 "import fnc {right} from \"./b.ores\";",
-                "import fnc {right as remoteRight} from \"./b.ores\";")
+                "import fnc {right} as remoteRight from \"./b.ores\";")
                 .replace("return right();", "return remoteRight();");
         // Parser-specific named-import alias syntax must be validated by
         // the production parser; do not assume this form is supported.
