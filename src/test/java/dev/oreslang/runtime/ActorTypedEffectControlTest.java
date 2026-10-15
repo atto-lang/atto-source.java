@@ -172,6 +172,71 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void optInParentReceivesAutomaticControlWithoutASecondUserMessage()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        CountDownLatch handled = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorFailureNotice> seen = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override
+                        public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+                            if (!message.equals("spawn")) {
+                                throw new AssertionError("unexpected second user mailbox message");
+                            }
+                            ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.set(next);
+                            next.send("fail");
+                            childCreated.countDown();
+                        }
+
+                        @Override
+                        public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            try {
+                                assertTrue(ActorRuntime.inActorExecution(),
+                                        "CONTROL callback must run on an actor carrier");
+                                assertTrue(actors.currentThreadOwnsActorExecutionLease(),
+                                        "CONTROL callback must own the parent execution lease");
+                                assertTrue(context.currentMail().isEmpty(),
+                                        "automatic CONTROL delivery is not a user mailbox message");
+                                assertEquals(context.self().id(), notice.supervisorId());
+                                assertEquals(child.get().id(), notice.actorId());
+                                assertEquals(GuestActorEffectSignal.Kind.RAISE, notice.effect());
+                                assertEquals(0L, context.childFailureNoticesDropped());
+                                assertEquals(0L, context.childFailureWakesRejected());
+                                assertTrue(context.pollChildFailureNotice().isEmpty(),
+                                        "automatic callback must consume the queued CONTROL notice");
+                                seen.set(notice);
+                            } catch (Throwable error) {
+                                callbackFailure.set(error);
+                            } finally {
+                                handled.countDown();
+                            }
+                        }
+                    });
+            parent.send("spawn");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            assertTrue(handled.await(3, TimeUnit.SECONDS),
+                    "idle parent must be scheduled by child CONTROL notification");
+            assertNull(callbackFailure.get(),
+                    () -> "CONTROL callback failed: " + callbackFailure.get());
+            assertNotNull(seen.get());
+            assertTrue(child.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(child.get().id(),
+                    actors.pollActorFailureNotice().orElseThrow().actorId());
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void parentConsumesOnlyItsOwnChildControlNoticeOnItsActorTurn() throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
         CountDownLatch parentInspected = new CountDownLatch(1);
