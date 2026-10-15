@@ -33,6 +33,20 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    // Keep the stage-one default-type allowlist consistent with concrete
+    // compiler-known scalar and nominal constructors. Do not allocate it per
+    // recursive validation node or admit arbitrary unresolved nominal names.
+    private static final Set<String> GENERIC_DEFAULT_BUILTINS = Set.of(
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+            "int", "uint", "bigint", "f32", "f64", "float",
+            "decimal", "complex64", "complex128", "complex",
+            "bool", "Bool", "string", "String", "void", "null",
+            "Symbol", "Array", "List", "Vector", "Slice",
+            "Tuple", "FixedArray", "FixedList",
+            "ActorId", "ActorKind", "ActorMail", "ActorOutput",
+            "ActorOutputStream", "Option", "Result", "Mutex",
+            "SharedMutex", "Channel", "Future", "Fnc", "Function");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -583,6 +597,7 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        validateFunctionGenericDefaults(fn);
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
@@ -2407,7 +2422,9 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label, target.genericSpecs(),
+                            GenericCallArguments.bind(
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -2445,7 +2462,9 @@ public final class TypeChecker {
                             env, generics, self,
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
-                            label);
+                            label, target.genericSpecs(),
+                            GenericCallArguments.bind(
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -7151,6 +7170,65 @@ public final class TypeChecker {
         return resolved;
     }
 
+    /** Fail closed on forward references, self references and unsound top defaults. */
+    private void validateFunctionGenericDefaults(Ast.FunctionDecl fn) {
+        Set<String> declared = Set.copyOf(fn.genericParameters());
+        Set<String> previous = new HashSet<>();
+        for (Ast.GenericParameter spec : fn.genericSpecs()) {
+            if (spec.defaultType() != null) {
+                validateGenericDefaultReferences(
+                        spec.defaultType(), declared, previous,
+                        "function " + fn.name() + " generic '" + spec.name() + "'");
+                // Validate declared types even if every call explicitly overrides the default.
+                resolve(spec.defaultType(), declared, null);
+            }
+            previous.add(spec.name());
+        }
+    }
+
+    private void validateGenericDefaultReferences(
+            Ast.TypeRef ref, Set<String> declared, Set<String> previous, String label) {
+        if (ref.isNamedParameter() || ref.inferArguments()
+                || ref.name().equals("_") || ref.name().equals("$infer$")) {
+            throw new IllegalArgumentException(label
+                    + " has unsupported named/inferred syntax in its default type");
+        }
+        if (ref.name().equals("Unknown") || ref.name().equals("Any")) {
+            throw new IllegalArgumentException(label
+                    + " cannot default to Any/Unknown until safe opaque/dynamic semantics are integrated");
+        }
+        if (declared.contains(ref.name()) && !previous.contains(ref.name())) {
+            throw new IllegalArgumentException(label
+                    + " has a forward or self-referential generic default '" + ref.name() + "'");
+        }
+        // General resolve() deliberately permits open nominal names for other
+        // source contexts. Generic defaults are an ABI promise and must not
+        // turn a misspelling into an apparently concrete, unsafe specialization.
+        // Keep this admission list explicit until the linked type registry
+        // exposes a single authoritative "is declared type" predicate.
+        boolean compilerShape = ref.isBorrow() || ref.isComplement()
+                || ref.isUnion() || ref.isTupleType() || ref.isRecordType()
+                || ref.isSequenceShape() || ref.isRepeatExact() || ref.isRepeatMany()
+                || ref.isStringLiteral() || ref.isIntLiteral() || ref.isBoolLiteral()
+                || (ref.name().startsWith("$field$") && ref.arguments().size() == 1);
+        if (ref.name().startsWith("$") && !compilerShape) {
+            throw new IllegalArgumentException(label
+                    + " contains an invalid synthetic type '" + ref.name() + "'");
+        }
+        if (!ref.name().startsWith("$")
+                && !declared.contains(ref.name())
+                && !GENERIC_DEFAULT_BUILTINS.contains(ref.name())
+                && findClass(ref.name()) == null
+                && findInterface(ref.name()) == null
+                && findTypeAlias(ref.name()) == null) {
+            throw new IllegalArgumentException(label
+                    + " references an unresolved default type '" + ref.name() + "'");
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            validateGenericDefaultReferences(argument, declared, previous, label);
+        }
+    }
+
     private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
 
     private List<ExpandedCallArgument> expandFixedCallArguments(
@@ -7210,6 +7288,24 @@ public final class TypeChecker {
             Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
+        return checkGenericCallable(genericNames, params, returnRef, arguments,
+                env, callerGenerics, callerSelf, callableSelf,
+                initialBindings, label, List.of(), Set.of());
+    }
+
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Map<String, Type> initialBindings,
+            String label,
+            List<Ast.GenericParameter> genericSpecs,
+            Set<String> inferenceHoles) {
         List<ExpandedCallArgument> expanded =
                 expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
         if (params.size() != expanded.size()) {
@@ -7226,6 +7322,23 @@ public final class TypeChecker {
             Type actual = expandedCallArgumentType(
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
+        }
+        if (!genericSpecs.isEmpty()) {
+            if (!genericSpecs.stream().map(Ast.GenericParameter::name).toList().equals(genericNames)) {
+                throw new IllegalArgumentException(label + " has inconsistent generic declarations");
+            }
+            for (Ast.GenericParameter spec : genericSpecs) {
+                if (spec.defaultType() == null
+                        || bindings.containsKey(spec.name())
+                        || inferenceHoles.contains(spec.name())) continue;
+                Type declaredDefault = resolve(spec.defaultType(), unique, callableSelf);
+                Type concreteDefault = substituteGenerics(declaredDefault, bindings);
+                if (containsGenericNamed(concreteDefault, unique)) {
+                    throw new IllegalArgumentException("cannot resolve dependent default for generic '"
+                            + spec.name() + "' in " + label);
+                }
+                bindings.put(spec.name(), concreteDefault);
+            }
         }
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
