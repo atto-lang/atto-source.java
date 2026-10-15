@@ -144,6 +144,47 @@ final class ActorGroupTurnGateTest {
     }
 
     @Test
+    void rejectedQueuedDispatchCancelsThousandsWithoutRecursivePermitHandoff() {
+        final int queuedAfterReject = 4_096;
+        try (var gate = new ActorGroupTurnGate(1, queuedAfterReject + 1)) {
+            AtomicInteger cancelled = new AtomicInteger();
+            var first = gate.submit(permit -> { }, () -> fail("active was cancelled"));
+            gate.submit(permit -> {
+                throw new RejectedExecutionException("existing carrier pool closed");
+            }, () -> fail("granted ticket was never queued-cancelled"));
+            for (int i = 0; i < queuedAfterReject; i++) {
+                gate.submit(permit -> fail("closed gate dispatched queued ticket"),
+                        cancelled::incrementAndGet);
+            }
+            assertEquals(queuedAfterReject + 1, gate.queuedTurns());
+            assertThrows(RejectedExecutionException.class, first::release);
+            assertTrue(gate.isClosed());
+            assertEquals(queuedAfterReject, cancelled.get());
+            assertEquals(0, gate.queuedTurns());
+            assertEquals(0, gate.activeTurns());
+            assertFalse(first.release(), "physical lease can be released only once");
+        }
+    }
+
+    @Test
+    void brokenCancellationObserverCannotPreventOtherTicketsFromBeingReclaimed() {
+        var gate = new ActorGroupTurnGate(1, 4);
+        var inFlight = gate.submit(permit -> { }, () -> fail());
+        gate.submit(permit -> fail(), () -> {
+            throw new IllegalStateException("synthetic observer failure");
+        });
+        AtomicInteger otherCancelled = new AtomicInteger();
+        gate.submit(permit -> fail(), otherCancelled::incrementAndGet);
+        assertThrows(IllegalStateException.class, gate::close);
+        assertEquals(1, otherCancelled.get(),
+                "a failing observer cannot strand the next queued ticket");
+        assertEquals(0, gate.queuedTurns());
+        assertTrue(inFlight.release());
+        assertEquals(0, gate.activeTurns());
+        gate.close();
+    }
+
+    @Test
     void cancellationRacingReleaseIsSingleWinnerWithNoDoubleDispatch() throws Exception {
         final int iterations = 160;
         for (int i = 0; i < iterations; i++) {
