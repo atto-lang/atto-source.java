@@ -171,7 +171,7 @@ final class NominalEnumOverloadsTest {
                 """)) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.checkTypes(Parser.parse(declarations
-                            + "define class Dispatcher as\\n" + methods + "end\\n")));
+                            + "define class Dispatcher as\n" + methods + "end\n")));
             assertTrue(error.getMessage().contains("already has arity 1"),
                     error.getMessage());
             assertTrue(error.getMessage().contains("not enabled"),
@@ -298,6 +298,26 @@ final class NominalEnumOverloadsTest {
                         new dev.oreslang.types.Types.Named("Color", List.of()),
                         new dev.oreslang.types.Types.Named("Mode", List.of())),
                 registry, eligible));
+    }
+
+    @Test
+    void immutableOverloadKeysCannotBypassSignatureValidation() {
+        var color = new NominalEnumOverloads.Position(
+                NominalEnumOverloads.Kind.ENUM, "unit::Color");
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature("go", java.util.Collections.nCopies(
+                        NominalEnumOverloads.MAX_OVERLOAD_ARITY + 1, color)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Signature("  ", List.of(color)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.ENUM, ""));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.ENUM, "Color"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "Any"));
+        assertEquals(
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "string"),
+                new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "String"));
     }
 
     @Test
