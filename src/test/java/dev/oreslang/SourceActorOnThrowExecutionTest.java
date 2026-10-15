@@ -126,10 +126,16 @@ final class SourceActorOnThrowExecutionTest {
     }
 
     @Test void sourceCannotInvokeActorLifecycleHookDirectly() throws Exception {
-        Path entry = source("self.on_throw(new WorkerFault(7));",
-                "on_throw(Error problem): bool { return true; }");
-        assertThrows(IllegalArgumentException.class,
-                () -> LinkedProgramRunner.validate(entry));
+        for (String invocation : new String[]{
+                "self.on_throw(new WorkerFault(7));",
+                "on_throw(new WorkerFault(7));",
+                "val callback = self.on_throw;"
+        }) {
+            Path entry = source(invocation,
+                    "on_throw(Error problem): bool { return true; }");
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(entry), invocation);
+        }
     }
 
     @Test void cooperativeOrLoopingHandlerFailsClosed() throws Exception {
