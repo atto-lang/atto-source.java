@@ -60,8 +60,13 @@ PR-controlled environment.
 
 The publisher itself must run from an **unmodified Git checkout of the same
 protected source-main commit** reported by GitHub. It checks the actual Git
-repository root, `HEAD`, and tracked code/policy paths before reading private
-snapshot files. An untrusted compiler PR checkout cannot run an altered
+repository root and immutable `HEAD`, then performs descriptor-relative,
+no-symlink byte hashing of every trusted script and policy file against
+its exact `HEAD` Git blob and mode, before reading private snapshot files.
+Git `status --porcelain` is insufficient: `skip-worktree` and
+`assume-unchanged` index flags can make altered executable bytes appear
+clean. The verifier bypasses Git replace-object mappings and does not trust
+the index as proof of worktree contents. An untrusted compiler PR checkout cannot run an altered
 publisher or grant itself approval. Prepare the exact compiler PR snapshot as
 a separate, bounded directory **inside the trusted main checkout** (for example
 using a reviewed `git archive` of the independently authenticated commit).
@@ -148,9 +153,13 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
-The Bash preflight and Python publisher both require the live destination's
-positive numeric repository ID to equal the **independently reviewed ID in the
-protected policy**, before reading private source or creating Git objects.
+The standalone Bash diagnostic and the Python publisher both require the live
+destination's positive numeric repository ID to equal the **independently
+reviewed ID in the protected policy**, before reading private source or
+creating Git objects. The production Python publisher **does not execute**
+a mutable checkout-local Bash guard: it instead performs its own no-follow,
+bounded policy read and authenticated live destination lookup, eliminating
+the pathname-swap window between guard attestation and interpretation.
 The publisher also pins this ID throughout each transfer, checking live name,
 numeric identity, private visibility, and active (non-archived, non-disabled)
 status before every Git object write. Missing status or an ID mismatch fails
