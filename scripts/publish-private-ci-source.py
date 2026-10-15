@@ -271,6 +271,100 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
+
+def snapshot_git_tree_sha(files):
+    """Hash the exact source snapshot using Git tree/blob object encoding.
+
+    Never infer source provenance merely from filenames or a successful GitHub
+    upload. Git sorts directory entries as name + '/' and stores raw SHA bytes.
+    Empty directories are omitted because Git cannot track them.
+    """
+    root = {}
+    for rel, data, mode in files:
+        parts = rel.split("/")
+        if (not parts or any(not item or item in (".", "..") for item in parts)
+                or mode not in ("100644", "100755")):
+            raise Denied("snapshot contains unsupported Git tree entry")
+        parent = root
+        for component in parts[:-1]:
+            existing = parent.setdefault(component, {})
+            if not isinstance(existing, dict):
+                raise Denied("snapshot file conflicts with directory")
+            parent = existing
+        if parts[-1] in parent:
+            raise Denied("snapshot contains colliding Git tree entries")
+        parent[parts[-1]] = (mode, data)
+    if not root:
+        raise Denied("empty Git source snapshot")
+
+    def tree_digest(node):
+        entries = []
+        for name, content in node.items():
+            try:
+                encoded = name.encode("utf-8")
+            except UnicodeError as exc:
+                raise Denied("snapshot contains invalid Git filename") from exc
+            if b"/" in encoded or bytes([0]) in encoded:
+                raise Denied("snapshot contains invalid Git filename")
+            is_tree = isinstance(content, dict)
+            entries.append((encoded + (b"/" if is_tree else b""), encoded, content))
+        payload = bytearray()
+        for _, encoded, content in sorted(entries, key=lambda item: item[0]):
+            if isinstance(content, dict):
+                mode = b"40000"
+                digest = tree_digest(content)
+            else:
+                file_mode, data = content
+                mode = file_mode.encode("ascii")
+                digest = hashlib.sha1(
+                    b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+                ).digest()
+            payload.extend(mode + b" " + encoded + bytes([0]) + digest)
+        return hashlib.sha1(
+            b"tree " + str(len(payload)).encode("ascii") + bytes([0]) + payload
+        ).digest()
+
+    return tree_digest(root).hex()
+
+
+def require_source_tree_match(source, trusted_root, files):
+    """Fail closed unless the snapshot is the *entire committed checkout tree*.
+
+    A subdirectory copy or dirty checkout is not an exact-tree CI mirror.
+    The source snapshot is matched to Git's committed HEAD tree *before*
+    any source bytes are published, without network or caller-provided SHAs.
+    """
+    try:
+        source_root = source.resolve(strict=True)
+        trusted = trusted_root.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise Denied("exact-tree source root unavailable") from exc
+    if source_root != trusted:
+        raise Denied("exact-tree transfer requires the checkout root")
+    try:
+        verify = subprocess.run(
+            ["git", "-C", str(trusted), "rev-parse",
+             "--show-toplevel", "HEAD", "HEAD^{tree}"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("exact-tree Git provenance unavailable") from exc
+    if verify.returncode != 0:
+        raise Denied("exact-tree Git provenance unavailable")
+    lines = verify.stdout.splitlines()
+    if len(lines) != 3:
+        raise Denied("exact-tree Git response malformed")
+    checkout_root, commit_sha, expected_tree = lines
+    if (Path(checkout_root).resolve() != trusted
+            or not SHA.fullmatch(commit_sha)
+            or not SHA.fullmatch(expected_tree)):
+        raise Denied("exact-tree checkout identity malformed")
+    actual_tree = snapshot_git_tree_sha(files)
+    if actual_tree != expected_tree:
+        raise Denied("source snapshot differs from committed Git HEAD tree")
+    return expected_tree
+
+
 def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
@@ -288,6 +382,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    exact_source_tree = require_source_tree_match(source, trusted_root, files)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -322,6 +417,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != exact_source_tree:
+        raise Denied("destination source subtree differs from committed Git HEAD tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
