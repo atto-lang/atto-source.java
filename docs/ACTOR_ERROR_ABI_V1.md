@@ -371,3 +371,46 @@ JDK25/JUnit/GraalVM runtime build. The exact PR's focused Actions job still
 returns `failure` with no executed steps or useful logs. Both private-CI
 destination allowlists are empty, so no cross-org source mirror has been
 authorized. Keep this draft and do not merge.
+
+## Structured shutdown and registry finalization barrier (2026-10-14)
+
+The structured parent/child teardown order now requires a child's host
+`ready`, `done` and internal finalized Futures to settle **before** the
+runtime unregisters that child's ActorId and before the owning parent's
+`childFinalized` releases its structured-child barrier. This closes two
+independent races:
+
+- `ActorRef.awaitTermination` historically interpreted absence from the
+  runtime registry as physical completion. Removing the cell before
+  `doneFuture` callbacks completed allowed early successful termination.
+- A stopping parent could finalize immediately after receiving
+  `childFinalized` even while its child's own `done` observers were
+  still pending. The parent may now finish only after the child has
+  settled its own terminal Futures.
+
+The terminal host audit notice is still published ahead of the done
+observers. The parent-facing immutable CONTROL notice remains last, only
+after physical teardown, completed Futures, unregistration and the
+structured owner unlink. `one_for_one` restart therefore continues to
+require the exact terminated child handle and completed removal.
+
+Two deterministic JUnit tests, `awaitTerminationDoesNotOvertakePendingDoneObservers`
+and `parentShutdownBarrierCannotOvertakeChildDoneFuture`, exercise these
+barriers with controlled CountDownLatch gates. `ControlWakeRetryQueueTest`
+also now includes 4,096 registrations competing with concurrent slot
+releases and cancellation, checking one-shot callback delivery,
+conservation of noncancelled callbacks and a zero-leak queue.
+
+An independent Java 21 `javac`/runtime stress harness compiled the
+current retry-queue logic and completed **10,000 concurrent registrations**
+across eight threads with no duplicated callbacks, no pending leaks and no
+lost noncancelled registration. This is narrowly scoped evidence; it does
+**not** establish passing repository JUnit or GraalVM Native Image tests.
+
+Latest sampled GitHub Actions jobs in Java and LLVM had empty runner
+identities, zero executed steps and terminated in roughly two seconds.
+Neither their results nor absent logs prove exhausted Actions minutes.
+Both source repositories' protected destination allowlists remain empty;
+cross-organizational private-source mirroring is therefore not authorized.
+Keep the actor exception PRs draft and unmerged.
+
