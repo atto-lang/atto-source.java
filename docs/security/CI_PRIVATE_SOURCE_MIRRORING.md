@@ -47,8 +47,9 @@ Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated. Before declaring success,
 it verifies that the ref-creation response, fresh ref readback, commit tree,
 and committed `private-oreslang-source/` subtree all refer to the expected
-commit and pinned source SHA. Malformed GitHub metadata is denied rather
-than escaping the publisher as an unhandled exception. Destination CI must
+commit and pinned source SHA. Truncated or missing tree-completeness metadata
+is denied rather than accepted as proof. Malformed GitHub metadata is denied
+rather than escaping the publisher as an unhandled exception. Destination CI must
 independently repeat source-subtree verification before running tests.
 
 The publisher requires a caller-pinned full Git-tree SHA as a mandatory
