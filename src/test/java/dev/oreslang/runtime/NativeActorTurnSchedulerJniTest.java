@@ -69,6 +69,42 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void throwingTrustedJavaCleanupDoesNotStrandOtherTaskCancellation() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(128)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var started = new CountDownLatch(2);
+                var failingCleanup = new AtomicInteger();
+                var firstGate = new OresFuture<Integer>();
+                var secondGate = new OresFuture<Integer>();
+                OresFuture<Integer> first = scheduler.start(resume -> {
+                    started.countDown();
+                    return OresScheduler.<Integer>await(firstGate);
+                }, () -> {
+                    failingCleanup.incrementAndGet();
+                    throw new IllegalStateException("trusted cleanup rejected");
+                });
+                OresFuture<Integer> second = scheduler.start(resume -> {
+                    started.countDown();
+                    return OresScheduler.<Integer>await(secondGate);
+                });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                var failure = assertThrows(IllegalStateException.class,
+                        scheduler::close);
+                assertTrue(failure.getMessage().contains("trusted cleanup")
+                                || failure.getSuppressed().length > 0,
+                        "source callback failure must remain visible");
+                assertTrue(first.isDone(), "failed source cancellation not delivered");
+                assertTrue(second.isDone(), "healthy source cancellation stranded");
+                assertEquals(1, failingCleanup.get(),
+                        "trusted callback must not be replayed on shutdown");
+                assertEquals(1, scheduler.nativeQuiescenceFailures());
+                kernel.stop();
+            }
+        }
+    }
+
+    @Test
     void nativeRetirementFailureCannotPreventOtherTaskShutdown() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(128)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
