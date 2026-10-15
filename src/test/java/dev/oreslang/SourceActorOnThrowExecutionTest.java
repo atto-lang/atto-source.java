@@ -125,6 +125,23 @@ final class SourceActorOnThrowExecutionTest {
         }
     }
 
+    @Test void sourceCannotInvokeActorLifecycleHookDirectly() throws Exception {
+        Path entry = source("self.on_throw(new WorkerFault(7));",
+                "on_throw(Error problem): bool { return true; }");
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+    }
+
+    @Test void cooperativeOrLoopingHandlerFailsClosed() throws Exception {
+        Path entry = source("throw new WorkerFault(7);",
+                "on_throw(Error problem): bool { loop { return true; } }");
+        // Accepted as an ordinary source method body, but not as an
+        // executable actor failure handler: no suspend/continuation may
+        // retain the guest Error past the local exceptional boundary.
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        assertThrows(RuntimeException.class, () -> run(entry));
+    }
+
     @Test void sourceOnRaiseRemainsUnavailable() throws Exception {
         Path entry = source("throw new WorkerFault(7);",
                 "on_raise(Error error): bool { return true; }");
