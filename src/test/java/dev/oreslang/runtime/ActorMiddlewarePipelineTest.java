@@ -22,6 +22,57 @@ final class ActorMiddlewarePipelineTest {
     }
 
     @Test
+    void concurrentNextAdmissionMustPublishChildBeforeParentSettlement() throws Exception {
+        var continuation = new java.util.concurrent.atomic.AtomicReference<ActorMiddlewarePipeline.Next>();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var parent = new CompletableFuture<ActorMiddlewarePipeline.Outcome>();
+        var pipeline = new ActorMiddlewarePipeline(
+                List.of(),
+                List.of(stage("around", ActorMiddlewarePipeline.Phase.ACTOR, false,
+                        (req, next) -> {
+                            continuation.set(next);
+                            return parent;
+                        })),
+                Set.of(), request -> {
+                    entered.countDown();
+                    try {
+                        if (!release.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                            throw new IllegalStateException("terminal admission timed out");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    return CompletableFuture.completedFuture(
+                            new ActorMiddlewarePipeline.Outcome(200, "child"));
+                });
+        var result = pipeline.invoke(
+                new ActorMiddlewarePipeline.Envelope("x", Map.of()), () -> false)
+                .toCompletableFuture();
+        var nextResult = new java.util.concurrent.atomic.AtomicReference<
+                java.util.concurrent.CompletionStage<ActorMiddlewarePipeline.Outcome>>();
+        Thread worker = new Thread(() -> nextResult.set(
+                continuation.get().proceed(new ActorMiddlewarePipeline.Envelope("x", Map.of()))));
+        worker.start();
+        try {
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            parent.complete(new ActorMiddlewarePipeline.Outcome(200, "parent"));
+            assertFalse(result.isDone(),
+                    "parent cannot commit before admitted child is published and settled");
+        } finally {
+            release.countDown();
+            worker.join(2000);
+        }
+        assertFalse(worker.isAlive());
+        assertEquals("parent", result.get(2, java.util.concurrent.TimeUnit.SECONDS).body());
+        assertEquals("child", nextResult.get().toCompletableFuture()
+                .get(2, java.util.concurrent.TimeUnit.SECONDS).body());
+        assertThrows(CompletionException.class, () -> continuation.get()
+                .proceed(new ActorMiddlewarePipeline.Envelope("late", Map.of()))
+                .toCompletableFuture().join());
+    }
+
+    @Test
     void supervisorEnrichesBeforeActorAndActorCleansBeforeTerminal() {
         var calls = new java.util.ArrayList<String>();
         var pipeline = new ActorMiddlewarePipeline(
