@@ -92,9 +92,13 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
 
         boolean detach() {
-            if (!claimed.compareAndSet(false, true)) return false;
+            boolean detached = claimed.compareAndSet(false, true);
+            // A concurrent settlement can have already claimed this waiter.
+            // Still remove the registration from the producer queue: claiming
+            // callback delivery and reclaiming queue retention are separate
+            // obligations. This is idempotent if the producer already polled it.
             owner.waiters.remove(this);
-            return true;
+            return detached;
         }
     }
 
@@ -487,6 +491,21 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     /**
+     * Select readiness must respect cancellation's revocation barrier, not
+     * merely the early state CAS. A cancelled producer is not selectable until
+     * its internal cancel hook has finished; subscribed wakeups are delivered
+     * after that barrier by the normal runtime waiter drain.
+     */
+    Object runtimeSelectReadyStateOrNull() {
+        Object observed = state.get();
+        if (observed == PENDING
+                || (observed instanceof Cancelled && !cancelRevocationComplete.get())) {
+            return null;
+        }
+        return observed;
+    }
+
+    /**
      * Decode a terminal state previously returned by
      * {@link #runtimeTerminalStateOrNull()} without allocating a wrapper.
      */
@@ -649,14 +668,21 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> registration =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // A timed-out or interrupted host get must not retain a callback
+            // (and its CountDownLatch) on a shared, still-pending producer.
+            // Detachment is idempotent against a concurrent terminal drain.
+            registration.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {
