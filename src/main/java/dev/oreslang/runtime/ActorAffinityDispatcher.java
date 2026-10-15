@@ -51,8 +51,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
     long controlRetryEpoch() { return controlRetries.epoch(); }
-    boolean registerControlRetry(Runnable callback, long epoch) {
-        return controlRetries.register(callback, epoch);
+    boolean registerControlRetry(int lane, Runnable callback, long epoch) {
+        if (lane < 0 || lane >= lanes.size()) {
+            throw new IllegalArgumentException("invalid actor CONTROL retry lane");
+        }
+        return controlRetries.register(callback, epoch, lane);
     }
     void cancelControlRetry(Runnable callback) { controlRetries.cancel(callback); }
 
@@ -72,7 +75,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         }
         if (closed.get() || !permits.tryAcquire())
             throw new RejectedExecutionException("actor lane admission unavailable");
-        QueuedTurn task = new QueuedTurn(command, permits);
+        QueuedTurn task = new QueuedTurn(command, permits, lane);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
             lanes.get(lane).execute(task);
@@ -85,17 +88,19 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final class QueuedTurn implements Runnable {
         private final Runnable command;
         private final Semaphore permits;
+        private final int lane;
         private final AtomicBoolean released = new AtomicBoolean();
-        private QueuedTurn(Runnable command, Semaphore permits) {
+        private QueuedTurn(Runnable command, Semaphore permits, int lane) {
             this.command = command;
             this.permits = permits;
+            this.lane = lane;
         }
         private void releaseSlot(boolean started) {
             if (released.compareAndSet(false, true)) {
                 permits.release();
                 // Failed submissions do not free a physical queue slot.
                 // Signalling them could recursively resubmit the same retry.
-                if (started) controlRetries.slotReleased();
+                if (started) controlRetries.slotReleased(lane);
             }
         }
         @Override public void run() {
