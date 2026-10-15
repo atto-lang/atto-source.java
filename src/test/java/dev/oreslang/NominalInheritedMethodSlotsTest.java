@@ -30,6 +30,16 @@ final class NominalInheritedMethodSlotsTest {
         return NominalInheritedMethodSlots.prove(program, root, domain, method, arity);
     }
 
+    private static IllegalArgumentException rejectProof(
+            String classes, String root, Domain domain, String method, int arity) {
+        // Parse OUTSIDE assertThrows: malformed fixtures must fail the test,
+        // not masquerade as successful negative compiler regression coverage.
+        Ast.Program parsed = Parser.parse(ENUMS + classes);
+        return assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.prove(
+                        parsed, root, domain, method, arity));
+    }
+
     @Test
     void inheritedDistinctEnumMethodPreservesBothNominalSlots() {
         var slots = prove("""
@@ -99,8 +109,8 @@ final class NominalInheritedMethodSlotsTest {
                     end
                     define abstract class Child extends Base as
                     """ + replacement + "\nend\n";
-            assertThrows(IllegalArgumentException.class,
-                    () -> prove(source, "Child", Domain.INSTANCE, "pick", 1));
+            assertTrue(rejectProof(source, "Child", Domain.INSTANCE, "pick", 1)
+                    .getMessage().contains("override"));
         }
     }
 
@@ -114,11 +124,11 @@ final class NominalInheritedMethodSlotsTest {
                     pub pick(Color x): int { return 2; }
                 end
                 """;
-        assertThrows(IllegalArgumentException.class,
-                () -> prove(parents + """
+        assertTrue(rejectProof(parents + """
                         define class Child extends Left, Right as
                         end
-                        """, "Child", Domain.INSTANCE, "pick", 1));
+                        """, "Child", Domain.INSTANCE, "pick", 1)
+                .getMessage().contains("ambiguous inherited nominal diamond"));
         var resolved = prove(parents + """
                 define class Child extends Left, Right as
                     pub pick(Color x): int { return 3; }
@@ -147,38 +157,42 @@ final class NominalInheritedMethodSlotsTest {
 
     @Test
     void inheritedPrimitiveOrUnknownCannotBecomeImplicitDynamicDispatch() {
-        assertThrows(IllegalArgumentException.class, () -> prove("""
+        assertTrue(rejectProof("""
                 define class Base as
                     pub pick(int x): int { return 1; }
                 end
                 define class Child extends Base as
                     pub pick(Mode x): int { return 2; }
                 end
-                """, "Child", Domain.INSTANCE, "pick", 1));
-        assertThrows(IllegalArgumentException.class, () -> prove("""
+                """, "Child", Domain.INSTANCE, "pick", 1)
+                .getMessage().contains("not pairwise distinct"));
+        assertTrue(rejectProof("""
                 define class Base as
                     pub pick(Color x): int { return 1; }
                 end
                 define class Child extends Base as
                     pub pick(Any x): int { return 2; }
                 end
-                """, "Child", Domain.INSTANCE, "pick", 1));
+                """, "Child", Domain.INSTANCE, "pick", 1)
+                .getMessage().contains("not an eligible primitive"));
     }
 
     @Test
     void unresolvedParentsAndGenericOwnersDoNotInventNominalIdentities() {
-        assertThrows(IllegalArgumentException.class, () -> prove("""
+        assertTrue(rejectProof("""
                 define class Child extends Missing as
                     pub pick(Color x): int { return 1; }
                 end
-                """, "Child", Domain.INSTANCE, "pick", 1));
-        assertThrows(IllegalArgumentException.class, () -> prove("""
+                """, "Child", Domain.INSTANCE, "pick", 1)
+                .getMessage().contains("cannot import or resolve class"));
+        assertTrue(rejectProof("""
                 define class Base<T> as
                     pub pick(Color x): int { return 1; }
                 end
                 define class Child extends Base<int> as
                 end
-                """, "Child", Domain.INSTANCE, "pick", 1));
+                """, "Child", Domain.INSTANCE, "pick", 1)
+                .getMessage().contains("unsubstituted generic parent"));
     }
 
     @Test
