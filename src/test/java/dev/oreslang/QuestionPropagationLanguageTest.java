@@ -267,6 +267,22 @@ final class QuestionPropagationLanguageTest {
     }
 
     @Test
+    void opaqueImportPreventsIncorrectSynchronousQuestionAdmission() {
+        // An imported member may select the SourceTask evaluator even when
+        // an unrelated sum operand is purely scalar. The checker must not
+        // assume an imported member call cannot suspend.
+        reject("""
+                import module Service from './service';
+
+                fnc evaluate(Option<int> source): Option<int> {
+                  val int value = source?;
+                  stdio.stdout.write(value);
+                  return Some(value);
+                }
+                """, "SourceTask continuation");
+    }
+
+    @Test
     void asyncOptionQuestionRunsNestedCleanupOnceOnFailureAndSuccess() throws Exception {
         String program = """
                 async fnc read_missing(): Option<int> {
