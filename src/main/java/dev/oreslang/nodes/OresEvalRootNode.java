@@ -7252,6 +7252,14 @@ public final class OresEvalRootNode extends RootNode {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
         }
 
+        private Invokable requireSumCompositionCallback(List<Object> args, String operation) {
+            requireOne(args, operation);
+            if (!(args.getFirst() instanceof Invokable callback)) {
+                throw new IllegalArgumentException(operation + " requires one callable");
+            }
+            return callback;
+        }
+
         private Object optionMember(OptionValue option, String name) {
             return switch (name) {
                 case "is_some" -> (Invokable) args -> { requireZero(args, "Option.is_some"); return option.present(); };
@@ -7275,6 +7283,16 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Option.unwrap_or");
                     return option.present() ? option.value() : args.getFirst();
+                };
+                case "map", "and_then" -> (Invokable) args -> {
+                    Invokable callback = requireSumCompositionCallback(args, "Option." + name);
+                    if (!option.present()) return option;
+                    Object mapped = callback.call(List.of(option.value()));
+                    if (name.equals("map")) return new OptionValue(true, mapped);
+                    if (!(mapped instanceof OptionValue)) {
+                        throw new IllegalArgumentException("Option.and_then callback must return Option<U>");
+                    }
+                    return mapped;
                 };
                 default -> throw new IllegalArgumentException("unknown Option member " + name);
             };
@@ -7303,6 +7321,20 @@ public final class OresEvalRootNode extends RootNode {
                 case "unwrap_or" -> (Invokable) args -> {
                     requireOne(args, "Result.unwrap_or");
                     return result.ok() ? result.value() : args.getFirst();
+                };
+                case "map", "and_then", "map_err" -> (Invokable) args -> {
+                    Invokable callback = requireSumCompositionCallback(args, "Result." + name);
+                    boolean runCallback = name.equals("map_err") ? !result.ok() : result.ok();
+                    if (!runCallback) return result;
+                    Object mapped = callback.call(List.of(result.value()));
+                    if (name.equals("and_then")) {
+                        if (!(mapped instanceof ResultValue)) {
+                            throw new IllegalArgumentException(
+                                    "Result.and_then callback must return Result<U,E>");
+                        }
+                        return mapped;
+                    }
+                    return new ResultValue(!name.equals("map_err"), mapped);
                 };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
             };
