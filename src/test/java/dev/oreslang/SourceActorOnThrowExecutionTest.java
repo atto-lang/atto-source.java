@@ -68,6 +68,34 @@ final class SourceActorOnThrowExecutionTest {
         assertEquals(0, run(entry));
     }
 
+    @Test void lexicalCatchPrecedesOnThrowHook() throws Exception {
+        Path entry = source(
+                "try { throw new WorkerFault(7); } "
+                        + "catch (e) { self.end(); return; }",
+                "on_throw(Error problem): bool { panic new WorkerFault(8); return true; }");
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        assertEquals(0, run(entry));
+    }
+
+    @Test void throwInsideOnThrowCannotExportAnotherGuestError() throws Exception {
+        Path entry = source("throw new WorkerFault(7);",
+                "on_throw(Error problem): bool { throw new WorkerFault(8); }");
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run(entry));
+        java.util.ArrayDeque<Throwable> queue = new java.util.ArrayDeque<>();
+        java.util.IdentityHashMap<Throwable, Boolean> seen = new java.util.IdentityHashMap<>();
+        queue.add(failure);
+        while (!queue.isEmpty()) {
+            Throwable next = queue.removeFirst();
+            assertTrue(seen.size() < 64, "host failure graph must remain bounded");
+            if (seen.put(next, Boolean.TRUE) != null) continue;
+            assertFalse(next.getClass().getName().contains("GuestThrowSignal"),
+                    "guest Error leaked from on_throw into the host");
+            if (next.getCause() != null) queue.add(next.getCause());
+            for (Throwable suppressed : next.getSuppressed()) queue.add(suppressed);
+        }
+    }
+
     @Test void handlerDecliningFailureEscalatesToActorRaise() throws Exception {
         Path entry = source("throw new WorkerFault(7);",
                 "on_throw(Error problem): bool { return false; }");
