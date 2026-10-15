@@ -206,4 +206,56 @@ final class RuntimePermissionsNetworkAuditTest {
         assertTrue(restored.allows(RuntimePermissions.Permission.NET, "api.example.com:80"));
         assertFalse(restored.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
     }
+
+    @Test
+    void malformedResourceStringsNeverPassUnrestrictedPermissions() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.values());
+
+        String loneHighSurrogate = String.valueOf((char) 0xd800);
+        String loneLowSurrogate = String.valueOf((char) 0xdc00);
+        for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+            for (String malformed : new String[] {
+                    null, "", " ", "\t", "broken\u0000scope",
+                    "line\nbreak", loneHighSurrogate, loneLowSurrogate
+            }) {
+                assertFalse(policy.allows(permission, malformed),
+                        "malformed resource admitted by " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.denyAll().withAllowed(permission, malformed),
+                        "malformed allow scope accepted by " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.denyAll().withDenied(permission, malformed),
+                        "malformed deny scope accepted by " + permission);
+            }
+        }
+    }
+
+    @Test
+    void malformedLaterNetworkCsvScopeCannotLeaveEarlierGrantInBuilder() {
+        RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allowCsv(RuntimePermissions.Permission.NET,
+                        "api.example.com:443,api.example.com:0"));
+        assertFalse(builder.build().allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"), "failed CSV parse must be transactional");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allowCsv(RuntimePermissions.Permission.NET,
+                        "api.example.com:443,not.valid.example:65536"));
+        assertFalse(builder.build().allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"));
+    }
+
+    @Test
+    void malformedLaterFileCsvScopeCannotLeaveEarlierGrantInBuilder() throws Exception {
+        String root = java.nio.file.Files.createTempDirectory("ores-permission-csv-")
+                .toAbsolutePath().toString();
+        RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allowCsv(RuntimePermissions.Permission.READ,
+                        root + ",path\u0000injection"));
+        assertFalse(builder.build().allows(RuntimePermissions.Permission.READ,
+                root), "invalid CSV must not leave an earlier filesystem grant");
+    }
 }
