@@ -4423,16 +4423,25 @@ public final class ActorRuntime implements AutoCloseable {
                                 inherited.managedWorkers.put(id, ref);
                                 parent.children.add(cell);
                                 linkedToParent = true;
-                                actors.put(id, cell);
+                                if (actors.putIfAbsent(id, cell) != null) {
+                                    throw new IllegalStateException(
+                                            "actor identity collision cannot replace a live incarnation");
+                                }
                             }
                         } else {
                             parent.children.add(cell);
                             linkedToParent = true;
-                            actors.put(id, cell);
+                            if (actors.putIfAbsent(id, cell) != null) {
+                                    throw new IllegalStateException(
+                                            "actor identity collision cannot replace a live incarnation");
+                                }
                         }
                     }
                 } else {
-                    actors.put(id, cell);
+                    if (actors.putIfAbsent(id, cell) != null) {
+                                    throw new IllegalStateException(
+                                            "actor identity collision cannot replace a live incarnation");
+                                }
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
