@@ -3394,7 +3394,7 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen,
             Map<String, Type> genericBindings) {
         // Check the borrow wrapper BEFORE deref can erase lifetime metadata.
-        if (type instanceof Borrow || (type instanceof Named n && n.name().equals("Pointer"))) return true;
+        if (type instanceof Borrow) return true;
         type = deref(type);
         if (type instanceof SelfType receiverSelf) {
             return containsChannelBorrow(receiverSelf.bound(), seen, genericBindings);
@@ -4285,7 +4285,7 @@ public final class TypeChecker {
         if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
-                    where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
+                    where + " must be a concrete owned/sendable data type (Sendable proof); borrows, functions, and unresolved types cannot cross an actor boundary");
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
@@ -4322,6 +4322,15 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
+        }
+        // Serializable is a wire-codec contract, never an actor-transfer proof.
+        // Pointer<T> is not admitted as an actor-mail argument/return until a
+        // verified Sendable transfer lowering (copy/move/share) is available.
+        // Checking T alone would accidentally launder unique ownership.
+        if (named.name().equals("Pointer")) {
+            throw new IllegalArgumentException(
+                    where + " requires Sendable actor-transfer proof for Pointer<T>; "
+                            + "Serializable is insufficient and pointer transport is not lowered");
         }
         if (named.name().equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
@@ -4371,7 +4380,7 @@ public final class TypeChecker {
         throw new IllegalArgumentException(
                 where + " cannot transport class instance '" + klass.name()
                         + "' by value; actor boundaries require data-only values "
-                        + "or an explicit serialization/copy contract");
+                        + "or an explicit compiler-verified Sendable transfer contract (Serializable alone is insufficient)");
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {

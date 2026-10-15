@@ -4451,6 +4451,12 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+        // SharedMutex can be built by a host caller, so its nested state must
+        // satisfy pointer isolation independently of the guest type checker.
+        if (value instanceof OresPointer) {
+            throw new IllegalArgumentException(
+                    "SharedMutex payload cannot contain Pointer<T> ownership capabilities");
+        }
 
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
@@ -4841,6 +4847,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (++nodes[0] > MAX_MESSAGE_GRAPH_NODES) {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
+        }
+        // A managed Pointer<T> is an actor-local ownership capability, not
+        // Sendable data. Fail at preflight, including inside nested containers,
+        // before mailbox memory reservation/copy or shared transport admission.
+        if (value instanceof OresPointer) {
+            throw new IllegalArgumentException(
+                    "Pointer<T> cannot cross actor boundaries or be frozen; transfer owned data explicitly");
         }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
@@ -5280,11 +5293,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
-        if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
-        if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
+        if (value.getClass() == BigInteger.class) return 32L + ((BigInteger) value).toByteArray().length;
+        if (value.getClass() == BigDecimal.class) return 48L + ((BigDecimal) value).unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
-        if (value instanceof Enum<?>) return 24L;
+        if (value instanceof ActorKind) return 24L;
         return -1L;
     }
 
@@ -5380,8 +5393,12 @@ public final class ActorRuntime implements AutoCloseable {
     private static boolean isScalar(Object value) {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof Float || value instanceof Double
+                // BigInteger/BigDecimal are extensible host classes. An enum
+                // may also retain mutable fields, pointers or other authority.
+                // Their nominal supertype is not a transitive immutability proof.
+                || value.getClass() == BigInteger.class || value.getClass() == BigDecimal.class
+                || value instanceof ActorKind || value instanceof UUID || value instanceof ActorId
                 || value instanceof ActorGroupId;
     }
 

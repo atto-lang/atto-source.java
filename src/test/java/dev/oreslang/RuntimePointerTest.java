@@ -24,6 +24,68 @@ final class RuntimePointerTest {
         assertTrue(error.getMessage().contains(message), error.getMessage());
     }
 
+    @Test void runtimeHandlesCannotNestOrContainNull() {
+        Object pointee = new Object();
+        var pointer = new dev.oreslang.runtime.OresPointer(pointee);
+        // Dereference borrows the existing object: it does not clone the pointee.
+        assertSame(pointee, pointer.target());
+        assertSame(pointer.target(), pointer.target());
+        assertThrows(NullPointerException.class,
+                () -> new dev.oreslang.runtime.OresPointer(null));
+        var nested = assertThrows(IllegalArgumentException.class,
+                () -> new dev.oreslang.runtime.OresPointer(pointer));
+        assertTrue(nested.getMessage().contains("nested Pointer<T>"), nested.getMessage());
+    }
+
+    @Test void hostCannotManufacturePointersToCopyScalars() {
+        for (Object scalar : java.util.List.of(
+                42, "text", true, java.util.UUID.fromString("00000000-0000-0000-0000-000000000042"),
+                java.math.BigInteger.valueOf(1000))) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> new dev.oreslang.runtime.OresPointer(scalar));
+            assertTrue(error.getMessage().contains("scalar/Copy"), error.getMessage());
+        }
+    }
+
+    @Test void hostCannotManufacturePointerOwnershipForRuntimeCapabilities() {
+        for (Object capability : java.util.List.of(
+                new dev.oreslang.runtime.ChannelRuntime.Channel<>(1),
+                dev.oreslang.runtime.OresMutex.local(7),
+                new java.util.concurrent.CompletableFuture<Integer>())) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> new dev.oreslang.runtime.OresPointer(capability));
+            assertTrue(error.getMessage().contains("cannot own"), error.getMessage());
+        }
+    }
+
+    @Test void unsupportedExclusivePointerFormsAreRejectedBeforeTypeChecking() {
+        for (String operation : new String[] {"ref", "unref", "deref"}) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse(BOX + "fnc bad(): void { const p = rt " + operation
+                            + " mut value; return; }"));
+            assertTrue(error.getMessage().contains("exclusive Pointer<T>"), error.getMessage());
+        }
+    }
+
+    @Test void localChannelTakeExecutesWithBorrowedReceiverAccess() throws Exception {
+        String code = BOX + """
+                pub routine main(): void {
+                  val Channel<Pointer<Box>> messages = Channel.new<Pointer<Box>>(1);
+                  const p = rt ref new Box();
+                  writech messages, rt take p;
+                  const received = readch messages;
+                  const view = rt deref received;
+                  stdio.stdout.write(view.value);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval("ores", code);
+        }
+        assertEquals("7", out.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void namedAndFreshTargetsHaveCheckedRoundTrips() {
         for (String access : new String[] {"deref"}) {
             check("const Pointer<Box> p = rt ref new Box(); const Box view = rt " + access + " p; stdio.println(view.value);");
@@ -231,9 +293,9 @@ final class RuntimePointerTest {
         reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt deref p; val child = view[0]; child.value = 9;", "borrow");
     }
 
-    @Test void pointerTypeCannotBeRedefinedOrTransported() {
+    @Test void pointerTypeCannotBeRedefinedOrSharedWithoutProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("define class Pointer as end")));
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + "fnc bad(Channel<Pointer<Box>> messages): void { return; }")));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + "fnc local(Channel<Pointer<Box>> messages): void { return; }")));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + "fnc bad(SharedMutex<Pointer<Box>> value): void { return; }")));
         reject("const Pointer<int> p = rt ref 7;", "Pointer<T>");
     }
