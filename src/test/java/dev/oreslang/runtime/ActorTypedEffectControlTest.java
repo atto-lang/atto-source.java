@@ -39,6 +39,53 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void parentShutdownBarrierCannotOvertakeChildDoneFuture() throws Exception {
+        // Force a parent cancellation while its child is executing. The
+        // child-done observer must run before the parent completes teardown;
+        // removing the structural child first makes this assertion fail.
+        CountDownLatch childSpawned = new CountDownLatch(1);
+        CountDownLatch childEntered = new CountDownLatch(1);
+        CountDownLatch releaseChild = new CountDownLatch(1);
+        CountDownLatch observedChildDone = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean parentPrematurelyDone =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> handle = actors.spawnChildShared(
+                                ignored -> (mail, turn) -> {
+                                    childEntered.countDown();
+                                    if (!releaseChild.await(3, TimeUnit.SECONDS)) {
+                                        throw new IllegalStateException("child test gate timed out");
+                                    }
+                                });
+                        child.set(handle);
+                        handle.send("run");
+                        childSpawned.countDown();
+                    });
+            parent.send("spawn");
+            assertTrue(childSpawned.await(3, TimeUnit.SECONDS));
+            assertTrue(childEntered.await(3, TimeUnit.SECONDS));
+            child.get().ref().done().whenCompleteRuntime((value, error) -> {
+                parentPrematurelyDone.set(parent.done().isDone());
+                observedChildDone.countDown();
+            });
+            try {
+                assertTrue(parent.cancel(), "parent cancellation must begin shutdown");
+                assertFalse(parent.done().isDone(),
+                        "parent must retain its active structured child");
+            } finally {
+                releaseChild.countDown();
+            }
+            assertTrue(observedChildDone.await(3, TimeUnit.SECONDS));
+            assertFalse(parentPrematurelyDone.get(),
+                    "parent termination became visible before child done observers");
+            assertTrue(child.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void terminationBarrierNeverOvertakesTypedControlPublication() throws Exception {
         try (ActorRuntime actors = new ActorRuntime()) {
             // Repeated independent actor lifecycles exercise the race between
