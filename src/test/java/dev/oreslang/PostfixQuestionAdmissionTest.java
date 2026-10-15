@@ -1,14 +1,13 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Admission/compatibility tests ONLY: postfix ? cannot run until the type,
- * ownership, unwind, and effect contracts have executable source lowering.
- */
+/** First-stage syntax is admitted only with synchronous local ownership proof. */
 final class PostfixQuestionAdmissionTest {
     @Test
     void ternaryRemainsTernaryRatherThanEarlyReturn() {
@@ -16,8 +15,6 @@ final class PostfixQuestionAdmissionTest {
                 fnc choose(bool flag): int {
                   return flag ? 1 : 2;
                 }
-                """));
-        assertDoesNotThrow(() -> Parser.parse("""
                 fnc choose_compact(bool flag): int {
                   return flag?1:2;
                 }
@@ -34,17 +31,32 @@ final class PostfixQuestionAdmissionTest {
     }
 
     @Test
-    void postfixQuestionFailsClosedUntilTypedEffectLoweringExists() {
+    void completedPostfixQuestionHasADedicatedAstNode() {
+        Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse("""
+                fnc value(Result<int, String> incoming): Result<int, String> {
+                  val int n = incoming?;
+                  return Ok(n);
+                }
+                """));
+        Ast.FunctionDecl fn = assertInstanceOf(Ast.FunctionDecl.class,
+                parsed.modules().getFirst().declarations().getFirst());
+        Ast.BindingStmt statement = assertInstanceOf(Ast.BindingStmt.class,
+                fn.body().getFirst());
+        assertInstanceOf(Ast.PropagateExpr.class, statement.initializer());
+    }
+
+    @Test
+    void unsupportedPostfixQuestionContextsFailAtTypeOrOwnershipChecking() {
         for (String source : new String[] {
-                "fnc sum_result(): Result<int, string> { val Result<int,string> v = Ok(3); return v?; }",
-                "fnc maybe_value(): Option<int> { val Option<int> v = Some(3); return v?; }",
-                "fnc sum_chained(): Result<int, string> { return parse_value()?.validate()?; }",
-                "fnc future_result(): int { return (await fetch_result())?; }"
+                "fnc wrong(Result<int, String> v): int { return v?; }",
+                "fnc wrong(Option<int> v): Result<int, String> { return Ok(v?); }",
+                "fnc wrong(Future<int> v): Result<int, String> { return Ok(v?); }",
+                "fnc wrong(Result<int, int> v): Result<int, String> { return Ok(v?); }",
+                "async fnc wrong(Result<int, String> v): Result<int, String> { return Ok(v?); }",
+                "fnc wrong(): Result<int, String> { val Result<int, String> a = Ok(1); return Ok((a?) + 1); }"
         }) {
-            IllegalArgumentException failure = assertThrows(
-                    IllegalArgumentException.class, () -> Parser.parse(source), source);
-            assertTrue(failure.getMessage().contains("postfix '?'"),
-                    "unexpected error for " + source + ": " + failure.getMessage());
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), source);
         }
     }
 
