@@ -12,12 +12,16 @@ final class SourceAdmissionBudget {
     private long bytes;
     private int units;
 
-    void admit(int actualUtf8Bytes, int depth) {
-        if (actualUtf8Bytes < 0) {
-            throw new IllegalArgumentException("invalid source size");
-        }
+    void checkDepth(int depth) {
         if (depth < 0 || depth > MAX_DEPTH) {
             throw new IllegalArgumentException("Oreslang import depth exceeds " + MAX_DEPTH);
+        }
+    }
+
+    void admit(int actualUtf8Bytes, int depth) {
+        checkDepth(depth);
+        if (actualUtf8Bytes < 0) {
+            throw new IllegalArgumentException("invalid source size");
         }
         if (units >= MAX_UNITS) {
             throw new IllegalArgumentException("Oreslang source unit count exceeds " + MAX_UNITS);
