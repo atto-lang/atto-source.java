@@ -269,14 +269,21 @@ public final class Types {
 
     private static boolean numericWidening(Type from, Type to) {
         if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
-        if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
+        // Exact decimals cannot implicitly become binary complex values.
+        if (from == Primitive.FLOAT && to == Primitive.COMPLEX) return true;
         return false;
     }
 
     public static Type numericJoin(Type left, Type right) {
         if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
+        // Reject implicit precision loss: decimal is an exact base-ten domain,
+        // while float and complex contain binary floating-point components.
+        if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) {
+            if (left == Primitive.FLOAT || right == Primitive.FLOAT
+                    || left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Unknown.INSTANCE;
+            return Primitive.DECIMAL;
+        }
         if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
-        if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
         if (left == Primitive.FLOAT || right == Primitive.FLOAT) return Primitive.FLOAT;
         return Primitive.INT;
     }
