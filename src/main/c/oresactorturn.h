@@ -82,6 +82,15 @@ ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
 ores_turn_status ores_turn_claim_user(ores_turn_vm *vm,
                                      ores_actor_cap *actor,
                                      ores_turn_lease **out_lease);
+/* Trusted scheduler-only SourceTask physical-turn admission. A successful
+ * claim is exclusive per actor, attributed to this exact SourceTask, and
+ * must be released on its original native carrier before suspension.
+ * STOP/revocation refuses new user-continuation claims. An await does not
+ * retire the SourceTask; only terminal/quiescence settlement can do that.
+ */
+ores_turn_status ores_turn_claim_source(ores_turn_vm *vm,
+                                        ores_source_task_cap *source,
+                                        ores_turn_lease **out_lease);
 ores_turn_status ores_turn_stop(ores_turn_vm *vm, ores_actor_cap *actor);
 ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                                         ores_cleanup_cap *ticket,
