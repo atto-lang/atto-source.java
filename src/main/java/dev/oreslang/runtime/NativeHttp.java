@@ -291,6 +291,9 @@ public final class NativeHttp implements AutoCloseable {
         private final Set<Handler.Worker> pooledWorkers = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
         private volatile boolean stopped;
+        // A graceful shutdown is distinct from a forced close; only the
+        // first forced closer may tear down the JDK transport and state.
+        private final AtomicBoolean forcedCloseClaimed = new AtomicBoolean();
         private boolean transportStopped, pooledBarrierStarted;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
@@ -502,7 +505,13 @@ public final class NativeHttp implements AutoCloseable {
             pending.clear();
         }
         @Override public void close() {
-            stopAccepting();
+            // Claim exactly once, even if multiple supervisors/teardown paths
+            // race on the same listener. Duplicate callers must not stop a
+            // transport or re-abort already released state a second time.
+            synchronized (this) {
+                if (!claimForcedClose(forcedCloseClaimed)) return;
+                stopAccepting();
+            }
             // Fail the pending guest shutdown promise before transportStopped
             // or active.remove can let concurrent request cleanup settle it
             // successfully. A forced context close is not an idle guarantee.
@@ -852,6 +861,12 @@ public final class NativeHttp implements AutoCloseable {
     static boolean readyForCarrierBarrier(
             boolean transportStopped, boolean activeEmpty, int releasesInProgress) {
         return transportStopped && activeEmpty && releasesInProgress == 0;
+    }
+
+    /** Exactly-once forced listener close; independent from graceful shutdown. */
+    static boolean claimForcedClose(AtomicBoolean owner) {
+        Objects.requireNonNull(owner, "owner");
+        return owner.compareAndSet(false, true);
     }
 
     /** A pooled worker is shared ownership: one aborted HTTP exchange cannot cancel it. */
