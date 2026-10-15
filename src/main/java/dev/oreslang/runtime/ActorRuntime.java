@@ -4451,6 +4451,12 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value)) return;
+        // SharedMutex can be built by a host caller, so its nested state must
+        // satisfy pointer isolation independently of the guest type checker.
+        if (value instanceof OresPointer) {
+            throw new IllegalArgumentException(
+                    "SharedMutex payload cannot contain Pointer<T> ownership capabilities");
+        }
 
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
