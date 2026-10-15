@@ -86,6 +86,47 @@ final class SourceActorTypedEffectExecutionTest {
         assertEquals(0, result.exitStatus(), "locally handled throw must not raise");
     }
 
+    @Test void cooperativeActorLoopThrowNeverRetainsGuestErrorInHostFailure()
+            throws Exception {
+        Path entry = source("throw");
+        Files.writeString(entry, Files.readString(entry).replace(
+                "throw new WorkerFault(7);",
+                "loop { throw new WorkerFault(7); }"));
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.runWithExitStatus(
+                        entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        // A loop promotes even a synchronous receive to a heap-owned task.
+        // Neither the scheduler Future nor an enclosing host wrapper may keep
+        // the private GuestThrowSignal that retains an OresObject.
+        java.util.ArrayDeque<Throwable> pending = new java.util.ArrayDeque<>();
+        java.util.IdentityHashMap<Throwable, Boolean> seen = new java.util.IdentityHashMap<>();
+        pending.add(failure);
+        while (!pending.isEmpty()) {
+            Throwable current = pending.removeFirst();
+            assertTrue(seen.size() < 64, "failure graph exceeded bound");
+            if (seen.put(current, Boolean.TRUE) != null) continue;
+            assertFalse(current.getClass().getName().contains("GuestThrowSignal"),
+                    "a guest heap-owned Error leaked into host failure metadata");
+            if (current.getCause() != null) pending.add(current.getCause());
+            for (Throwable suppressed : current.getSuppressed()) pending.add(suppressed);
+        }
+    }
+
+    @Test void cooperativeActorLoopPreservesLocalGuestCatch() throws Exception {
+        Path entry = source("throw");
+        Files.writeString(entry, Files.readString(entry).replace(
+                "throw new WorkerFault(7);",
+                "try { loop { throw new WorkerFault(7); } }"
+                        + " catch (e) { self.end(); return; }"));
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        var result = LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, result.exitStatus());
+    }
+
     @Test void actorThrowRequiresStaticallyProvenError() throws Exception {
         Path entry = source("throw");
         Files.writeString(entry, Files.readString(entry).replace(
