@@ -1,7 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
+import java.util.HashSet;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A bounded, host-only retry registry for supervisor CONTROL admission.
@@ -30,6 +32,10 @@ final class ControlWakeRetryQueue {
         final ArrayDeque<Runnable> later = new ArrayDeque<>();
     }
     private final ThreadLocal<RetryDispatch> retryDispatch = new ThreadLocal<>();
+    // Guarded by this monitor: all currently active carrier dispatchers.
+    // A parent can be cancelled by a *different* host thread after a retry
+    // was dequeued but before the owner carrier invokes it.
+    private final Set<RetryDispatch> activeDispatchers = new HashSet<>();
     // Guarded by the queue monitor: bounded affinity preference over FIFO.
     private int consecutiveAffinityBypasses;
 
@@ -115,10 +121,10 @@ final class ControlWakeRetryQueue {
     synchronized void cancel(Runnable callback) {
         // Runnable identity is host-owned and one per parent actor.
         pending.removeIf(next -> next.callback() == callback);
-        // Reentrant slot releases can dequeue a callback but defer it on
-        // this same carrier thread. Cancel the deferred work as well.
-        RetryDispatch state = retryDispatch.get();
-        if (state != null && state.active) {
+        // The cancellation thread need not be the carrier thread. Revoke
+        // deferred callbacks from *every* active dispatcher under the
+        // monitor also used to enqueue and drain deferred callbacks.
+        for (RetryDispatch state : activeDispatchers) {
             state.later.removeIf(next -> next == callback);
         }
     }
@@ -126,6 +132,7 @@ final class ControlWakeRetryQueue {
     synchronized void close() {
         closed = true;
         pending.clear();
+        for (RetryDispatch state : activeDispatchers) state.later.clear();
     }
 
     synchronized int pending() {
@@ -145,11 +152,21 @@ final class ControlWakeRetryQueue {
         }
         if (state.active) {
             // A host wake callback can synchronously release the next
-            // physical slot. Queue it on this thread rather than recursing.
-            state.later.addLast(ready);
+            // physical slot. This queue is also read by cancellation from
+            // other carrier threads, so always serialize the append.
+            synchronized (this) {
+                if (!closed) state.later.addLast(ready);
+            }
             return;
         }
-        state.active = true;
+        synchronized (this) {
+            if (closed) {
+                retryDispatch.remove();
+                return;
+            }
+            state.active = true;
+            activeDispatchers.add(state);
+        }
         try {
             Runnable next = ready;
             while (next != null) {
@@ -175,13 +192,19 @@ final class ControlWakeRetryQueue {
                         }
                     }
                 }
-                next = state.later.pollFirst();
+                synchronized (this) {
+                    next = state.later.pollFirst();
+                }
             }
         } finally {
-            // A fatal callback must never leave captured retry Runnables
-            // pinned in the carrier's ThreadLocal on pooled threads.
-            state.later.clear();
-            state.active = false;
+            // Even after a fatal callback, no dispatcher may retain an
+            // executable callback or an active-state registration.
+            synchronized (this) {
+                state.later.clear();
+                state.active = false;
+                activeDispatchers.remove(state);
+            }
+            retryDispatch.remove();
         }
     }
 }
