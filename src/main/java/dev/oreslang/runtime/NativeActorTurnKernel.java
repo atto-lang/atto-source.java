@@ -65,6 +65,11 @@ final class NativeActorTurnKernel implements AutoCloseable {
 
     synchronized void enter(SourceTask task) {
         checkLiveTask(task);
+        // JNI TLS identity is the OS carrier, not the virtual Java thread.
+        // A virtual thread can migrate between enter() and exit() JNI calls.
+        if (Thread.currentThread().isVirtual()) {
+            throw new IllegalStateException("native source lease requires a platform carrier thread");
+        }
         if (task.activeLease != 0) throw new IllegalStateException("task already executing");
         if (stopped) throw new IllegalStateException("actor stopped");
         long lease = checkedPointer(nClaimSource(vm, task.handle));
