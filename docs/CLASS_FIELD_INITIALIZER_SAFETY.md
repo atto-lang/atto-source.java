@@ -33,8 +33,9 @@ unary borrow (`&` or `&mut`) cannot create a loan across construction.
 
 A verified zero-argument scalar helper may still be called, but its callable
 name must resolve to that function in the runtime lexical environment. A
-constructor parameter shadowing the callable, or a foreign/imported class
-namespace with unproven effects, cannot satisfy this exception.
+constructor parameter shadowing the callable, a same-named module that
+takes precedence over a class namespace at runtime, or a foreign/imported
+class namespace with unproven effects, cannot satisfy this exception.
 
 The synchronous scalar-helper exception requires a statically resolved
 zero-argument, non-generic, non-async, non-suspending, non-generator,
