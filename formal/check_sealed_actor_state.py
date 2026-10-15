@@ -115,6 +115,37 @@ def successors(m, owners):
             yield (f"restart actor{ai}", replace(m, actors=put(m.actors, ai, replace(a, running=True))))
 
 
+def authenticated_write_transition(before, after, owners):
+    """Verify the *edge*, not only the receipt totals in a state snapshot.
+
+    An internally consistent ledger can still be forged without a live write
+    admission. Any change to actor data/version must be an atomic write by the
+    actor's current exclusive writer, recorded in the same transition.
+    The runtime/compiler must separately prove this modeled gate is enforced.
+    """
+    if len(before.actors) != len(after.actors) or len(before.turns) != len(after.turns):
+        return False
+    changed = [i for i, (old, new) in enumerate(zip(before.actors, after.actors))
+               if (old.data, old.version) != (new.data, new.version)]
+    if not changed:
+        return before.audit == after.audit
+    if len(changed) != 1:
+        return False
+    ai = changed[0]
+    actor = before.actors[ai]
+    t = actor.writer
+    if (t < 0 or t >= len(owners) or owners[t] != ai or actor.readers != 0
+            or before.turns[t].phase != "write" or not valid(before, owners, t)
+            or actor.version >= 1):
+        return False
+    return (
+        after.actors == put(before.actors, ai,
+                            replace(actor, data=1-actor.data, version=actor.version+1))
+        and after.turns == before.turns
+        and after.audit == before.audit + ((ai, t, actor.epoch),)
+    )
+
+
 def explore(owners):
     root = Model(tuple(Actor() for _ in range(max(owners)+1)), tuple(Turn() for _ in owners))
     queue = deque([root])
@@ -126,6 +157,8 @@ def explore(owners):
         for action, nxt in successors(current, owners):
             edges += 1
             assert invariant(nxt, owners), f"unsafe transition: {action} {current!r} -> {nxt!r}"
+            assert authenticated_write_transition(current, nxt, owners), (
+                f"unauthenticated mutation: {action} {current!r} -> {nxt!r}")
             if nxt not in seen:
                 seen.add(nxt)
                 queue.append(nxt)
@@ -143,7 +176,27 @@ def main():
     assert not invariant(bare_store, (0,))
     overlap = Model((Actor(readers=1, writer=0),), (Turn("write", 0),))
     assert not invariant(overlap, (0,))
-    print("PASS unsafe-write mutant rejected")
+    # A forged receipt may satisfy the *snapshot* invariant. It must fail the
+    # causal edge check because no write-capable continuation was admitted.
+    root = Model((Actor(),), (Turn(),))
+    coherent_forgery = Model((Actor(data=1, version=1),),
+                             (Turn(),), ((0, 0, 0),))
+    assert invariant(coherent_forgery, (0,))
+    assert not authenticated_write_transition(root, coherent_forgery, (0,))
+    # Even an audit append without changing data is not an authorized write.
+    receipt_only = replace(root, audit=((0, 0, 0),))
+    assert not authenticated_write_transition(root, receipt_only, (0,))
+    admitted = Model((Actor(writer=0),), (Turn("write", 0),))
+    authorized = next(nxt for action, nxt in successors(admitted, (0,))
+                      if action == "critical-write t0")
+    assert authenticated_write_transition(admitted, authorized, (0,))
+    # No writer can retroactively authorize a raw write during an active read.
+    reading = Model((Actor(readers=1),), (Turn("read", 0),))
+    forged_during_read = replace(reading,
+                                actors=(Actor(readers=1, data=1, version=1),),
+                                audit=((0, 0, 0),))
+    assert not authenticated_write_transition(reading, forged_during_read, (0,))
+    print("PASS raw store, forged receipt, and read/write overlap mutants rejected")
 
 
 if __name__ == "__main__":
