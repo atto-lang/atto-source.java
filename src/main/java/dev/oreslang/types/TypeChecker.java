@@ -4940,9 +4940,12 @@ public final class TypeChecker {
         // executable or lifetime-bearing capabilities, never mailbox data.
         // In particular a NetworkCodec<T> may not grant actor-message
         // authority merely by serializing its own implementation object.
-        if (named.name().equals("Pointer") || named.name().equals("NetworkCodec")
-                || named.name().equals("ActorMessageCodec") || named.name().equals("Stream")
-                || named.name().equals("Observable")) {
+        // Types declared within an Oreslang module resolve to qualified
+        // names (e.g. "CodecModule.NetworkCodec"). Do not allow that
+        // qualification to bypass the non-data-capability admission list.
+        String actorBoundarySimpleName = named.name().substring(named.name().lastIndexOf('.') + 1);
+        if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
+                "Observable").contains(actorBoundarySimpleName)) {
             throw new IllegalArgumentException(where + " cannot transport "
                     + named.name() + " across an actor boundary; encode owned data with "
                     + "an independently admitted ActorMessageCodec<T>");
@@ -5031,9 +5034,9 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Pointer") || named.name().equals("NetworkCodec")
-                || named.name().equals("ActorMessageCodec") || named.name().equals("Stream")
-                || named.name().equals("Observable")) return false;
+        String sharedSafetySimpleName = named.name().substring(named.name().lastIndexOf('.') + 1);
+        if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
+                "Observable").contains(sharedSafetySimpleName)) return false;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("Iterator")
                 || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
