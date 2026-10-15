@@ -257,6 +257,25 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * A stopped actor exhausted its bounded lexical cleanup window.
+     *
+     * <p>This is distinct from ordinary cancellation: the runtime revoked
+     * the remaining cleanup lane without claiming guest finally/defer ran to
+     * completion. The original cancellation remains available as the cause.</p>
+     */
+    public static final class ActorCleanupTimeoutException extends IllegalStateException {
+        private final ActorId actorId;
+
+        private ActorCleanupTimeoutException(ActorId actorId, Throwable cancellation) {
+            super("actor source cleanup exceeded bounded STOP deadline: " + actorId,
+                    cancellation);
+            this.actorId = actorId;
+        }
+
+        public ActorId actorId() { return actorId; }
+    }
+
+    /**
      * Internal control-plane unwind used at actor scheduler safepoints.
      * It is an Error intentionally: Oreslang source catch handles ordinary
      * runtime failures, but cancellation must not be absorbable by guest code.
@@ -7052,11 +7071,20 @@ public final class ActorRuntime implements AutoCloseable {
         private void expireSourceCleanup() {
             final OresScheduler scheduler;
             synchronized (lifecycleLock) {
-                if (finalized || !stopped.get() || sourceCleanupTasks.isEmpty()) return;
-                ref.terminationCause.compareAndSet(null,
-                        new IllegalStateException(
-                                "actor source cleanup exceeded bounded STOP deadline: "
-                                        + ref.id()));
+                if (finalized || !stopped.get() || forceRevoked
+                        || sourceCleanupTasks.isEmpty()) return;
+                // Structured cancellation normally already supplies a
+                // cancellation cause. A deadline must not be hidden behind
+                // it: report incomplete cleanup through get_done()/CONTROL,
+                // preserving the initial cancellation as the cause.
+                // Existing fatal/quota/other failures retain precedence.
+                for (;;) {
+                    Throwable prior = ref.terminationCause.get();
+                    if (prior != null && !(prior instanceof CancellationException)) break;
+                    ActorCleanupTimeoutException expired =
+                            new ActorCleanupTimeoutException(ref.id(), prior);
+                    if (ref.terminationCause.compareAndSet(prior, expired)) break;
+                }
                 scheduler = sourceScheduler;
             }
             if (scheduler != null) {
