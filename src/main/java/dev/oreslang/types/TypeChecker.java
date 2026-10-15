@@ -3898,6 +3898,8 @@ public final class TypeChecker {
             // constructor's one-time fixed-field initialization privilege.
             currentConstructorOwner = null;
             Type result;
+            Type previousQuestionReturn = currentQuestionReturn;
+            currentQuestionReturn = null;
             try {
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
@@ -3910,6 +3912,7 @@ public final class TypeChecker {
                 // assignments inside a closure establish definite-init facts
                 // for the enclosing flow merely because the closure exists.
                 env.restoreInitialization(outerInitialization);
+                currentQuestionReturn = previousQuestionReturn;
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
             }
@@ -4612,6 +4615,8 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        Type previousQuestionReturn = currentQuestionReturn;
+        currentQuestionReturn = null;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -4629,6 +4634,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentQuestionReturn = previousQuestionReturn;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
