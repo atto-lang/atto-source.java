@@ -85,6 +85,19 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_GROUP_MAILMAN_CONTEXT_SEND =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    /**
+     * A breached STOP cleanup deadline is a lifecycle failure, not merely the
+     * cancellation that initiated the unwind. Preserve the original cause.
+     */
+    private static final class SourceCleanupDeadlineExceededException
+            extends IllegalStateException {
+        private SourceCleanupDeadlineExceededException(
+                ActorId actorId, Throwable priorCause) {
+            super("actor source cleanup exceeded bounded STOP deadline: " + actorId,
+                    priorCause);
+        }
+    }
+
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
             ActorGroupId groupId) { }
@@ -6954,7 +6967,19 @@ public final class ActorRuntime implements AutoCloseable {
                     || failure instanceof ThreadDeath
                     || failure instanceof LinkageError) return 3;
             if (failure instanceof UntrustedActorQuotaExceededException) return 2;
+            if (failure instanceof SourceCleanupDeadlineExceededException) return 1;
             return 0;
+        }
+
+        /** Fail STOP explicitly even when an earlier cancellation supplied a cause. */
+        private void recordSourceCleanupDeadlineFailure() {
+            for (;;) {
+                Throwable prior = ref.terminationCause.get();
+                if (sourceFailurePriority(prior) >= 1) return;
+                Throwable timeout = new SourceCleanupDeadlineExceededException(
+                        ref.id(), prior);
+                if (ref.terminationCause.compareAndSet(prior, timeout)) return;
+            }
         }
 
         /**
@@ -7689,20 +7714,33 @@ public final class ActorRuntime implements AutoCloseable {
                 if (finalized || !stopped.get() || sourceCleanupTasks.isEmpty()) return;
                 sourceCleanupRevoked = true;
                 sourceCancellationPending = true;
-                ref.terminationCause.compareAndSet(null,
-                        new IllegalStateException(
-                                "actor source cleanup exceeded bounded STOP deadline: " + ref.id()));
+                recordSourceCleanupDeadlineFailure();
                 continuationMailbox.close(ref.terminationCause.get());
                 drainMailboxReservations();
                 scheduler = sourceScheduler;
             }
             // Outside the actor lock: scheduler termination may synchronously
             // invoke Future subscribers that re-enter actor lifecycle code.
-            if (scheduler != null) scheduler.close();
-            synchronized (lifecycleLock) {
-                sourceCancellationPending = false;
-                finalizeStopLocked();
-                lifecycleLock.notifyAll();
+            try {
+                if (scheduler != null) scheduler.close();
+            } catch (Throwable closeFailure) {
+                synchronized (lifecycleLock) {
+                    recordDominantSourceFailure(closeFailure);
+                    CleanupFailureDiagnostics.suppress(
+                            ref.terminationCause.get(), closeFailure);
+                }
+                if (closeFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (closeFailure instanceof ThreadDeath fatal) throw fatal;
+                if (closeFailure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                // Unexpected close failures must never leave STOP's injection
+                // barrier permanently set. Finalization still waits for the
+                // physically quiescent source tasks.
+                synchronized (lifecycleLock) {
+                    sourceCancellationPending = false;
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
             }
         }
 

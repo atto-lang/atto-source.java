@@ -227,4 +227,48 @@ final class ActorStopCleanupAdmissionBaselineTest {
         }
     }
 
+
+    @Test
+    void cleanupDeadlineDominatesStructuredCancellationButPreservesOriginalCause()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> neverCleanup = new OresFuture<>();
+        CountDownLatch suspended = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        AtomicInteger turns = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                context.runtime().ownCurrentActorFuture(context.runtime().startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) event -> {
+                            int turn = turns.incrementAndGet();
+                            if (turn == 1) {
+                                suspended.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            if (turn == 2) {
+                                assertInstanceOf(CancellationException.class, event.failure());
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(neverCleanup);
+                            }
+                            throw new AssertionError("expired cleanup must not resume");
+                        }));
+            });
+            actor.send("start");
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel(), "structured cancellation must be accepted");
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(8, TimeUnit.SECONDS));
+            Throwable failure = actor.failure().orElseThrow();
+            assertTrue(failure.getMessage().contains(
+                    "source cleanup exceeded bounded STOP deadline"),
+                    "a prior cancellation must not hide an incomplete cleanup");
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    failure.getCause(), "preserve the structured cancellation as cause");
+            assertEquals(2, turns.get());
+            neverCleanup.completeFromRuntime(9);
+            assertEquals(2, turns.get());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, neverCleanup.pendingRuntimeWaiterCount());
+        }
+    }
 }
