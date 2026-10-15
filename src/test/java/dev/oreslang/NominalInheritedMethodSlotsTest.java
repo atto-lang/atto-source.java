@@ -14,8 +14,14 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class NominalInheritedMethodSlotsTest {
     private static final String ENUMS = """
-            define enum Color as Red Blue end
-            define enum Mode as Fast Slow end
+            define enum Color as
+                Red
+                Blue
+            end
+            define enum Mode as
+                Fast
+                Slow
+            end
             """;
 
     private static Map<Slot, NominalInheritedMethodSlots.Target> prove(
