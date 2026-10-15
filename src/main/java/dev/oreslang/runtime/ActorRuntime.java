@@ -4439,6 +4439,14 @@ public final class ActorRuntime implements AutoCloseable {
                     "force-cancellation revoker failed before logical actor teardown; "
                             + "revokers must be atomic and side-effect-free on false/throw",
                     revocationFailure);
+        } catch (Error revocationFailure) {
+            // An embedder revoker may throw a nonfatal Error (for example,
+            // AssertionError) as well as RuntimeException. Never strand the
+            // entire actor subtree behind a temporary force-kill fence when
+            // revocation was not acknowledged. Fatal VM Errors are handled
+            // above and preserve their original identity.
+            clearForceKillFence(attempt, true);
+            throw revocationFailure;
         }
 
         if (!revoked) {
