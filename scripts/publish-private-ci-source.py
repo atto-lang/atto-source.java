@@ -39,6 +39,14 @@ def valid_sha(value):
     return value
 
 
+def nested_sha(response, member):
+    """Reject malformed GitHub response objects without an uncaught traceback."""
+    value = response.get(member)
+    if not isinstance(value, dict):
+        raise Denied("GitHub returned malformed object metadata")
+    return valid_sha(value.get("sha"))
+
+
 def gh_api(route, method="GET", payload=None):
     argv = ["gh", "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
@@ -353,9 +361,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
     base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = valid_sha(base_ref.get("object", {}).get("sha"))
+    base_sha = nested_sha(base_ref, "object")
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
-    base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
+    base_tree = nested_sha(base_commit, "tree")
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
@@ -404,7 +412,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     })
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("GitHub did not confirm creation of requested isolated CI branch")
-    if valid_sha(created.get("object", {}).get("sha")) != commit_sha:
+    if nested_sha(created, "object") != commit_sha:
         raise Denied("created CI branch does not reference the expected commit")
 
     # The create response is not evidence that the branch resolves to the
@@ -412,10 +420,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     # reporting success. Destination workflows independently check the
     # subtree SHA again before executing any private source.
     verified_ref = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
-    if valid_sha(verified_ref.get("object", {}).get("sha")) != commit_sha:
+    if nested_sha(verified_ref, "object") != commit_sha:
         raise Denied("CI branch readback points to a different commit")
     verified_commit = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
-    if valid_sha(verified_commit.get("tree", {}).get("sha")) != new_tree_sha:
+    if nested_sha(verified_commit, "tree") != new_tree_sha:
         raise Denied("CI branch commit tree differs from published snapshot")
     verified_tree = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
     tree_items = verified_tree.get("tree")
