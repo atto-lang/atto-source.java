@@ -4896,6 +4896,34 @@ public final class ActorRuntime implements AutoCloseable {
         return cell.drainAcceptedMessages();
     }
 
+    /**
+     * HOST-ONLY HTTP shutdown barrier. A normal drain finishes while the
+     * TurnExecutor can still be inside its host/Truffle context boundary.
+     * This observer waits until all previously admitted user messages have
+     * finished AND the physical carrier has actually left that boundary.
+     * A stopped actor instead settles after physical finalization.
+     *
+     * This does not seal admissions or authorize foreign-runtime references.
+     */
+    OresFuture<Void> quiesceAcceptedMessages(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("observe actor carrier quiescence");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        if (currentActor.get() != null) {
+            return OresFuture.failed(new IllegalStateException(
+                    "actor carrier quiescence can only be observed from host context"));
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (!isCurrentIncarnation(cell, ref)) {
+            // The registry removes an incarnation only AFTER finalization.
+            return OresFuture.completed(null);
+        }
+        return cell.quiesceAcceptedMessages();
+    }
+
     /** Graceful stop seals new mail, drains prior admissions, then terminates.
      * Never blocks a carrier: done is resolved after physical finalization. */
     public OresFuture<Void> gracefulStop(ActorRef<?> ref) {
@@ -6656,6 +6684,9 @@ public final class ActorRuntime implements AutoCloseable {
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
+        // Unlike pendingDrains, these observe the physical TurnExecutor exit,
+        // not merely mail processing. Used for context-safe HTTP shutdown.
+        private final ArrayList<DrainWaiter> pendingCarrierQuiescence = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -6812,6 +6843,38 @@ public final class ActorRuntime implements AutoCloseable {
 
         private OresFuture<Void> drainAcceptedMessages() {
             return drainAcceptedMessages(false);
+        }
+
+        private OresFuture<Void> quiesceAcceptedMessages() {
+            synchronized (lifecycleLock) {
+                if (finalized) return OresFuture.completed(null);
+                if (stopped.get()) return finalizedFuture;
+                final long target = nextUserMessageSequence - 1L;
+                if (lastProcessedUserMessageSequence >= target
+                        && !carrierActive && activeTurns == 0 && !scheduled.get()) {
+                    return OresFuture.completed(null);
+                }
+                if (pendingCarrierQuiescence.size() >= MAX_PENDING_DRAIN_WAITERS) {
+                    return OresFuture.failed(
+                            new ActorResourceExhaustedException(ref.id()));
+                }
+                OresFuture<Void> future = new OresFuture<>(() -> false, () -> { });
+                pendingCarrierQuiescence.add(new DrainWaiter(target, future));
+                return future;
+            }
+        }
+
+        // Caller holds lifecycleLock. Never publish success while any
+        // TurnExecutor has the physical carrier or a scheduled turn is queued.
+        private void collectCarrierQuiescenceLocked(List<OresFuture<Void>> ready) {
+            if (carrierActive || activeTurns != 0 || scheduled.get()) return;
+            for (int i = pendingCarrierQuiescence.size() - 1; i >= 0; i--) {
+                DrainWaiter waiter = pendingCarrierQuiescence.get(i);
+                if (finalized || lastProcessedUserMessageSequence >= waiter.sequence()) {
+                    pendingCarrierQuiescence.remove(i);
+                    ready.add(waiter.completion());
+                }
+            }
         }
 
         private OresFuture<Void> drainAcceptedMessages(boolean shutdownBarrier) {
@@ -7002,6 +7065,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
+            // Finalization is authoritative even when cancellation prevented
+            // previously admitted messages from running.
+            List<OresFuture<Void>> quiesced = new ArrayList<>();
+            collectCarrierQuiescenceLocked(quiesced);
+            for (OresFuture<Void> waiter : quiesced) waiter.completeFromRuntime(null);
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
@@ -7191,6 +7259,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
             boolean reschedule = false;
+            List<OresFuture<Void>> quiesced = new ArrayList<>();
             try {
                 synchronized (lifecycleLock) {
                     // Prevent obsolete queued runnables impersonating the
@@ -7291,6 +7360,7 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !finalized
                                     && hasQueuedWorkLocked();
                         }
+                        collectCarrierQuiescenceLocked(quiesced);
                         lifecycleLock.notifyAll();
                     }
                 } finally {
@@ -7299,7 +7369,16 @@ public final class ActorRuntime implements AutoCloseable {
                         else ACTOR_CARRIER.remove();
                     }
                 }
-                if (reschedule) schedule();
+                try {
+                    // Runtime-only completion, after TurnExecutor returned and
+                    // physical carrier authority was dropped, never inline in
+                    // the guest receive callback or under lifecycleLock.
+                    for (OresFuture<Void> waiter : quiesced) {
+                        waiter.completeFromRuntime(null);
+                    }
+                } finally {
+                    if (reschedule) schedule();
+                }
             }
         }
 
