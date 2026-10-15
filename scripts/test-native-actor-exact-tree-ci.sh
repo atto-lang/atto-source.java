@@ -72,24 +72,10 @@ mvn -version
 # identity substitutions before executing any guest or native test workload.
 sh scripts/test-native-actor-ci-preflight.sh
 
-# Private-source transfer policy must pass *before* beginning expensive
-# native work. These suites use synthetic local fixtures and mocked APIs:
-# they never upload or export the source tree. Python bytecode caches can
-# otherwise contaminate later clean-checkout checks.
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "Python 3 is required for private CI mirror security regressions" >&2
-  exit 1
-fi
-if ! command -v bash >/dev/null 2>&1; then
-  echo "Bash is required for private CI destination policy regressions" >&2
-  exit 1
-fi
-PYTHONDONTWRITEBYTECODE=1
-export PYTHONDONTWRITEBYTECODE
-bash scripts/test-private-ci-destination.sh
-python3 scripts/test-publish-private-ci-source.py
-python3 tests/test_ci_private_mirror_preflight.py
-echo "ORES_PRIVATE_CI_SECURITY_SUITES_PASS"
+# Before running native builds, run the complete offline publisher,
+# destination-policy and admission tests. No GitHub API writes occur.
+# The shared entry point also works on hosts without Maven or compilers.
+sh scripts/test-private-ci-security-offline.sh
 
 # The immutable source check must precede every build, and stale native
 # objects and Maven reports must never satisfy a current-head test.
