@@ -153,7 +153,7 @@ final class RuntimePointerTest {
         }
         reject("const p = rt unref new Box();", "Pointer<T>");
         reject("const p = rt deref 1;", "Pointer<T>");
-        reject("const p = rt unref(rt ref new Box());", "named owner");
+        reject("const p = rt unref(rt ref new Box());", "named Pointer<T> owner");
     }
 
     @Test void viewsCannotMutateOrManufactureOwnership() {
