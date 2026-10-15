@@ -14,6 +14,16 @@ public final class OresPointer {
         if (checked instanceof OresPointer) {
             throw new IllegalArgumentException("nested Pointer<T> runtime targets are forbidden");
         }
+        // Pointer<T> is for owned reference-backed objects, not scalars that
+        // are Copy/interned values in the guest language. Keep host callers
+        // from manufacturing Pointer<int>, Pointer<String>, or enum pointers.
+        if (checked instanceof Number || checked instanceof CharSequence
+                || checked instanceof Boolean || checked instanceof Character
+                || checked instanceof Enum<?> || checked instanceof java.util.UUID
+                || checked instanceof OresSymbol) {
+            throw new IllegalArgumentException(
+                    "Pointer<T> requires reference-backed owned data, not a scalar/Copy value");
+        }
         // A guest type check cannot protect callers using the public Java
         // runtime API directly. Reject known actor, synchronization, async and
         // transport capabilities without cloning/wrapping their authority.
