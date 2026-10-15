@@ -443,6 +443,59 @@ class NativeHttpTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(3)
+    @org.junit.jupiter.api.Timeout(30)
+    void abortingRequestOnFirstListenerKeepsSharedWorkerForSecondListener()
+            throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = runTwoPorts("""
+                define %s Worker as
+                  let int uses = 0;
+                  receive(ActorMail<String> mail): void {
+                    self.uses = self.uses + 1;
+                    val request = http.claim(mail.value);
+                    if request.target == "/abort"; then
+                      request.abort();
+                    else
+                      request.set_header("X-Reused", self.uses > 1 ? "yes" : "no");
+                      await request.respond(200, "text/plain", "ok");
+                    fi
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val first = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  val second = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(first.port);
+                  stdio.println(second.port);
+                  val firstRequest = await first.accept();
+                  val firstCompletion = firstRequest.completion;
+                  handler.dispatch(rt borrow mut firstRequest);
+                  await firstCompletion;
+                  await first.shutdown(0);
+                  val secondRequest = await second.accept();
+                  val secondCompletion = secondRequest.completion;
+                  handler.dispatch(rt borrow mut secondRequest);
+                  await secondCompletion;
+                  await second.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(first.active);
+                  stdio.println(second.active);
+                  return;
+                }
+                """.formatted(kind), (first, second) -> {
+                    assertEquals(500, request(first, "GET", "/abort", "").statusCode());
+                    var following = request(second, "GET", "/ok", "");
+                    assertEquals(200, following.statusCode());
+                    assertEquals("yes", following.headers()
+                            .firstValue("X-Reused").orElseThrow());
+                });
+            assertTrue(output.stripTrailing().endsWith("1\\n1\\n0\\n0"), output);
+        }
+    }
+
     @org.junit.jupiter.api.RepeatedTest(8)
     @org.junit.jupiter.api.Timeout(30)
     void freshActorDeadlineDuringDispatchCannotOrphanCarrier() throws Exception {
