@@ -15,6 +15,7 @@ on:
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
+      - 'docs/PRIVATE_CI_MIRRORS.md'
 permissions:
   contents: read
 jobs:
