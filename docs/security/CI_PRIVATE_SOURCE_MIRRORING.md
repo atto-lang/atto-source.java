@@ -17,6 +17,20 @@ Run the checked transfer from trusted, reviewed source, not an untrusted PR
 checkout. If an approval policy can be modified by the code under test, treat
 the result as untrusted.
 
+The publisher now requires the local policy bytes to **exactly match** the
+policy returned by GitHub's authenticated Contents API for
+`ores-truffle-oreslang/oreslang-source.java` at `ref=main`. It validates the
+remote policy blob, size, encoding and SHA-1, and re-fetches the protected-main
+policy before every destination write. A feature branch that adds its own
+destination without a protected-main review therefore fails closed, even if its
+local allowlist and the destination metadata both claim approval. An
+unreachable or malformed protected-main response also denies transfer.
+
+This verification is defense in depth, not proof that an arbitrary edited
+publisher script or a direct GitHub connector write is safe. Execute only the
+reviewed publisher from a trusted checkout; protect the source `main` branch,
+its review rules, and its workflow files independently.
+
 ## Destination-bound source snapshot publisher
 
 The only supported transfer entry point is **not an arbitrary command
