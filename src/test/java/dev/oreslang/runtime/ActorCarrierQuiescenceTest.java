@@ -331,6 +331,142 @@ final class ActorCarrierQuiescenceTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(12)
+    void successfulStartupReadinessDoesNotNotifyUnderLifecycleLock() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        CountDownLatch notified = new CountDownLatch(1);
+        AtomicBoolean heldLock = new AtomicBoolean();
+        AtomicBoolean blockedCompetingThread = new AtomicBoolean();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            entered.countDown();
+            awaitTestRelease(resume);
+            turn.run();
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            try {
+                OresFuture<Void> ready = actor.ready();
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                Object monitor = lifecycleMonitor(runtime, actor);
+                ready.whenCompleteRuntime((ignored, failure) -> {
+                    if (Thread.holdsLock(monitor)) heldLock.set(true);
+                    CountDownLatch acquired = new CountDownLatch(1);
+                    Thread.ofVirtual().start(() -> {
+                        synchronized (monitor) { acquired.countDown(); }
+                    });
+                    try {
+                        if (!acquired.await(2, TimeUnit.SECONDS)) {
+                            blockedCompetingThread.set(true);
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        blockedCompetingThread.set(true);
+                    } finally {
+                        notified.countDown();
+                    }
+                });
+                assertFalse(ready.isDone(), "the initializer is still gated");
+                resume.countDown();
+                ready.get(5, TimeUnit.SECONDS);
+                assertTrue(notified.await(5, TimeUnit.SECONDS));
+                assertFalse(heldLock.get(), "readiness callback held lifecycleLock");
+                assertFalse(blockedCompetingThread.get(),
+                        "readiness notification prevented competing lifecycle entry");
+            } finally {
+                resume.countDown();
+            }
+        }
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(12)
+    void cancelledBeforeStartupNotifiesAllTerminalFuturesOutsideLifecycleLock()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch resume = new CountDownLatch(1);
+        CountDownLatch notified = new CountDownLatch(4);
+        AtomicBoolean heldLock = new AtomicBoolean();
+        AtomicBoolean blockedCompetingThread = new AtomicBoolean();
+        java.util.concurrent.atomic.AtomicInteger notifications =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            entered.countDown();
+            awaitTestRelease(resume);
+            turn.run();
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            try {
+                OresFuture<Void> ready = actor.ready();
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                Object monitor = lifecycleMonitor(runtime, actor);
+                OresFuture<Void> done = actor.done();
+                // The internal finalization Future must follow the same
+                // after-lock rule as public ready/done/quiescence observers.
+                var registryField = ActorRuntime.class.getDeclaredField("actors");
+                registryField.setAccessible(true);
+                Object cell = ((java.util.Map<?, ?>) registryField.get(runtime))
+                        .get(actor.id());
+                assertNotNull(cell);
+                var finalizedField = cell.getClass().getDeclaredField("finalizedFuture");
+                finalizedField.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                OresFuture<Void> finalized = (OresFuture<Void>) finalizedField.get(cell);
+
+                actor.cancel();
+                OresFuture<Void> quiescence = runtime.quiesceAcceptedMessages(actor);
+                for (OresFuture<Void> future :
+                        java.util.List.of(ready, done, finalized, quiescence)) {
+                    future.whenCompleteRuntime((ignored, failure) -> {
+                        notifications.incrementAndGet();
+                        if (Thread.holdsLock(monitor)) heldLock.set(true);
+                        CountDownLatch acquired = new CountDownLatch(1);
+                        Thread.ofVirtual().start(() -> {
+                            synchronized (monitor) { acquired.countDown(); }
+                        });
+                        try {
+                            if (!acquired.await(2, TimeUnit.SECONDS)) {
+                                blockedCompetingThread.set(true);
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            blockedCompetingThread.set(true);
+                        } finally {
+                            notified.countDown();
+                        }
+                    });
+                }
+                assertFalse(done.isDone(), "physical carrier still held");
+                assertFalse(finalized.isDone());
+                assertFalse(quiescence.isDone());
+                resume.countDown();
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> ready.get(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> done.get(5, TimeUnit.SECONDS));
+                finalized.get(5, TimeUnit.SECONDS);
+                quiescence.get(5, TimeUnit.SECONDS);
+                assertTrue(notified.await(5, TimeUnit.SECONDS));
+                assertEquals(4, notifications.get(), "one notification per Future");
+                assertFalse(heldLock.get(),
+                        "terminal readiness, done, or finalization notified while locked");
+                assertFalse(blockedCompetingThread.get(),
+                        "terminal notification blocked competing lifecycle admission");
+            } finally {
+                resume.countDown();
+            }
+        }
+    }
+
     private static Object lifecycleMonitor(
             ActorRuntime runtime, ActorRuntime.ActorRef<?> ref)
             throws ReflectiveOperationException {
