@@ -319,8 +319,15 @@ def publish(repository, source, branch, trusted_root):
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    if (created.get("ref") != "refs/heads/" + branch
+            or not isinstance(created.get("object"), dict)
+            or created["object"].get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm the exact requested isolated CI commit")
+    # A private-to-public visibility flip or same-name repository replacement
+    # after the last pre-write check must not be reported as a successful
+    # private transfer. This post-write check detects, but cannot undo,
+    # races occurring during a GitHub API request.
+    checked_repo(repository, expected_id=destination_id)
     return commit_sha, len(files)
 
 
