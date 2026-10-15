@@ -294,9 +294,40 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def source_tree_sha(files):
+    """Compute the exact Git SHA-1 tree for the frozen source bytes and modes."""
+    root = {}
+    for relative, data, mode in files:
+        parts = relative.split("/")
+        node = root
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                            + b"\0" + data).digest()
+        if parts[-1] in node:
+            raise Denied("source snapshot contains conflicting file names")
+        node[parts[-1]] = (mode, blob)
+
+    def hash_directory(directory):
+        entries = []
+        for name, value in sorted(
+                directory.items(),
+                key=lambda item: (item[0] + ("/" if isinstance(item[1], dict) else "")).encode("utf-8")):
+            if isinstance(value, dict):
+                mode, digest = b"40000", hash_directory(value)
+            else:
+                mode, digest = value[0].encode("ascii"), value[1]
+            entries.append(mode + b" " + name.encode("utf-8") + b"\0" + digest)
+        raw = b"".join(entries)
+        return hashlib.sha1(b"tree " + str(len(raw)).encode("ascii")
+                            + b"\0" + raw).digest()
+
+    return hash_directory(root).hex()
+
+def publish(repository, source, branch, trusted_root, expected_source_tree):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    valid_sha(expected_source_tree)
     # Approval comes before reading potentially sensitive source files.
     approved_destination_id = require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
@@ -311,6 +342,8 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    if source_tree_sha(files) != expected_source_tree:
+        raise Denied("source snapshot Git tree differs from pinned expected SHA")
     base = checked_repo(repository, expected_id=approved_destination_id)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -344,6 +377,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_source_tree:
+        raise Denied("destination source subtree differs from pinned expected SHA")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -373,11 +408,13 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--expected-source-tree", required=True, help="pinned complete source Git tree SHA")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch, root,
+                                args.expected_source_tree)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
