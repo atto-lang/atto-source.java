@@ -64,6 +64,36 @@ final class SourceActorTypedEffectExecutionTest {
                 new ByteArrayOutputStream(), new ByteArrayOutputStream()));
     }
 
+    @Test void uncaughtSynchronousActorThrowEscalatesToRaise() throws Exception {
+        Path entry = source("throw");
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        // Host runtime must see a terminal failure, never an owned guest
+        // Error or a GuestThrowSignal that retains actor heap state.
+        assertThrows(RuntimeException.class, () -> LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+    }
+
+    @Test void actorLocalTryCatchConsumesTheOriginalThrow() throws Exception {
+        Path entry = source("throw");
+        Files.writeString(entry, Files.readString(entry).replace(
+                "throw new WorkerFault(7);",
+                "try { throw new WorkerFault(7); } catch (e) { self.end(); return; }"));
+        assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
+        var result = LinkedProgramRunner.runWithExitStatus(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream());
+        assertEquals(0, result.exitStatus(), "locally handled throw must not raise");
+    }
+
+    @Test void actorThrowRequiresStaticallyProvenError() throws Exception {
+        Path entry = source("throw");
+        Files.writeString(entry, Files.readString(entry).replace(
+                "throw new WorkerFault(7);", "throw 7;"));
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry));
+    }
+
     @Test void scalarActorEffectsAreRejectedBeforeRuntime() throws Exception {
         Path entry = source("raise");
         String source = Files.readString(entry).replace(
