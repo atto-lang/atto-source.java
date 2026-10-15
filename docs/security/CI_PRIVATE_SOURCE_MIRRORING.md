@@ -99,9 +99,14 @@ The publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility
 immediately before each write. Every GitHub API write is constructed from
 that **same validated owner/repo**, rather than a caller-provided URL, Git
-remote, shell command or separate destination argument. It creates blobs,
-then a **fresh standalone source tree with no `base_tree`**, followed by a
-root tree that replaces the **entire** `private-oreslang-source/` directory
+remote, shell command or separate destination argument. It creates a **fresh
+standalone source tree without the carrier `base_tree`**, optionally building
+that source tree through bounded incremental Git Trees API batches. Each
+incremental batch derives only from the prior *isolated source tree*. GitHub
+creates blobs for bounded UTF-8 entries during those tree writes; binary
+and oversized files use individually verified blob uploads. The completed
+source tree must match the pinned Git tree SHA. The final root tree replaces
+the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Before reading any source bytes, the publisher also requires the private
@@ -246,32 +251,40 @@ than relying solely on a valid CODEOWNERS text entry.
 
 ## GitHub API rate-limit preflight
 
-The audited publisher re-authenticates immutable source identity, live
-source and destination branch protections, destination repository ID and
-CODEOWNERS before **each** Git object write. This is deliberately more
-expensive than a simple unauthenticated blob copy and is separate from
-GitHub Actions minute limits.
+The publisher re-authenticates the source and destination security boundary
+immediately **before every Git object write**, including Git Trees API writes
+that create multiple blobs together. Batching reduces *the number of writes*;
+it does not skip any per-write authorization. GitHub Actions minutes and GitHub
+REST API budgets are separate constraints.
 
-For a source snapshot containing `N` files, the publisher checks the
-authenticated GitHub `core.remaining` budget after verifying the local
-snapshot's pinned tree but **before creating its first destination blob**.
-The conservative lower bound is `16 * N + 128` core API requests, allowing
-for fifteen repeated authorization reads plus the blob write and fixed
-tree/commit/ref creation and verification. Invalid, unavailable or
-insufficient rate-limit metadata fails closed. This check does not reserve
-quota, guarantee no concurrent usage or eliminate GitHub secondary limits.
-If resources drop later, further writes still fail closed and unreferenced
-destination Git objects may require owner retention review.
+For a source snapshot with `N` files, UTF-8 content of up to 128 KiB per file
+may be sent inside isolated tree POSTs when `N >= 16`; otherwise files use
+individually verified blob uploads. Batches are bounded to at most 64 entries
+and 256 KiB of accounted input bytes. Non-UTF-8, NUL-containing, and larger
+files use separate Git blob POSTs with SHA-1 verification. The first isolated
+source tree is constructed without a base tree; subsequent partial trees
+use only the *prior isolated tree* as a base. The completed source tree must
+match the independently pinned full Git SHA **before** building the carrier
+root tree or creating a branch.
 
-For example, 554 files require at least **8,992** available core requests
-at admission. A working alternative Actions organization may still lack
-this API allowance or approved branch protections. Do not bypass
-authorization or reduce per-write checks to fit a smaller allowance
-without a separate reviewed security design.
+After computing and verifying the complete local snapshot, the publisher
+checks `core.remaining` before its first destination write. Its conservative
+reserve is `16 * max(1, blob_posts + isolated_tree_batches - 1) + 128`.
+This accounts for repeated authorization checks on *each* write plus fixed
+root-tree/commit/ref creation and readback. Invalid or insufficient quota
+metadata fails closed. This is an estimate, not a reservation, and does not
+guarantee avoidance of concurrent GitHub API consumption or secondary limits.
 
-The exact new `require_private_ci_api_budget` function passed isolated
-local unit tests covering quotas at/above/below boundaries, malformed
-responses and invalid file counts. Its checked source length was 1,058
-characters and FNV-1a fingerprint was `5e0257e7`. The complete
-repository Python/Bash suites have not yet passed on a working source
-CI runner.
+Example: 554 small UTF-8 files can fit in nine tree batches with no separate
+blob POSTs, yielding a modeled admission reserve of **256** core requests
+instead of the previous **8,992**. This is an illustrative source-free
+snapshot, **not a measured benchmark of the exact Java compiler tree**:
+real file sizes, encoding, paths and batch counts determine its actual cost.
+
+Git Trees API incremental behavior was checked using synthetic files in an
+approved-access private carrier without creating a branch or transferring
+compiler source. An isolated local test harness checked 800 deterministic
+randomized batching cases and confirmed a synthetic final tree SHA matches
+GitHub's readback. These are *targeted tests*, not a passing run of the
+full checked-in Python/Bash exporter suites. Those suites still require a
+working trusted runner and independent security review before export.
