@@ -25,11 +25,16 @@ final class ControlWakeRetryQueue {
         final Runnable callback;
         final int lane;
         boolean retained;
+        boolean directReserved;
         boolean cancelled;
         Retry(Runnable callback, int lane, boolean retained) {
+            this(callback, lane, retained, false);
+        }
+        Retry(Runnable callback, int lane, boolean retained, boolean directReserved) {
             this.callback = callback;
             this.lane = lane;
             this.retained = retained;
+            this.directReserved = directReserved;
         }
         Runnable callback() { return callback; }
         int lane() { return lane; }
@@ -43,6 +48,11 @@ final class ControlWakeRetryQueue {
     // callbacks share one finite admission budget. An in-flight callback no
     // longer retains its slot once execution actually begins.
     private int retainedCallbacks;
+    // A stale-epoch retry must not wait behind a full pending queue, but
+    // immediate handoffs can still stall between registration and callback
+    // start. Bound their outstanding tickets independently so that slow or
+    // blocked carrier threads cannot grow aboutToInvoke without limit.
+    private int directHandoffs;
     // Per carrier thread and retry queue: nested synchronous slot releases
     // must not consume an unbounded number of Java stack frames. A state
     // contains no callback reference after its outer dispatch returns.
@@ -95,7 +105,9 @@ final class ControlWakeRetryQueue {
                     dispatch.later.addLast(new Retry(callback, lane, true));
                     return true;
                 }
-                ready = new Retry(callback, lane, false);
+                if (directHandoffs >= capacity) return false;
+                ++directHandoffs;
+                ready = new Retry(callback, lane, false, true);
                 aboutToInvoke.add(ready);
             } else {
                 if (retainedCallbacks >= capacity) return false;
@@ -160,6 +172,10 @@ final class ControlWakeRetryQueue {
             ticket.retained = false;
             --retainedCallbacks;
         }
+        if (ticket.directReserved) {
+            ticket.directReserved = false;
+            --directHandoffs;
+        }
     }
 
     private void revoke(Retry ticket) {
@@ -213,6 +229,10 @@ final class ControlWakeRetryQueue {
 
     synchronized int retained() {
         return retainedCallbacks;
+    }
+
+    synchronized int directHandoffs() {
+        return directHandoffs;
     }
 
     synchronized long callbacksFailed() {
