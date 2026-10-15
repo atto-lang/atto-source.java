@@ -66,6 +66,27 @@ final class PrivateCiRunnerWorkflowSecurityTest {
             if (following.find(start)) next = following.start();
             String body = jobs.substring(start, next);
             String job = matcher.group(1);
+            if (job.equals("deny-unapproved-runner")) {
+                // Skipped required jobs can show as successful in GitHub.
+                // This separate denial job is hosted-only, performs NO source
+                // checkout, and fails on a mismatched approved SHA.
+                String exactDenial = "if: ${{ github.repository != '" + REPO
+                        + "' || github.event.repository.private != true || github.ref != 'refs/heads/"
+                        + expectedBranch + "' || (" + ENABLED
+                        + " == 'true' && (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || "
+                        + "vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha)) }}";
+                assertEquals(exactDenial,
+                        lineContaining(body, "    if: ").trim(),
+                        () -> path + " authorization denial condition changed");
+                assertEquals("runs-on: ubuntu-24.04",
+                        lineContaining(body, "    runs-on: ").trim(),
+                        () -> path + " denied work must never reach a private runner");
+                assertFalse(body.contains("uses: actions/checkout@"),
+                        () -> path + " denied work must not checkout private source");
+                assertTrue(body.contains("exit 1"),
+                        () -> path + " denied work must fail the workflow");
+                continue;
+            }
             count++;
             String gate = lineContaining(body, "    if: ");
             assertNotNull(gate, () -> path + " job " + job + " is missing a pre-checkout admission gate");
@@ -97,7 +118,9 @@ final class PrivateCiRunnerWorkflowSecurityTest {
             assertFalse(body.contains("cache: maven"),
                     () -> path + " job " + job + " publishes a shared Maven cache");
         }
-        assertEquals(3, count, () -> path + " expected exactly 3 protected job definitions");
+        assertEquals(3, count, () -> path + " expected exactly 3 protected execution jobs");
+        assertTrue(jobs.contains("  deny-unapproved-runner:\n"),
+                () -> path + " needs a hosted-only fail-closed denial job");
     }
 
     private static String lineContaining(String text, String prefix) {
