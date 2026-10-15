@@ -71,6 +71,52 @@ JNIEXPORT jint JNICALL METHOD(nRetireSource)(JNIEnv *env, jclass cls,
     return (jint)ores_turn_retire_source_task(PTR(ores_turn_vm, vm),
             PTR(ores_source_task_cap, source));
 }
+JNIEXPORT jlong JNICALL METHOD(nIssueCleanup)(JNIEnv *env, jclass cls,
+        jlong vm, jlong source) {
+    (void)env; (void)cls;
+    ores_cleanup_cap *out = NULL;
+    if (!vm || !source) return 0;
+    if (ores_turn_issue_cleanup(PTR(ores_turn_vm, vm),
+                PTR(ores_source_task_cap, source), &out) != ORES_TURN_OK) return 0;
+    return HANDLE(out);
+}
+JNIEXPORT jlong JNICALL METHOD(nClaimCleanup)(JNIEnv *env, jclass cls,
+        jlong vm, jlong ticket) {
+    (void)env; (void)cls;
+    ores_turn_lease *out = NULL;
+    if (!vm || !ticket) return 0;
+    if (ores_turn_claim_cleanup(PTR(ores_turn_vm, vm),
+                PTR(ores_cleanup_cap, ticket), &out) != ORES_TURN_OK) return 0;
+    return HANDLE(out);
+}
+JNIEXPORT jint JNICALL METHOD(nTerminalInjected)(JNIEnv *env, jclass cls,
+        jlong vm, jlong lease, jlong source) {
+    (void)env; (void)cls;
+    if (!vm || !lease || !source) return ORES_TURN_INVALID;
+    return (jint)ores_turn_note_terminal_injected(PTR(ores_turn_vm, vm),
+            PTR(ores_turn_lease, lease), PTR(ores_source_task_cap, source));
+}
+JNIEXPORT jint JNICALL METHOD(nCheckCleanupEffects)(JNIEnv *env, jclass cls,
+        jlong vm, jlong lease) {
+    (void)env; (void)cls;
+    if (!vm || !lease) return ORES_TURN_INVALID;
+    return (jint)ores_turn_check_cleanup_effects(PTR(ores_turn_vm, vm),
+            PTR(ores_turn_lease, lease));
+}
+JNIEXPORT jint JNICALL METHOD(nCompleteCleanup)(JNIEnv *env, jclass cls,
+        jlong vm, jlong lease, jlong source) {
+    (void)env; (void)cls;
+    if (!vm || !lease || !source) return ORES_TURN_INVALID;
+    return (jint)ores_turn_complete_cleanup(PTR(ores_turn_vm, vm),
+            PTR(ores_turn_lease, lease), PTR(ores_source_task_cap, source));
+}
+JNIEXPORT jint JNICALL METHOD(nCancelCleanup)(JNIEnv *env, jclass cls,
+        jlong vm, jlong ticket) {
+    (void)env; (void)cls;
+    if (!vm || !ticket) return ORES_TURN_INVALID;
+    return (jint)ores_turn_cancel_cleanup(PTR(ores_turn_vm, vm),
+            PTR(ores_cleanup_cap, ticket));
+}
 JNIEXPORT jint JNICALL METHOD(nStop)(JNIEnv *env, jclass cls,
         jlong vm, jlong actor) {
     (void)env; (void)cls;
