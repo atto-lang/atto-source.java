@@ -386,6 +386,23 @@ def snapshot_git_tree_sha(files):
     return tree_digest(root).hex()
 
 
+def checked_source_commit(commit_sha, source_tree_sha):
+    """Bind the exact local snapshot to a commit object in the pinned source repo.
+
+    A local Git repository (including one redirected via environment variables)
+    is not proof that its HEAD belongs to SOURCE_REPOSITORY. Resolve the commit
+    through the authenticated, fixed source-repository API before any export.
+    """
+    valid_sha(commit_sha)
+    valid_sha(source_tree_sha)
+    response = gh_api(f"repos/{SOURCE_REPOSITORY}/git/commits/{commit_sha}")
+    tree = response.get("tree")
+    if (response.get("sha") != commit_sha
+            or not isinstance(tree, dict)
+            or tree.get("sha") != source_tree_sha):
+        raise Denied("source commit is not authenticated against pinned source Git tree")
+
+
 def require_source_tree_match(source, trusted_root, files):
     """Fail closed unless the snapshot is the *entire committed checkout tree*.
 
@@ -405,6 +422,8 @@ def require_source_tree_match(source, trusted_root, files):
             ["git", "-C", str(trusted), "rev-parse",
              "--show-toplevel", "HEAD", "HEAD^{tree}"],
             capture_output=True, text=True, timeout=20, check=False,
+            env={key: value for key, value in os.environ.items()
+                 if not key.startswith("GIT_")},
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("exact-tree Git provenance unavailable") from exc
@@ -443,6 +462,7 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root, omit_checkout_metadata=True)
     source_commit, exact_source_tree = require_source_tree_match(source, trusted_root, files)
+    checked_source_commit(source_commit, exact_source_tree)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
