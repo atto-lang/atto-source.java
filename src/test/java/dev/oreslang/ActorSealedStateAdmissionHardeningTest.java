@@ -186,4 +186,36 @@ final class ActorSealedStateAdmissionHardeningTest {
         assertTrue(denied.getMessage().contains("verified typed projection lowering"),
                 denied::getMessage);
     }
+
+    @Test void canonicalClosedMapSchemaAcceptedButForgedWrappersRejected() {
+        Ast.Program parsed = Parser.parse("define actor A as "
+                + "state: Map<string,int> { value: int = 0; } end");
+        assertDoesNotThrow(() -> ActorStateContract.verify(parsed));
+
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.TypeRef record = Ast.TypeRef.recordType(
+                java.util.Map.of("value", Ast.TypeRef.simple("int")));
+        Ast.TypeRef badMap = new Ast.TypeRef("Map",
+                List.of(Ast.TypeRef.simple("int"), Ast.TypeRef.simple("int")), false);
+        List<Ast.TypeRef> forged = List.of(
+                new Ast.TypeRef("$actor_state_map$", List.of(), false),
+                new Ast.TypeRef("$actor_state_map$", List.of(record), false),
+                new Ast.TypeRef("$actor_state_map$", List.of(Ast.TypeRef.simple("NotMap"), record), false),
+                new Ast.TypeRef("$actor_state_map$", List.of(badMap, record), false),
+                new Ast.TypeRef("$actor_state_map$",
+                        List.of(state.type().arguments().getFirst(),
+                                Ast.TypeRef.readonlyRecordType(
+                                        java.util.Map.of("value", Ast.TypeRef.simple("int")))), false),
+                new Ast.TypeRef("$actor_state_map$", state.type().arguments(), true));
+        for (Ast.TypeRef type : forged) {
+            Ast.FieldDecl changed = new Ast.FieldDecl(
+                    state.name(), state.visibility(), state.bindingKind(), type,
+                    state.annotations(), state.initializer(), state.mutableReferent());
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(replaceStateField(parsed, changed)));
+            assertTrue(denied.getMessage().contains("sealed actor state map"),
+                    denied::getMessage);
+        }
+    }
 }
