@@ -54,7 +54,10 @@ class namespace with unproven effects, cannot satisfy this exception.
 
 The synchronous scalar-helper exception requires a statically resolved
 zero-argument, non-generic, non-async, non-suspending, non-generator,
-non-trapped, non-actor-dispatched callable. Its entire body must be one
+non-trapped, non-actor-dispatched callable. Generic callables remain
+excluded even when every generic parameter has a default type or the
+caller uses an empty `<>` marker; default substitution is not a proof
+of constructor-time effect safety. Its entire body must be one
 scalar-return expression formed from literals and the supported unary and
 arithmetic operations. Abstract static methods are not admissible.
 
