@@ -14,10 +14,10 @@ final class NumericIeee754HardeningTest {
     void finiteBinary64LiteralsAndSeparators() {
         Ast.LiteralExpr value = assertInstanceOf(Ast.LiteralExpr.class,
                 new Parser(new Lexer("1_0.2_5e+1").scan()).parseExpression());
-        assertEquals(102.5, assertInstanceOf(Double.class, value.value()));
+        assertEquals(102.5, assertInstanceOf(Double.class, value.value()).doubleValue());
         assertEquals(Double.MIN_VALUE,
                 assertInstanceOf(Double.class, assertInstanceOf(Ast.LiteralExpr.class,
-                        new Parser(new Lexer("5e-324").scan()).parseExpression()).value()));
+                        new Parser(new Lexer("5e-324").scan()).parseExpression()).value()).doubleValue());
     }
 
     @Test
