@@ -3,7 +3,6 @@ package dev.oreslang.math;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
-import java.math.RoundingMode;
 import java.util.Objects;
 
 /**
@@ -78,13 +77,11 @@ public final class ExactScalarMath {
         Objects.requireNonNull(context, "context");
         validate(Objects.requireNonNull(numerator, "numerator"));
         validate(Objects.requireNonNull(denominator, "denominator"));
-        if (context.getPrecision() <= 0) {
-            throw new IllegalArgumentException("rounded decimal divide requires positive precision");
+        if (context.getPrecision() <= 0 || context.getPrecision() > MAX_DIGITS) {
+            throw new IllegalArgumentException("decimal division context precision out of budget");
         }
-        if (context.getRoundingMode() == RoundingMode.UNNECESSARY) {
-            // Inexact results must fail instead of silently rounding.
-            return checked(numerator.divide(denominator, context));
-        }
+        // RoundingMode.UNNECESSARY already rejects any inexact quotient
+        // with ArithmeticException; no special global rounding state.
         return checked(numerator.divide(denominator, context));
     }
 
