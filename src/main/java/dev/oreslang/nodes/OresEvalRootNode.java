@@ -1544,6 +1544,17 @@ public final class OresEvalRootNode extends RootNode {
                         && selected.mode() == Ast.WaitMode.BLOCKING) {
                 return true;
             }
+            if (expr instanceof Ast.MatchExpr matched) {
+                // Value matches are expressions, not procedural blocks. Check
+                // subject, guards and arm results for cooperative suspension.
+                if (expressionContainsPotentialSuspension(matched.subject(), seen)) return true;
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    if (arm.guard() != null
+                            && expressionContainsPotentialSuspension(arm.guard(), seen)) return true;
+                    if (expressionContainsPotentialSuspension(arm.value(), seen)) return true;
+                }
+                return false;
+            }
             if (expr instanceof Ast.RuntimeCallExpr runtime) {
                 if (runtime.operation().equals("cooperate")) return true;
                 return runtime.arguments().stream()
@@ -2456,8 +2467,9 @@ public final class OresEvalRootNode extends RootNode {
          * A selected branch is a source block, not an exception boundary. Run
          * it on the resumable source frame so RETURN/BREAK/CONTINUE propagate
          * as SourceFlow rather than escaping as host RuntimeExceptions.
-         * Explicit do-select suppresses only the arm-local RETURN; errors,
-         * cancellation and other failures still propagate.
+         * Blocking do-select is procedural: RETURN/BREAK/CONTINUE propagate
+         * through the original source frame, including on resumed selections.
+         * Detached legacy nb-select arms remain a separate continuation scope.
          */
         private void runSelectedArmSuspendable(
                 SourceTask task,
@@ -2472,15 +2484,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.SelectArm arm = select.arms().get(selected.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(arm.bindingName(), selected.value(), arm.bindingKind());
             }
-            runBlock(task, arm.body(), armEnv, (t, flow) ->
-                    continuation.accept(t,
-                            select.explicitDo() && flow.kind() == SourceFlowKind.RETURN
-                                    ? SourceFlow.normal()
-                                    : flow));
+            runBlock(task, arm.body(), armEnv, continuation);
         }
 
         private void runSelectSuspendable(
@@ -2488,6 +2497,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
+            // Reject detached static selection before evaluating case operands
+            // or registering a winning read/write. Cancelling a Future after
+            // selectAsync() may be too late to undo an immediate commit.
+            if (select.mode() == Ast.WaitMode.NONBLOCKING
+                    && !ActorRuntime.inActorExecution()) {
+                continuation.accept(task, SourceFlow.throwing(
+                        new IllegalStateException(
+                                "nonblocking static select requires actor execution")));
+                return;
+            }
             // A blocking/nonblocking select arms callback or Future state.
             // Validate before selecting: late rejection could consume a
             // message, publish a send, or leave an armed callback behind.
@@ -2523,15 +2542,7 @@ public final class OresEvalRootNode extends RootNode {
             OresFuture<ChannelRuntime.SelectResult> future =
                     set.selectAsync(policy);
             if (select.mode() == Ast.WaitMode.NONBLOCKING) {
-                if (!ActorRuntime.inActorExecution()) {
-                    future.cancel(false);
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "nonblocking static select requires actor execution")));
-                    return;
-                }
+                // Actor admission was checked before buildStaticSelectSet.
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 context.actors().enqueueOnCompletion(
@@ -3060,6 +3071,25 @@ public final class OresEvalRootNode extends RootNode {
                     return;
                 }
 
+                if (expr instanceof Ast.MatchExpr matched) {
+                    // Evaluate the subject once on the SourceTask. In
+                    // particular, an awaited subject must not be replayed
+                    // after a losing guard or after resumption.
+                    evalSuspendableExpr(
+                            task,
+                            matched.subject(),
+                            env,
+                            (t, value, failure) -> {
+                                if (failure != null) {
+                                    continuation.accept(t, null, failure);
+                                } else {
+                                    evalSuspendableValueMatchArm(
+                                            t, matched, value, env, 0, continuation);
+                                }
+                            });
+                    return;
+                }
+
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -3559,6 +3589,72 @@ public final class OresEvalRootNode extends RootNode {
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
             }
+        }
+
+        /**
+         * Evaluate only the first matching value arm, including its guard and
+         * result, on the resumable source task. Unlike a procedural do-match,
+         * the selected arm publishes a value to the expression continuation;
+         * it never emits a function-level RETURN flow.
+         */
+        private void evalSuspendableValueMatchArm(
+                SourceTask task,
+                Ast.MatchExpr matched,
+                Object subject,
+                Env parent,
+                int index,
+                SourceValueCont continuation) {
+            if (index >= matched.arms().size()) {
+                continuation.accept(
+                        task, null,
+                        new IllegalStateException(
+                                "exhaustive value match invariant violated at runtime"));
+                return;
+            }
+
+            Ast.MatchValueArm arm = matched.arms().get(index);
+            final Env armEnv;
+            try {
+                LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                if (!patternMatches(arm.pattern(), subject, bindings)) {
+                    evalSuspendableValueMatchArm(
+                            task, matched, subject, parent, index + 1, continuation);
+                    return;
+                }
+                armEnv = new Env(parent);
+                bindings.forEach((name, value) ->
+                        armEnv.define(name, value, Ast.BindingKind.VAL));
+            } catch (RuntimeException | Error failure) {
+                continuation.accept(task, null, failure);
+                return;
+            }
+
+            if (arm.guard() == null) {
+                evalSuspendableExpr(task, arm.value(), armEnv, continuation);
+                return;
+            }
+            evalSuspendableExpr(
+                    task,
+                    arm.guard(),
+                    armEnv,
+                    (t, guard, failure) -> {
+                        if (failure != null) {
+                            continuation.accept(t, null, failure);
+                            return;
+                        }
+                        try {
+                            if (truth(guard)) {
+                                evalSuspendableExpr(
+                                        t, arm.value(), armEnv, continuation);
+                            } else {
+                                evalSuspendableValueMatchArm(
+                                        t, matched, subject, parent,
+                                        index + 1, continuation);
+                            }
+                        } catch (RuntimeException | Error guardFailure) {
+                            continuation.accept(t, null, guardFailure);
+                        }
+                    });
         }
 
         private void evalSuspendableArguments(
@@ -4353,6 +4449,16 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private static int sequenceIndex(Object value) {
+            // Dynamic/host values still cross this check. Number.longValue()
+            // would silently truncate floating-point indices (including NaN).
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long)) {
+                throw new IllegalArgumentException("array/list index must be an integer");
+            }
+            return Math.toIntExact(((Number) value).longValue());
+        }
+
         private Object indexValue(Object receiver, Object index) {
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
@@ -4371,11 +4477,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return value;
             }
-            if (!(index instanceof Number number)) {
-                throw new IllegalArgumentException(
-                        "array/list index must be an integer");
-            }
-            int i = Math.toIntExact(number.longValue());
+            int i = sequenceIndex(index);
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
             throw new IllegalArgumentException(
@@ -4439,11 +4541,10 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
-                if (receiver instanceof List<?> raw
-                        && key instanceof Number number) {
+                if (receiver instanceof List<?> raw) {
                     @SuppressWarnings("unchecked")
                     List<Object> list = (List<Object>) raw;
-                    list.set(Math.toIntExact(number.longValue()), value);
+                    list.set(sequenceIndex(key), value);
                     return value;
                 }
                 throw new IllegalArgumentException(
@@ -4511,7 +4612,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 List<?> captured = fn.async()
-                        ? detachAsyncArguments(normalized)
+                        ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
                     GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
@@ -4533,7 +4634,7 @@ public final class OresEvalRootNode extends RootNode {
                             startSourceFunctionTask(
                                     fn,
                                     fn.async()
-                                            ? detachAsyncArguments(normalized)
+                                            ? detachAsyncArguments(normalized, fn.parameters())
                                             : normalized);
 
                     if (fn.async()) {
@@ -4612,10 +4713,37 @@ public final class OresEvalRootNode extends RootNode {
             return objectArguments(args);
         }
 
-        private List<?> detachAsyncArguments(List<?> args) {
+        private List<?> detachAsyncArguments(
+                List<?> args,
+                List<Ast.Param> parameters) {
+            if (args.size() != parameters.size()) {
+                throw new IllegalArgumentException(
+                        "async task argument count differs from its formal parameters");
+            }
             ArrayList<Object> detached = new ArrayList<>(args.size());
-            for (Object arg : args) {
-                detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
+            for (int i = 0; i < args.size(); i++) {
+                Object arg = args.get(i);
+                if (arg instanceof ChannelRuntime.Channel<?> channel) {
+                    // Channel<T> is an Ores-owned synchronized, copyable handle
+                    // within an execution domain. Preserve its coordinator
+                    // identity across local async source task arguments, but
+                    // require the *formal* to explicitly declare Channel<T>.
+                    // This runtime gate also protects host-entered callables
+                    // that might bypass source expression type checking.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"Channel".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task channel argument " + (i + 1)
+                                        + " requires an explicit Channel<T> parameter");
+                    }
+                    // Actor/mailbox boundary capabilities remain forbidden.
+                    // Nested channel capabilities still fail detachAsyncValue.
+                    detached.add(channel);
+                } else {
+                    detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
+                }
             }
             return List.copyOf(detached);
         }
@@ -4756,7 +4884,7 @@ public final class OresEvalRootNode extends RootNode {
                         startSourceFunctionTask(
                                 fn,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
@@ -5274,6 +5402,14 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt selected,
                 Env env,
                 boolean tailBarrier) {
+            // Fail before evaluating channel/payload expressions or committing
+            // a ready operation. Future cancellation is not rollback.
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && !ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "static nb select branches require an actor execution context; "
+                                + "use 'nb select from cases' when you only need a Future");
+            }
             ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
@@ -5295,13 +5431,7 @@ public final class OresEvalRootNode extends RootNode {
                     set.selectAsync(policy);
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                if (!ActorRuntime.inActorExecution()) {
-                    future.cancel(false);
-                    throw new IllegalStateException(
-                            "static nb select branches require an actor execution context; "
-                                    + "use 'nb select from cases' when you only need a Future");
-                }
-
+                // Execution-domain admission occurred before selectAsync().
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 Env captured = env.snapshot();
@@ -5339,6 +5469,14 @@ public final class OresEvalRootNode extends RootNode {
                     case WRITE -> cases.add(ChannelRuntime.write(
                             requireChannel(eval(arm.channel(), env), "writech select case"),
                             eval(arm.value(), env)));
+                    case AWAIT -> {
+                        Object future = eval(arm.channel(), env);
+                        if (!(future instanceof OresFuture<?> typedFuture)) {
+                            throw new IllegalArgumentException(
+                                    "when await requires Oreslang Future<T> (not a host callback)");
+                        }
+                        cases.add(ChannelRuntime.await(typedFuture));
+                    }
                 }
             }
             return new ChannelRuntime.SelectSet(
@@ -5376,7 +5514,8 @@ public final class OresEvalRootNode extends RootNode {
 
             Ast.SelectArm arm = selected.arms().get(result.index());
             Env armEnv = new Env(parent);
-            if (arm.operation() == Ast.ChannelOperation.READ
+            if ((arm.operation() == Ast.ChannelOperation.READ
+                    || arm.operation() == Ast.ChannelOperation.AWAIT)
                     && arm.bindingName() != null) {
                 armEnv.define(
                         arm.bindingName(),
@@ -5385,19 +5524,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (!detached) {
-                if (selected.explicitDo()) {
-                    try {
-                        // Return values are discarded, so this arm must be a
-                        // tail-call barrier even when the caller is in tail
-                        // position. Otherwise 'return fn();' escapes as a
-                        // TailCallSignal and hijacks the enclosing callable.
-                        executeBlock(arm.body(), armEnv, true);
-                    } catch (ReturnSignal ignored) {
-                        // Do-select return is arm-local; expression evaluated, value discarded.
-                    }
-                } else {
-                    executeBlock(arm.body(), armEnv, tailBarrier);
-                }
+                // Procedural do-select has the same enclosing-callable control
+                // scope as do-match/do-switch; do not swallow ReturnSignal.
+                executeBlock(arm.body(), armEnv, tailBarrier);
                 return;
             }
 
@@ -5942,6 +6071,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.MatchExpr valueMatch) {
+                Object subject = eval(valueMatch.subject(), env);
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    // The arm's return is the result of this expression;
+                    // do not throw the enclosing callable's Return signal.
+                    return eval(arm.value(), armEnv);
+                }
+                throw new IllegalStateException(
+                        "exhaustive value match invariant violated at runtime");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -6084,8 +6229,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                    int i = Math.toIntExact(number.longValue());
+                    int i = sequenceIndex(index);
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
@@ -6225,28 +6369,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
-                Object receiver = eval(indexed.receiver(), env);
-                Object index = eval(indexed.index(), env);
-                if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
-                        throw new IllegalArgumentException("indexed map key must be a String or Symbol");
-                    }
-                    Object key = index;
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown struct/map key " + key);
-                    }
-                    Object value = map.get(key);
-                    if (value == UNINITIALIZED_FIELD) {
-                        throw new IllegalArgumentException(
-                                "explicit struct field '" + key + "' is read before initialization");
-                    }
-                    return value;
-                }
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable: " + receiver);
+                return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
@@ -6766,6 +6889,7 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "read" -> (Invokable) factory::read;
                     case "write" -> (Invokable) factory::write;
+                    case "future" -> (Invokable) factory::future;
                     case "default" -> (Invokable) factory::defaultCase;
                     default -> throw new IllegalArgumentException(
                             "unknown SelectCase factory member " + name);
@@ -7003,11 +7127,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "get" -> (Invokable) args -> {
                         requireOne(args, "List.get");
                         Object index = args.getFirst();
-                        if (!(index instanceof Number number)) {
-                            throw new IllegalArgumentException(
-                                    "List.get index must be an integer");
-                        }
-                        return rawList.get(Math.toIntExact(number.longValue()));
+                        return rawList.get(sequenceIndex(index));
                     };
                     case "add" -> (Invokable) args -> {
                         requireOne(args, "List.add");
@@ -7022,13 +7142,9 @@ public final class OresEvalRootNode extends RootNode {
                                     "List.set expects exactly 2 argument(s)");
                         }
                         Object index = args.getFirst();
-                        if (!(index instanceof Number number)) {
-                            throw new IllegalArgumentException(
-                                    "List.set index must be an integer");
-                        }
                         @SuppressWarnings("unchecked")
                         List<Object> list = (List<Object>) rawList;
-                        list.set(Math.toIntExact(number.longValue()), args.get(1));
+                        list.set(sequenceIndex(index), args.get(1));
                         return null;
                     };
                     default -> throw new IllegalArgumentException(
@@ -7283,7 +7399,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn,
                                 null,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
@@ -7536,12 +7652,25 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
-                    if (i < args.size()) value = args.get(i);
-                    else if (field.initializer() != null) {
+                    if (i < args.size()) {
+                        // Runtime defense in depth: reject fixed-slot injection
+                        // even if this path is reached through a linked program
+                        // or an AST that skipped the static type checker.
+                        if (field.initializer() != null
+                                && field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "positional construction cannot override initialized final class field '"
+                                            + klass.name() + "." + field.name() + "'");
+                        }
+                        value = args.get(i);
+                    } else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                        // The object must remain unobservable while fields
+                        // are being initialized. Static analysis never binds
+                        // self in field initializer scope; the runtime must
+                        // enforce that same boundary for linked/unchecked code.
                         Env initializerEnv = new Env(null, false, fieldOwner);
-                        initializerEnv.define("self", object, Ast.BindingKind.VAL);
                         value = eval(field.initializer(), initializerEnv);
                     } else {
                         throw new IllegalArgumentException(
@@ -7570,17 +7699,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresObject object = new OresObject(this, klass, fields);
 
-            // Field initializers run before the constructor body and with the
-            // declaring class's private-member authority.
-            for (Ast.FieldDecl field : classFields) {
-                if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
-                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
-                Env initializerEnv = new Env(null, false, fieldOwner);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
-            }
-
+            // Bind constructor parameters before evaluating field initializers.
+            // The object is not returned or published until all initializers
+            // and constructor-body validation have completed.
             Env constructorEnv = new Env(null, false, klass, object);
             constructorEnv.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(
@@ -7588,6 +7709,45 @@ public final class OresEvalRootNode extends RootNode {
                     constructor.parameters(),
                     args,
                     "constructor " + klass.name());
+
+            // Deliberately narrower than the constructor-body environment.
+            // A reference, borrow or move-only parameter cannot be injected
+            // into a declaration initializer without a checked transfer
+            // proof. The implicit arguments tuple is likewise unavailable.
+            // Initializer parameter frames carry no constructor authority:
+            // they cannot authorize a write to an uninitialized object slot.
+            Env scalarInitializerArgs = new Env(null, false, klass);
+            for (int i = 0; i < constructor.parameters().size(); i++) {
+                Ast.Param param = constructor.parameters().get(i);
+                Ast.TypeRef parameterType = param.type();
+                String typeName = parameterType.name();
+                if (!parameterType.isBorrow()
+                        && parameterType.arguments().isEmpty()
+                        && !param.structural()
+                        && (typeName.equals("int") || typeName.equals("bool")
+                                || typeName.equals("float") || typeName.equals("string"))) {
+                    scalarInitializerArgs.define(
+                            param.name(), args.get(i),
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+
+            // Field initializers run before the constructor body and with the
+            // declaring class's private-member authority. Only the declaring
+            // class may read its own constructor arguments, not inherited
+            // parent-field initializers.
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() == null) continue;
+                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                // Do not bind self. Constructor parameters are scalar-only,
+                // and the partly built instance is not an initializer value.
+                Env initializerEnv = new Env(
+                        fieldOwner == klass ? scalarInitializerArgs : null,
+                        false, fieldOwner, null);
+                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+            }
+
             try {
                 executeBlock(constructor.body(), constructorEnv);
             } catch (ReturnSignal signal) {
@@ -8148,6 +8308,9 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (target.isComplement()) {
+                return !oresTypeMatches(value, target.complementedType());
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
@@ -8421,7 +8584,19 @@ public final class OresEvalRootNode extends RootNode {
                     return left.doubleValue() == right.doubleValue();
                 }
             }
-            if (isIntegral(left) && isIntegral(right)) return left.longValue() == right.longValue();
+            boolean integralLeft = isIntegral(left);
+            boolean integralRight = isIntegral(right);
+            if (integralLeft && integralRight) return left.longValue() == right.longValue();
+            if (integralLeft != integralRight) {
+                // Converting a long above 2^53 to double silently merges
+                // distinct numeric values. Compare exact finite decimal
+                // representations instead, matching static subsumption.
+                Number integer = integralLeft ? left : right;
+                Number floating = integralLeft ? right : left;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
             return left.doubleValue() == right.doubleValue();
         }
 
@@ -8729,7 +8904,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
-        private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
+        private String display(Object value) { return CycleSafeDisplay.render(value); }
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
@@ -9026,7 +9201,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Object get(Object key) { return fields.get(key); }
         @Override public boolean containsKey(Object key) { return fields.containsKey(key); }
         @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
-        @Override public String toString() { return "infer struct" + fields; }
+        @Override public String toString() { return CycleSafeDisplay.render(this); }
     }
 
     private record SourceActorState(
@@ -9054,11 +9229,136 @@ public final class OresEvalRootNode extends RootNode {
             this.fields = fields;
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
-        @Override public String toString(){
-            LinkedHashMap<String,Object> display = new LinkedHashMap<>();
-            fields.forEach((name, value) ->
-                    display.put(name, value == Evaluator.UNINITIALIZED_FIELD ? "<uninitialized>" : value));
-            return klass.name()+display;
+        @Override public String toString() { return CycleSafeDisplay.render(this); }
+    }
+
+
+    /** Identity-aware bounded diagnostic rendering; not a serializer. */
+    static final class CycleSafeDisplay {
+        private static final int MAX_DEPTH = 64;
+        private static final int MAX_NODES = 8192;
+        private static final int MAX_CHARS = 65536;
+        private static final String TRUNCATED = "<truncated>";
+
+        static String render(Object value) {
+            State state = new State();
+            state.append(value, 0);
+            return state.output.toString();
+        }
+
+        private static final class State {
+            private final StringBuilder output = new StringBuilder();
+            private final IdentityHashMap<Object, Boolean> visiting = new IdentityHashMap<>();
+            private int nodes;
+
+            private void write(String value) {
+                if (output.length() >= MAX_CHARS) return;
+                int available = MAX_CHARS - output.length();
+                if (value.length() > available) {
+                    int prefix = Math.max(0, available - TRUNCATED.length());
+                    output.append(value, 0, prefix);
+                    if (available > prefix) output.append(TRUNCATED, 0, available - prefix);
+                } else {
+                    output.append(value);
+                }
+            }
+
+            private void append(Object value, int depth) {
+                if (output.length() >= MAX_CHARS) return;
+                if (depth > MAX_DEPTH || ++nodes > MAX_NODES) {
+                    write(TRUNCATED);
+                    return;
+                }
+                if (!(value instanceof OresObject
+                        || value instanceof ReadonlyRecordValue
+                        || value instanceof OptionValue
+                        || value instanceof ResultValue
+                        || value instanceof Map<?, ?>
+                        || value instanceof List<?>
+                        || value instanceof Set<?>
+                        || value instanceof Object[])) {
+                    write(value instanceof String str ? str : String.valueOf(value));
+                    return;
+                }
+                if (visiting.put(value, Boolean.TRUE) != null) {
+                    write("<cycle>");
+                    return;
+                }
+                try {
+                    if (value instanceof OresObject object) {
+                        write(object.klass.name());
+                        write("{");
+                        boolean first = true;
+                        for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                            if (!first) write(", ");
+                            first = false;
+                            write(entry.getKey());
+                            write("=");
+                            append(entry.getValue() == Evaluator.UNINITIALIZED_FIELD
+                                    ? "<uninitialized>" : entry.getValue(), depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("}");
+                    } else if (value instanceof ReadonlyRecordValue readonly) {
+                        write("infer struct");
+                        append(readonly.fields, depth + 1);
+                    } else if (value instanceof OptionValue option) {
+                        if (!option.present()) {
+                            write("None");
+                        } else {
+                            write("Some(");
+                            append(option.value(), depth + 1);
+                            write(")");
+                        }
+                    } else if (value instanceof ResultValue result) {
+                        write(result.ok() ? "Ok(" : "Err(");
+                        if (!(result.ok() && result.value() == null)) append(result.value(), depth + 1);
+                        write(")");
+                    } else if (value instanceof Map<?, ?> map) {
+                        write("{");
+                        boolean first = true;
+                        for (Map.Entry<?, ?> entry : map.entrySet()) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(entry.getKey(), depth + 1);
+                            write("=");
+                            append(entry.getValue(), depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("}");
+                    } else if (value instanceof List<?> list) {
+                        write("[");
+                        boolean first = true;
+                        for (Object element : list) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("]");
+                    } else if (value instanceof Set<?> set) {
+                        write("[");
+                        boolean first = true;
+                        for (Object element : set) {
+                            if (!first) write(", ");
+                            first = false;
+                            append(element, depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("]");
+                    } else if (value instanceof Object[] array) {
+                        write("[");
+                        for (int i = 0; i < array.length; i++) {
+                            if (i != 0) write(", ");
+                            append(array[i], depth + 1);
+                            if (output.length() >= MAX_CHARS) break;
+                        }
+                        write("]");
+                    }
+                } finally {
+                    visiting.remove(value);
+                }
+            }
         }
     }
 
@@ -9100,6 +9400,15 @@ public final class OresEvalRootNode extends RootNode {
             return ChannelRuntime.write(
                     (ChannelRuntime.Channel) channel,
                     args.get(1));
+        }
+
+        private Object future(List<Object> args) {
+            requireOne(args, "SelectCase.future");
+            if (!(args.getFirst() instanceof OresFuture<?> pending)) {
+                throw new IllegalArgumentException(
+                        "SelectCase.future requires an Oreslang Future<T>");
+            }
+            return ChannelRuntime.await(pending);
         }
 
         private Object defaultCase(List<Object> args) {
@@ -9205,15 +9514,14 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
-        @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
+        @Override public String toString(){return CycleSafeDisplay.render(this);}
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){
             return value == null ? List.of() : List.of(value);
         }
         @Override public String toString(){
-            return ok && value == null ? "Ok()" :
-                    ok ? "Ok(" + value + ")" : "Err(" + value + ")";
+            return CycleSafeDisplay.render(this);
         }
     }
     private record OptionUnwrapError(String reason) {
@@ -9326,7 +9634,7 @@ public final class OresEvalRootNode extends RootNode {
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);
-        String value = String.valueOf(args.getFirst());
+        String value = CycleSafeDisplay.render(args.getFirst());
         long started = dev.oreslang.runtime.CorePerf.start();
         try {
             if (newline) {
@@ -9349,7 +9657,7 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object log(List<Object> args){
             context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.log");
-            for(Object arg:args)context.output().print(String.valueOf(arg));
+            for(Object arg:args)context.output().print(CycleSafeDisplay.render(arg));
             context.output().println();
             context.output().flush();
             return null;

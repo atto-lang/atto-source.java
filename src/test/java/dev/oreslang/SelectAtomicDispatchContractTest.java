@@ -1,10 +1,40 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectAtomicDispatchContractTest {
+    @Test
+    void nonActorDetachedSelectIsRejectedEvenWhenChannelCouldCommitImmediately() {
+        // Runtime lowering must also check the actor boundary before creating
+        // a SelectSet or calling selectAsync(): cancellation cannot undo an
+        // already-committed ready send. Static typechecking is the first gate.
+        for (String header : new String[]{"nb select", "do nb select"}) {
+            String source = """
+                    pub fnc main(): void {
+                      val Channel<int> channel = Channel.new<int>(1);
+                    """ + "  " + header + """
+                     {
+                        case writech channel, 42: {
+                          stdio.stdout.write("should-not-execute");
+                        }
+                      }
+                      return;
+                    }
+                    """;
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source),
+                    header);
+            assertTrue(failure.getMessage().contains("actor execution domain"),
+                    failure::getMessage);
+        }
+    }
+
     @Test
     void prioritySelectExecutesExactlyOneReadyArm() throws Exception {
         String source = """
