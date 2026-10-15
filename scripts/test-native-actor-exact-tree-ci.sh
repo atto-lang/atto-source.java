@@ -29,10 +29,11 @@ if [ "$actual_commit" != "$ORES_CI_EXPECTED_COMMIT_SHA" ] ||
   exit 1
 fi
 
-# No caller-supplied untracked source can be allowed to influence an exact
-# Git-tree test. target/ is intentionally ignored: it holds only build output.
-if [ -n "$(git status --porcelain --untracked-files=all -- \
-    src/main/c src/main/java src/test/c src/test/java scripts pom.xml)" ]; then
+# The WHOLE checkout must be pristine, not just Java/C subdirectories.
+# Maven also loads stdlib, resources, .mvn and potentially other tracked inputs.
+# Use an ephemeral fresh source checkout; any pre-existing untracked build
+# output must be removed by the operator before entering this gate.
+if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
   echo "CI source checkout has modified or untracked inputs" >&2
   exit 1
 fi
@@ -53,6 +54,11 @@ fi
 java -version
 javac -version
 mvn -version
+
+# The immutable source check must precede every build, and stale native
+# objects and Maven reports must never satisfy a current-head test.
+mvn -B -ntp clean
+rm -rf target/native target/native-jni
 
 CC=gcc ORES_NATIVE_SANITIZE=0 ORES_NATIVE_TSAN=0 \
   sh scripts/test-native-actor-turn.sh
