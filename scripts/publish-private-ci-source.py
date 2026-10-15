@@ -147,18 +147,15 @@ def checked_repo(repository, expected_id=None):
 
 
 def require_preflight(repository, root):
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True,
-                           env=verified_child_env(), timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
-    return checked_repo(repository)["id"]
+    """Read trusted approval as data; never execute checkout-local Bash.
+
+    A mutable path can be swapped after byte attestation but before Bash
+    opens it. The publisher needs the same policy and live repository ID
+    check, not a second executable interpreter entry point.
+    """
+    reviewed_policy = checked_policy_fingerprint(root, repository)
+    destination = checked_repo(repository, expected_id=reviewed_policy[1])
+    return destination["id"]
 
 
 def checked_policy_fingerprint(root, repository):
@@ -664,9 +661,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # Require the exact policy Git blob to exist on protected source main.
     reviewed_main_sha = require_protected_main_policy(approved_policy)
     require_trusted_publisher_checkout(trusted_root, reviewed_main_sha)
-    # Only a pinned, clean protected-main checkout may execute its own guard.
-    # All failures above occur before launching any checkout-local code,
-    # inspecting private source files, or writing destination Git objects.
+    # No checkout-local shell runs here. Revalidate the approved policy data
+    # and pinned private destination identity without interpreting local code.
+    # All failures above occur before private source reads or Git writes.
     approved_destination_id = require_preflight(repository, trusted_root)
     if approved_policy[1] != approved_destination_id:
         raise Denied("destination numeric ID differs from reviewed approval policy")
