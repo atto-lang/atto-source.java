@@ -280,7 +280,25 @@ public record IsolatePolicy(
                 || className.equals("java.util.Formatter")
                 || className.equals("java.util.zip.ZipFile")
                 || className.equals("java.util.jar.JarFile")
-                || className.equals("javax.imageio.ImageIO")) {
+                || className.equals("javax.imageio.ImageIO")
+                // Exact class names do not constrain public method authority.
+                // These other JDK APIs can open files, sockets, preferences,
+                // resources, database connections, or remote XML entities.
+                // Keep such operations behind scoped Ores-owned APIs.
+                || className.startsWith("java.util.logging.")
+                || className.startsWith("java.util.prefs.")
+                || className.startsWith("java.util.zip.")
+                || className.startsWith("java.util.jar.")
+                || className.startsWith("javax.imageio.")
+                || className.startsWith("javax.naming.")
+                || className.startsWith("javax.net.")
+                || className.startsWith("java.sql.")
+                || className.startsWith("javax.sql.")
+                || className.startsWith("java.rmi.")
+                || className.startsWith("javax.xml.")
+                || className.startsWith("org.xml.sax.")
+                || className.equals("java.awt.Desktop")
+                || className.equals("java.util.ResourceBundle")) {
             throw new SecurityException(
                     "direct Java host I/O is blocked from class-level interop; "
                             + "use Oreslang fs/network/http APIs: " + className);
