@@ -15,8 +15,10 @@ import java.util.Objects;
  * Runtime callers coalesce to one stable callback per parent actor.
  */
 final class ControlWakeRetryQueue {
+    private static final int MAX_LANE_AFFINITY_SCAN = 16;
+    private record Retry(Runnable callback, int lane) { }
     private final int capacity;
-    private final ArrayDeque<Runnable> pending = new ArrayDeque<>();
+    private final ArrayDeque<Retry> pending = new ArrayDeque<>();
     private long releaseEpoch;
     private boolean closed;
     private long callbacksFailed;
@@ -31,30 +33,58 @@ final class ControlWakeRetryQueue {
     }
 
     boolean register(Runnable callback, long observedEpoch) {
+        return register(callback, observedEpoch, -1);
+    }
+
+    boolean register(Runnable callback, long observedEpoch, int lane) {
         Objects.requireNonNull(callback, "callback");
         Runnable ready = null;
         synchronized (this) {
             if (closed || pending.size() >= capacity) return false;
-            pending.addLast(callback);
-            if (releaseEpoch != observedEpoch) ready = pending.removeFirst();
+            pending.addLast(new Retry(callback, lane));
+            if (releaseEpoch != observedEpoch) ready = dequeueForLane(lane);
         }
         notifyRetry(ready);
         return true;
     }
 
-    void slotReleased() {
+    void slotReleased() { slotReleased(-1); }
+
+    void slotReleased(int lane) {
         Runnable ready;
         synchronized (this) {
             if (closed) return;
             ++releaseEpoch;
-            ready = pending.pollFirst();
+            ready = dequeueForLane(lane);
         }
         notifyRetry(ready);
     }
 
+    /**
+     * Prefer the lane that just freed a physical queue slot. The global
+     * fallback is essential: shared admission permits can be released on a
+     * different lane even when a waiting parent's own lane is idle.
+     * Scan at most 16 entries per release to bound scheduler overhead.
+     */
+    private Runnable dequeueForLane(int lane) {
+        if (pending.isEmpty()) return null;
+        if (lane >= 0) {
+            var cursor = pending.iterator();
+            int inspected = 0;
+            while (cursor.hasNext() && inspected++ < MAX_LANE_AFFINITY_SCAN) {
+                Retry candidate = cursor.next();
+                if (candidate.lane() == lane) {
+                    cursor.remove();
+                    return candidate.callback();
+                }
+            }
+        }
+        return pending.removeFirst().callback();
+    }
+
     synchronized void cancel(Runnable callback) {
         // Runnable identity is host-owned and one per parent actor.
-        pending.removeIf(next -> next == callback);
+        pending.removeIf(next -> next.callback() == callback);
     }
 
     synchronized void close() {
