@@ -268,6 +268,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" and route.endswith("/git/refs")
                              for m, route, _ in self.route_calls))
 
+    def test_source_force_push_revocation_prevents_next_git_write(self):
+        # Revocation after one private blob write must prevent construction
+        # of a new tree, commit, or CI branch.
+        original_api = self.fake_api
+        def revoke_after_first_blob(route, method="GET", payload=None):
+            result = original_api(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.source_force_push_rules[0] = {"enabled": True}
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "unsafe ref-update"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
     def test_unprotected_carrier_main_denies_before_source_read(self):
         self.carrier_main_protected = [False] * 100
         with patch.object(pub, "collect_source",
