@@ -825,17 +825,45 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
-    def test_source_must_be_under_trusted_checkout(self):
-        outside = self.root.parent / ("unsafe-" + self.root.name)
-        outside.mkdir()
-        try:
-            (outside / "outside.ores").write_text("private data")
+    def test_candidate_checkout_can_be_separate_from_trusted_publisher(self):
+        # Publisher code/policy live under self.root, candidate source in a
+        # different checkout. Unit test substitutes the exact remote HEAD
+        # proof, which is separately exercised against real Git above.
+        with tempfile.TemporaryDirectory() as external:
+            candidate = Path(external)
+            (candidate / "outside.ores").write_text("private data")
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
-                with self.assertRaisesRegex(pub.Denied, "trusted checkout"):
-                    pub.publish("trusted/ci", outside, "ci/oreslang-test", self.root)
-        finally:
-            (outside / "outside.ores").unlink()
-            outside.rmdir()
+                sha, count = pub.publish(
+                    "trusted/ci", candidate, "ci/oreslang-test", self.root)
+            self.assertEqual((sha, count), (A, 1))
+            blob_writes = [payload for method, route, payload in self.route_calls
+                           if method == "POST" and route.endswith("/git/blobs")]
+            self.assertEqual(len(blob_writes), 1)
+            self.assertEqual(base64.b64decode(blob_writes[0]["content"]),
+                             b"private data")
+
+    def test_candidate_checkout_cannot_self_approve_private_export(self):
+        # Attacker-controlled candidate policy/script must not authorize itself.
+        with tempfile.TemporaryDirectory() as external:
+            candidate = Path(external)
+            (candidate / ".github").mkdir()
+            (candidate / ".github" / "private-ci-approved-repositories.txt"
+             ).write_text("trusted/ci\\n")
+            (candidate / "run.sh").write_text("#!/bin/sh\\nexit 0\\n")
+            self.approval.write_text("# protected publisher policy denies\\n")
+            with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
+                    pub.publish("trusted/ci", candidate, "ci/oreslang-test",
+                                self.root)
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_symlinked_candidate_checkout_refused(self):
+        link = self.root / "linked-source"
+        link.symlink_to(self.source, target_is_directory=True)
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(pub.Denied, "symlink"):
+                pub.publish("trusted/ci", link, "ci/oreslang-test", self.root)
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_python_preflight_never_executes_checkout_controlled_bash(self):
@@ -914,9 +942,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "unsupported name"):
             pub.collect_source(self.source, self.root, omit_checkout_metadata=True)
 
-    def test_git_metadata_directory_rejected(self):
+    def test_checkout_git_metadata_directory_is_omitted(self):
         (self.source / ".git").mkdir()
-        with self.assertRaises(pub.Denied):
+        (self.source / ".git" / "config").write_text("not source content")
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (A, 1))
+        source_paths = [
+            entry["path"] for method, route, payload in self.route_calls
+            if method == "POST" and route.endswith("/git/trees")
+            and isinstance(payload, dict) and "base_tree" not in payload
+            for entry in payload["tree"]]
+        self.assertEqual(source_paths, ["hello.ores"])
+
+    def test_checkout_git_metadata_symlink_is_rejected(self):
+        (self.source / ".git").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(pub.Denied, "Git metadata"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
