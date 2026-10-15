@@ -1194,6 +1194,16 @@ public final class TypeChecker {
                                 + "' requires async next_val(MiddlewareContext, MiddlewareResponseDraft)"
                                 + ": MiddlewareDecision<T>; !void is not a typed middleware decision");
                     }
+                    if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY) {
+                        Ast.MethodDecl run = klass.methods().stream()
+                                .filter(m -> !m.isStatic() && m.name().equals("run"))
+                                .findFirst().orElse(null);
+                        if (run != null && !result.arguments().getFirst().equals(run.returnType())) {
+                            throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
+                                    + "' next_val reply type must match unary actor '"
+                                    + klass.name() + ".run' return type exactly");
+                        }
+                    }
                 } else {
                     hasAround = true;
                     boolean legacy = params.size() == 2
