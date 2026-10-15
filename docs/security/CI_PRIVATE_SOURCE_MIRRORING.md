@@ -38,7 +38,10 @@ metadata may be omitted; nested Git metadata or source symlinks are rejected.
 GitHub reports source `main` as protected and permits inspection of its branch
 protection rules. It requires code-owner review, stale-review dismissal, at
 least one approval, strict nonempty required CI, administrator enforcement,
-and disabled force pushes/deletions; failure to read these settings is a denial.
+and disabled force pushes/deletions; GitHub must explicitly require the
+`preflight-regressions` CI context (or an app-scoped equivalent with a positive
+GitHub App ID). Unrelated required CI jobs or a wildcard-app check cannot
+satisfy the policy. Failure to read these settings is a denial.
 This checks current enforcement settings, not the authenticity of a particular
 reviewer's decision or an exemption outside the reported rules. A pending
 allowlist PR never authorizes a transfer. The security owner must independently
