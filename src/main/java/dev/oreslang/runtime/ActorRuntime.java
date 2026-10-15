@@ -6907,6 +6907,9 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor single-writer execution lease violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
                 }
+                if (ActorRaceInstrumentation.enabled()) {
+                    ActorRaceInstrumentation.runtime().enterActor(this);
+                }
                 activeTurns = 1;
                 return true;
             }
@@ -6961,6 +6964,9 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor execution lease accounting violation for " + ref.id()
                                     + ": activeTurns=" + activeTurns);
+                }
+                if (ActorRaceInstrumentation.enabled()) {
+                    ActorRaceInstrumentation.runtime().exitActor(this);
                 }
                 activeTurns = 0;
                 if (stopped.get()) finalizeStopLocked();
