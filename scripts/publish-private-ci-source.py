@@ -65,12 +65,34 @@ def nested_sha(response, member):
     return valid_sha(value.get("sha"))
 
 
+# Executables are resolved only from controlled system directories; a caller's
+# PATH must never select its own bash/git/gh helper during authorization.
+SAFE_EXEC_PATH = "/usr/bin:/bin:/usr/local/bin"
+
+
+def verified_child_env():
+    """Exclude shell startup hooks, Git overrides, and dynamic loader injection."""
+    env = os.environ.copy()
+    for name in tuple(env):
+        if (name in ("BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+                     "CDPATH", "GLOBIGNORE", "PROMPT_COMMAND",
+                     "PYTHONPATH", "PYTHONHOME")
+                or name.startswith(("BASH_FUNC_", "GIT_", "LD_", "DYLD_"))):
+            env.pop(name, None)
+    env["PATH"] = SAFE_EXEC_PATH
+    env["GH_HOST"] = "github.com"
+    env["GH_PROMPT_DISABLED"] = "1"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    return env
+
+
 def gh_api(route, method="GET", payload=None):
     argv = ["gh", "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    env = verified_child_env()
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
@@ -113,7 +135,8 @@ def require_preflight(repository, root):
         raise Denied("trusted destination approval guard missing")
     try:
         p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
+                           capture_output=True, text=True,
+                           env=verified_child_env(), timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
@@ -255,9 +278,11 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
     base = Path(root).resolve(strict=True)
     def git(*args):
         try:
-            response = subprocess.run(["git", "-C", str(base), *args],
-                                      capture_output=True, text=True,
-                                      timeout=12, check=False)
+            response = subprocess.run(
+                ["git", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null", "-C", str(base), *args],
+                capture_output=True, text=True, env=verified_child_env(),
+                timeout=12, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Denied("trusted source checkout Git proof unavailable") from exc
         if response.returncode != 0:
