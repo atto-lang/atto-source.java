@@ -100,8 +100,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     /** Released at terminal CAS so retained settled Futures cannot pin actor/channel state. */
     private volatile BooleanSupplier cancelAdmission;
-    /** Released only after all subscribers present at settlement have returned. */
-    private final Runnable onNotificationDrained;
+    /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
+    private volatile Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     /**
@@ -400,16 +400,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     boolean completeFromRuntime(T value) {
-        boolean completed = settle(new Success<>(value));
-        if (completed) cancelHook.set(null);
-        return completed;
+        return settle(new Success<>(value));
     }
 
     boolean failFromRuntime(Throwable failure) {
-        boolean completed = settle(
-                new Failure(Objects.requireNonNull(failure, "failure")));
-        if (completed) cancelHook.set(null);
-        return completed;
+        return settle(new Failure(Objects.requireNonNull(failure, "failure")));
     }
 
     /**
@@ -625,6 +620,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // terminal CAS to change the result, so releasing the stored reference
         // here does not weaken cancellation arbitration.
         cancelAdmission = null;
+        // Completion/failure also irrevocably defeats cancellation; release
+        // its revoker now, not after a synchronous subscriber eventually
+        // returns. Cancellation itself uses invokeCancelHook() after CAS.
+        if (!(terminal instanceof Cancelled)) cancelHook.set(null);
 
         try {
             // The winning cancellation claim runs its internal revoker before
@@ -649,7 +648,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Terminal state can be visible long before a synchronous waiter
             // returns. A bounded host notification permit cannot be reused
             // just because isDone() became true during a blocked callback.
-            onNotificationDrained.run();
+            Runnable drained = onNotificationDrained;
+            onNotificationDrained = null;
+            // There is exactly one winning terminal CAS, hence one release.
+            // Keep the callback live until every synchronous waiter returns.
+            if (drained != null) drained.run();
         }
     }
 
