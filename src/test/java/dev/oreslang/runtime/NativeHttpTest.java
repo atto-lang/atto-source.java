@@ -76,6 +76,39 @@ class NativeHttpTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    @org.junit.jupiter.api.Timeout(10)
+    void concurrentForcedListenerCloseHasExactlyOneWinner() throws Exception {
+        // This is the same claim used by Server.close(). Every losing caller
+        // must return without invoking transport.stop or state cleanup.
+        var claimed = new java.util.concurrent.atomic.AtomicBoolean();
+        var winners = new java.util.concurrent.atomic.AtomicInteger();
+        var start = new CountDownLatch(1);
+        var ready = new CountDownLatch(64);
+        var threads = new java.util.ArrayList<Thread>();
+        for (int i = 0; i < 64; i++) {
+            threads.add(Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) return;
+                    if (NativeHttp.claimForcedClose(claimed)) winners.incrementAndGet();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        for (Thread thread : threads) {
+            thread.join(5_000);
+            assertFalse(thread.isAlive(), "concurrent close did not return");
+        }
+        assertEquals(1, winners.get(), "transport stop must have a single owner");
+        assertTrue(claimed.get());
+        assertFalse(NativeHttp.claimForcedClose(claimed),
+                "a repeated forced close cannot claim another shutdown");
+    }
+
     @Test void noActorDispatchOrTransferAfterRuntimeOrListenerClose() {
         assertTrue(NativeHttp.mayBeginDispatch(false, false));
         for (boolean runtimeClosed : new boolean[] {false, true}) {
