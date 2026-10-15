@@ -295,6 +295,66 @@ class NativeHttpTest {
         assertEquals(List.of("cancel", "release"), calls);
     }
 
+    @org.junit.jupiter.api.RepeatedTest(100)
+    void timeoutDetachesPendingPhysicalQuiescenceCallback() {
+        OresFuture<Void> waitingOnStalledActor = new OresFuture<>();
+        OresFuture<Object> listenerDrain = new OresFuture<>();
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        var reg = waitingOnStalledActor.whenCompleteRuntimeCancellable(
+                (ignored, failure) -> callbacks.incrementAndGet());
+        assertEquals(1, waitingOnStalledActor.pendingRuntimeWaiterCount());
+
+        listenerDrain.whenCompleteRuntime((ignored, failure) -> reg.detach());
+        assertTrue(listenerDrain.failFromRuntime(
+                new TimeoutException("actor carrier did not quiesce")));
+        assertEquals(0, waitingOnStalledActor.pendingRuntimeWaiterCount(),
+                "timed-out server must not remain retained by a live actor's Future");
+        assertTrue(waitingOnStalledActor.completeFromRuntime(null));
+        assertEquals(0, callbacks.get(),
+                "late actor quiescence must not replay a timed-out listener callback");
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(100)
+    void quiescenceSubscriptionRegistrationRacingTimeoutStillDetaches()
+            throws Exception {
+        OresFuture<Void> actorQuiescence = new OresFuture<>();
+        OresFuture<Object> drain = new OresFuture<>();
+        var subscribers = new ConcurrentLinkedQueue<
+                OresFuture.RuntimeWaiterRegistration<Void>>();
+        drain.whenCompleteRuntime((ignored, failure) -> {
+            for (var subscription : subscribers) subscription.detach();
+            subscribers.clear();
+        });
+        CountDownLatch registrationReady = new CountDownLatch(1);
+        CountDownLatch publishRegistration = new CountDownLatch(1);
+        try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> registration = workers.submit(() -> {
+                var sub = actorQuiescence.whenCompleteRuntimeCancellable(
+                        (ignored, failure) -> { });
+                registrationReady.countDown();
+                try {
+                    if (!publishRegistration.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("test registration gate timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(interrupted);
+                }
+                subscribers.add(sub);
+                if (drain.isDone()) sub.detach();
+            });
+            try {
+                assertTrue(registrationReady.await(5, TimeUnit.SECONDS));
+                assertTrue(drain.failFromRuntime(new TimeoutException("listener stopped")));
+            } finally {
+                publishRegistration.countDown();
+            }
+            registration.get(5, TimeUnit.SECONDS);
+        }
+        assertEquals(0, actorQuiescence.pendingRuntimeWaiterCount(),
+                "subscribers registered after timeout callback must detach");
+    }
+
     @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
         var order = new java.util.ArrayList<String>();
         var closeFailure = new IllegalStateException("socket close failed");
