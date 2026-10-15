@@ -140,6 +140,10 @@ public final class NominalEnumOverloads {
     public static Map<String, String> eligibleEnumSymbols(Ast.Program program) {
         Map<String, String> names = new HashMap<>();
         Set<String> ambiguous = new java.util.HashSet<>();
+        // Reject repeated canonical enum declarations even when the same
+        // spelling would otherwise cause putIfAbsent to return the same ID.
+        // The policy helper is public and must not trust AST provenance.
+        Set<String> seenQualifiedSymbols = new java.util.HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.EnumDecl enumeration)
@@ -149,6 +153,10 @@ public final class NominalEnumOverloads {
                 String prefix = program.namespace() == null || program.namespace().isBlank()
                         ? "" : program.namespace() + "::";
                 String symbol = prefix + module.name() + "::" + enumeration.name();
+                if (!seenQualifiedSymbols.add(symbol)) {
+                    throw new IllegalArgumentException(
+                            "duplicate nominal enum overload declaration: " + symbol);
+                }
                 String previous = names.putIfAbsent(enumeration.name(), symbol);
                 if (previous != null && !previous.equals(symbol)) {
                     ambiguous.add(enumeration.name());
