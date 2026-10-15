@@ -286,6 +286,13 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             TurnExecutor turnExecutor,
             NativeActorTurnKernel witness) {
+        // One native VM actor has exactly one physical guest lane. A larger
+        // Java carrier pool would turn valid concurrent logical tasks into
+        // spurious native BUSY failures instead of serializing admission.
+        if (parallelism != 1) {
+            throw new IllegalArgumentException(
+                    "one native actor witness requires scheduler parallelism=1");
+        }
         return new OresScheduler(parallelism, DEFAULT_QUEUE_CAPACITY,
                 turnExecutor, Objects.requireNonNull(witness, "witness"));
     }
