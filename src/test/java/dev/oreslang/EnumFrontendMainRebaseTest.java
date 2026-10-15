@@ -107,6 +107,21 @@ final class EnumFrontendMainRebaseTest {
     }
 
     @Test
+    void typeCheckerMustRejectSyntaxOnlyEnumAndPatternDeclarations() {
+        for (String source : List.of(
+                "define enum Color as Red end",
+                "define match pattern P as Color.Red end",
+                "define pattern P as Color.Red end")) {
+            Ast.Program parsed = Parser.parse(source);
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.TypeChecker.checkTypes(parsed), source);
+            assertTrue(denied.getMessage().contains("syntax-only"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void existingClassAndAritySyntaxIsStillParsedOnNewMainParser() {
         Ast.Program result = Parser.parse("""
                 define class Worker as
