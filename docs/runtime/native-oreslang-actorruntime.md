@@ -181,6 +181,20 @@ executed successfully with GCC/Clang, -O0/-O2 and ASan/UBSan (eight
 executions). This is **exact-native-blob evidence only**, not proof that the
 entire Git tree, Java guest loader or LLVM compiler passed.
 
+An additional security regression isolates an **abandoned lease** in a child
+process after its original carrier thread exits. It starts 256 new native
+threads and verifies all release attempts fail with WRONG_CARRIER, even if
+the OS reuses its old pthread ID; it also checks retirement and VM destruction
+remain blocked. The isolated child exits via `_exit` because intentionally
+abandoned leases cannot be repaired through the normal safe public API.
+[Funded Actions run #38657443729](https://github.com/canonical-cloud/canonical-e2e/actions/runs/38657443729)
+verified the revised native test blob at source head
+`f8792c3cfc9ea302a5378ebe16fb959249315465` against private
+four-file mirror tree `a746d10c5bcd8a608c50e43818ca69801de21ead`;
+all eight GCC/Clang/optimization/sanitizer configurations passed.
+This proves rejected stale carrier release in a regression, **not**
+a production-grade recovery protocol for a legitimately abandoned lease.
+
 Native compiler-and-test evidence is required on the exact Git tree; successful
 registration of a GitHub Actions workflow without executed job steps is not
 validation. Cross-org CI mirrors require private/private pinned repository IDs
