@@ -364,8 +364,9 @@ public final class Parser {
             }
 
             Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
-            if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                    || modifiers.isStatic || modifiers.isAbstract || modifiers.isSealed || modifiers.isFinal) {
+            if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                    || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                    || modifiers.isAbstract || modifiers.isSealed || modifiers.isFinal) {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
@@ -641,41 +642,46 @@ public final class Parser {
     }
 
     private void validateClassModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.shared || modifiers.untrusted) {
             throw error(previous(),
                     "classes accept only private/pub visibility and abstract; callable/actor modifiers are not permitted");
         }
     }
 
     private void validateClassFieldModifiers(Modifiers modifiers) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
+                || modifiers.shared || modifiers.untrusted || modifiers.isSealed || modifiers.isFinal) {
             throw error(peek(), "class fields accept only private/pub visibility modifiers");
         }
     }
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
-        if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted
-                || modifiers.isFinal || (modifiers.isSealed && !context.startsWith("interface"))) {
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
+                || modifiers.shared || modifiers.untrusted || modifiers.isFinal
+                || (modifiers.isSealed && !context.startsWith("interface"))) {
             throw error(previous(), context + " accept only private/pub visibility modifiers"
                     + (context.startsWith("interface") ? " and sealed" : ""));
         }
     }
 
     private void validateInterfaceCallableModifiers(Modifiers modifiers) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.nonLexical || modifiers.trapped
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator
+                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
+                || modifiers.shared || modifiers.untrusted || modifiers.isSealed || modifiers.isFinal) {
             throw error(previous(),
                     "interface callable signatures currently accept only the structural callable modifier");
         }
     }
 
     private void validateNoModifiers(Modifiers modifiers, String context) {
-        if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
-                || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted || modifiers.isSealed || modifiers.isFinal) {
+        if (modifiers.visibilitySeen || modifiers.async || modifiers.suspends || modifiers.generator
+                || modifiers.structural || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
+                || modifiers.isAbstract || modifiers.shared || modifiers.untrusted
+                || modifiers.isSealed || modifiers.isFinal) {
             throw error(previous(), context + " do not accept declaration modifiers");
         }
     }
@@ -696,7 +702,7 @@ public final class Parser {
         modifiers = mergeModifiers(modifiers, parseModifiers());
         Ast.ActorKind kind = resolveActorKind(
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
-        if (modifiers.async || modifiers.generator || modifiers.structural
+        if (modifiers.async || modifiers.suspends || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
                 || modifiers.isAbstract || modifiers.isSealed || modifiers.isFinal) {
             throw error(actorToken,
