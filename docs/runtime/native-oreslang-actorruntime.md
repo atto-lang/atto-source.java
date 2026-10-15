@@ -2,6 +2,61 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## Latest verified integration snapshot — 2026-10-14
+
+**Native C regression gate: PASS (local exact Git blobs).**
+
+After the source-branch/mainline reconciliation, the full original
+**16-function** `oresactorturn_test.c` regression suite AND the separate
+scheduler-boundary fixture were recovered from this PR and executed locally.
+The four input files were independently checked against GitHub blob SHA
+using `git hash-object`:
+
+| Input file | Exact Git blob SHA |
+| --- | --- |
+| `src/main/c/oresactorturn.c` | `0c461c22e5466242430a3c38731b0f249b4abdf8` |
+| `src/main/c/oresactorturn.h` | `0c28c259ae31590158aee4066d417867d5b9666e` |
+| `src/test/c/oresactorturn_test.c` | `cb38654e454b216943995f9d12af70b4c5990787` |
+| `src/test/c/oresactorturn_scheduler_boundary_test.c` | `cc494b21a8f15f83007fb4227c645832830ec85b` |
+
+**18/18 full-suite executions passed**: both suites compiled and ran under
+GCC/Clang with strict warnings at O0 and O2, without sanitizers and with
+AddressSanitizer + UndefinedBehaviorSanitizer (**16/16**), plus each suite
+with GCC ThreadSanitizer at O1 (**2/2**). All executions returned the expected
+`ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK` or
+`ORES_NATIVE_SCHEDULER_BOUNDARY_CONTRACT_OK` marker. Each of the nine
+boundary fixture runs includes 1,000 concurrent FORCE/cleanup races;
+ten additional back-to-back GCC O2 runs of both suites also passed.
+GCC `-fanalyzer` and Clang static analyzer passed on the kernel and both
+test units under strict warnings. Local OS/compiler evidence is **not**
+a full-tree build or proof of native-image/LLVM or Java guest execution.
+
+**Exact mainline merge**: Main commit
+`7020608e9613f2ea0e8ec670766b442ac8670375`
+(42 newer commits) was incorporated into the PR through two-parent commit
+`18fc1b95da2673cd26415ede8240b8645d03ed22`.
+All 13 mainline-changed and 11 native-branch-changed file paths were
+disjoint. Independently overlaying the two sides' exact blobs onto each
+parent tree produced identical merged tree SHA
+`306cc016507378801fb61ff50530732e4bbfd6c9`.
+This preserved all newer compiler and ownership changes; no wholesale
+Java file replacement and no cross-repository private source transfer.
+
+**Native CI readiness**: `.github/workflows/native-actor-turn.yml` was
+updated to trigger on **both** native test files, record Git commit/tree
+and blob identities, and run a GCC/Clang × plain/ASan+UBSan matrix plus
+GCC ThreadSanitizer. This workflow is **not yet green in source Actions**:
+runs have been failing before steps due to runner availability/capacity,
+not due to observed test failures. Source-org CI, GraalVM Native Image,
+real `OresScheduler.TaskRunner` → native SourceTask binding, compiled actor
+STOP/defer/finally/DONE, and LLVM parity remain **unproven**; PR stays DRAFT.
+The protected-branch cross-organization CI allowlist remains empty.
+
+Older sections below preserve the progress of earlier audits. Earlier
+statements that the original C suite was unexecuted describe those
+historical audit snapshots; the local full-suite gate is now complete.
+
+
 ## Ownership decision
 
 The **canonical implementation language** for Oreslang actor semantics is
