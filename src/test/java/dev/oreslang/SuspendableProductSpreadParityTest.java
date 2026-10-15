@@ -347,6 +347,54 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void standaloneOwnershipCannotSpreadReadonlyInferredStruct() {
+        String code = """
+                fnc add(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    const args = infer struct { b: 23, a: 19 };
+                    stdio.stdout.write(add(...args));
+                    return;
+                }
+                """;
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(code)));
+        assertTrue(error.getMessage().contains("record spread")
+                        || error.getMessage().contains("closed pack"),
+                error.getMessage());
+    }
+
+    @Test
+    void standaloneOwnershipRejectsRebindableAndAliasedRecordPacks() {
+        String function = "fnc add(int a, int b): int { return a + b; }\\n";
+        for (String local : new String[] {
+                "let args = (b: 23, a: 19);",
+                "const source = (b: 23, a: 19); const args = source;",
+                "const source = infer struct { b: 23, a: 19 }; const args = source;"
+        }) {
+            String code = function + "pub routine main(): void { " + local
+                    + " stdio.stdout.write(add(...args)); return; }";
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> OwnershipChecker.check(Parser.parse(code)), local);
+            assertTrue(error.getMessage().contains("record spread")
+                            || error.getMessage().contains("closed pack"),
+                    "unexpected standalone ownership diagnostic: " + error.getMessage());
+        }
+    }
+
+    @Test
+    void standaloneOwnershipPreservesImmutableLiteralPack() {
+        String code = """
+                fnc add(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    const args = (b: 23, a: 19);
+                    stdio.stdout.write(add(...args));
+                    return;
+                }
+                """;
+        assertDoesNotThrow(() -> OwnershipChecker.check(Parser.parse(code)));
+    }
+
+    @Test
     void independentOwnershipPassRejectsForgedNamedBindingLayouts() {
         String prefix = """
                 fnc calculate(int base, int multiplier, int offset): int {
