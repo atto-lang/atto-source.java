@@ -2,6 +2,71 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## Experimental JVM-to-native JNI boundary — 2026-10-14
+
+The source branch now contains a real, *opt-in* JNI bridge to the existing
+native actor-turn capability kernel:
+
+- `src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java` is a
+  package-private trusted-JVM owner. It opens a per-actor native VM, mints
+  scheduler-owned SourceTask handles, claims and releases native physical
+  turns, observes STOP, and allows explicit one-shot terminal/quiescent
+  settlement and retirement. The opt-in property
+  `-Dores.native.actor.turn.experimental=true` is required before it
+  loads `liboresactorturnjni.so`; production `ActorRuntime` and
+  `OresScheduler` do **not** load or activate it by default.
+- `src/main/c/oresactorturnjni.c` binds these methods to the already
+  verified native C kernel. JNI pointers remain private to trusted Java.
+  Native lease entry on Java virtual threads is rejected: JNI uses OS-carrier
+  TLS identity, and virtual threads may migrate between enter and exit.
+  Each platform-thread physical claim must be released from its original
+  Java/native carrier.
+- Separate `CleanupTicket` and `CleanupTurn` types bind the cleanup-only
+  claim, terminal-injection acknowledgement, cleanup-effect check,
+  completion, cancellation, and release. Ordinary `SourceTask` leases
+  have no Java API to impersonate a claimed terminal cleanup lease.
+  Cleanup-effects checking remains a **point-in-time query**; it is NOT
+  an atomic authorization for future guest effects after FORCE revocation.
+- `scripts/test-native-actor-jni.sh` builds the real JNI shared library and
+  compiles/runs Java 21 standalone smoke without Maven dependencies. The
+  native workflow now triggers on these files and has a separate JNI job.
+  The script currently supports Linux/JDK 21+.
+- `NativeActorTurnSchedulerJniTest` is an additional **opt-in** JUnit
+  experiment wrapping genuine `OresScheduler.TaskRunner` work and
+  terminal/quiescence callbacks, testing await/resume and STOP. It
+  deliberately does not activate any production actor runtime and has
+  not yet been run under Maven because the local environment lacks
+  the full project dependency/runtime toolchain.
+
+**Local exact-source proof:** Java/JNI source blobs
+`d70f1044721af8015148b6b6151263826b7aab05`,
+`9e7abc37ba89b1b0702a0ed19878621d82bd77c8`,
+`b467c913a2e768656e8b97a3b7688b88cc40668c`
+and runner `2e0387754574965e0eca655b038e8ca15d0dba84`
+match the committed Git tree. On Linux/OpenJDK 21, the smoke compiled with
+`javac -Xlint:all -Werror` and GCC 14 / Clang 17
+`-std=c11 -Wall -Wextra -Werror -pedantic -O2`. Each compiler variant
+passed **13/13 Java-to-native program executions** (26 total). The
+executable assertions include native VM allocation, source admission,
+two-source single-flight, wrong-carrier refusal, suspended-task resumption
+on another platform thread, STOP, cleanup-ticket admission, injection
+before completion, post-completion effect revocation, and retirement.
+These are Java/JNI smoke tests, **not compiled Oreslang guest executions**.
+
+**Production activation gate remains CLOSED.** The opt-in JUnit exercise
+releases its lease when a guest `Task.resume` lambda exits, while a real
+`TaskRunner` can still be unwinding its host context. That is NOT a valid
+production carrier-exit barrier. The production bridge must claim before
+guest entry and release in the actual `afterCarrierTurn` lifecycle
+after all Truffle/actor context frames unwind, then settle only from
+the `onQuiescent` terminal callback, while authenticating actor STOP,
+cleanup-only continuation admission and cancellation delivery. Direct
+wrappers around `Task.resume` must NOT be used as production enforcement.
+The complete Java/GraalVM JDK25, compiled `.ores` actor, Native Image
+and LLVM-parity gates remain open.
+
+
+
 ## Latest verified integration snapshot — 2026-10-14
 
 **Native C regression gate: PASS (local exact Git blobs).**
