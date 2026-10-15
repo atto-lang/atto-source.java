@@ -237,6 +237,31 @@ final class ActorRaceInstrumentationTest {
     }
 
     @Test
+    void retainedReadWriteEpochsAreBoundedAndRetirementFreesBudget() throws Exception {
+        ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTestingWithEpochLimit(2);
+        Object memory = new Object();
+        probe.read(memory, "count");
+        probe.write(memory, "count");
+
+        AtomicReference<Throwable> denied = new AtomicReference<>();
+        Thread third = Thread.ofPlatform().start(() -> {
+            try {
+                probe.read(memory, "count");
+            } catch (Throwable error) {
+                denied.set(error);
+            }
+        });
+        third.join(5000);
+        assertFalse(third.isAlive());
+        assertInstanceOf(IllegalStateException.class, denied.get(),
+                "a third retained access epoch must fail rather than evict race evidence");
+
+        probe.retireMemoryDomain(memory);
+        assertDoesNotThrow(() -> probe.read(new Object(), "count"),
+                "retirement should release the tracked epoch budget");
+    }
+
+    @Test
     void rejectedStaleOptimisticCommitIsNotAnUnprotectedWrite() {
         ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
         probe.observeCheckedCommit(false);  // Actual CAS succeeded.
