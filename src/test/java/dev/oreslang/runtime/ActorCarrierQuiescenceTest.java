@@ -234,6 +234,53 @@ final class ActorCarrierQuiescenceTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    void cancellationAndCarrierExitCompleteObserverExactlyOnce() throws Exception {
+        CountDownLatch processed = new CountDownLatch(1);
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch notified = new CountDownLatch(1);
+        AtomicBoolean holdOnce = new AtomicBoolean();
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (processed.getCount() == 0 && holdOnce.compareAndSet(false, true)) {
+                held.countDown();
+                awaitTestRelease(release);
+            }
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> processed.countDown());
+            Thread canceller = null;
+            try {
+                actor.send(1);
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                OresFuture<Void> observer = runtime.quiesceAcceptedMessages(actor);
+                observer.whenCompleteRuntime((ignored, failure) -> {
+                    notifications.incrementAndGet();
+                    notified.countDown();
+                });
+                canceller = Thread.ofVirtual().start(actor::cancel);
+                release.countDown();
+                canceller.join(5_000);
+                assertFalse(canceller.isAlive(), "cancellation did not return");
+                observer.get(5, TimeUnit.SECONDS);
+                assertTrue(notified.await(5, TimeUnit.SECONDS),
+                        "runtime-only completion callback did not fire");
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+                assertEquals(1, notifications.get(),
+                        "racing finalization replayed an observer callback");
+            } finally {
+                release.countDown();
+                if (canceller != null) canceller.join(5_000);
+            }
+        }
+    }
+
     @Test
     @Timeout(45)
     void thousandAcceptedMessageAndPhysicalCarrierCyclesPerActorKind() throws Exception {
