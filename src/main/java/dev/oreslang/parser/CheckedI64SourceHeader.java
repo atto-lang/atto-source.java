@@ -7,32 +7,12 @@ public final class CheckedI64SourceHeader {
     /**
      * A misspelled, displaced or CRLF checked directive is an error, not a
      * request to silently execute wrapping arithmetic. Normal unmarked
-     * sources remain unchanged. Only full comment lines are directives.
+     * sources remain unchanged. Only lexical line-comment tokens are directives.
      */
     public static boolean isEnabled(String text) {
         final String prefix = "// oreslang:checked-i64";
         final String directive = "// oreslang:checked-i64-v1";
         final boolean enabled = text.startsWith(directive + "\n");
-        for (int pos = 0; pos < text.length();) {
-            int end = text.indexOf('\n', pos);
-            int stop = end < 0 ? text.length() : end;
-            int offset = pos;
-            // A UTF-8 BOM is not part of the exact source opt-in.
-            if (pos == 0 && text.charAt(0) == '\uFEFF') ++offset;
-            // The lexer also ignores CR before comments. Do not allow a
-            // CR-prefixed checked directive to select legacy wrapping i64.
-            while (offset < stop && (text.charAt(offset) == ' '
-                    || text.charAt(offset) == '\t'
-                    || text.charAt(offset) == '\r')) ++offset;
-            if (text.startsWith(prefix, offset)
-                    && (!enabled || pos != 0 || offset != 0
-                        || !text.substring(pos, stop).equals(directive))) {
-                throw new IllegalArgumentException(
-                    "checked-i64-v1: malformed, duplicated, displaced or unsupported directive");
-            }
-            if (end < 0) break;
-            pos = end + 1;
-        }
         // A checked marker following source tokens or a closed block comment
         // must not silently select wrapping arithmetic. Inspect only real
         // line comments, not marker-like text in strings or nested comments.
@@ -56,9 +36,12 @@ public final class CheckedI64SourceHeader {
             if (ch == '"' || ch == '\'') { quote = ch; ++i; continue; }
             if (ch == '/' && next == '*') { blockDepth = 1; i += 2; continue; }
             if (ch == '/' && next == '/') {
-                if (i != 0 && text.startsWith(prefix, i)) {
+                // Only an actual line-comment token is a directive.
+                // Matching entire lines also matched markers inside block
+                // comments, incorrectly rejecting valid unmarked source.
+                if (text.startsWith(prefix, i) && (!enabled || i != 0)) {
                     throw new IllegalArgumentException(
-                        "checked-i64-v1: displaced directive after source tokens");
+                        "checked-i64-v1: malformed, duplicated, displaced or unsupported directive");
                 }
                 int end = text.indexOf('\n', i);
                 i = end < 0 ? text.length() : end + 1;
