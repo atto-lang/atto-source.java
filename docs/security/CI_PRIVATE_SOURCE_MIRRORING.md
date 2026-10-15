@@ -89,6 +89,14 @@ then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
+Before reading any source bytes, the publisher also requires the private
+carrier's default branch to be `main`, verifies its exact commit ref and
+requires GitHub to report `main.protected=true`. It rechecks that protection
+and pinned commit before every write. The carrier main tree supplies Actions
+workflows that execute with the carrier's own token: an unprotected carrier
+must not be trusted to inherit or run those workflows. Protection metadata
+alone does not prove independent workflow/CODEOWNER approval; reviewers must
+also audit the carrier's workflow definitions and effective rules.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated. Before declaring success,
 it verifies that the ref-creation response, fresh ref readback, commit tree,
