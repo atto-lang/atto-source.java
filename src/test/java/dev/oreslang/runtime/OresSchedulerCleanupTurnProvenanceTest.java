@@ -135,4 +135,57 @@ final class OresSchedulerCleanupTurnProvenanceTest {
         }
     }
 
+    @Test
+    void queuedProducerSuccessIsReplacedByAuthenticatedCancellationBeforeResume()
+            throws Exception {
+        ArrayDeque<Runnable> actorLane = new ArrayDeque<>();
+        try (OresScheduler scheduler = OresScheduler.runtimeOwned(
+                "owner", 1, actorLane::add)) {
+            OresFuture<Integer> producer = new OresFuture<>();
+            AtomicInteger guestTurns = new AtomicInteger();
+            AtomicBoolean observedCleanupAuthority = new AtomicBoolean();
+            OresFuture<Integer> result = scheduler.start(
+                    (OresScheduler.CleanupAwareTask<Integer>) event -> {
+                        int turn = guestTurns.incrementAndGet();
+                        if (turn == 1) {
+                            assertTrue(event.initial());
+                            return OresScheduler.await(producer);
+                        }
+                        assertEquals(2, turn, "no duplicate resume may enter guest code");
+                        assertInstanceOf(CancellationException.class, event.failure(),
+                                "STOP cancellation must supersede the queued producer result");
+                        observedCleanupAuthority.set(OresScheduler.currentTaskInCleanup());
+                        return OresScheduler.done(20);
+                    });
+
+            var initial = (OresScheduler.CleanupTurn) actorLane.removeFirst();
+            initial.run();
+            producer.completeFromRuntime(7);
+            assertEquals(1, actorLane.size(),
+                    "settled producer queues one continuation, never runs it inline");
+
+            var queued = (OresScheduler.CleanupTurn) actorLane.removeFirst();
+            assertTrue(queued.eligibleForStoppedCleanup(scheduler));
+            assertFalse(queued.authorizedBy(scheduler),
+                    "producer completion alone cannot mint STOP authority");
+            assertTrue(result.cancel(false));
+            assertTrue(queued.authorizedBy(scheduler),
+                    "cancelled live task may resume on its owned cleanup lane");
+            assertFalse(result.isDone(), "terminal publication waits for guest unwind");
+
+            queued.run();
+            assertEquals(2, guestTurns.get());
+            assertTrue(observedCleanupAuthority.get());
+            assertThrows(CancellationException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertFalse(producer.isCancelled(),
+                    "STOP must not steal an independently owned producer");
+            assertFalse(queued.eligibleForStoppedCleanup(scheduler),
+                    "a terminal task cannot consume post-STOP continuation slots");
+            assertFalse(queued.authorizedBy(scheduler),
+                    "terminal publication revokes all stale cancellation envelopes");
+            assertTrue(actorLane.isEmpty(), "no continuation may be dispatched twice");
+        }
+    }
+
 }

@@ -122,7 +122,7 @@ public final class OresScheduler implements AutoCloseable {
             return ownedBy(expected) && authorization.getAsBoolean();
         }
 
-        /** A never-entered task has no lexical cleanup and must not fill STOP's control queue. */
+        /** Only an entered, still-live source task may occupy post-STOP control headroom. */
         boolean eligibleForStoppedCleanup(OresScheduler expected) {
             return ownedBy(expected) && previouslyEnteredGuest.getAsBoolean();
         }
@@ -743,15 +743,20 @@ public final class OresScheduler implements AutoCloseable {
                     }
                 }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal,
                         task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null,
-                        this::hasPreviouslyEnteredGuest);
+                        this::hasLivePreviouslyEnteredGuest);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
         }
 
-        private boolean hasPreviouslyEnteredGuest() {
-            return previouslyEnteredGuest.get();
+        private boolean hasLivePreviouslyEnteredGuest() {
+            // STOP pruning happens before cancellation injection. We cannot
+            // require an injected cancellation here, but terminal tasks have
+            // already exhausted their lexical cleanup authority and must not
+            // monopolize the bounded control queue.
+            return previouslyEnteredGuest.get() && phase.get() != TERMINAL
+                    && !closed.get();
         }
 
         private boolean cleanupAuthorized() {
