@@ -25,6 +25,15 @@ MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 
+# These IDs are bound to reviewed source code, never caller-controlled
+# environment variables or workflow inputs. A reused owner/repo slug with a
+# different immutable GitHub repository ID must not inherit export approval.
+SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPOSITORY_ID = 1400792274
+PINNED_DESTINATION_IDS = {
+    "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
+}
+
 
 class Denied(RuntimeError):
     pass
@@ -59,14 +68,30 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
-def checked_repo(repository):
+def checked_identity(repository, expected_id):
+    """Recheck immutable numeric identity as well as private visibility."""
     result = gh_api("repos/" + repository)
-    if (not isinstance(result.get("full_name"), str)
+    if (type(result.get("id")) is not int
+            or result["id"] != expected_id
+            or not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
-        raise Denied("destination identity or private visibility changed")
+            or result.get("private") is not True
+            or result.get("archived") is True
+            or result.get("disabled") is True):
+        raise Denied("repository numeric identity or private visibility changed")
     return result
+
+
+def checked_source():
+    return checked_identity(SOURCE_REPOSITORY, SOURCE_REPOSITORY_ID)
+
+
+def checked_repo(repository):
+    expected_id = PINNED_DESTINATION_IDS.get(repository.casefold())
+    if type(expected_id) is not int:
+        raise Denied("destination repository ID is not approved in reviewed code")
+    return checked_identity(repository, expected_id)
 
 
 def require_preflight(repository, root):
@@ -252,6 +277,10 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    # Check both original private source and approved carrier identities before
+    # accessing source bytes; neither the slug nor visibility alone is enough.
+    checked_source()
+    checked_repo(repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -270,6 +299,7 @@ def publish(repository, source, branch, trusted_root):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
+        checked_source()
         checked_repo(repository)
 
     elements = []
