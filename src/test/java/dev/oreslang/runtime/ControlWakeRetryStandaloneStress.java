@@ -154,6 +154,7 @@ public final class ControlWakeRetryStandaloneStress {
     }
 
     private static void verifyBoundedMissedEpochHandoff() throws Exception {
+        for (boolean closing : new boolean[]{false, true}) {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         long missedEpoch = queue.epoch();
         queue.slotReleased();
@@ -207,7 +208,7 @@ public final class ControlWakeRetryStandaloneStress {
                     "stalled handoff quota not accounted");
             require(!queue.register(victim, missedEpoch),
                     "direct immediate path bypassed bounded capacity");
-            queue.cancel(victim);
+            if (closing) queue.close(); else queue.cancel(victim);
             require(queue.directHandoffs() == 0,
                     "cancellation leaked immediate handoff budget");
         } finally {
@@ -220,10 +221,18 @@ public final class ControlWakeRetryStandaloneStress {
         field.set(queue, original);
         require(failure.get() == null && invoked.get() == 0,
                 "cancelled immediate callback executed: " + failure.get());
-        require(queue.register(victim, missedEpoch),
-                "quota did not recover after cancelling stalled handoffs");
-        require(invoked.get() == 1 && queue.directHandoffs() == 0,
-                "new immediate callback lost or retained after completion");
+        if (closing) {
+            require(!queue.register(victim, missedEpoch),
+                    "closed direct handoff was re-admitted");
+        } else {
+            require(queue.register(victim, missedEpoch),
+                    "quota did not recover after cancelling stalled handoffs");
+            require(invoked.get() == 1,
+                    "new immediate callback lost after cancellation");
+        }
+        require(queue.directHandoffs() == 0,
+                "immediate handoff budget leaked after completion");
+        }
 
         // A stale epoch must still bypass ordinary FIFO saturation. The
         // separate immediate budget is intentional, not an accidental
