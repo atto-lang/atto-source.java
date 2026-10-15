@@ -57,7 +57,7 @@ import counts fail before semantic admission. This prevents mutable caller
 map references from changing what the linker checks versus what is fingerprinted.
 
 AST values themselves are **not deeply cloned**, but the verifier now
-runs `SccAstShapeGuard.requireImmutable` before retaining them in the
+runs `SccAstShapeGuard.requireImmutableGraph` before retaining them in the
 snapshot. It recursively traverses first-party AST records/lists with
 explicit node and depth budgets, and permits only immutable scalar literal
 payloads (including `BigInteger`, `BigDecimal` and `Ast.Imaginary`).
@@ -91,6 +91,30 @@ implementation-sensitive optimized-code caches separately.
 `verifySingleScc` rejects a graph with more than one component. A token
 holds the complete verified source set and interface fingerprint. It is
 not serialized and there is no decoder that can manufacture a token.
+
+## Further v0 audit: public API and graph-wide resource bounds
+
+`SccPublicSurface.requirePrimitiveOnly` runs **both before type checking and
+after annotation expansion**. It now prevents the verified interface plan
+from publishing class and actor layouts, interfaces, type aliases, public
+fields, module contracts/annotations or generic/effectful/non-primitive
+functions. Private declarations remain eligible for the real local semantic
+checker; they are not treated as exported ABI. This conservative v0 gate
+stops uncertified public types from being represented as a checked import
+interface. It is deliberately more restrictive than the full Oreslang
+language and can be relaxed only after verified canonical cross-module
+symbol/layout metadata exists.
+
+AST validation now uses **one aggregate node budget** across the entire
+source graph, rather than allowing each input unit to spend the full AST
+traversal budget. A test constructs two separately admissible large ASTs
+whose combined size must be rejected. The verifier still trusts the caller
+to supply compiler-generated ASTs; shape validation does not prove parser
+provenance.
+
+The independent test workflow verifies the AST/input/public-interface
+policies only. End-to-end TypeChecker/OwnershipChecker validation and
+runtime execution of linked functions are outstanding merge gates.
 
 ## Important limitations
 
