@@ -430,3 +430,43 @@ The complete Python and Bash suites remain unexecuted because source
 GitHub Actions jobs still terminate before runner allocation. Synthetic
 carrier success is not a substitute for the exact private-source security
 suite or approval for any source transfer.
+
+
+### Git branch namespace preflight (2026-10-15)
+
+The publisher now rejects Git-invalid isolated branch names **before**
+reading protected policy data or source bytes and before issuing any Git
+object write. The format allowlist `ci/oreslang-...` alone previously
+permitted `a..b`, `a.lock`, or `a.` suffixes, all of which
+`git check-ref-format --branch` rejects. The early check now enforces the
+Git prohibitions on adjacent dots, trailing dots and the `.lock` suffix.
+It also retains the narrower publisher namespace of exactly one branch-name
+component after `ci/`, although Git itself permits more components.
+
+Two offline regression methods cover six invalid ref spellings, three
+valid spellings, and deny-before-policy-read behavior; the checked-in
+security suite has **136 Python test methods**.
+
+The source-free [Benefactor private Actions run #38812541918](https://github.com/benefactor-cc/backend.rs/actions/runs/38812541918)
+**passed all five job steps**. The dedicated validation step exercised
+**2,000 deterministic Git ref-format fuzz cases**, nine explicit denied
+publisher spellings, and three accepted spellings. Its earlier steps also
+repeated the 554-file JSON-bounded Git-object batching proof (nine tree
+POSTs, two blob POSTs, exact Git SHA
+`5fbd663e02b096ca8288cab3bb71ac1634edc76a`) and 15 rejected
+malformed synthetic manifests with 60 randomized tree fixtures.
+
+An initial version of the carrier test compared against Git without
+accounting for the publisher's deliberately narrower namespace; Git permits
+`ci/oreslang-a/b`, whereas the publisher does not. That **test
+assumption** caused run #38812453359 to fail. It was corrected in carrier
+commit `d145ed4788e55977459c769bfb9cccdd92895d7b`, and the
+subsequent live run #38812541918 passed. No private compiler files were
+transferred in either run.
+
+These are synthetic-only checks of policy shape and Git behavior. The full
+source-side Python and Bash exporter suites remain unverified until a
+trusted runner executes their complete checked-in revisions. Neither
+synthetic carrier availability nor this PR authorizes private source
+mirroring without reviewed immutable source/destination approvals and
+enforced protected branches.
