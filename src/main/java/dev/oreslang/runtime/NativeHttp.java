@@ -326,14 +326,23 @@ public final class NativeHttp implements AutoCloseable {
                     } catch (RuntimeException failure) {
                         stopFailure = failure;
                     } finally {
-                        synchronized (this) { transportStopped = true; }
-                        for (State state : active) state.abort(503);
-                        servers.remove(this);
-                        // A transport exception must never turn into a
-                        // successful shutdown Future merely because all HTTP
-                        // states were subsequently force-aborted.
+                        // Publish the transport failure BEFORE making the
+                        // transportStopped flag visible to concurrent release
+                        // callbacks. Otherwise the last State.release() could
+                        // settle drained successfully before this thread
+                        // reports the failure.
                         if (stopFailure != null) drained.failFromRuntime(stopFailure);
-                        else completeDrain();
+                        synchronized (this) { transportStopped = true; }
+                        try {
+                            for (State state : active) state.abort(503);
+                        } catch (RuntimeException cleanupFailure) {
+                            // A cleanup exception also denies successful
+                            // shutdown even if transport.stop itself returned.
+                            drained.failFromRuntime(cleanupFailure);
+                        } finally {
+                            servers.remove(this);
+                            completeDrain();
+                        }
                     }
                 });
             } catch (RejectedExecutionException unavailable) {
