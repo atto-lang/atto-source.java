@@ -258,4 +258,35 @@ final class RuntimePermissionsNetworkAuditTest {
         assertFalse(builder.build().allows(RuntimePermissions.Permission.READ,
                 root), "invalid CSV must not leave an earlier filesystem grant");
     }
+
+    @Test
+    void duplicateSerializedAuthorityEntriesFailClosed() {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[] {
+                                "--ores-permission-explicit=true",
+                                "--ores-permission-explicit=true"
+                        }, policy));
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[] {
+                                "--ores-permission-explicit=true",
+                                "--ores-permission-net-allow=api.example.com:443",
+                                "--ores-permission-net-allow=api.example.com:443"
+                        }, policy));
+
+        RuntimePermissions valid = RuntimePermissions.fromApplicationArguments(
+                new String[] {
+                        "--ores-permission-explicit=true",
+                        "--ores-permission-net-allow=api.example.com:443",
+                        "--ores-permission-net-allow=api.example.net:443",
+                        "--ores-permission-net-deny=api.example.net:443"
+                }, policy);
+        assertTrue(valid.allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"));
+        assertFalse(valid.allows(RuntimePermissions.Permission.NET,
+                "api.example.net:443"));
+    }
 }
