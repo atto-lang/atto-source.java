@@ -1154,6 +1154,25 @@ public final class Parser {
         return result;
     }
 
+    /**
+     * `sealed` and `final` remain contextual identifiers. Recognize them
+     * as modifiers only when the remaining type header is syntactically
+     * identifiable, including when visibility/abstract modifiers intervene.
+     * Do not reserve these words in ordinary function or field expressions.
+     */
+    private boolean contextualSealingModifierBeforeType() {
+        for (int index = current + 1; index < tokens.size(); index++) {
+            Token token = tokens.get(index);
+            Token.Type kind = token.type();
+            if (kind == CLASS || kind == INTERFACE || kind == TRAIT) return true;
+            if (kind == PUB || kind == PRIVATE || kind == ABSTRACT) continue;
+            if (kind == IDENT && (token.lexeme().equals("sealed")
+                    || token.lexeme().equals("final"))) continue;
+            return false;
+        }
+        return false;
+    }
+
     private Modifiers parseModifiers() {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
@@ -1242,12 +1261,11 @@ public final class Parser {
                 if (abstractSeen) throw error(previous(), "duplicate 'abstract' modifier");
                 abstractSeen = true;
                 isAbstract = true;
-            } else if (isContextualIdentifier("sealed") && (checkNext(CLASS) || checkNext(INTERFACE)
-                    || checkNext(TRAIT) || checkNextLexeme("final"))) {
+            } else if (isContextualIdentifier("sealed") && contextualSealingModifierBeforeType()) {
                 if (isSealed) throw error(previous(), "duplicate 'sealed' modifier");
                 advance();
                 isSealed = true;
-            } else if (isContextualIdentifier("final") && (checkNext(CLASS) || checkNextLexeme("sealed"))) {
+            } else if (isContextualIdentifier("final") && contextualSealingModifierBeforeType()) {
                 if (isFinal) throw error(previous(), "duplicate 'final' modifier");
                 advance();
                 isFinal = true;
