@@ -38,12 +38,7 @@ public final class ActorRaceInstrumentation {
             if (current == Long.MAX_VALUE) throw new IllegalStateException("race clock overflow");
             ticks.put(thread, current + 1);
         }
-        private Clock copy() {
-            Clock result = new Clock();
-            result.merge(this);
-            return result;
-        }
-    }
+     }
 
     private static final class Location {
         private final IdentityHashMap<Thread, Long> reads = new IdentityHashMap<>();
@@ -104,6 +99,24 @@ public final class ActorRaceInstrumentation {
         clock.tick(Thread.currentThread());
         lane.released.merge(clock);
         lane.executing = null;
+    }
+
+    /** Retire a completed actor incarnation without retaining its identity forever. */
+    public synchronized void retireActor(Object actorKey) {
+        Objects.requireNonNull(actorKey, "actor incarnation");
+        ActorLane lane = lanes.get(actorKey);
+        if (lane != null && lane.executing != null) {
+            overlaps++;
+            throw new IllegalStateException("cannot retire an executing actor");
+        }
+        lanes.remove(actorKey);
+    }
+
+    /** Remove an abandoned instrumented guest memory domain after teardown. */
+    public synchronized void retireMemoryDomain(Object memoryOwner) {
+        Objects.requireNonNull(memoryOwner, "memory owner identity");
+        Map<String, Location> fields = memory.remove(memoryOwner);
+        if (fields != null) locations -= fields.size();
     }
 
     /** Host synchronization release. Caller must guarantee real external synchronization. */
