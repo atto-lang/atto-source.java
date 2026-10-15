@@ -99,6 +99,34 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
         }
     }
 
+    private static void rejectsSharedNativeSchedulerOwnership() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler first = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                try {
+                    OresScheduler.managedWithNativeTurnWitness(
+                            1, Runnable::run, kernel);
+                    throw new AssertionError("native actor kernel was shared by two schedulers");
+                } catch (IllegalStateException expected) {
+                    require(expected.getMessage().contains("already bound"),
+                            "wrong duplicate-native-owner refusal");
+                }
+                require(first.start(resume -> OresScheduler.done(73))
+                                .get(5, TimeUnit.SECONDS) == 73,
+                        "rejected second owner affected original scheduler");
+            }
+            try {
+                OresScheduler.managedWithNativeTurnWitness(
+                        1, Runnable::run, kernel);
+                throw new AssertionError("retired owner permitted kernel reassignment");
+            } catch (IllegalStateException expected) {
+                require(expected.getMessage().contains("already bound"),
+                        "native VM identity must never be silently reused");
+            }
+            kernel.stop();
+        }
+    }
+
     private static void stopDeniesUserResumption() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64);
                 OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
@@ -216,6 +244,7 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
         for (int iteration = 1; iteration <= iterations; iteration++) {
             try {
                 ordinarySuspendResume();
+                rejectsSharedNativeSchedulerOwnership();
                 stopDeniesUserResumption();
                 pendingCleanupBlocksNativeDoneUntilTicketClosed();
                 closeInsideQuiescenceDoesNotClaimDone();
@@ -227,6 +256,6 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
             }
         }
         System.out.println("NATIVE_ACTOR_TURN_REAL_SCHEDULER_JNI_OK iterations="
-                + iterations + " scenarios=" + (4 * iterations));
+                + iterations + " scenarios=" + (5 * iterations));
     }
 }
