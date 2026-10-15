@@ -24,21 +24,24 @@ final class OresPointerSafetyTest {
     }
 
     @Test
-    void concurrentUnrefCannotReturnTargetTwice() throws Exception {
+    void concurrentCrossDomainUnrefCannotStealOwnership() throws Exception {
+        // The parent branch now fences handles to their creating execution
+        // domain. Host worker threads are different domains and must never
+        // race to win ownership over a pointer created on this thread.
         Object original = new Object();
         ExecutorService executor = Executors.newFixedThreadPool(2);
         try {
             for (int attempt = 0; attempt < 200; attempt++) {
                 OresPointer pointer = new OresPointer(original);
                 CountDownLatch start = new CountDownLatch(1);
-                AtomicInteger moved = new AtomicInteger();
-                AtomicInteger stale = new AtomicInteger();
+                AtomicInteger denied = new AtomicInteger();
                 Runnable contender = () -> {
                     try {
                         start.await();
-                        if (pointer.unref() == original) moved.incrementAndGet();
+                        pointer.unref();
+                        throw new AssertionError("a foreign execution domain unwrapped a pointer");
                     } catch (IllegalStateException expected) {
-                        stale.incrementAndGet();
+                        denied.incrementAndGet();
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new IllegalStateException(interrupted);
@@ -49,8 +52,10 @@ final class OresPointerSafetyTest {
                 start.countDown();
                 first.get();
                 second.get();
-                assertEquals(1, moved.get(), "unique ownership must transfer only once");
-                assertEquals(1, stale.get(), "second unwrap must be rejected");
+                assertEquals(2, denied.get(), "foreign domains must never unwrap");
+                assertSame(original, pointer.target(), "denied attempts cannot consume the handle");
+                assertSame(original, pointer.unref(), "the owner may still move the original pointee");
+                assertThrows(IllegalStateException.class, pointer::unref);
                 assertThrows(IllegalStateException.class, pointer::target);
             }
         } finally {
