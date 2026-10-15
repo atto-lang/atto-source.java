@@ -118,6 +118,50 @@ final class PostfixQuestionExecutionTest {
     }
 
     @Test
+    void trapDoesNotSwallowEarlyReturnAsAnOrdinaryThrow() throws Exception {
+        String source = """
+                fnc failed(): Result<int, String> {
+                  val Result<int, String> value = Err("bad");
+                  val Option<int> trapped = trap value?;
+                  stdio.println("invalid: trap captured early return");
+                  return Ok(9);
+                }
+
+                pub fnc main(): void {
+                  stdio.println(failed().is_err());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true\\n", run(source));
+    }
+
+    @Test
+    void deferAndFinallyCannotInitiateHiddenEarlyReturns() {
+        String defer = """
+                fnc rejected(): Result<int, String> {
+                  val Result<int, String> value = Ok(1);
+                  defer value?;
+                  return Ok(3);
+                }
+                """;
+        String finallyBlock = """
+                fnc rejected(): Result<int, String> {
+                  val Result<int, String> value = Ok(1);
+                  try { return Ok(3); }
+                  catch (err) { return Err("fail"); }
+                  finally { val int n = value?; }
+                }
+                """;
+        for (String source : new String[] {defer, finallyBlock}) {
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck(source), source);
+            assertTrue(error.getMessage().contains("postfix '?'"), error::getMessage);
+        }
+    }
+
+    @Test
     void copyableCarrierCanBeReusedAfterQuestion() {
         String source = """
                 fnc reuse(): Result<int, String> {
