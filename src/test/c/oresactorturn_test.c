@@ -373,6 +373,63 @@ static void test_exited_carrier_cannot_be_impersonated(void) {
  * incarnation and generation; it cannot cross VMs or be replayed.
  * Registration itself is trusted scheduler-only, not a guest-facing FFI.
  */
+struct terminal_identity_args {
+    ores_turn_vm *vm;
+    ores_turn_lease *lease;
+    ores_source_task_cap *source;
+    ores_turn_status injection, effects;
+};
+static void *wrong_carrier_terminal_probe(void *opaque) {
+    struct terminal_identity_args *a = opaque;
+    a->injection = ores_turn_note_terminal_injected(a->vm, a->lease, a->source);
+    a->effects = ores_turn_check_cleanup_effects(a->vm, a->lease);
+    return NULL;
+}
+static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(16);
+    CHECK(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL, *foreign_source = NULL;
+    ores_cleanup_cap *ticket = NULL;
+    ores_turn_lease *lease = NULL;
+    CHECK(ores_turn_register(vm, 112, 1, 1, &actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 1, 1, &source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 2, 1, &foreign_source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_claim_cleanup(vm, ticket, &lease) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
+    CHECK(ores_turn_note_terminal_injected(vm, lease, foreign_source)
+          == ORES_TURN_DENIED);
+    struct terminal_identity_args probe = {vm, lease, source,
+            ORES_TURN_INVALID, ORES_TURN_INVALID};
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, wrong_carrier_terminal_probe,
+                         &probe) == 0);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(probe.injection == ORES_TURN_WRONG_CARRIER);
+    CHECK(probe.effects == ORES_TURN_DENIED);
+    CHECK(ores_turn_note_terminal_injected(vm, lease, source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_OK);
+    CHECK(ores_turn_note_terminal_injected(vm, lease, source)
+          == ORES_TURN_DENIED);
+    CHECK(pthread_create(&thread, NULL, wrong_carrier_terminal_probe,
+                         &probe) == 0);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(probe.effects == ORES_TURN_WRONG_CARRIER);
+    CHECK(ores_turn_force_revoke(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
+    CHECK(ores_turn_release(vm, lease) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, foreign_source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+}
+
 static void test_source_task_provenance_and_retirement(void) {
     ores_turn_vm *vm = ores_turn_vm_new(64), *foreign = ores_turn_vm_new(16);
     CHECK(vm && foreign);
@@ -490,6 +547,7 @@ int main(void) {
     test_carrier_identity_churn();
     test_exited_carrier_cannot_be_impersonated();
     test_source_task_provenance_and_retirement();
+    test_terminal_signal_requires_real_lease_and_one_shot_ack();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
