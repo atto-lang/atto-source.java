@@ -240,6 +240,29 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectStaticHelperWhenModuleShadowsClassName() {
+        // Runtime NameExpr resolves module namespaces ahead of classes.
+        // A literal-only static helper in a same-named class must not
+        // authorize a module's potentially effectful callable.
+        String source = """
+                define module Utility as
+                  pub fnc forty(): int { return 40; }
+                end
+                define class Utility as
+                  pub static fnc forty(): int { return 40; }
+                end
+                define class Unsafe as
+                  final int first: 1;
+                  final int second: Utility.forty();
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
