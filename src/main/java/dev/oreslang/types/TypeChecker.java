@@ -2255,6 +2255,11 @@ public final class TypeChecker {
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
             if (unary.operator().equals("?")) {
+                if (questionOperandHasExplicitSuspension(unary.operand())) {
+                    throw new IllegalArgumentException(
+                            "postfix ? cannot enclose await, select, or channel suspension "
+                            + "until continuation-local early return is implemented");
+                }
                 if (questionPropagationReturn == null || currentMaySuspend
                         || currentGenerator || currentAsyncCallable
                         || inDiscardingSelectArm || checkingTrapOperand) {
@@ -6049,6 +6054,38 @@ public final class TypeChecker {
                 : new Named("Result", List.of(
                         member.equals("map_err") ? receiver.arguments().getFirst() : output,
                         member.equals("map_err") ? output : unchanged));
+    }
+
+    private boolean questionOperandHasExplicitSuspension(Ast.Expr expr) {
+        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return questionOperandHasExplicitSuspension(unary.operand());
+        if (expr instanceof Ast.TrapExpr trapped)
+            return questionOperandHasExplicitSuspension(trapped.expression());
+        if (expr instanceof Ast.CallExpr call) {
+            if (questionOperandHasExplicitSuspension(call.callee())) return true;
+            for (Ast.Expr argument : call.arguments())
+                if (questionOperandHasExplicitSuspension(argument)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.MemberExpr member)
+            return questionOperandHasExplicitSuspension(member.receiver());
+        if (expr instanceof Ast.IndexExpr index)
+            return questionOperandHasExplicitSuspension(index.receiver())
+                    || questionOperandHasExplicitSuspension(index.index());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return questionOperandHasExplicitSuspension(binary.left())
+                    || questionOperandHasExplicitSuspension(binary.right());
+        if (expr instanceof Ast.ConditionalExpr conditional)
+            return questionOperandHasExplicitSuspension(conditional.condition())
+                    || questionOperandHasExplicitSuspension(conditional.whenTrue())
+                    || questionOperandHasExplicitSuspension(conditional.whenFalse());
+        if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr element : list.elements())
+                if (questionOperandHasExplicitSuspension(element)) return true;
+        }
+        return false;
     }
 
     private boolean scalarSumCompositionType(Type type) {
