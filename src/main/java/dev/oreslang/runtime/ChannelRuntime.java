@@ -635,9 +635,9 @@ public final class ChannelRuntime {
         private final Runnable afterWaiterAttachedForTesting;
         private boolean decided;
         private boolean registered;
-        /** Registrations that may still return after a winner is chosen. */
+        /** Registrations that can still return after a selection was committed. */
         private int attachingFutureWaiters;
-        /** Complete only after late registrations have been detached. */
+        /** Completion publication is held until in-flight listener attachments detach. */
         private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
@@ -670,10 +670,6 @@ public final class ChannelRuntime {
             try {
                 if (decided) return false;
                 decided = true;
-                // Attached waiters are reclaimed before cancellation settles.
-                // A registration still in flight cannot be detached until its
-                // handle is returned; attachFutureWaiters() reclaims that
-                // late handle in its finally block outside COORDINATOR.
                 unregisterLocked(this, cleanups);
                 return true;
             } finally {
@@ -734,10 +730,6 @@ public final class ChannelRuntime {
         }
 
         private void attachFutureWaiters() {
-            // Each source arm owns a registration credit and detachable
-            // waiter. Do not dedupe registrations across duplicate Futures:
-            // independent arm accounting is part of the public select quota
-            // contract. Readiness is sampled once per producer in arbitration.
             List<CaseRegistration> pending;
             COORDINATOR.lock();
             try {
@@ -748,9 +740,8 @@ public final class ChannelRuntime {
             }
             for (CaseRegistration registration : pending) {
                 if (!(registration.selectCase instanceof FutureCase<?> candidate)) continue;
-                // Registration can settle while we are attaching an earlier
-                // Future listener. Do not execute guest-controlled callback
-                // registration for operations that have already lost.
+                // Claim the attachment lifetime before leaving the coordinator.
+                // Committed results cannot be published while this claim lives.
                 COORDINATOR.lock();
                 try {
                     if (decided) return;
@@ -759,8 +750,7 @@ public final class ChannelRuntime {
                     COORDINATOR.unlock();
                 }
                 OresFuture.RuntimeWaiterRegistration<?> waiter = null;
-                // Most listeners never defer publication; allocate a drain
-                // snapshot only if a winner really committed mid-attachment.
+                // Ordinary pending listeners never need a drain snapshot.
                 List<Runnable> readyToPublish = null;
                 try {
                     waiter = candidate.future().whenCompleteRuntimeCancellable(
@@ -774,23 +764,34 @@ public final class ChannelRuntime {
                     try {
                         lost = decided;
                         if (!lost && waiter != null) futureWaiters.add(waiter);
-                        attachingFutureWaiters--;
-                        if (attachingFutureWaiters == 0 && !deferredPublication.isEmpty()) {
-                            readyToPublish = List.copyOf(deferredPublication);
-                            deferredPublication.clear();
-                        }
                     } finally {
                         COORDINATOR.unlock();
                     }
-                    // A decision may have been made by the synchronous callback.
-                    // Reclaim the late waiter before making that decision visible.
-                    if (lost && waiter != null) waiter.detach();
-                    if (readyToPublish != null) runCompletions(readyToPublish);
+                    try {
+                        // Detachment can scan a large producer waiter queue.
+                        // Leave the attachment claim live until AFTER removal:
+                        // a concurrent publisher must not observe count == 0
+                        // while this losing registration remains linked.
+                        if (lost && waiter != null) waiter.detach();
+                    } finally {
+                        COORDINATOR.lock();
+                        try {
+                            attachingFutureWaiters--;
+                            if (attachingFutureWaiters == 0
+                                    && !deferredPublication.isEmpty()) {
+                                readyToPublish = List.copyOf(deferredPublication);
+                                deferredPublication.clear();
+                            }
+                        } finally {
+                            COORDINATOR.unlock();
+                        }
+                        if (readyToPublish != null) runCompletions(readyToPublish);
+                    }
                 }
             }
         }
 
-        /** Called outside COORDINATOR: publication cannot overtake waiter attachment. */
+        /** Publish a selected result only after every in-flight attachment has settled. */
         private void publishAfterAttachment(Runnable action) {
             COORDINATOR.lock();
             try {
