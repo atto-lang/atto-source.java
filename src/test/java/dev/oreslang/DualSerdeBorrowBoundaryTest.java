@@ -52,6 +52,8 @@ final class DualSerdeBorrowBoundaryTest {
         assertEquals("ActorMessageCodec", actor.name());
         assertEquals(2, network.members().size());
         assertEquals(2, actor.members().size());
+        assertDoesNotThrow(() -> TypeChecker.check(program),
+                "both borrowed-encode and owned-decode interface definitions must type-check");
     }
 
     @Test
