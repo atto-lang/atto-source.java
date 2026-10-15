@@ -5,6 +5,7 @@ import base64
 import hashlib
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -49,6 +50,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        self.real_publisher_checkout = pub.require_trusted_publisher_checkout
         self.publisher_checkout = patch.object(pub, "require_trusted_publisher_checkout",
                                                return_value=A)
         self.publisher_checkout.start()
@@ -123,6 +125,50 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_real_git_checkout_admission_denies_unreviewed_or_tampered_code(self):
+        # No private repo files are needed: initialize a synthetic Git repository
+        # and exercise the REAL checkout admission helper, not the mock.
+        with tempfile.TemporaryDirectory() as location:
+            root = Path(location).resolve()
+            def git(*args):
+                return subprocess.run(["git", "-C", str(root), *args],
+                                      capture_output=True, text=True,
+                                      check=True).stdout.strip()
+            git("init", "-q")
+            git("config", "user.name", "CI Synthetic Fixture")
+            git("config", "user.email", "ci@example.invalid")
+            protected = (
+                "scripts/publish-private-ci-source.py",
+                "scripts/run-in-private-ci-destination.sh",
+                "scripts/check-private-ci-destination.sh",
+                ".github/private-ci-approved-repositories.txt",
+                ".github/private-ci-approved-source-snapshots.txt",
+            )
+            for rel in protected:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# synthetic trusted file only\\n".replace("\\n", "\n"))
+            git("add", ".")
+            git("commit", "-qm", "Source-free synthetic publisher fixture")
+            commit = git("rev-parse", "HEAD")
+            self.assertEqual(
+                self.real_publisher_checkout(root, commit), commit)
+            with self.assertRaisesRegex(pub.Denied, "not executing reviewed"):
+                self.real_publisher_checkout(root, "0" * 40)
+            script = root / protected[0]
+            script.write_text("unreviewed mutation")
+            with self.assertRaisesRegex(pub.Denied, "modified"):
+                self.real_publisher_checkout(root, commit)
+            git("add", protected[0])
+            with self.assertRaisesRegex(pub.Denied, "modified"):
+                self.real_publisher_checkout(root, commit)
+            git("reset", "--hard", "HEAD")
+            (root / protected[-1]).unlink()
+            with self.assertRaises(pub.Denied):
+                self.real_publisher_checkout(root, commit)
+            git("reset", "--hard", "HEAD")
+            self.assertEqual(self.real_publisher_checkout(root, commit), commit)
 
     def test_reviewed_local_publisher_checkout_must_precede_source_read(self):
         with patch.object(pub, "require_trusted_publisher_checkout",
