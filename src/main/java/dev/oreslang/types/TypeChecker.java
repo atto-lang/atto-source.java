@@ -1925,22 +1925,42 @@ public final class TypeChecker {
                         ? new Env(env, env.descendantsNonLexical(), true)
                         : new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
-                    Type element = channelElementType(
-                            typeOf(arm.channel(), env, generics, self),
-                            "select " + arm.operation().name().toLowerCase());
+                    Type source = typeOf(arm.channel(), env, generics, self);
+                    Type element;
+                    if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                        if (!(source instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "when await requires Future<T>, got " + source);
+                        }
+                        element = future.arguments().getFirst();
+                    } else {
+                        element = channelElementType(
+                                source, "select " + arm.operation().name().toLowerCase());
+                    }
                     if (arm.operation() == Ast.ChannelOperation.WRITE) {
                         requireAssignable(
                                 typeOf(arm.value(), env, generics, self),
-                                element,
-                                "writech select value");
+                                element, "writech select value");
                     } else if (arm.bindingName() != null) {
+                        Type bound = element;
+                        if (arm.bindingType() != null) {
+                            bound = resolve(arm.bindingType(), generics, self);
+                            // A type annotation cannot strip the readonly
+                            // capability of a selected infer-struct event.
+                            // Apply the same capability check used for
+                            // assignments, parameters and return values.
+                            requireReadonlyCapabilityPreserved(
+                                    element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                            requireAssignable(element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
+                        }
                         requireMutableReferentCompatible(
-                                element, arm.mutableReferent(),
+                                bound, arm.mutableReferent(),
                                 "select binding '" + arm.bindingName() + "'");
-                        armEnv.define(
-                                arm.bindingName(),
-                                element,
-                                arm.bindingKind());
+                        armEnv.define(arm.bindingName(), bound, arm.bindingKind());
                     }
                 }
                 if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
@@ -2526,6 +2546,19 @@ public final class TypeChecker {
                                 typeOf(call.arguments().get(1), env, generics, self),
                                 element,
                                 "SelectCase.write value");
+                        yield new Named("SelectCase", List.of());
+                    }
+                    case "future" -> {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("SelectCase.future expects one Future<T>");
+                        }
+                        Type pending = typeOf(call.arguments().getFirst(), env, generics, self);
+                        if (!(pending instanceof Named future)
+                                || !future.name().equals("Future")
+                                || future.arguments().size() != 1) {
+                            throw new IllegalArgumentException(
+                                    "SelectCase.future requires Future<T>, got " + pending);
+                        }
                         yield new Named("SelectCase", List.of());
                     }
                     case "default" -> {
@@ -3320,6 +3353,10 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
+            if (sumReceiver instanceof Function) {
+                throw new IllegalArgumentException("unknown function member '" + member.member()
+                        + "'; invoke directly or spread a statically known tuple with f(...args)");
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
@@ -3469,7 +3506,7 @@ public final class TypeChecker {
                     return member;
                 }
                 if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return record.members().values().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return indexedElementUnion(record.members().values());
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -3482,7 +3519,7 @@ public final class TypeChecker {
                     }
                     return tuple.elements().get(constant.intValue());
                 }
-                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
@@ -5934,8 +5971,7 @@ public final class TypeChecker {
             };
         }
         if (receiver instanceof Tuple tuple) {
-            Type element = tuple.elements().stream()
-                    .reduce(Unknown.INSTANCE, this::commonType);
+            Type element = indexedElementUnion(tuple.elements());
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), element);
@@ -6102,6 +6138,11 @@ public final class TypeChecker {
         // Match the newer iterator prototype: for-await also admits synchronous
         // iterables, but execution still crosses the runtime-owned Future boundary.
         return iterableElementType(iterable);
+    }
+
+    private Type indexedElementUnion(java.util.Collection<Type> elements) {
+        return elements.stream().map(this::widenCollectionElement)
+                .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
     /** Folds trivial signed integer literals without performing guest arithmetic. */
@@ -7332,6 +7373,7 @@ public final class TypeChecker {
         GenericCallArguments.requireBound(genericNames, bindings, label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
+
 
         for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
