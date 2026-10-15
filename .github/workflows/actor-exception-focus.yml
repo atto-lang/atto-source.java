@@ -12,6 +12,8 @@ on:
       - "src/test/java/dev/oreslang/SourceActorOnThrowExecutionTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorIncarnationIdentityTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorCrossRuntimeRestartAuthorityTest.java"
+      - "src/test/java/dev/oreslang/runtime/ControlWakeRetryStandaloneStress.java"
+      - "scripts/verify_actor_control_retry_standalone.sh"
       - "scripts/verify_actor_exception_jvm.sh"
       - "tests/test_actor_ci_checkout_proof.py"
       - "scripts/check_private_ci_destination.py"
@@ -50,6 +52,10 @@ jobs:
           echo "source_sha=${GITHUB_SHA}"
           java --version
           mvn --version
+      - name: Exercise 100k CONTROL retries against checked-out production class
+        run: |
+          git hash-object -- src/main/java/dev/oreslang/runtime/ControlWakeRetryQueue.java
+          bash scripts/verify_actor_control_retry_standalone.sh
       - name: Test clean and stale source SHA admission (mock toolchains)
         run: python3 -m unittest discover -s tests -p 'test_actor_ci_checkout_proof.py' -v
       - name: Check private-source transfer policy
