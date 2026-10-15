@@ -436,9 +436,16 @@ public final class OresScheduler implements AutoCloseable {
                 runner.reserveDeadlineSlot();
             }
             try {
+                // SourceTask ID is allocated only after admission is confirmed
+                // under the same lock that linearizes scheduler close().
+                runner.registerNativeSourceIfEnabled();
                 tasks.add(runner);
             } catch (RuntimeException | Error failure) {
-                runner.releaseUnusedDeadlineSlot();
+                try {
+                    runner.releaseUnadmittedNativeSource();
+                } finally {
+                    runner.releaseUnusedDeadlineSlot();
+                }
                 throw failure;
             }
         }
@@ -601,6 +608,8 @@ public final class OresScheduler implements AutoCloseable {
 
         private final Task<T> task;
         private final Runnable onQuiescent;
+        /** Never disclosed to the guest or to Future completion callbacks. */
+        private NativeActorTurnKernel.SourceTask nativeSource;
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
@@ -631,6 +640,21 @@ public final class OresScheduler implements AutoCloseable {
             this.onNotificationDrained = onNotificationDrained;
             this.completion = new OresFuture<>(
                     this::cancelFromFuture, this::notificationDrained);
+        }
+
+        private void registerNativeSourceIfEnabled() {
+            if (nativeTurnKernel == null) return;
+            long id = nativeSourceIds.incrementAndGet();
+            if (id <= 0) throw new IllegalStateException("native SourceTask ID exhausted");
+            nativeSource = nativeTurnKernel.register(id, 1);
+        }
+
+        /** Admission failure before any continuation was made runnable. */
+        private void releaseUnadmittedNativeSource() {
+            if (nativeSource == null) return;
+            nativeTurnKernel.settled(nativeSource);
+            nativeTurnKernel.retire(nativeSource);
+            nativeSource = null;
         }
 
         private void reserveDeadlineSlot() {
