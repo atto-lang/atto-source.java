@@ -175,6 +175,31 @@ final class ActorMiddlewareValuePipelineTest {
     }
 
     @Test
+    void modifiedResponseDraftInvalidatesSkipDespiteUnchangedRequest() {
+        var key = key("safe");
+        var actorCalls = new AtomicInteger();
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(
+                        ActorMiddlewareValuePipeline.Stage.<Integer>value(key, S,
+                                (input, res) -> CompletableFuture.completedFuture(
+                                        new ActorMiddlewareValuePipeline.Continue<>(
+                                                input, res.withStatus(201))), false),
+                        ActorMiddlewareValuePipeline.Stage.<Integer>value(key("reset"), S,
+                                (input, res) -> CompletableFuture.completedFuture(
+                                        new ActorMiddlewareValuePipeline.Continue<>(
+                                                input, res.withStatus(200))), false)),
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key, A,
+                        (input, res) -> {
+                            actorCalls.incrementAndGet();
+                            return CompletableFuture.completedFuture(
+                                    new ActorMiddlewareValuePipeline.Continue<>(input, res));
+                        }, true)),
+                Set.of(key), input -> CompletableFuture.completedFuture(17));
+        pipeline.invoke(req("stable"), () -> false).toCompletableFuture().join();
+        assertEquals(1, actorCalls.get());
+    }
+
+    @Test
     void pendingDownstreamMustSettleBeforeParentErrorIsPublished() {
         var pending = new CompletableFuture<Integer>();
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
