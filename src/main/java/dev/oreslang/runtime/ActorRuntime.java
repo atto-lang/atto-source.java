@@ -1317,6 +1317,23 @@ public final class ActorRuntime implements AutoCloseable {
                 String actorTypeName,
                 ActorContext<Object> context) throws Exception;
 
+        /**
+         * Trusted compiler-owned, synchronous pre-dispatch hook, always
+         * executed inside the admitted actor turn. It can normalize the
+         * payload, but MUST NOT alter runtime-owned identity/correlation.
+         *
+         * This is a narrow admission bridge, not async guest next_val/next.
+         * A compiled middleware continuation may later use the same
+         * ownership barrier after scheduler integration.
+         */
+        default ActorInboxMail<Object> prepareActorMail(
+                String actorTypeName,
+                ActorOwnedGuestState state,
+                ActorInboxMail<Object> mail,
+                ActorContext<Object> context) throws Exception {
+            return mail;
+        }
+
         void receiveActor(
                 String actorTypeName,
                 ActorOwnedGuestState state,
@@ -7441,10 +7458,38 @@ public final class ActorRuntime implements AutoCloseable {
                                     @SuppressWarnings("unchecked")
                                     ActorContext<Object> sourceContext =
                                             (ActorContext<Object>) (ActorContext<?>) context;
+                                    // Preprocess only after mailbox admission and
+                                    // actor-owned state/generation validation.
+                                    ActorInboxMail<Object> prepared = Objects.requireNonNull(
+                                            codeExecutor.prepareActorMail(
+                                                    codeActorType, codeActorState,
+                                                    sourceMail, sourceContext),
+                                            "source actor middleware must return an envelope");
+                                    if (!sourceMail.recipient().equals(prepared.recipient())
+                                            || !sourceMail.sender().equals(prepared.sender())
+                                            || sourceMail.sequence() != prepared.sequence()) {
+                                        throw new SecurityException(
+                                                "actor middleware cannot forge mailbox recipient, sender or sequence");
+                                    }
+                                    validateMessageGraph(prepared.value());
+                                    if (kind == ActorKind.UNTRUSTED) {
+                                        rejectUntrustedInboundCapabilities(
+                                                prepared.value(), new IdentityHashMap<>(), 0);
+                                    }
+                                    requireMutexTransport(
+                                            ActorCell.this, prepared.value(), new IdentityHashMap<>(), 0);
+                                    requireOwnedActorRefs(
+                                            prepared.value(), new IdentityHashMap<>(), 0);
+                                    // currentMail must refer to the *same* trusted
+                                    // envelope as the guest receive handler.
+                                    @SuppressWarnings("unchecked")
+                                    ActorInboxMail<M> preparedMail =
+                                            (ActorInboxMail<M>) (ActorInboxMail<?>) prepared;
+                                    activeMail = preparedMail;
                                     codeExecutor.receiveActor(
                                             codeActorType,
                                             codeActorState,
-                                            sourceMail,
+                                            prepared,
                                             sourceContext);
                                 } else {
                                     behavior.onMessage(mail.value(), context);
