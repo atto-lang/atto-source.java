@@ -195,6 +195,24 @@ all eight GCC/Clang/optimization/sanitizer configurations passed.
 This proves rejected stale carrier release in a regression, **not**
 a production-grade recovery protocol for a legitimately abandoned lease.
 
+### Forked-process VM isolation
+
+The native VM is now explicitly bound to the process that created it.
+`fork()` copies the in-memory actor registry, mutex, lease pointer and
+calling thread's TLS carrier token. Without process fencing, the child
+could wrongly appear to own an inherited lease. Every public native
+status operation now checks the creator PID **before locking** a VM mutex.
+Inherited-VM operations reject with `ORES_TURN_INVALID`, including lease
+release, registration, STOP and VM destruction. A forked child that needs
+native actors must create a new VM. This also avoids deadlock on a mutex
+copied in its locked state from a disappeared parent thread.
+
+The fork regression copies a VM while the parent owns an active physical
+turn lease, attempts native operations in the child, and then verifies
+that the parent's original lease and actor can complete and retire.
+This regression, like the current SourceTask/terminal-completion changes,
+is **committed but not yet compiled/executed**.
+
 ### Registered SourceTask cleanup provenance (implementation in progress)
 
 The prototype no longer accepts an arbitrary actor handle as sufficient proof
@@ -242,8 +260,8 @@ handles, duplicate or decreasing task generations, double issue, retirement
 barriers, replay after actor restart, wrong-carrier acknowledgement,
 pre-injection completion refusal, injection-without-completion retirement
 refusal, repeated completion denial, no effects after completion and
-200 completion-vs-FORCE race iterations. **These new tests have not yet
-executed on a runner.** The most recent funded private CI attempt
+200 completion-vs-FORCE race iterations, and inherited-VM rejection
+after `fork()`. **These new tests have not yet executed on a runner.** The most recent funded private CI attempt
 [#38658876999](https://github.com/canonical-cloud/canonical-e2e/actions/runs/38658876999)
 failed before executing any steps, so neither compilation nor test failure
 can be inferred from that run.
