@@ -535,6 +535,27 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private void validateCallbackDeliveryParameter(
+            Ast.Param param, Type parameterType, boolean publicApi, String owner) {
+        if (param.callbackDelivery() == Ast.CallbackDelivery.UNSPECIFIED) {
+            if (publicApi && parameterType instanceof Function) {
+                warnings.add("W-CB001: public callable " + owner + " parameter '" + param.name()
+                        + "' has no callback delivery contract; declare @callback(inline), "
+                        + "@callback(deferred), or @callback(maybe_inline)");
+            }
+            return;
+        }
+        if (!(parameterType instanceof Function)) {
+            throw new IllegalArgumentException(
+                    "@callback parameter '" + param.name() + "' must have an Fnc callable type");
+        }
+        if (param.structural() || param.mutable()) {
+            throw new IllegalArgumentException(
+                    "@callback parameter '" + param.name()
+                            + "' cannot grant mutable or structural callable authority");
+        }
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -602,6 +623,8 @@ public final class TypeChecker {
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
+            validateCallbackDeliveryParameter(param, parameterType,
+                    fn.visibility() == Ast.Visibility.PUBLIC, module + "." + fn.name());
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -1401,6 +1424,9 @@ public final class TypeChecker {
             List<Type> methodArgumentTypes = new ArrayList<>(method.parameters().size());
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
+                validateCallbackDeliveryParameter(param, parameterType,
+                        method.visibility() == Ast.Visibility.PUBLIC,
+                        klass.name() + "." + method.name());
                 methodArgumentTypes.add(parameterType);
                 if (param.structural() && klass.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
