@@ -113,6 +113,16 @@ final class QuestionPropagationLanguageTest {
                   return x? + 1;
                 }
                 """, "expected ':'");
+        reject("""
+                async fnc pending(): Result<int, String> {
+                  return Ok(4);
+                }
+                fnc bad(): Result<int, String> {
+                  val int x = (await pending())?;
+                  return Ok(x);
+                }
+                """, "cannot enclose await");
+
     }
 
     private static void reject(String source, String expected) {
