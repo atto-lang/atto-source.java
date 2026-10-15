@@ -173,15 +173,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         "users": ["bypasser"] if self.carrier_review_bypass.pop(0) else [],
                         "teams": [], "apps": []}}
         mapping = {
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
-            "repos/trusted/ci/git/commits/"+C: {"tree": {"sha": E}},
+            "repos/trusted/ci/git/commits/"+C: {"sha": C, "tree": {"sha": E}},
             "repos/trusted/ci/git/refs": {
                 "ref": "refs/heads/ci/oreslang-test", "object": {"sha": C}},
             "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
-                "object": {"sha": C}},
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"sha": C, "type": "commit"}},
             "repos/trusted/ci/git/trees/"+E: {
-                "truncated": False,
+                "sha": E, "truncated": False,
                 "tree": [{"path": pub.PREFIX, "mode": "040000",
                           "type": "tree", "sha": self.expected_tree}]},
         }
@@ -952,6 +953,54 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                     self.root, self.expected_tree, D)
 
+    def test_carrier_main_commit_readback_rejects_forged_sha(self):
+        original = self.fake_api
+        def wrong_main_commit(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + A:
+                self.route_calls.append((method, route, payload))
+                return {"sha": B, "tree": {"sha": B}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_main_commit):
+            with self.assertRaisesRegex(pub.Denied, "main commit identity"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_post_publish_ref_identity_and_object_type_must_match(self):
+        original = self.fake_api
+        for ref, kind in (("refs/heads/wrong", "commit"),
+                          ("refs/heads/ci/oreslang-test", "blob")):
+            with self.subTest(ref=ref, kind=kind):
+                self.route_calls.clear()
+                def wrong_ref(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                        self.route_calls.append((method, route, payload))
+                        return {"ref": ref, "object": {"sha": C, "type": kind}}
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=wrong_ref):
+                    with self.assertRaisesRegex(pub.Denied, "branch readback identity"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+
+    def test_post_publish_commit_and_root_tree_shas_must_match(self):
+        original = self.fake_api
+        for target in ("commit", "tree"):
+            with self.subTest(target=target):
+                self.route_calls.clear()
+                def wrong_identity(route, method="GET", payload=None):
+                    if target == "commit" and route == "repos/trusted/ci/git/commits/" + C:
+                        self.route_calls.append((method, route, payload))
+                        return {"sha": A, "tree": {"sha": E}}
+                    if target == "tree" and route == "repos/trusted/ci/git/trees/" + E:
+                        response = original(route, method, payload)
+                        return dict(response, sha=B)
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=wrong_identity):
+                    with self.assertRaisesRegex(pub.Denied,
+                                                "commit readback identity|root tree readback identity"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+
     def test_created_branch_confirmation_must_point_to_commit(self):
         original = self.fake_api
         def changed_ref(route, method="GET", payload=None):
@@ -982,7 +1031,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def wrong_commit_tree(route, method="GET", payload=None):
             if route == "repos/trusted/ci/git/commits/" + C:
                 self.route_calls.append((method, route, payload))
-                return {"tree": {"sha": B}}
+                return {"sha": C, "tree": {"sha": B}}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=wrong_commit_tree):
             with self.assertRaisesRegex(pub.Denied, "commit tree differs"):
@@ -994,7 +1043,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def wrong_root_tree(route, method="GET", payload=None):
             if route == "repos/trusted/ci/git/trees/" + E:
                 self.route_calls.append((method, route, payload))
-                return {"truncated": False,
+                return {"sha": E, "truncated": False,
                         "tree": [{"path": pub.PREFIX, "mode": "040000",
                                   "type": "tree", "sha": B}]}
             return original(route, method, payload)
@@ -1011,7 +1060,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 def incomplete_tree(route, method="GET", payload=None):
                     if route == "repos/trusted/ci/git/trees/" + E:
                         self.route_calls.append((method, route, payload))
-                        return {"truncated": truncated,
+                        return {"sha": E, "truncated": truncated,
                                 "tree": [{"path": pub.PREFIX, "mode": "040000",
                                           "type": "tree", "sha": self.expected_tree}]}
                     return original(route, method, payload)
@@ -1027,7 +1076,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.route_calls.append((method, route, payload))
                 item = {"path": pub.PREFIX, "mode": "040000", "type": "tree",
                         "sha": self.expected_tree}
-                return {"truncated": False, "tree": [item, dict(item)]}
+                return {"sha": E, "truncated": False, "tree": [item, dict(item)]}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=ambiguous_root_tree):
             with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
