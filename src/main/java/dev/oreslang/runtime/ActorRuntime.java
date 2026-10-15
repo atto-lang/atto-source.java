@@ -668,7 +668,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void publishActorFailureNotice(ActorFailureNotice notice) {
         if (!actorFailureNotices.offer(notice)) {
-            actorFailureNoticesDropped.incrementAndGet();
+            SaturatingAtomicCounter.increment(actorFailureNoticesDropped);
         }
     }
 
@@ -681,11 +681,11 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
         long now = System.nanoTime();
-        watchdogOverruns.incrementAndGet();
+        SaturatingAtomicCounter.increment(watchdogOverruns);
         if (!watchdogNotices.offer(new WatchdogNotice(
                 cell.ref.id(), cell.kind,
                 lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)))) {
-            watchdogNoticesDropped.incrementAndGet();
+            SaturatingAtomicCounter.increment(watchdogNoticesDropped);
         }
     }
 
@@ -6904,13 +6904,13 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!completedChild || child.parent != this
                         || !child.ref.id().equals(notice.actorId())
                         || !ref.id().equals(notice.supervisorId())) {
-                    childFailureControlDropped.incrementAndGet();
-                    childFailureControlNoticesDropped.incrementAndGet();
+                    SaturatingAtomicCounter.increment(childFailureControlDropped);
+                    SaturatingAtomicCounter.increment(childFailureControlNoticesDropped);
                     return false;
                 }
                 if (stopped.get() || finalized) {
-                    childFailureControlDropped.incrementAndGet();
-                    childFailureControlNoticesDropped.incrementAndGet();
+                    SaturatingAtomicCounter.increment(childFailureControlDropped);
+                    SaturatingAtomicCounter.increment(childFailureControlNoticesDropped);
                     return false;
                 }
                 ArrayBlockingQueue<ActorFailureNotice> inbox =
@@ -6920,8 +6920,8 @@ public final class ActorRuntime implements AutoCloseable {
                     childFailureControlInbox.set(inbox);
                 }
                 if (inbox.offer(notice)) return true;
-                childFailureControlDropped.incrementAndGet();
-                childFailureControlNoticesDropped.incrementAndGet();
+                SaturatingAtomicCounter.increment(childFailureControlDropped);
+                SaturatingAtomicCounter.increment(childFailureControlNoticesDropped);
                 return false;
             }
         }
@@ -6956,11 +6956,11 @@ public final class ActorRuntime implements AutoCloseable {
                     childFailureRetryRegistered.set(false);
                     // Fail visibly; immutable notice stays in the parent
                     // queue and in the separate host audit channel.
-                    childFailureWakeRejected.incrementAndGet();
+                    SaturatingAtomicCounter.increment(childFailureWakeRejected);
                 }
             } catch (RuntimeException failedWake) {
                 childFailureRetryRegistered.set(false);
-                childFailureWakeRejected.incrementAndGet();
+                SaturatingAtomicCounter.increment(childFailureWakeRejected);
             }
         }
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
@@ -7354,8 +7354,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // invisible discarded notices for the host's CONTROL monitor.
                 int undelivered = retiredControl.size();
                 if (undelivered != 0) {
-                    childFailureControlDropped.addAndGet(undelivered);
-                    childFailureControlNoticesDropped.addAndGet(undelivered);
+                    SaturatingAtomicCounter.add(childFailureControlDropped, undelivered);
+                    SaturatingAtomicCounter.add(childFailureControlNoticesDropped, undelivered);
                 }
                 retiredControl.clear();
             }
@@ -7613,7 +7613,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 if (!fatalOnRejection) {
-                    childFailureWakeRejected.incrementAndGet();
+                    SaturatingAtomicCounter.increment(childFailureWakeRejected);
                     return false;
                 }
                 stop();
