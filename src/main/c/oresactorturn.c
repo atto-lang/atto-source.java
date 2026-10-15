@@ -18,7 +18,7 @@ struct ores_turn_lease {
     struct ores_actor_cap *actor;
     struct ores_source_task_cap *source; /* NULL for ordinary user turns */
     uint_fast64_t carrier_token;
-    bool released;
+    bool cleanup_turn, released;
 };
 struct ores_actor_cap {
     struct ores_actor_cap *next;
@@ -432,6 +432,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                 status = allocate_lease(vm, a, out);
                 if (status == ORES_TURN_OK) {
                     (*out)->source = ticket->source;
+                    (*out)->cleanup_turn = true;
                     ticket->source->active_lease = *out;
                     ticket->consumed = true;
                     ticket->source->ticket_closed = true;
@@ -479,6 +480,7 @@ ores_turn_status ores_turn_note_terminal_injected(ores_turn_vm *vm,
         status = require_live_source(vm, source);
         if (status == ORES_TURN_OK) {
             if (lease->released || lease->actor->active != lease
+                    || !lease->cleanup_turn || !source->ticket_claimed
                     || lease->source != source || !lease->actor->stopped
                     || lease->actor->revoked || source->terminal_injected)
                 status = ORES_TURN_DENIED;
@@ -501,7 +503,8 @@ ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_lease(vm, lease)) {
         if (lease->released || lease->actor->active != lease
-                || !lease->source || !lease->actor->stopped
+                || !lease->cleanup_turn || !lease->source
+                || !lease->source->ticket_claimed || !lease->actor->stopped
                 || lease->actor->revoked || !lease->source->terminal_injected
                 || lease->source->cleanup_completed
                 || lease->source->terminal_aborted)
@@ -528,6 +531,7 @@ ores_turn_status ores_turn_complete_cleanup(ores_turn_vm *vm,
         status = require_live_source(vm, source);
         if (status == ORES_TURN_OK) {
             if (lease->released || lease->actor->active != lease
+                    || !lease->cleanup_turn || !source->ticket_claimed
                     || lease->source != source || !lease->actor->stopped
                     || lease->actor->revoked || !source->terminal_injected
                     || source->cleanup_completed || source->terminal_aborted)
