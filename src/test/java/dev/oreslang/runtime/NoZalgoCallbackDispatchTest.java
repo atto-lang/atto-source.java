@@ -110,6 +110,40 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void continuationTargetCannotBeTransferredIntoAnotherRuntime()
+            throws Exception {
+        AtomicReference<Throwable> observedFailure = new AtomicReference<>();
+        CountDownLatch verified = new CountDownLatch(1);
+        try (var owner = new ActorRuntime(IsolatePolicy.developer());
+                var foreign = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = owner.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var target = owner.captureCurrentContinuationTarget();
+                    var source = new OresFuture<Integer>();
+                    var rejection = assertThrows(IllegalArgumentException.class,
+                            () -> foreign.enqueueOnCompletion(source, target,
+                                    (value, error) -> fail("foreign actor continuation ran")));
+                    assertTrue(rejection.getMessage().contains("different ActorRuntime"));
+                    assertFalse(source.isDone(),
+                            "invalid target must be rejected before owning or cancelling source");
+                    assertEquals(0, source.pendingRuntimeWaiterCount(),
+                            "invalid target must not register a foreign runtime waiter");
+                } catch (Throwable failure) {
+                    observedFailure.compareAndSet(null, failure);
+                } finally {
+                    verified.countDown();
+                }
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("check");
+            assertTrue(verified.await(5, TimeUnit.SECONDS));
+            assertNull(observedFailure.get(),
+                    () -> String.valueOf(observedFailure.get()));
+            actor.cancel();
+        }
+    }
+
+    @Test
     void completedFutureRegisteredWithinActorCannotInvokeGuestBeforeReceiveReturns()
             throws Exception {
         AtomicBoolean insideReceive = new AtomicBoolean();
