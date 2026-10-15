@@ -9,32 +9,36 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class SelectNestedReturnContractTest {
     @Test
-    void evaluatesDiscardedReturnOnlyOnce() throws Exception {
+    void evaluatesEnclosingReturnOnlyOnce() throws Exception {
         String source = """
                 pub fnc produce(): int {
                   stdio.stdout.write("evaluated:");
                   return 9;
                 }
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       return produce();
                     }
                   }
-                  stdio.stdout.write("continued");
+                  return 42;
+                }
+                pub fnc main(): void {
+                  stdio.stdout.write(compute());
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("evaluated:continued", run(source));
+        assertWarnings(source, 0);
+        assertEquals("evaluated:9", run(source));
     }
 
     @Test
-    void nestedSelectionsOnlyExitTheirOwnArm() throws Exception {
+    void nestedProceduralSelectionsReturnFromEnclosingCallable() throws Exception {
         String source = """
                 pub fnc main(): void {
                   do select {
@@ -42,23 +46,23 @@ final class SelectNestedReturnContractTest {
                       do select {
                         default: {
                           stdio.stdout.write("inner:");
-                          return 1;
+                          return;
                         }
                       }
                       stdio.stdout.write("outer:");
-                      return 2;
+                      return;
                     }
                   }
                   stdio.stdout.write("done");
                   return;
                 }
                 """;
-        assertWarnings(source, 2);
-        assertEquals("inner:outer:done", run(source));
+        assertWarnings(source, 0);
+        assertEquals("inner:", run(source));
     }
 
     @Test
-    void discardReturnCannotHijackEnclosingFunctionResult() throws Exception {
+    void doSelectReturnIsCheckedAgainstEnclosingFunctionType() {
         String source = """
                 pub fnc compute(): int {
                   do select {
@@ -73,8 +77,26 @@ final class SelectNestedReturnContractTest {
                   return;
                 }
                 """;
-        assertWarnings(source, 1);
-        assertEquals("42", run(source));
+        var problem = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(problem.getMessage().contains("return value"), problem::getMessage);
+    }
+
+    @Test
+    void proceduralSelectReturnIsAlsoCheckedInClassMethods() {
+        String source = """
+                define class Resolver as
+                  pub fnc choose(): int {
+                    do select {
+                      default: {
+                        return 17;
+                      }
+                    }
+                    return 99;
+                  }
+                end
+                """;
+        assertWarnings(source, 0);
     }
 
     @Test

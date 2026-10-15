@@ -6,8 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -58,6 +60,14 @@ final class ActorStructuredCancellationTest {
             assertInstanceOf(
                     ActorRuntime.ActorCancelledException.class,
                     child.failure().orElseThrow());
+            // Parent's graceful STOP is successful for the parent, but it
+            // structurally cancels descendants. A child's DONE is the
+            // physical barrier; it does not silently convert cancellation
+            // into successful completion after resources have been released.
+            parent.done().get(5, TimeUnit.SECONDS);
+            ExecutionException cancelled = assertThrows(ExecutionException.class,
+                    () -> child.done().get(5, TimeUnit.SECONDS));
+            assertSame(child.failure().orElseThrow(), cancelled.getCause());
         }
     }
 
