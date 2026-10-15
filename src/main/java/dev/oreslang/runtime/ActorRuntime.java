@@ -7236,14 +7236,31 @@ public final class ActorRuntime implements AutoCloseable {
                 if (gate == null) {
                     dispatchScheduledTurn(dispatchTicket, null);
                 } else {
-                    ActorGroupTurnGate.Ticket ticket = gate.submit(
-                            granted -> dispatchScheduledTurn(dispatchTicket, granted),
-                            this::cancelQueuedScheduleOnShutdown);
-                    pendingTurnGateTicket = ticket;
-                    if (stopped.get()) ticket.cancelWaiting();
-                    if (ticket.isSettled() && pendingTurnGateTicket == ticket) {
-                        pendingTurnGateTicket = null;
+                    ActorGroupTurnGate.Ticket ticket;
+                    // Publish the reservation atomically with respect to the
+                    // actor's stop/finalization path. Without this lifecycle
+                    // lock, stop() can miss a WAITING ticket between gate
+                    // submission and pendingTurnGateTicket publication,
+                    // permanently stranding a scheduled but unstarted actor.
+                    // gate.submit() never runs guest code: its callback only
+                    // submits to the existing VM domain dispatcher.
+                    synchronized (lifecycleLock) {
+                        if (scheduledDispatchToken != dispatchTicket
+                                || stopped.get() || forceKillFenced || closed.get()) {
+                            if (scheduledDispatchToken == dispatchTicket) {
+                                scheduledDispatchToken = null;
+                                scheduled.set(false);
+                                if (stopped.get() && activeTurns == 0) finalizeStopLocked();
+                            }
+                            return;
+                        }
+                        ticket = gate.submit(
+                                granted -> dispatchScheduledTurn(dispatchTicket, granted),
+                                this::cancelQueuedScheduleOnShutdown);
+                        pendingTurnGateTicket = ticket;
+                        if (ticket.isSettled()) pendingTurnGateTicket = null;
                     }
+                    if (stopped.get()) ticket.cancelWaiting();
                 }
             } catch (RejectedExecutionException rejected) {
                 synchronized (lifecycleLock) {
@@ -7292,9 +7309,11 @@ public final class ActorRuntime implements AutoCloseable {
                         scheduled.set(false);
                     }
                 }
-                if (lease != null) lease.release();
-                stop();
-                if (lease == null && !closed.get()) throw rejected;
+                if (lease == null) stop();
+                // Let ActorGroupTurnGate close all queued admissions and
+                // reclaim this grant. Releasing it here would promote the
+                // next waiter recursively into the same broken dispatcher.
+                throw rejected;
             }
         }
 
