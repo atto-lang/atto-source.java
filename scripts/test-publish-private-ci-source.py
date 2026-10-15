@@ -618,7 +618,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_subdirectory_cannot_enable_checkout_metadata_exception(self):
         (self.source / ".git").mkdir()
-        with self.assertRaisesRegex(pub.Denied, "checkout root"):
+        with self.assertRaisesRegex(pub.Denied, "unsupported name"):
             pub.collect_source(self.source, self.root, omit_checkout_metadata=True)
 
     def test_git_metadata_directory_rejected(self):
