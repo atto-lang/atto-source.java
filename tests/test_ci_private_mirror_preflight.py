@@ -104,6 +104,43 @@ class MirrorGateTest(unittest.TestCase):
         with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
             admission.fetch_metadata("private/dst", "")
 
+    def test_malformed_tokens_fail_before_an_http_request(self):
+        malformed = (None, "", " ", " has-space", "trailing-space ",
+                     "line\\nsecond", "carriage\\rreturn", "tab\\tvalue",
+                     "nonascii-雪", "bad:colon", "A" * (admission.MAX_TOKEN_LENGTH + 1),
+                     123, False)
+        for token in malformed:
+            with self.subTest(token_type=type(token).__name__, token_len=len(token) if isinstance(token, str) else 0):
+                called = []
+                def opener(req, timeout):
+                    called.append(req)
+                    raise AssertionError("malformed credential reached HTTP")
+                with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
+                    admission.fetch_metadata("private/src", token, opener=opener)
+                self.assertEqual(called, [])
+
+    def test_both_tokens_required_before_either_metadata_fetch(self):
+        for bad_side in ("source", "destination"):
+            with self.subTest(bad_side=bad_side):
+                calls = []
+                def fetch(name, token):
+                    calls.append(name)
+                    return metadata(name, 21 if name == "private/src" else 34)
+                source_token = "a" if bad_side != "source" else "bad\\nheader"
+                destination_token = "b" if bad_side != "destination" else None
+                with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
+                    admission.verify("private/src", "private/dst", 21, 34,
+                                     source_token, destination_token, fetch=fetch)
+                self.assertEqual(calls, [])
+
+    def test_noncredential_bearer_error_is_sanitized(self):
+        key = "SECRET_CANARY"
+        def opener(req, timeout):
+            raise ValueError("malformed header " + key)
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "metadata unavailable") as caught:
+            admission.fetch_metadata("private/src", key, opener=opener)
+        self.assertNotIn(key, str(caught.exception))
+
     def test_path_traversal_and_bad_names_refused(self):
         for name in ("foo", "../dst", "foo/../dst", "foo/dst?x=1", "foo/dst#tag", "/dst", "src/dst/%2F"):
             with self.subTest(name=name), self.assertRaises(admission.MirrorPreflightError):
