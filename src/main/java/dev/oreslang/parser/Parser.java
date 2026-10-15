@@ -1418,6 +1418,7 @@ public final class Parser {
 
             // Compatibility name-first structural spelling: y structural Foo
             if (check(IDENT) && checkNextLexeme("structural")) {
+                if (delivery != Ast.CallbackDelivery.UNSPECIFIED) throw error(peek(), "@callback cannot be structural");
                 String name = advance().lexeme();
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
@@ -1432,6 +1433,7 @@ public final class Parser {
 
             // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
             if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
+                if (delivery != Ast.CallbackDelivery.UNSPECIFIED) throw error(peek(), "@callback cannot be structural");
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
