@@ -6181,8 +6181,14 @@ public final class TypeChecker {
                     return seen.add(target) && target.body().stream().anyMatch(
                             a -> questionStmtMaySuspend(a, seen));
                 }
+                // Only the source-known scalar sum constructors are proven
+                // non-suspending without a resolved function declaration.
+                // Unresolved imports, host callables and dynamic values must
+                // not make a synchronous ? callable enter SourceTask later.
+                return !(name.name().equals("Ok") || name.name().equals("Err")
+                        || name.name().equals("Some") || name.name().equals("None"));
             }
-            return false;
+            return true; // unclassified callable target: fail closed
         }
         if (expr instanceof Ast.MatchExpr v) {
             return questionExprMaySuspend(v.subject(), seen)
