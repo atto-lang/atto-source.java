@@ -6848,7 +6848,14 @@ public final class ActorRuntime implements AutoCloseable {
         private OresFuture<Void> quiesceAcceptedMessages() {
             synchronized (lifecycleLock) {
                 if (finalized) return OresFuture.completed(null);
-                if (stopped.get()) return finalizedFuture;
+                if (stopped.get()) {
+                    // Do not expose the internal finalizedFuture's default
+                    // cancellation capability through this shutdown observer.
+                    OresFuture<Void> observer = new OresFuture<>(() -> false, () -> { });
+                    finalizedFuture.whenCompleteRuntime(
+                            (ignored, failure) -> observer.completeFromRuntime(null));
+                    return observer;
+                }
                 final long target = nextUserMessageSequence - 1L;
                 if (lastProcessedUserMessageSequence >= target
                         && !carrierActive && activeTurns == 0 && !scheduled.get()) {
@@ -7259,7 +7266,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
             boolean reschedule = false;
-            List<OresFuture<Void>> quiesced = new ArrayList<>();
+            List<OresFuture<Void>> quiesced = null;
             try {
                 synchronized (lifecycleLock) {
                     // Prevent obsolete queued runnables impersonating the
@@ -7360,7 +7367,10 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !finalized
                                     && hasQueuedWorkLocked();
                         }
-                        collectCarrierQuiescenceLocked(quiesced);
+                        if (!pendingCarrierQuiescence.isEmpty()) {
+                            quiesced = new ArrayList<>();
+                            collectCarrierQuiescenceLocked(quiesced);
+                        }
                         lifecycleLock.notifyAll();
                     }
                 } finally {
@@ -7373,8 +7383,10 @@ public final class ActorRuntime implements AutoCloseable {
                     // Runtime-only completion, after TurnExecutor returned and
                     // physical carrier authority was dropped, never inline in
                     // the guest receive callback or under lifecycleLock.
-                    for (OresFuture<Void> waiter : quiesced) {
-                        waiter.completeFromRuntime(null);
+                    if (quiesced != null) {
+                        for (OresFuture<Void> waiter : quiesced) {
+                            waiter.completeFromRuntime(null);
+                        }
                     }
                 } finally {
                     if (reschedule) schedule();
