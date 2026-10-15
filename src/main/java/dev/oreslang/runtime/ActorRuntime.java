@@ -6743,7 +6743,6 @@ public final class ActorRuntime implements AutoCloseable {
                 childFailureControlInbox = new AtomicReference<>();
         private final AtomicLong childFailureControlDropped = new AtomicLong();
         private final AtomicLong childFailureWakeRejected = new AtomicLong();
-        private final AtomicBoolean childFailureWakeQueued = new AtomicBoolean();
 
         private boolean acceptDirectChildFailure(ActorFailureNotice notice) {
             if (!ref.id().equals(notice.supervisorId())) {
@@ -6772,28 +6771,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Submit an internal scheduling request to a pre-existing runtime
-         * dispatcher, never run guest code synchronously from child teardown.
-         * A rejected wake leaves the immutable notice available for polling.
+         * Schedule one parent-owned turn directly on its existing VM dispatcher,
+         * never a redundant dispatcher job to enqueue yet another job.
+         * Rejection preserves the parent actor and its pollable CONTROL notice.
          */
         private void wakeChildFailureHandler() {
-            // The behavior is published on the parent carrier; inspect it
-            // under that parent's lifecycle monitor for visibility and to
-            // linearize scheduling eligibility with cancellation/retirement.
             synchronized (lifecycleLock) {
                 if (!(behavior instanceof ChildFailureHandler<?>)
-                        || stopped.get() || finalized || closed.get()
-                        || !childFailureWakeQueued.compareAndSet(false, true)) return;
+                        || stopped.get() || finalized || closed.get()) return;
             }
-            try {
-                dispatcherFor(kind).execute(() -> {
-                    childFailureWakeQueued.set(false);
-                    schedule();
-                });
-            } catch (RejectedExecutionException rejected) {
-                childFailureWakeQueued.set(false);
-                childFailureWakeRejected.incrementAndGet();
-            }
+            schedule(false);
         }
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
@@ -7372,6 +7359,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void schedule() {
+            schedule(true);
+        }
+
+        /**
+         * Ordinary user-mail dispatch fails closed on pool rejection.
+         * An optional supervisor CONTROL wake is different: its immutable
+         * notice is already admitted, so saturation must not destroy the
+         * parent actor or convert a child failure into its cancellation.
+         */
+        private void schedule(boolean fatalOnRejection) {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
                 if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
@@ -7394,6 +7391,10 @@ public final class ActorRuntime implements AutoCloseable {
                         scheduledDispatchToken = null;
                         scheduled.set(false);
                     }
+                }
+                if (!fatalOnRejection) {
+                    childFailureWakeRejected.incrementAndGet();
+                    return;
                 }
                 stop();
                 if (!closed.get()) throw rejected;
