@@ -780,10 +780,9 @@ public final class Parser {
             if (mods.isStatic && !explicitFnc) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
             }
-            // Do not silently admit methods that look like checked supervisor
-            // handlers before typed exhaustiveness and CONTROL dispatch exist.
-            if (check(IDENT) && (peek().lexeme().equals("on_throw")
-                    || peek().lexeme().equals("on_throws")
+            // on_throw(Error): bool is a checked actor-local receive hook.
+            // Other on_* forms stay gated until their own safe lowering exists.
+            if (check(IDENT) && (peek().lexeme().equals("on_throws")
                     || peek().lexeme().equals("on_raise")
                     || peek().lexeme().equals("on_panic")
                     || peek().lexeme().equals("on_recover"))) {
