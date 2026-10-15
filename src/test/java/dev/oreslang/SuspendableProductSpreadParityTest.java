@@ -144,6 +144,38 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void recordSnapshotValidatesExactlyTheMapItStores() {
+        // Adversarial maps can change their entries between traversals.
+        // Checking the source map, then copying it, could admit unchecked
+        // nulls into what the type checker believes is a closed record.
+        java.util.concurrent.atomic.AtomicInteger traversals =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.Map<String, Types.Type> shifting = new java.util.AbstractMap<>() {
+            @Override
+            public int size() {
+                return 1;
+            }
+
+            @Override
+            public java.util.Set<Entry<String, Types.Type>> entrySet() {
+                if (traversals.getAndIncrement() == 0) {
+                    return java.util.Set.of(java.util.Map.entry(
+                            "count", Types.Primitive.INT));
+                }
+                return java.util.Collections.singleton(
+                        new java.util.AbstractMap.SimpleImmutableEntry<>(
+                                "count", null));
+            }
+        };
+
+        var record = new Types.Record(shifting, true);
+        assertEquals(1, traversals.get(), "caller-controlled map must be read once");
+        assertEquals(Types.Primitive.INT, record.members().get("count"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> record.members().put("count", Types.Primitive.STRING));
+    }
+
+    @Test
     void recordSpreadChecksMixedScalarTypesByLabelNotByPosition() throws Exception {
         String code = """
                 fnc checked(string name, int count): string { return name; }
