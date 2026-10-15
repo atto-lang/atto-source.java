@@ -375,7 +375,7 @@ public final class LinkedProgramRunner {
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
         // Fail before any file I/O or parsing when import recursion is too deep.
-        budget.checkDepth(depth);
+        budget.checkCanAdmitUnit(depth);
 
         BoundedSourceReader.ReadResult source = BoundedSourceReader.readWithByteCount(normalized);
         budget.admit(source.byteCount(), depth);
@@ -434,7 +434,7 @@ public final class LinkedProgramRunner {
             int depth) throws IOException {
         String id = CoreLibrarySources.unitId(importPath);
         if (units.containsKey(id)) return;
-        budget.checkDepth(depth);
+        budget.checkCanAdmitUnit(depth);
 
         String coreSource = CoreLibrarySources.source(importPath);
         budget.admit(coreSource.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, depth);
