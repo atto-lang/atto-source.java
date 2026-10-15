@@ -1697,11 +1697,11 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ThrowStmt thrown) {
-            if (currentActorKind != Ast.ActorKind.NONE) {
-                throw new IllegalArgumentException(
-                        "guest throw in an actor requires supervisor CONTROL lowering; not enabled");
-            }
-            if (lexicalGuestTryDepth == 0) {
+            // Outside actors, a guest Error must have a lexical catch: guest
+            // values cannot cross into the host process exception boundary.
+            // Inside a synchronous actor handler, an uncaught throw is lowered
+            // to the payload-free terminal raise at the actor entry boundary.
+            if (currentActorKind == Ast.ActorKind.NONE && lexicalGuestTryDepth == 0) {
                 throw new IllegalArgumentException(
                         "guest throw currently requires an enclosing lexical try/catch");
             }
