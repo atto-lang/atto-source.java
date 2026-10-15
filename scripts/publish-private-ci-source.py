@@ -211,6 +211,10 @@ def collect_source(root, trusted_root):
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
                     or "\\" in name):
                 raise Denied("source path contains unsupported name")
+            try:
+                name.encode("utf-8", errors="strict")
+            except UnicodeEncodeError as exc:
+                raise Denied("source path contains non-UTF-8 name") from exc
             rel = prefix + name
             try:
                 metadata = os.stat(name, dir_fd=directory_fd,
