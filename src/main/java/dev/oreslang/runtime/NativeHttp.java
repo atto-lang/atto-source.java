@@ -143,22 +143,26 @@ public final class NativeHttp implements AutoCloseable {
                 try {
                     Worker worker = worker();
                     synchronized (exchange.state) {
+                        // An abort may have revoked the transfer between the
+                        // initial dispatch preflight and worker selection.
+                        // Recheck, track the actor, move the ticket and admit
+                        // the mailbox message under one ownership lock. A
+                        // concurrent State.release cannot make shutdown
+                        // observe an empty active set before this send.
+                        exchange.checkOwner();
                         exchange.state.poolWorker = worker;
                         worker.requests.add(exchange.state);
-                        // Response transport may finish before the receive
-                        // exits TurnExecutor. Remember each pooled incarnation
-                        // that ran mail for this particular listener.
                         exchange.state.server.pooledWorkers.add(worker);
                         worker.served.add(exchange.state.server);
+                        // Reused workers have no per-request startup. Do not retain
+                        // one actor.done callback per completed request.
+                        exchange.state.readyNanos = exchange.state.spawnNanos;
+                        worker.actor.send(exchange.moveTo(worker.actor));
                         if (worker.actor.done().isDone()) {
                             exchange.state.server.pooledWorkers.remove(worker);
                             worker.served.remove(exchange.state.server);
                         }
-                        // Reused workers have no per-request startup. Do not retain
-                        // one actor.done callback per completed request.
-                        exchange.state.readyNanos = exchange.state.spawnNanos;
                     }
-                    worker.actor.send(exchange.moveTo(worker.actor));
                 } catch (RuntimeException failure) {
                     exchange.state.abort(500, false);
                 } finally {
