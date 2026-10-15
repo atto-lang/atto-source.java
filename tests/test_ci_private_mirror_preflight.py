@@ -64,6 +64,42 @@ class MirrorGateTest(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(admission.MirrorPreflightError):
                 admission.verify("private/src", "private/dst", 21, 34, "a", "b", fetch=fetch)
 
+    def test_missing_or_unrecognized_active_status_rejected_on_both_sides(self):
+        for side in ("private/src", "private/dst"):
+            for field in ("archived", "disabled"):
+                for value in (None, "false", 0, 1, True):
+                    with self.subTest(side=side, field=field, value=value):
+                        def fetch(name, _token):
+                            result = metadata(name, 21 if name == "private/src" else 34)
+                            if name == side:
+                                result[field] = value
+                            return result
+                        with self.assertRaisesRegex(admission.MirrorPreflightError, "active status"):
+                            admission.verify("private/src", "private/dst", 21, 34, "a", "b", fetch=fetch)
+                with self.subTest(side=side, field=field, value="absent"):
+                    def fetch(name, _token):
+                        result = metadata(name, 21 if name == "private/src" else 34)
+                        if name == side:
+                            del result[field]
+                        return result
+                    with self.assertRaisesRegex(admission.MirrorPreflightError, "active status"):
+                        admission.verify("private/src", "private/dst", 21, 34, "a", "b", fetch=fetch)
+
+    def test_invalid_pinned_ids_rejected_before_any_network(self):
+        for invalid in (None, True, False, 0, -1, 3.5, "21", [], {}):
+            for side in ("source", "destination"):
+                with self.subTest(invalid=invalid, side=side):
+                    calls = []
+                    def fetch(name, _token):
+                        calls.append(name)
+                        return metadata(name, 21 if name == "private/src" else 34)
+                    src_id = invalid if side == "source" else 21
+                    dst_id = invalid if side == "destination" else 34
+                    with self.assertRaisesRegex(admission.MirrorPreflightError, "numeric repository identities"):
+                        admission.verify("private/src", "private/dst", src_id, dst_id,
+                                         "a", "b", fetch=fetch)
+                    self.assertEqual(calls, [])
+
     def test_missing_token_rejected_before_network(self):
         with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
             admission.fetch_metadata("private/dst", "")
