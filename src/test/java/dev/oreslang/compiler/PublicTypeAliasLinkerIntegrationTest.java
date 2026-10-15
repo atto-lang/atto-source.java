@@ -407,4 +407,23 @@ final class PublicTypeAliasLinkerIntegrationTest {
                     error.getMessage());
         }
     }
+
+    @Test
+    void callerLocalBorrowAliasCannotBypassForeignOwnershipGate() {
+        var source = Map.of(
+                "library.ores", """
+                        define module products as
+                            define pub type alias Wrap<T> as Tuple[T];
+                        end
+                        """,
+                "app.ores", """
+                        import type Wrap from "./library.ores";
+                        type LocalLoan = &int;
+                        fnc consume(Wrap<LocalLoan> value): void { return; }
+                        """);
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(source));
+        assertTrue(failure.getMessage().contains("borrowed ownership"),
+                failure.getMessage());
+    }
 }
