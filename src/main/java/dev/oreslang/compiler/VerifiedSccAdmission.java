@@ -76,6 +76,14 @@ public final class VerifiedSccAdmission {
         compilerEnvironments = snapshot.environments();
         resolvedOverrides = snapshot.overrides();
 
+        // v0 may certify only public signatures whose complete semantic
+        // surface is represented by the primitive-only linked contract.
+        // Otherwise a nominal/layout/alias/module contract could escape
+        // without a canonical type or provider identity.
+        for (Ast.Program source : sourcePrograms.values()) {
+            SccPublicSurface.requirePrimitiveOnly(source);
+        }
+
         TwoPhaseInterfaceLinker.Declarations staged =
                 TwoPhaseInterfaceLinker.collectCheckedDeclarations(
                         sourcePrograms, compilerEnvironments);
@@ -147,6 +155,12 @@ public final class VerifiedSccAdmission {
                             formerlyResolved, verifiedProvider);
                 }
             }
+        }
+
+        // The post-expansion public ABI must independently remain within
+        // the same certified subset as the pre-expansion declarations.
+        for (Ast.Program checkedSource : passed.values()) {
+            SccPublicSurface.requirePrimitiveOnly(checkedSource);
         }
 
         // Annotation expansion and checked signatures may change the public
