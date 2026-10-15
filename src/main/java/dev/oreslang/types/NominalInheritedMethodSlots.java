@@ -94,6 +94,7 @@ public final class NominalInheritedMethodSlots {
         private final IdentityHashMap<Ast.ClassDecl, Map<Slot, Target>> memo =
                 new IdentityHashMap<>();
         private static final int MAX_INHERITANCE_DEPTH = 128;
+        private static final int MAX_PROOF_CLASSES = 1024;
 
         private Planner(Ast.Program program) {
             enums = NominalEnumOverloads.eligibleEnumSymbols(program);
@@ -149,6 +150,11 @@ public final class NominalInheritedMethodSlots {
             if (visiting.size() >= MAX_INHERITANCE_DEPTH) {
                 throw new IllegalArgumentException("nominal method ancestry depth bound exceeded");
             }
+            // A shallow inheritance DAG can still have unbounded breadth.
+            // Bound completed and currently active nodes before descending.
+            if (memo.size() + visiting.size() >= MAX_PROOF_CLASSES) {
+                throw new IllegalArgumentException("nominal method ancestry class-count bound exceeded");
+            }
             if (!visiting.add(owner)) {
                 throw new IllegalArgumentException("inheritance cycle in nominal method proof");
             }
@@ -160,6 +166,19 @@ public final class NominalInheritedMethodSlots {
                 if (owner.actorKind() != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
                             "actor methods are excluded from nominal method vtable proof");
+                }
+                // This helper is intentionally not an interface/contract solver.
+                // Never advertise a complete inherited proof until those
+                // obligations have been reconciled by the production checker.
+                if (!owner.interfaces().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "interface contracts require integrated nominal method slot validation");
+                }
+                for (Ast.FieldDecl field : owner.fields()) {
+                    if (field.name().equals(name) && domain == Domain.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "field and nominal method share a member name: " + name);
+                    }
                 }
                 Map<Slot, List<Target>> inherited = new LinkedHashMap<>();
                 for (Ast.TypeRef parentRef : owner.parents()) {
@@ -195,6 +214,14 @@ public final class NominalInheritedMethodSlots {
                     if (!method.genericParameters().isEmpty()) {
                         throw new IllegalArgumentException("generic method needs specialization");
                     }
+                    if (method.structural()) {
+                        throw new IllegalArgumentException(
+                                "structural methods cannot enter nominal method proof");
+                    }
+                    if (domain == Domain.STATIC && method.isAbstract()) {
+                        throw new IllegalArgumentException(
+                                "abstract static method has no executable nominal slot");
+                    }
                     Signature sig = NominalEnumOverloads.signature(
                             name, method.parameters(), enums);
                     Slot slot = new Slot(domain, name, sig.positions());
@@ -222,6 +249,15 @@ public final class NominalInheritedMethodSlots {
                     }
                 }
                 effective.putAll(local);
+                if (!owner.isAbstract()) {
+                    for (Target target : effective.values()) {
+                        if (target.method().isAbstract()) {
+                            throw new IllegalArgumentException(
+                                    "concrete class has unresolved abstract nominal method: "
+                                            + name + "/" + arity);
+                        }
+                    }
+                }
                 if (effective.size() > NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES) {
                     throw new IllegalArgumentException("inherited nominal overload candidate bound exceeded");
                 }
