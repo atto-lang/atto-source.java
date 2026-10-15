@@ -91,6 +91,71 @@ final class GenericCallArgumentsTest {
     }
 
     @Test
+    void sharedDefaultResolutionHonorsInferenceAndExplicitBindings() {
+        List<String> slots = List.of("A", "B", "C", "D");
+        List<Ast.GenericParameter> specs = List.of(
+                new Ast.GenericParameter("A", null),
+                new Ast.GenericParameter("B", type("int")),
+                new Ast.GenericParameter("C", type("B")),
+                new Ast.GenericParameter("D",
+                        new Ast.TypeRef("Array", List.of(type("C")), false)));
+        java.util.Map<String, Ast.TypeRef> bound = new java.util.HashMap<>();
+        bound.put("A", type("bool"));
+        GenericCallArguments.applyDefaults(
+                slots, specs, bound, java.util.Set.of(),
+                ref -> ref, GenericCallArgumentsTest::substitute,
+                ref -> GenericCallArguments.containsUnresolvedAstGeneric(ref, java.util.Set.copyOf(slots)),
+                "test function");
+        assertEquals(type("bool"), bound.get("A"));
+        assertEquals(type("int"), bound.get("B"));
+        assertEquals(type("int"), bound.get("C"));
+        assertEquals(new Ast.TypeRef("Array", List.of(type("int")), false), bound.get("D"));
+
+        java.util.Map<String, Ast.TypeRef> explicit = new java.util.HashMap<>();
+        explicit.put("A", type("bool"));
+        explicit.put("B", type("string"));
+        GenericCallArguments.applyDefaults(
+                slots, specs, explicit, java.util.Set.of("C"),
+                ref -> ref, GenericCallArgumentsTest::substitute,
+                ref -> GenericCallArguments.containsUnresolvedAstGeneric(ref, java.util.Set.copyOf(slots)),
+                "test function");
+        assertEquals(type("string"), explicit.get("B"));
+        assertFalse(explicit.containsKey("C"), "explicit inference holes must not receive defaults");
+        assertThrows(IllegalArgumentException.class,
+                () -> GenericCallArguments.applyDefaults(
+                        slots, specs, explicit, java.util.Set.of("C"),
+                        ref -> ref, GenericCallArgumentsTest::substitute,
+                        ref -> GenericCallArguments.containsUnresolvedAstGeneric(
+                                ref, java.util.Set.copyOf(slots)),
+                        "test function"));
+    }
+
+    @Test
+    void sharedDefaultResolutionFailsOnUnboundDependentGeneric() {
+        List<String> slots = List.of("A", "B");
+        List<Ast.GenericParameter> specs = List.of(
+                new Ast.GenericParameter("A", null),
+                new Ast.GenericParameter("B", type("A")));
+        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> GenericCallArguments.applyDefaults(
+                        slots, specs, new java.util.HashMap<>(), java.util.Set.of(),
+                        ref -> ref, GenericCallArgumentsTest::substitute,
+                        ref -> GenericCallArguments.containsUnresolvedAstGeneric(ref, java.util.Set.copyOf(slots)),
+                        "test function"));
+        assertTrue(exception.getMessage().contains("cannot resolve dependent default"),
+                exception.getMessage());
+    }
+
+    private static Ast.TypeRef substitute(
+            Ast.TypeRef ref, java.util.Map<String, Ast.TypeRef> bindings) {
+        Ast.TypeRef replacement = bindings.get(ref.name());
+        if (replacement != null && ref.arguments().isEmpty()) return replacement;
+        return new Ast.TypeRef(ref.name(),
+                ref.arguments().stream().map(arg -> substitute(arg, bindings)).toList(),
+                ref.inferArguments());
+    }
+
+    @Test
     void allFiveFactorialNamedArgumentPermutationsHaveIdenticalBindings() {
         List<String> names = List.of("A", "B", "C", "D", "E");
         List<Ast.TypeRef> values = List.of(
