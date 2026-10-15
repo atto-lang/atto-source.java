@@ -286,6 +286,16 @@ public final class ActorStateContract {
                 && referencesAccess(call.callee(), activeAccess)) {
             throw new IllegalArgumentException("critical read cannot call potentially mutating state methods");
         }
+        // No indexing through the actor object or a state loan until the
+        // typechecker and both backends lower a statically typed, bounds-checked
+        // projection. String-key indexing is not a hidden state escape hatch.
+        if (node instanceof Ast.IndexExpr indexed
+                && (isSelf(indexed.receiver())
+                    || (activeAccess != null
+                        && referencesAccess(indexed.receiver(), activeAccess)))) {
+            throw new IllegalArgumentException(
+                    "actor state indexing requires verified typed projection lowering");
+        }
         if (node instanceof Ast.MemberExpr member
                 && isSelf(member.receiver()) && member.member().equals("state")) {
             throw new IllegalArgumentException(
