@@ -5372,28 +5372,30 @@ public final class TypeChecker {
      */
     private boolean literalPatternRuntimeEquals(Object left, Object right) {
         if (left instanceof Number a && right instanceof Number b) {
-            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
-                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(a.toString())
-                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return a.doubleValue() == b.doubleValue();
-                }
-            }
             boolean integralA = isRuntimeIntegralNumber(a);
             boolean integralB = isRuntimeIntegralNumber(b);
             if (integralA && integralB) return a.longValue() == b.longValue();
-            if (integralA != integralB) {
-                Number integer = integralA ? a : b;
-                Number floating = integralA ? b : a;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            if (integralA != integralB
+                    || a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+                if (isNonFiniteBinaryFloat(a) || isNonFiniteBinaryFloat(b)) return false;
+                return exactFiniteNumericDecimal(a).compareTo(exactFiniteNumericDecimal(b)) == 0;
             }
             return a.doubleValue() == b.doubleValue();
         }
         return java.util.Objects.equals(left, right);
+    }
+
+    private boolean isNonFiniteBinaryFloat(Number number) {
+        return (number instanceof Float || number instanceof Double)
+                && !Double.isFinite(number.doubleValue());
+    }
+
+    private java.math.BigDecimal exactFiniteNumericDecimal(Number number) {
+        if (number instanceof java.math.BigDecimal value) return value;
+        if (number instanceof java.math.BigInteger value) return new java.math.BigDecimal(value);
+        if (isRuntimeIntegralNumber(number)) return java.math.BigDecimal.valueOf(number.longValue());
+        return new java.math.BigDecimal(number.doubleValue());
     }
 
     private boolean isRuntimeIntegralNumber(Number value) {
