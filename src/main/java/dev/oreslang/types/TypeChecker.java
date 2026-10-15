@@ -1188,7 +1188,8 @@ public final class TypeChecker {
                     Ast.TypeRef result = method.returnType();
                     if (!correct || !result.name().equals("MiddlewareDecision")
                             || result.arguments().size() != 1
-                            || result.arguments().getFirst().name().equals("void")) {
+                            || result.arguments().getFirst().name().equals("void")
+                            || result.arguments().getFirst().isComplement()) {
                         throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
                                 + "' requires async next_val(MiddlewareContext, MiddlewareResponseDraft)"
                                 + ": MiddlewareDecision<T>; !void is not a typed middleware decision");
