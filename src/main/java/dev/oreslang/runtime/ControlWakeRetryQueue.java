@@ -106,9 +106,11 @@ final class ControlWakeRetryQueue {
                     return true;
                 }
                 if (directHandoffs >= capacity) return false;
-                ++directHandoffs;
                 ready = new Retry(callback, lane, false, true);
                 aboutToInvoke.add(ready);
+                // Charge only after both allocations succeed. If the VM
+                // fails during admission, no outstanding quota is stranded.
+                ++directHandoffs;
             } else {
                 if (retainedCallbacks >= capacity) return false;
                 pending.addLast(new Retry(callback, lane, true));
