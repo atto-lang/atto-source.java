@@ -108,6 +108,48 @@ final class ActorCompletionStageContinuationTest {
     }
 
     @Test
+    void exceptionallyCompletedStageDeliversFailureOnlyOnOwningActorLane() throws Exception {
+        var ready = new CountDownLatch(1);
+        var observed = new CountDownLatch(1);
+        var stage = new CompletableFuture<Integer>();
+        var producer = new AtomicReference<Thread>();
+        var callbackError = new AtomicReference<Throwable>();
+        var reason = new IllegalStateException("host stage failed");
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                runtime.enqueueOnCompletion(
+                        stage, runtime.captureCurrentContinuationTarget(),
+                        (value, failure) -> {
+                            try {
+                                assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                                assertNotEquals(producer.get(), Thread.currentThread());
+                                assertEquals(context.self().id(),
+                                        ActorRuntime.currentActorId().orElseThrow());
+                                assertNull(value);
+                                assertSame(reason, failure);
+                            } catch (Throwable err) {
+                                callbackError.set(err);
+                            } finally {
+                                observed.countDown();
+                            }
+                        });
+                ready.countDown();
+            });
+            actor.send(1);
+            assertTrue(ready.await(3, TimeUnit.SECONDS));
+            Thread failingProducer = new Thread(() -> {
+                producer.set(Thread.currentThread());
+                stage.completeExceptionally(reason);
+            }, "host-error-producer");
+            failingProducer.start();
+            failingProducer.join(3000);
+            assertFalse(failingProducer.isAlive());
+            assertTrue(observed.await(3, TimeUnit.SECONDS));
+            assertNull(callbackError.get(), () -> String.valueOf(callbackError.get()));
+        }
+    }
+
+    @Test
     void foreignRuntimeCannotRetargetCapturedActorContinuation() throws Exception {
         var ready = new CountDownLatch(1);
         var captured = new AtomicReference<ActorRuntime.ContinuationTarget>();
