@@ -511,11 +511,10 @@ public final class NativeHttp implements AutoCloseable {
             synchronized (this) {
                 if (!claimForcedClose(forcedCloseClaimed)) return;
                 stopAccepting();
-            }
-            // Fail the pending guest shutdown promise before transportStopped
-            // or active.remove can let concurrent request cleanup settle it
-            // successfully. A forced context close is not an idle guarantee.
-            synchronized (this) {
+                // Keep the close claim, admission seal and exceptional drain
+                // publication under ONE listener monitor. Otherwise a
+                // transport-stop callback can publish successful shutdown
+                // between the two operations.
                 if (drained != null && !drained.isDone()) {
                     drained.failFromRuntime(new IllegalStateException(
                             "HTTP runtime closed before pooled actor quiescence"));
