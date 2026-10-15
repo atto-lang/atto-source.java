@@ -92,4 +92,112 @@ class RaceTraceRecorderTest {
         assertThrows(IOException.class, () -> out.access("a", "heap:test", true));
         assertEquals(3, Files.readAllLines(file).size());
     }
+    private void assertUnsealed(Path path) throws Exception {
+        assertFalse(Files.readString(path).contains("\"op\":\"end\""),
+                "invalid trace must not contain a successful end marker");
+    }
+
+    @Test void doesNotForgeOrderingFromUnmatchedReceive() throws Exception {
+        Path file = temporary.resolve("unsent.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(file, "r1", "graal")) {
+            out.task("a");
+            out.task("b");
+            out.access("a", "heap:counter", true);
+            assertThrows(IOException.class, () -> out.recv("b", "never-sent"));
+            assertThrows(IOException.class, () -> out.access("b", "heap:counter", false));
+        }
+        assertUnsealed(file);
+    }
+
+    @Test void refusesUnfinishedOrForeignJoins() throws Exception {
+        Path file = temporary.resolve("premature-join.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(file, "r2", "graal")) {
+            out.task("parent");
+            out.task("other");
+            out.fork("parent", "child");
+            assertThrows(IOException.class, () -> out.join("other", "child"));
+        }
+        assertUnsealed(file);
+        Path unfinished = temporary.resolve("unfinished-join.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(unfinished, "r3", "graal")) {
+            out.task("parent");
+            out.fork("parent", "child");
+            assertThrows(IOException.class, () -> out.join("parent", "child"));
+        }
+        assertUnsealed(unfinished);
+    }
+
+    @Test void preventsForgedUnlockOrDuplicateMessage() throws Exception {
+        Path file = temporary.resolve("unlock.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(file, "r4", "graal")) {
+            out.task("owner");
+            out.task("other");
+            out.lock("owner", "mutex");
+            assertThrows(IOException.class, () -> out.unlock("other", "mutex"));
+        }
+        assertUnsealed(file);
+
+        Path duplicate = temporary.resolve("messages.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(duplicate, "r5", "graal")) {
+            out.task("sender");
+            out.task("receiver");
+            out.send("sender", "m1");
+            out.recv("receiver", "m1");
+            assertThrows(IOException.class, () -> out.send("sender", "m1"));
+        }
+        assertUnsealed(duplicate);
+    }
+
+    @Test void incompleteChildrenAndHeldLocksCannotSeal() throws Exception {
+        Path child = temporary.resolve("child-open.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(child, "r6", "graal")) {
+            out.task("parent");
+            out.fork("parent", "child");
+            out.access("child", "heap:v", true);
+        }
+        assertUnsealed(child);
+
+        Path locked = temporary.resolve("held-lock.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(locked, "r7", "graal")) {
+            out.task("a");
+            out.lock("a", "mutex");
+            out.access("a", "heap:v", true);
+        }
+        assertUnsealed(locked);
+    }
+
+    @Test void taskMustBeRegisteredAndAlive() throws Exception {
+        Path unknown = temporary.resolve("unregistered.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(unknown, "r8", "graal")) {
+            assertThrows(IOException.class, () -> out.access("unknown", "heap:x", true));
+        }
+        assertUnsealed(unknown);
+
+        Path finished = temporary.resolve("finished.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(finished, "r9", "graal")) {
+            out.task("a");
+            out.finish("a");
+            assertThrows(IOException.class, () -> out.access("a", "heap:x", true));
+        }
+        assertUnsealed(finished);
+    }
+
+    @Test void correctlyEmitsNestedForkCompletionAndLocks() throws Exception {
+        Path file = temporary.resolve("valid-join.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(file, "good", "graal")) {
+            out.task("root");
+            out.fork("root", "child");
+            out.fork("child", "grandchild");
+            out.lock("grandchild", "mutex");
+            out.access("grandchild", "heap:x", true);
+            out.unlock("grandchild", "mutex");
+            out.finish("grandchild");
+            out.join("child", "grandchild");
+            out.finish("child");
+            out.join("root", "child");
+            out.access("root", "heap:x", false);
+        }
+        assertTrue(Files.readString(file).contains("\"op\":\"end\""));
+    }
+
 }
