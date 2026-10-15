@@ -24,6 +24,10 @@ final class ControlWakeRetryQueue {
     private long releaseEpoch;
     private boolean closed;
     private long callbacksFailed;
+    // Guarded by this monitor: pending, deferred and dequeued-but-not-started
+    // callbacks share one finite admission budget. An in-flight callback no
+    // longer retains its slot once execution actually begins.
+    private int retainedCallbacks;
     // Per carrier thread and retry queue: nested synchronous slot releases
     // must not consume an unbounded number of Java stack frames. A state
     // contains no callback reference after its outer dispatch returns.
@@ -67,17 +71,19 @@ final class ControlWakeRetryQueue {
                 // trampoline. Enforce a second, capacity-sized bound here.
                 RetryDispatch dispatch = retryDispatch.get();
                 if (dispatch != null && dispatch.active) {
-                    if (dispatch.later.size() >= capacity) return false;
+                    if (retainedCallbacks >= capacity) return false;
+                    ++retainedCallbacks;
                     dispatch.later.addLast(callback);
                     return true;
                 }
                 ready = callback;
             } else {
-                if (pending.size() >= capacity) return false;
+                if (retainedCallbacks >= capacity) return false;
                 pending.addLast(new Retry(callback, lane));
+                ++retainedCallbacks;
             }
         }
-        notifyRetry(ready);
+        notifyRetry(ready, false);
         return true;
     }
 
@@ -90,7 +96,7 @@ final class ControlWakeRetryQueue {
             ++releaseEpoch;
             ready = dequeueForLane(lane);
         }
-        notifyRetry(ready);
+        notifyRetry(ready, true);
     }
 
     /**
@@ -128,30 +134,42 @@ final class ControlWakeRetryQueue {
 
     synchronized void cancel(Runnable callback) {
         // Runnable identity is host-owned and one per parent actor.
+        int previouslyPending = pending.size();
         pending.removeIf(next -> next.callback() == callback);
+        retainedCallbacks -= previouslyPending - pending.size();
         // The cancellation thread need not be the carrier thread. Revoke
         // deferred callbacks from *every* active dispatcher under the
         // monitor also used to enqueue and drain deferred callbacks.
         for (RetryDispatch state : activeDispatchers) {
+            int previouslyDeferred = state.later.size();
             state.later.removeIf(next -> next == callback);
+            retainedCallbacks -= previouslyDeferred - state.later.size();
         }
     }
 
     synchronized void close() {
         closed = true;
+        retainedCallbacks -= pending.size();
         pending.clear();
-        for (RetryDispatch state : activeDispatchers) state.later.clear();
+        for (RetryDispatch state : activeDispatchers) {
+            retainedCallbacks -= state.later.size();
+            state.later.clear();
+        }
     }
 
     synchronized int pending() {
         return pending.size();
     }
 
+    synchronized int retained() {
+        return retainedCallbacks;
+    }
+
     synchronized long callbacksFailed() {
         return callbacksFailed;
     }
 
-    private void notifyRetry(Runnable ready) {
+    private void notifyRetry(Runnable ready, boolean retained) {
         if (ready == null) return;
         RetryDispatch state = retryDispatch.get();
         if (state == null) {
@@ -164,11 +182,13 @@ final class ControlWakeRetryQueue {
             // other carrier threads, so always serialize the append.
             synchronized (this) {
                 if (!closed) state.later.addLast(ready);
+                else if (retained) --retainedCallbacks;
             }
             return;
         }
         synchronized (this) {
             if (closed) {
+                if (retained) --retainedCallbacks;
                 retryDispatch.remove();
                 return;
             }
@@ -177,11 +197,13 @@ final class ControlWakeRetryQueue {
         }
         try {
             Runnable next = ready;
+            boolean nextRetained = retained;
             while (next != null) {
-                // A close() while a previous callback ran revokes nested
-                // wakeups that were queued but not yet invoked. A callback
-                // already executing remains in-flight.
+                // Only an actually executing callback gives back its
+                // admission slot. Count dequeued-but-not-started callbacks
+                // so another registration cannot refill the same slot.
                 synchronized (this) {
+                    if (nextRetained) --retainedCallbacks;
                     if (closed) break;
                 }
                 try {
@@ -202,12 +224,15 @@ final class ControlWakeRetryQueue {
                 }
                 synchronized (this) {
                     next = state.later.pollFirst();
+                    // Every deferred callback holds a retained admission.
+                    nextRetained = next != null;
                 }
             }
         } finally {
             // Even after a fatal callback, no dispatcher may retain an
             // executable callback or an active-state registration.
             synchronized (this) {
+                retainedCallbacks -= state.later.size();
                 state.later.clear();
                 state.active = false;
                 activeDispatchers.remove(state);
