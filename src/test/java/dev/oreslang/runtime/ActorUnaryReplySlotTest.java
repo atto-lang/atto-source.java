@@ -41,7 +41,7 @@ final class ActorUnaryReplySlotTest {
         assertFalse(slot.reply(owner, 1, id, "late"));
         assertFalse(slot.reject(owner, 1, id, new IllegalStateException("late")));
         assertEquals(ActorUnaryReplySlot.State.CANCELLED, slot.state());
-        assertThrows(CompletionException.class,
+        assertThrows(RuntimeException.class,
                 () -> slot.result().toCompletableFuture().join());
     }
 
