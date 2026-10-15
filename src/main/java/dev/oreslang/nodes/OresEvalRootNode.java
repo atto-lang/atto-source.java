@@ -6399,6 +6399,10 @@ public final class OresEvalRootNode extends RootNode {
                 return new ReadonlyRecordValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
+                if (lambda.async() || lambda.suspends()) {
+                    throw new IllegalStateException(
+                            "qualified lambda cannot be executed without verified callback lowering");
+                }
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
