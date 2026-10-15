@@ -140,7 +140,7 @@ final class ActorMiddlewareValueSignatureTest {
                     run(int value): int { return value; }
                 end
                 define class Clean as
-                    static async fnc next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
+                    static fnc next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
                         return null;
                     }
                 end
