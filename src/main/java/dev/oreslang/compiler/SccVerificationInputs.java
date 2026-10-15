@@ -13,8 +13,9 @@ import java.util.Set;
  * effective target overrides and final ABI fingerprints aligned. This class
  * is NOT semantic admission and never mints a VerifiedScc certificate.
  *
- * The Ast.Program tree is composed of immutable AST records; this snapshots
- * their enclosing identity map plus nested, caller-owned override maps.
+ * The Ast.Program tree consists of AST records with copied list fields;
+ * arbitrary literal payloads are independently checked by SccAstShapeGuard.
+ * This snapshots enclosing identity and nested, caller-owned override maps.
  */
 public final class SccVerificationInputs {
     private static final int MAX_UNITS = 1024;
@@ -62,6 +63,9 @@ public final class SccVerificationInputs {
             }
             Ast.Program program = Objects.requireNonNull(entry.getValue(),
                     "source program");
+            // AST record structure is immutable, but Object literal payloads
+            // could otherwise retain user-owned mutable byte[] / collections.
+            SccAstShapeGuard.requireImmutable(program);
             ExportInterfaceCodec.Header header =
                     Objects.requireNonNull(environments.get(id),
                             "missing compilation environment");
