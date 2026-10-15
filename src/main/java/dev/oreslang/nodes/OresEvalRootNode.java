@@ -3669,19 +3669,25 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Ast.MatchValueArm arm = matched.arms().get(index);
+            final boolean matchedPattern;
             final Env armEnv;
             try {
                 LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
-                if (!patternMatches(arm.pattern(), subject, bindings)) {
-                    evalSuspendableValueMatchArm(
-                            task, matched, subject, parent, index + 1, continuation);
-                    return;
+                matchedPattern = patternMatches(arm.pattern(), subject, bindings);
+                armEnv = matchedPattern ? new Env(parent) : null;
+                if (matchedPattern) {
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
                 }
-                armEnv = new Env(parent);
-                bindings.forEach((name, value) ->
-                        armEnv.define(name, value, Ast.BindingKind.VAL));
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            if (!matchedPattern) {
+                // Recursive arm dispatch is downstream work, not part of the
+                // pattern-matching catch scope.
+                evalSuspendableValueMatchArm(
+                        task, matched, subject, parent, index + 1, continuation);
                 return;
             }
 
@@ -3698,17 +3704,18 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
+                        boolean selected;
                         try {
-                            if (truth(guard)) {
-                                evalSuspendableExpr(
-                                        t, arm.value(), armEnv, continuation);
-                            } else {
-                                evalSuspendableValueMatchArm(
-                                        t, matched, subject, parent,
-                                        index + 1, continuation);
-                            }
+                            selected = truth(guard);
                         } catch (RuntimeException | Error guardFailure) {
                             continuation.accept(t, null, guardFailure);
+                            return;
+                        }
+                        if (selected) {
+                            evalSuspendableExpr(t, arm.value(), armEnv, continuation);
+                        } else {
+                            evalSuspendableValueMatchArm(
+                                    t, matched, subject, parent, index + 1, continuation);
                         }
                     });
         }
