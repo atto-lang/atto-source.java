@@ -53,6 +53,111 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.callbacksFailed());
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void stalledStaleEpochHandoffsStayBoundedAndCancellationReclaimsThem()
+            throws Exception {
+        // The stale-epoch path bypasses a saturated ordinary pending queue.
+        // Two carrier threads pause *after* the registration lock and before
+        // callback-start admission; a third must not allocate an unbounded
+        // ready ticket. Cancellation must reclaim both stalled tickets.
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        long missedEpoch = queue.epoch();
+        queue.slotReleased();
+        AtomicInteger invoked = new AtomicInteger();
+        Runnable victim = invoked::incrementAndGet;
+        java.util.concurrent.CountDownLatch inHandoff =
+                new java.util.concurrent.CountDownLatch(2);
+        java.util.concurrent.CountDownLatch resume =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> workerError =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.lang.reflect.Field field =
+                ControlWakeRetryQueue.class.getDeclaredField("retryDispatch");
+        field.setAccessible(true);
+        Object original = field.get(queue);
+        field.set(queue, new ThreadLocal<Object>() {
+            private final ThreadLocal<Integer> calls =
+                    ThreadLocal.withInitial(() -> 0);
+            @Override public Object get() {
+                int current = calls.get() + 1;
+                calls.set(current);
+                if (current == 2) {
+                    inHandoff.countDown();
+                    try {
+                        if (!resume.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError("direct handoff deadline");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                }
+                return null;
+            }
+        });
+        Thread[] carriers = new Thread[2];
+        for (int i = 0; i < carriers.length; ++i) {
+            carriers[i] = new Thread(() -> {
+                try {
+                    if (!queue.register(victim, missedEpoch)) {
+                        throw new AssertionError("initial direct retry rejected");
+                    }
+                } catch (Throwable failure) {
+                    workerError.compareAndSet(null, failure);
+                }
+            }, "direct-control-handoff-" + i);
+            carriers[i].setDaemon(true);
+            carriers[i].start();
+        }
+        try {
+            assertTrue(inHandoff.await(3, TimeUnit.SECONDS));
+            assertEquals(2, queue.directHandoffs());
+            assertEquals(0, queue.pending());
+            assertFalse(queue.register(victim, missedEpoch),
+                    "stalled immediate retries must have a finite admission quota");
+            queue.cancel(victim);
+            assertEquals(0, queue.directHandoffs());
+            java.lang.reflect.Field tickets =
+                    ControlWakeRetryQueue.class.getDeclaredField("aboutToInvoke");
+            tickets.setAccessible(true);
+            synchronized (queue) {
+                assertTrue(((java.util.Set<?>)tickets.get(queue)).isEmpty());
+            }
+        } finally {
+            resume.countDown();
+        }
+        for (Thread carrier : carriers) {
+            carrier.join(3000);
+            assertFalse(carrier.isAlive());
+        }
+        field.set(queue, original);
+        assertNull(workerError.get(), () -> "carrier failed: " + workerError.get());
+        assertEquals(0, invoked.get(), "cancelled immediate retry must not run");
+        assertTrue(queue.register(victim, missedEpoch));
+        assertEquals(1, invoked.get(), "direct handoff capacity did not recover");
+        assertEquals(0, queue.directHandoffs());
+    }
+
+    @Test void staleEpochRetryStillBypassesFullOrdinaryPendingQueue() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
+        long oldEpoch = queue.epoch();
+        queue.slotReleased();
+        AtomicInteger older = new AtomicInteger();
+        AtomicInteger immediate = new AtomicInteger();
+        assertTrue(queue.register(older::incrementAndGet, queue.epoch()));
+        assertEquals(1, queue.pending());
+        assertTrue(queue.register(immediate::incrementAndGet, oldEpoch),
+                "missed-epoch supervisor must not be stranded behind a full FIFO");
+        assertEquals(1, immediate.get());
+        assertEquals(0, older.get());
+        assertEquals(1, queue.pending());
+        assertEquals(0, queue.directHandoffs());
+        queue.slotReleased();
+        assertEquals(1, older.get());
+        assertEquals(0, queue.retained());
+    }
+
     @Test void missedReleaseRetriesTheNewSupervisorRatherThanAnOlderWaiter() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(3);
         StringBuilder order = new StringBuilder();
