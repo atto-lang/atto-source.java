@@ -58,3 +58,12 @@ Related typed throwable/raise/panic RFC:
    Image and native LLVM comparison, and formatter idempotence.
 
 Until these are proven, keep all unsupported postfix `?` forms fail-closed; do not mark this draft PR ready before exact-branch-head guest execution, runtime cleanup tests, and ownership negatives pass.
+
+### First-stage restrictions, including lexical cleanup
+
+- Direct postfix chaining on call results (`read_port(text)?`) is not yet ownership-admitted. Bind the typed result to `val Result<...> result`, then use `result?`; the same applies to Option and to `(await future)?` (async is not admitted).
+- Only ordinary synchronous function bodies can currently use the operator. Methods, actor callables, suspends/async functions, generators, trap callables and nested lambda callbacks are rejected. The checker resets its propagation return context for nested lambdas.
+- A deferred cleanup expression and a `finally` block cannot themselves initiate a `?` early return. Ordinary `?` returns from within `try` still run those cleanups and bypass the `catch`. `trap x?` must not mistake that early return for a trappable ordinary throw.
+- A carrier containing only Oreslang Copy types may be copied and reused; a move-only carrier such as `Result<Array<int>, String>` must be transferred once and rejected if referenced after moving. This is determined by the existing ownership checker, not by a blanket rule that every `?` consumes every carrier.
+- Guest language tests now cover these boundaries but remain **unverified** until a full Java 25/GraalVM runner executes them on exact PR-head bytes.
+
