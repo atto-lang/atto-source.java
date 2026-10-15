@@ -5,11 +5,18 @@ on:
       - 'src/main/c/oresactorturn*.c'
       - 'src/main/c/oresactorturn.h'
       - 'src/test/c/oresactorturn*_test.c'
+      - 'src/test/c/oresactorturn_stop_cleanup_done_probe.c'
       - 'scripts/test-native-actor-turn.sh'
       - 'scripts/test-native-actor-jni.sh'
       - 'scripts/test-native-actor-scheduler-jni.sh'
       - 'scripts/test-native-actor-exact-tree-ci.sh'
       - 'scripts/test-native-actor-ci-preflight.sh'
+      - 'scripts/test-private-ci-security-offline.sh'
+      - 'scripts/verify-native-actor-surefire.py'
+      - 'scripts/test-verify-native-actor-surefire.py'
+      - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
       - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
       - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
@@ -22,11 +29,18 @@ on:
       - 'src/main/c/oresactorturn*.c'
       - 'src/main/c/oresactorturn.h'
       - 'src/test/c/oresactorturn*_test.c'
+      - 'src/test/c/oresactorturn_stop_cleanup_done_probe.c'
       - 'scripts/test-native-actor-turn.sh'
       - 'scripts/test-native-actor-jni.sh'
       - 'scripts/test-native-actor-scheduler-jni.sh'
       - 'scripts/test-native-actor-exact-tree-ci.sh'
       - 'scripts/test-native-actor-ci-preflight.sh'
+      - 'scripts/test-private-ci-security-offline.sh'
+      - 'scripts/verify-native-actor-surefire.py'
+      - 'scripts/test-verify-native-actor-surefire.py'
+      - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
       - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
       - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
@@ -48,11 +62,13 @@ jobs:
       ORES_NATIVE_SANITIZE: ${{ matrix.sanitizer == 'asan-ubsan' && '1' || '0' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Record exact full-tree and native source identities
         run: |
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
-          git hash-object src/main/c/oresactorturn.c src/main/c/oresactorturn.h src/test/c/oresactorturn_test.c src/test/c/oresactorturn_scheduler_boundary_test.c
+          git hash-object src/main/c/oresactorturn.c src/main/c/oresactorturn.h src/test/c/oresactorturn_test.c src/test/c/oresactorturn_scheduler_boundary_test.c src/test/c/oresactorturn_stop_cleanup_done_probe.c
       - name: Full native suites at O0 and O2
         run: sh scripts/test-native-actor-turn.sh
   native-turn-tsan:
@@ -63,6 +79,8 @@ jobs:
       ORES_NATIVE_TSAN: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Record exact full-tree identity
         run: |
           git rev-parse HEAD
@@ -76,13 +94,17 @@ jobs:
       CC: gcc
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Record exact JVM/JNI source tree
         run: |
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
           git hash-object src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java src/main/c/oresactorturnjni.c src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java
       - name: Deny-by-default source-local CI preflight regressions (no network)
-        run: sh scripts/test-native-actor-ci-preflight.sh
+        run: |
+          sh scripts/test-native-actor-ci-preflight.sh
+          sh scripts/test-private-ci-security-offline.sh
       - name: Compile and run JDK 21 JNI kernel and real scheduler smoke (no Maven)
         run: |
           if [ -n "${JAVA_HOME_21_X64:-}" ]; then
@@ -103,8 +125,10 @@ jobs:
           mvn -B -q -Dsurefire.failIfNoSpecifiedTests=true -Dtest=NativeActorTurnSchedulerJniTest \
             -DargLine="-Djava.library.path=$PWD/target/native-jni/lib -Dores.native.actor.turn.experimental=true" \
             test
+          python3 -B scripts/verify-native-actor-surefire.py --suite jni
       - name: Compile real Oreslang policy and run Java actor migration baselines
         run: |
           mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
             -Dtest=NativeActorRuntimePolicyTest,ActorEndCleanupTest,ActorAsyncFinalizationBarrierTest,ActorReadinessLifecycleTest,ActorStructuredCancellationTest,ActorStopMailboxRaceTest \
             test
+          python3 -B scripts/verify-native-actor-surefire.py --suite policy
