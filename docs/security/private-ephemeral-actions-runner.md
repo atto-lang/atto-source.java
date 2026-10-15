@@ -21,35 +21,52 @@ and the runner-admission diagnostic in
    Give it no cloud/admin privileges, no application secrets, and no network
    access beyond what is required for GitHub Actions, Maven dependencies,
    GraalVM/native-image setup and trusted build tools.
-2. In the **private source repository**, navigate to **Settings > Actions >
-   Runners > New self-hosted runner** and follow the current GitHub instructions
-   to download and verify the correct official runner package. Obtain the
-   short-lived registration token through the repository's administrative
-   interface. Do not commit, print, archive, or place that token in Actions
-   logs, shell history or this repository.
-3. Register the runner **at repository scope** (not broadly accessible
-   at the organization level), with the extra exact label
-   `oreslang-private-ephemeral` and GitHub's `--ephemeral` registration
-   option. Preserve the default `self-hosted`, `linux`, `x64` labels.
-   Run the agent as a dedicated non-root account, in a sandbox with a fresh
-   working directory. A runner using `--ephemeral` handles **only one job**;
-   arrange a new VM/runner for each further Maven or AOT/hybrid job and destroy
-   the prior VM after completion. The label alone does **not** prove ephemeral
-   isolation; administrators must enforce the VM lifecycle.
-4. In **Settings > Secrets and variables > Actions > Variables**, create
-   repository variable `ORESLANG_PRIVATE_EPHEMERAL_RUNNER` with exact value
-   `true`. Set this only **after** the ephemeral runner is online. Until this
-   is set, the dedicated branch workflows select `ubuntu-24.04` as before.
-   When enabled, their `runs-on` expression selects
-   `[self-hosted, linux, x64, oreslang-private-ephemeral]`.
-5. Push a new reviewed commit to the trusted integration branch, or
-   re-run the matching exact-head workflow when runner capacity is available.
-   Existing dedicated workflows are branch-scoped and refuse job admission
-   unless repository identity, private visibility and branch ref match.
-   After checkout, they assert `git rev-parse HEAD == GITHUB_SHA`.
-   Do not grant the runner to arbitrary `pull_request`,
-   `pull_request_target`, fork, or unreviewed workflow inputs.
-6. Verify that **steps actually executed**. A run marked `failure` with no
+2. Require branch protection/rulesets for both integration refs:
+   restrict who can push, require reviewed workflow changes, disable force
+   pushes, and restrict deployment/runner administrators. **The workflows
+   live in mutable feature branches**, so workflow-file code review matters
+   even though their current YAML has job-level safeguards.
+3. In the **private source repository**, navigate to **Settings > Actions >
+   Runners > New self-hosted runner** and follow the official instructions
+   for a verified runner package. Prefer GitHub's **just-in-time (JIT)
+   registration** to guarantee at most one job per registration. Otherwise
+   use repository-scoped registration with `--ephemeral`. Obtain any
+   short-lived registration token via the administrative interface only;
+   never commit, print, archive, or put it in Actions logs or shell history.
+   For JIT registration see:
+   https://docs.github.com/en/rest/actions/self-hosted-runners
+4. Attach the runner **at repository scope**, with the exact additional label
+   `oreslang-private-ephemeral` and the default `self-hosted`, `linux`,
+   `x64` labels. Run as a dedicated non-root account. Deploy each worker in
+   a **fresh isolated VM**, enforce its destruction after exactly one job,
+   and provision new workers for focused Maven, full Maven and each AOT/hybrid
+   job. A runner's label or deregistration alone is not VM isolation.
+5. Freeze and review the target commit. In **Settings > Secrets and variables
+   > Actions > Variables**, set **both** repository variables:
+   - `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA`: exact full 40-character
+     head SHA of the reviewed PR #949 **or** #950 source branch (one at a time).
+   - `ORESLANG_PRIVATE_EPHEMERAL_RUNNER`: exact string `true`, only after
+     runners are online and the approved SHA is set. Otherwise leave it
+     unset/`false`; the workflow defaults to `ubuntu-24.04`.
+   All jobs are skipped before checkout in self-hosted mode unless
+   `github.sha` matches the approved SHA, the private repository identity
+   matches, and the exact branch ref matches. When switching between PR #949
+   and #950, update the approved SHA **first** and provision new workers.
+   A new commit invalidates the previous approved SHA; do not silently
+   authorize subsequent pushes.
+6. **Re-run the failed workflow for the already-approved exact SHA**, after
+   runner provisioning. Do not push an extra commit solely to activate a
+   runner, because it changes the SHA and invalidates approval. Note that
+   `workflow_dispatch` may not be available for workflows that have never
+   been added to the default branch; use existing trusted push-run reruns
+   rather than relying on a manual dispatch from a feature-only workflow.
+   A rerun must demonstrably use the fresh approved runner; if variable
+   changes are not reflected on reruns, return to the reviewed branch
+   workflow change process instead of weakening the SHA gate.
+   After checkout, a second assertion checks `git rev-parse HEAD == GITHUB_SHA`.
+   No arbitrary `pull_request`, `pull_request_target`, forks or
+   unreviewed workflow inputs may run on this worker.
+7. Verify that **steps actually executed**. A run marked `failure` with no
    step records is runner infrastructure failure, **not** a compiler or
    JUnit failure. For PR #949 require focused Future/channel/host-listener
    tests and native AOT/hybrid output `first:7:9`. For #950 additionally
@@ -58,8 +75,9 @@ and the runner-admission diagnostic in
    Record Git head/tree SHA, JDK/GraalVM version, test counts, stdout and
    final conclusions on each PR. Test evidence belongs to the **exact
    source head**, not an older or partial mirror.
-7. When verification is finished, reset the repository variable to
-   `false` (or delete it), stop/dispose of all ephemeral runner VMs, revoke
+8. When verification is finished, reset the repository variable to
+   `false` (or delete it), delete the approved SHA variable, stop/dispose
+   of all ephemeral runner VMs, revoke
    lingering registration if necessary, and confirm that no private source
    remains on reusable worker disks, caches, or public artifacts.
 
@@ -77,3 +95,25 @@ and the runner-admission diagnostic in
   shared machine that could retain private source or later run malicious code.
 - Draft PRs remain unmerged until actual executed, reviewed, exact-head
   evidence is available. Merge #949 first and revalidate/rebase #950.
+
+
+### Additional hardening
+
+- The dedicated workflows intentionally **disable Maven dependency caching**
+  in the setup action. An ephemeral worker may use only its disposable local
+  cache for the duration of a job. Do not restore workspace archives or
+  build caches from lower-trust branches or public storage.
+- Self-hosted runner registration and VM image provisioning must have
+  independent change review. Forward operational agent logs to a restricted,
+  private diagnostics sink if needed, with secret redaction and defined
+  retention. Do not upload source, test artifacts or runner workspaces to
+  public buckets.
+- A repository variable is **not a cryptographic authorization token** and
+  a mutable workflow could modify or remove its own guard. Protected
+  branches, trusted maintainers and ephemeral VM isolation remain mandatory.
+- GitHub's security guidance prefers JIT single-job runners; even JIT runner
+  registration must be paired with new, clean host hardware/VM state:
+  https://docs.github.com/en/actions/reference/security/secure-use
+- If either source head changes after the approval SHA was set, stop the
+  private runner jobs, re-review the resulting tree, and update the approved
+  SHA; never bypass the check in YAML to make a job run.
