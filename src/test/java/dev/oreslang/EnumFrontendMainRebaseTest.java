@@ -87,6 +87,30 @@ final class EnumFrontendMainRebaseTest {
     }
 
     @Test
+    void oversizedEnumAndPatternDeclarationsFailBeforeAstExpansion() {
+        StringBuilder tooManyCases = new StringBuilder("define enum Overflow as\n");
+        StringBuilder tooManyAlts = new StringBuilder("define match pattern Overflow as\n");
+        for (int i = 0; i <= 4096; i++) {
+            tooManyCases.append("Case").append(i).append("\n");
+            tooManyAlts.append("Color.Case").append(i).append("\n");
+        }
+        tooManyCases.append("end\n");
+        tooManyAlts.append("end\n");
+
+        IllegalArgumentException enumError = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(tooManyCases.toString()));
+        assertTrue(enumError.getMessage().contains("enum case declaration limit"),
+                enumError.getMessage());
+
+        IllegalArgumentException patternError = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse(tooManyAlts.toString()));
+        assertTrue(patternError.getMessage().contains("named pattern alternative limit"),
+                patternError.getMessage());
+    }
+
+    @Test
     void standaloneLegacyPatternSpellingRetainsSyntaxCompatibility() {
         Ast.PatternDecl pat = assertInstanceOf(Ast.PatternDecl.class,
                 Parser.parse("define pattern P as Color.Red end")
