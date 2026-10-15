@@ -322,6 +322,42 @@ final class SourceActorMiddlewareBoundaryTest {
     }
 
     @Test
+    void replacementCannotChangeTypedActorMailPayloadClass() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = image(store);
+            var receives = new AtomicInteger();
+            ActorRuntime.ActorCodeExecutor executor = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    return new OwnedState(context.self().id());
+                }
+                @Override public ActorRuntime.ActorInboxMail<Object> prepareActorMail(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    return new ActorRuntime.ActorInboxMail<>(
+                            mail.recipient(), mail.sender(), mail.sequence(), 7);
+                }
+                @Override public void receiveActor(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    receives.incrementAndGet();
+                }
+            };
+            var worker = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(), executor, "Worker");
+            worker.ready().join();
+            worker.send("hi");
+            assertTrue(worker.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0, receives.get());
+            assertTrue(worker.failure().orElseThrow().toString().contains("payload type"));
+        }
+    }
+
+    @Test
     void scalarMiddlewareCannotExpandBeyondOriginalMailboxBudget() throws Exception {
         try (SharedCodeImageStore store = new SharedCodeImageStore();
              ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
