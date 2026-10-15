@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -38,6 +39,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ) + "\n"
         self.codeowners_fake_sha = None
         self.codeowners_errors = []
+        self.api_core_remaining = 15000
         self.codeowner_permission = "write"
         self.codeowner_login = "ORESoftware"
         self.codeowner_type = "User"
@@ -72,6 +74,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_conversations = [True] * 100
         self.carrier_review_count = [1] * 100
         self.carrier_codeowner = [True] * 100
+        self.carrier_codeowners_text = (
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/workflows/ @ORESoftware\n"
+        )
+        self.carrier_codeowners_sha = None
+        self.carrier_codeowners_errors = []
+        self.carrier_security_permission = "write"
         self.carrier_stale_review_dismissal = [True] * 100
         self.carrier_review_bypass = [False] * 100
         self.carrier_branch_commits = [A] * 100
@@ -95,6 +104,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == "rate_limit":
+            return {"resources": {"core": {"remaining": self.api_core_remaining}}}
         if route == pub.SOURCE_METADATA_ROUTE:
             return dict(full_name=self.source_identity.pop(0),
                         id=self.source_ids.pop(0), private=self.source_private.pop(0),
@@ -177,16 +188,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "bypass_pull_request_allowances": {
                         "users": ["bypasser"] if self.carrier_review_bypass.pop(0) else [],
                         "teams": [], "apps": []}}
+        if route == "repos/trusted/ci/contents/.github/CODEOWNERS?ref=main":
+            raw = self.carrier_codeowners_text.encode("utf-8")
+            sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_codeowners_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == "repos/trusted/ci/codeowners/errors?ref=main":
+            return {"errors": self.carrier_codeowners_errors}
+        if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
+            return {"permission": self.carrier_security_permission,
+                    "user": {"login": "ORESoftware", "type": "User"}}
         mapping = {
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
-            "repos/trusted/ci/git/commits/"+C: {"tree": {"sha": E}},
+            "repos/trusted/ci/git/commits/"+C: {"sha": C, "tree": {"sha": E}},
             "repos/trusted/ci/git/refs": {
                 "ref": "refs/heads/ci/oreslang-test", "object": {"sha": C}},
             "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
-                "object": {"sha": C}},
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"sha": C, "type": "commit"}},
             "repos/trusted/ci/git/trees/"+E: {
-                "truncated": False,
+                "sha": E, "truncated": False,
                 "tree": [{"path": pub.PREFIX, "mode": "040000",
                           "type": "tree", "sha": self.expected_tree}]},
         }
@@ -375,6 +399,52 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         finally:
             self.preflight.start()
 
+    def test_carrier_workflow_codeowners_must_cover_every_workflow(self):
+        for policy in ("",
+                       "/.github/CODEOWNERS @ORESoftware\n",
+                       "/.github/workflows/ @ORESoftware\n/.github/CODEOWNERS @ORESoftware\n",
+                       "/.github/CODEOWNERS @ORESoftware\n/.github/workflows/ @ORESoftware\n"
+                       "* @another-reviewer\n"):
+            with self.subTest(policy=policy):
+                self.route_calls.clear()
+                self.carrier_codeowners_text = policy
+                with self.assertRaisesRegex(pub.Denied, "terminal security CODEOWNER coverage"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_codeowners_text = (
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/workflows/ @ORESoftware\n"
+        )
+
+    def test_carrier_codeowner_digest_validation_and_permission_fail_closed(self):
+        self.carrier_codeowners_sha = "f" * 40
+        with self.assertRaisesRegex(pub.Denied, "blob integrity"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_codeowners_sha = None
+        self.carrier_codeowners_errors = [{"line": 2, "message": "unknown owner"}]
+        with self.assertRaisesRegex(pub.Denied, "validation errors"):
+            self.publish()
+        self.carrier_codeowners_errors = []
+        self.carrier_security_permission = "read"
+        with self.assertRaisesRegex(pub.Denied, "lacks write permission"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_security_owner_revocation_aborts_after_first_blob(self):
+        original = self.fake_api
+        def revoke(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.carrier_security_permission = "read"
+            return response
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaisesRegex(pub.Denied, "lacks write permission"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
     def test_carrier_default_branch_must_be_trusted_main_before_source_read(self):
         self.carrier_default_branches = ["unreviewed-feature"] * 100
         with patch.object(pub, "collect_source",
@@ -420,6 +490,40 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
                              for method, route, _ in self.route_calls))
+
+    def test_malformed_rate_limit_response_is_sanitized(self):
+        for response in (None, [], {}, {"resources": []},
+                         {"resources": {"core": {"remaining": True}}}):
+            with self.subTest(response=response):
+                with patch.object(pub, "gh_api", return_value=response) as api:
+                    with self.assertRaisesRegex(pub.Denied, "API budget"):
+                        pub.require_private_ci_api_budget(1)
+                    api.assert_called_once_with("rate_limit")
+
+    def test_core_api_budget_denies_before_creating_git_objects(self):
+        for remaining in (0, 100, 183, None, "15000", True, -1):
+            with self.subTest(remaining=remaining):
+                self.route_calls.clear()
+                self.api_core_remaining = remaining
+                with self.assertRaisesRegex(pub.Denied, "API budget"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.api_core_remaining = 15000
+
+    def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
+        # One source file: 24 * 1 + 160 == 184 API requests reserved.
+        self.api_core_remaining = 184
+        self.publish()
+        self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_api_budget_gate_rejects_bogus_file_counts_before_rate_lookup(self):
+        for count in (-1, 0, True, None, pub.MAX_FILES + 1):
+            with self.subTest(count=count):
+                self.route_calls.clear()
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with self.assertRaisesRegex(pub.Denied, "file count"):
+                        pub.require_private_ci_api_budget(count)
+                self.assertEqual(self.route_calls, [])
 
     def test_real_git_checkout_admission_denies_unreviewed_or_tampered_code(self):
         # No private repo files are needed: initialize a synthetic Git repository
@@ -794,6 +898,36 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_codeowner_write_access_revocation_blocks_later_export_writes(self):
+        original = self.fake_api
+        def revoke_after_first_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.codeowner_permission = "read"
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "CODEOWNER lacks"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
+    def test_codeowners_validation_revocation_blocks_later_export_writes(self):
+        original = self.fake_api
+        def invalidate_after_first_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.codeowners_errors = [{"line": 1, "kind": "Invalid owner"}]
+            return result
+        with patch.object(pub, "gh_api", side_effect=invalidate_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "invalid according to GitHub"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
         overrides = (
             {"required_approving_review_count": 0},
@@ -935,7 +1069,55 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         return dict(response, **{member: None})
                     return original(request, method, payload)
                 with patch.object(pub, "gh_api", side_effect=invalid_shape):
-                    with self.assertRaisesRegex(pub.Denied, "malformed object metadata"):
+                    with self.assertRaisesRegex(pub.Denied, "malformed object metadata|branch readback identity"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+
+    def test_carrier_main_commit_readback_rejects_forged_sha(self):
+        original = self.fake_api
+        def wrong_main_commit(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + A:
+                self.route_calls.append((method, route, payload))
+                return {"sha": B, "tree": {"sha": B}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_main_commit):
+            with self.assertRaisesRegex(pub.Denied, "main commit identity"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_post_publish_ref_identity_and_object_type_must_match(self):
+        original = self.fake_api
+        for ref, kind in (("refs/heads/wrong", "commit"),
+                          ("refs/heads/ci/oreslang-test", "blob")):
+            with self.subTest(ref=ref, kind=kind):
+                self.route_calls.clear()
+                def wrong_ref(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                        self.route_calls.append((method, route, payload))
+                        return {"ref": ref, "object": {"sha": C, "type": kind}}
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=wrong_ref):
+                    with self.assertRaisesRegex(pub.Denied, "branch readback identity"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+
+    def test_post_publish_commit_and_root_tree_shas_must_match(self):
+        original = self.fake_api
+        for target in ("commit", "tree"):
+            with self.subTest(target=target):
+                self.route_calls.clear()
+                def wrong_identity(route, method="GET", payload=None):
+                    if target == "commit" and route == "repos/trusted/ci/git/commits/" + C:
+                        self.route_calls.append((method, route, payload))
+                        return {"sha": A, "tree": {"sha": E}}
+                    if target == "tree" and route == "repos/trusted/ci/git/trees/" + E:
+                        response = original(route, method, payload)
+                        return dict(response, sha=B)
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=wrong_identity):
+                    with self.assertRaisesRegex(pub.Denied,
+                                                "commit readback identity|root tree readback identity"):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                     self.root, self.expected_tree, D)
 
@@ -969,7 +1151,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def wrong_commit_tree(route, method="GET", payload=None):
             if route == "repos/trusted/ci/git/commits/" + C:
                 self.route_calls.append((method, route, payload))
-                return {"tree": {"sha": B}}
+                return {"sha": C, "tree": {"sha": B}}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=wrong_commit_tree):
             with self.assertRaisesRegex(pub.Denied, "commit tree differs"):
@@ -981,7 +1163,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def wrong_root_tree(route, method="GET", payload=None):
             if route == "repos/trusted/ci/git/trees/" + E:
                 self.route_calls.append((method, route, payload))
-                return {"truncated": False,
+                return {"sha": E, "truncated": False,
                         "tree": [{"path": pub.PREFIX, "mode": "040000",
                                   "type": "tree", "sha": B}]}
             return original(route, method, payload)
@@ -998,7 +1180,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 def incomplete_tree(route, method="GET", payload=None):
                     if route == "repos/trusted/ci/git/trees/" + E:
                         self.route_calls.append((method, route, payload))
-                        return {"truncated": truncated,
+                        return {"sha": E, "truncated": truncated,
                                 "tree": [{"path": pub.PREFIX, "mode": "040000",
                                           "type": "tree", "sha": self.expected_tree}]}
                     return original(route, method, payload)
@@ -1014,7 +1196,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.route_calls.append((method, route, payload))
                 item = {"path": pub.PREFIX, "mode": "040000", "type": "tree",
                         "sha": self.expected_tree}
-                return {"truncated": False, "tree": [item, dict(item)]}
+                return {"sha": E, "truncated": False, "tree": [item, dict(item)]}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=ambiguous_root_tree):
             with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
@@ -1037,6 +1219,146 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(tree_writes[1]["tree"], [
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": self.expected_tree}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
+
+    def test_bulk_plan_is_bounded_and_binary_never_inlined(self):
+        files = [(f"src/file-{i:03}.ores", b"x" * 8192, "100644")
+                 for i in range(70)]
+        files[35] = ("src/file-035.ores", b"\xff\x00", "100644")
+        batches = pub.prepare_source_tree_batches(files)
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(sum(map(len, batches)), 70)
+        self.assertEqual(batches[0][0][3], "x" * 8192)
+        self.assertIsNone([row for batch in batches for row in batch
+                           if row[0] == "src/file-035.ores"][0][3])
+        self.assertTrue(all(len(batch) <= pub.TREE_BATCH_MAX_ENTRIES
+                            for batch in batches))
+        self.assertTrue(all(
+            sum((len(data) if text is not None else 40) + len(rel.encode("utf-8")) + 128
+                for rel, data, _, text in batch) <= pub.TREE_BATCH_MAX_BYTES
+            for batch in batches if len(batch) > 1))
+
+    def test_escaped_json_source_is_bounded_before_git_tree_upload(self):
+        # Raw UTF-8 length can underestimate serialized JSON request size
+        # by sixfold. Neither a single escaped file nor a batch may bypass
+        # the 256-KiB request-size cap.
+        examples = (
+            bytes([1]) * 100000,
+            bytes([92]) * 100000,
+            bytes([34]) * 100000,
+            ("é" * 50000).encode("utf-8"),
+            ("🚀" * 25000).encode("utf-8"),
+        )
+        for hostile in examples:
+            with self.subTest(prefix=hostile[:12]):
+                files = [
+                    (f"nested/file-{i:02d}.ores",
+                     hostile if i == 0 else b"simple", "100644")
+                    for i in range(16)
+                ]
+                batches = pub.prepare_source_tree_batches(files)
+                self.assertEqual(sum(map(len, batches)), len(files))
+                for batch in batches:
+                    elements = []
+                    for rel, data, mode, as_text in batch:
+                        item = {"path": rel, "mode": mode, "type": "blob"}
+                        if as_text is None:
+                            item["sha"] = hashlib.sha1(
+                                b"blob " + str(len(data)).encode("ascii")
+                                + bytes([0]) + data).hexdigest()
+                        else:
+                            item["content"] = as_text
+                        elements.append(item)
+                    json_size = len(json.dumps({"tree": elements}).encode("utf-8"))
+                    self.assertLessEqual(json_size, pub.TREE_BATCH_MAX_BYTES)
+                    self.assertLessEqual(len(batch), pub.TREE_BATCH_MAX_ENTRIES)
+        large_control = [(f"f-{i:02d}",
+                          bytes([1]) * 100000 if i == 0 else b"x", "100644")
+                         for i in range(16)]
+        batches = pub.prepare_source_tree_batches(large_control)
+        self.assertIsNone(batches[0][0][3], "escaped content needs a verified blob")
+
+    def test_escape_heavy_text_uses_blob_and_preserves_api_budget(self):
+        for i in range(15):
+            (self.source / f"tiny-{i:02d}.ores").write_text("safe")
+        (self.source / "control.ores").write_bytes(bytes([1]) * 100000)
+        files = pub.collect_source(self.source, self.root)
+        self.expected_tree = pub.source_tree_sha(files)
+        self.set_reviewed_snapshot()
+        batches = pub.prepare_source_tree_batches(files)
+        self.assertEqual(sum(len(batch) for batch in batches), len(files))
+        self.assertEqual(sum(text is None for batch in batches
+                             for _, _, _, text in batch), 1)
+        self.api_core_remaining = 183
+        with self.assertRaisesRegex(pub.Denied, "insufficient GitHub core API budget"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.route_calls.clear()
+        self.api_core_remaining = 184
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (C, len(files)))
+        uploads = [payload for method, route, payload in self.route_calls
+                   if method == "POST" and route.endswith("/git/blobs")]
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(base64.b64decode(uploads[0]["content"]), bytes([1]) * 100000)
+
+    def test_many_file_snapshot_batches_reauthorize_and_match_pinned_tree(self):
+        for i in range(140):
+            (self.source / f"many-{i:03}.ores").write_text("pub fnc f(): int { return 42; }")
+        self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
+        files = pub.collect_source(self.source, self.root)
+        planned = pub.prepare_source_tree_batches(files)
+        self.assertGreater(len(planned), 1)
+        self.api_core_remaining = 24 * max(1, len(planned) - 1) + 160
+        partial = []
+        original = self.fake_api
+
+        def bulk_api(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/trees" and method == "POST"
+                    and payload.get("base_tree") != B):
+                self.route_calls.append((method, route, payload))
+                partial.append(payload)
+                return {"sha": self.expected_tree if len(partial) == len(planned)
+                        else f"{len(partial):040x}"}
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=bulk_api):
+            sha, count = pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                     self.root, self.expected_tree, D)
+        self.assertEqual((sha, count), (C, 141))
+        self.assertEqual(len(partial), len(planned))
+        self.assertNotIn("base_tree", partial[0])
+        self.assertEqual(partial[1]["base_tree"], f"{1:040x}")
+        self.assertTrue(all("content" in item and "sha" not in item
+                            for request in partial for item in request["tree"]))
+        self.assertFalse(any(route.endswith("/git/blobs")
+                             for method, route, _ in self.route_calls if method == "POST"))
+
+    def test_bulk_snapshot_policy_revocation_blocks_next_tree_write(self):
+        for i in range(70):
+            (self.source / f"many-{i:03}.ores").write_text("safe")
+        self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
+        original = self.fake_api
+        first_tree = []
+
+        def revoke_after_first_tree(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/trees" and method == "POST"
+                    and payload.get("base_tree") != B):
+                self.route_calls.append((method, route, payload))
+                first_tree.append(payload)
+                if len(first_tree) == 1:
+                    self.reviewed_snapshot = "# approval revoked\\n"
+                return {"sha": f"{len(first_tree):040x}"}
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_tree):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual(len(first_tree), 1)
+        self.assertFalse(any(route.endswith("/git/refs")
+                             for method, route, _ in self.route_calls if method == "POST"))
 
     def test_git_tree_sha_matches_known_git_write_tree_result(self):
         # Verified independently with git init, git add, git write-tree

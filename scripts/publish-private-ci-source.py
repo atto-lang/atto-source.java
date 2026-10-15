@@ -276,6 +276,53 @@ def require_protected_source_codeowners():
         raise Denied("CODEOWNER lacks independently verified repository write access")
 
 
+
+def require_protected_carrier_codeowners(repository):
+    """Prove carrier workflows have an effective independent security owner.
+
+    GitHub's require_code_owner_reviews flag can be true even when no
+    CODEOWNERS rule covers the inherited Actions workflows. An unreviewed
+    workflow would execute on a transferred private-source branch.
+    """
+    route = f"repos/{repository}"
+    metadata = gh_api(route + "/contents/.github/CODEOWNERS?ref=main")
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 0 <= metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier CODEOWNERS metadata is unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()),
+                               validate=True)
+        decoded = raw.decode("utf-8")
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier CODEOWNERS is not valid UTF-8/base64") from exc
+    digest = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                          + bytes([0]) + raw).hexdigest()
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier CODEOWNERS blob integrity failed")
+    effective = [line.strip() for line in decoded.splitlines()
+                 if line.strip() and not line.strip().startswith("#")]
+    # The last matching rule wins. Require these final two rules in order:
+    # no later wildcard or exception can remove security ownership.
+    expected = ["/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+                "/.github/workflows/ " + REQUIRED_CODEOWNER]
+    if effective[-len(expected):] != expected:
+        raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
+    errors = gh_api(route + "/codeowners/errors?ref=main")
+    if not isinstance(errors.get("errors"), list) or errors["errors"]:
+        raise Denied("private carrier CODEOWNERS has GitHub validation errors")
+    access = gh_api(route + "/collaborators/ORESoftware/permission")
+    owner = access.get("user")
+    if (not isinstance(owner, dict)
+            or owner.get("login") != REQUIRED_CODEOWNER.lstrip("@")
+            or owner.get("type") != "User"
+            or access.get("permission") not in ("write", "admin")):
+        raise Denied("private carrier security CODEOWNER lacks write permission")
+
+
 def require_protected_main_policy(approved_policy):
     """Require a known private source and protected main, not just its blob.
 
@@ -309,7 +356,7 @@ def require_protected_main_policy(approved_policy):
             or not required_checks["contexts"]
             or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
         raise Denied("protected main must require strict source CI checks")
-    # Source main must not permit unreviewed ref replacement or deletion.
+    # A protected flag must not authorize mutable/deletable source main refs.
     for rule in ("allow_force_pushes", "allow_deletions"):
         setting = rules.get(rule)
         if not isinstance(setting, dict) or setting.get("enabled") is not False:
@@ -668,6 +715,80 @@ def source_tree_sha(files):
 
     return hash_directory(root).hex()
 
+# Inline only bounded, valid UTF-8 file contents in the Git Trees API. GitHub
+# creates the corresponding blob objects atomically with each tree POST.
+# Binary and large files still use individually verified Git blob uploads.
+TREE_INLINE_MIN_FILES = 16
+TREE_INLINE_MAX_BYTES = 128 * 1024
+TREE_BATCH_MAX_ENTRIES = 64
+TREE_BATCH_MAX_BYTES = 256 * 1024
+
+
+def prepare_source_tree_batches(files):
+    """Bound request size and preserve per-write admission for every batch.
+
+    Partial trees are constructed only from prior *isolated source trees*,
+    never from the carrier's main tree. The final SHA must still equal the
+    independently pinned full source Git tree before a branch is created.
+    """
+    allow_inline = len(files) >= TREE_INLINE_MIN_FILES
+    batches = []
+    batch = []
+    size = 0
+    for rel, data, mode in files:
+        as_text = None
+        if allow_inline and len(data) <= TREE_INLINE_MAX_BYTES and b"\x00" not in data:
+            try:
+                as_text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+        # Charge the serialized JSON payload rather than raw UTF-8 bytes.
+        # Escaped control characters and non-ASCII text can multiply size.
+        path_bytes = len(json.dumps(rel).encode("utf-8"))
+        content_bytes = (len(json.dumps(as_text).encode("utf-8"))
+                         if as_text is not None else 40)
+        item_size = content_bytes + path_bytes + 128
+        if item_size > TREE_BATCH_MAX_BYTES and as_text is not None:
+            as_text = None
+            item_size = 40 + path_bytes + 128
+        if item_size > TREE_BATCH_MAX_BYTES:
+            raise Denied("private CI Git tree entry exceeds request size limit")
+        if batch and (len(batch) >= TREE_BATCH_MAX_ENTRIES
+                      or size + item_size > TREE_BATCH_MAX_BYTES):
+            batches.append(batch)
+            batch = []
+            size = 0
+        batch.append((rel, data, mode, as_text))
+        size += item_size
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def require_private_ci_api_budget(file_count, estimated_writes=None):
+    """Reserve per-write authorization calls, including partial tree batches."""
+    if type(file_count) is not int or file_count < 1 or file_count > MAX_FILES:
+        raise Denied("private CI snapshot file count invalid")
+    if estimated_writes is None:
+        estimated_writes = file_count
+    if (type(estimated_writes) is not int or estimated_writes < 1
+            or estimated_writes > 2 * MAX_FILES):
+        raise Denied("private CI estimated write count invalid")
+    budget = gh_api("rate_limit")
+    if not isinstance(budget, dict):
+        raise Denied("GitHub core API budget unavailable")
+    resources = budget.get("resources")
+    core = resources.get("core") if isinstance(resources, dict) else None
+    remaining = core.get("remaining") if isinstance(core, dict) else None
+    if type(remaining) is not int or remaining < 0:
+        raise Denied("GitHub core API budget unavailable")
+    # Each write revalidates both source and carrier CODEOWNERS plus all
+    # immutable approvals. Allow headroom for those extra core API reads.
+    required = 24 * estimated_writes + 160
+    if remaining < required:
+        raise Denied("insufficient GitHub core API budget for safe private CI export")
+
+
 def publish(repository, source, branch, trusted_root, expected_source_tree,
             expected_source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
@@ -735,7 +856,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                 or not checks["contexts"]
                 or not all(isinstance(c, str) and c for c in checks["contexts"])):
             raise Denied("private carrier main lacks enforced administrator and CI protections")
-        # Carrier workflows can read the mirrored private source tree.
+        # Private carrier workflows inherit the protected main tree. Require
+        # explicit denial of force pushes and deletions there as well.
         for rule in ("allow_force_pushes", "allow_deletions"):
             setting = carrier_rules.get(rule)
             if not isinstance(setting, dict) or setting.get("enabled") is not False:
@@ -757,13 +879,25 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     not isinstance(bypass.get(key, []), list) or bypass.get(key)
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
+        require_protected_carrier_codeowners(repository)
         return current_sha
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = nested_sha(base_commit, "tree")
+    if base_commit.get("sha") != base_sha:
+        raise Denied("private carrier main commit identity differs from pinned ref")
     files = collect_source(source, trusted_root)
     if source_tree_sha(files) != expected_source_tree:
         raise Denied("source snapshot Git tree differs from pinned expected SHA")
+    # Fail before any mutable GitHub object is created rather than leaving
+    # partial private blobs after a predictable core-rate-limit exhaustion.
+    batches = prepare_source_tree_batches(files)
+    # First isolated tree and the final root/commit/ref writes fit in the
+    # fixed reserve. Remaining source-tree batches and binary blob writes
+    # incur a complete fresh admission before every POST.
+    blob_writes = sum(text is None for batch in batches for _, _, _, text in batch)
+    reserved_writes = max(1, blob_writes + len(batches) - 1)
+    require_private_ci_api_budget(len(files), reserved_writes)
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
@@ -777,26 +911,38 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("private carrier default branch changed during transfer")
         require_pinned_carrier_main(base_sha)
 
-    elements = []
-    for rel, data, mode in files:
-        authorize_write()  # recheck approval and identity before each write
-        blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
-            "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
-        })
-        blob_sha = valid_sha(blob.get("sha"))
-        expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
-                                + bytes([0]) + data).hexdigest()
-        if blob_sha != expected:
-            raise Denied("uploaded blob digest does not match local source bytes")
-        elements.append({"path": rel, "mode": mode,
-                         "type": "blob", "sha": blob_sha})
-    # Construct the source subtree from scratch, without base_tree. Overlaying
-    # PREFIX/file onto the destination base tree retains old private files
-    # that are no longer present in this snapshot.
-    authorize_write()
-    isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
-                      payload={"tree": elements})
-    isolated_sha = valid_sha(isolated.get("sha"))
+    isolated_sha = None
+    for batch in batches:
+        elements = []
+        for rel, data, mode, as_text in batch:
+            entry = {"path": rel, "mode": mode, "type": "blob"}
+            if as_text is not None:
+                # GitHub creates this UTF-8 blob as part of the upcoming
+                # single reviewed tree write; no separate blob POST.
+                entry["content"] = as_text
+            else:
+                authorize_write()  # recheck before each binary/large blob POST
+                blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
+                    "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
+                })
+                blob_sha = valid_sha(blob.get("sha"))
+                expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                                        + bytes([0]) + data).hexdigest()
+                if blob_sha != expected:
+                    raise Denied("uploaded blob digest does not match local source bytes")
+                entry["sha"] = blob_sha
+            elements.append(entry)
+        # Each tree POST creates blobs as well as the tree. Reconfirm every
+        # protection/approval immediately before sending any private bytes.
+        authorize_write()
+        isolated_payload = {"tree": elements}
+        if isolated_sha is not None:
+            isolated_payload["base_tree"] = isolated_sha
+        isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
+                          payload=isolated_payload)
+        isolated_sha = valid_sha(isolated.get("sha"))
+    # Intermediate trees are not approval evidence. Only the final complete
+    # Git tree digest can authenticate the snapshot.
     if isolated_sha != expected_source_tree:
         raise Denied("destination source subtree differs from pinned expected SHA")
     # Replace the entire PREFIX subtree atomically in the new root tree.
@@ -828,12 +974,21 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # reporting success. Destination workflows independently check the
     # subtree SHA again before executing any private source.
     verified_ref = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
-    if nested_sha(verified_ref, "object") != commit_sha:
+    readback_sha = nested_sha(verified_ref, "object")
+    if (verified_ref.get("ref") != "refs/heads/" + branch
+            or verified_ref["object"].get("type") != "commit"):
+        raise Denied("CI branch readback identity or object type is invalid")
+    if readback_sha != commit_sha:
         raise Denied("CI branch readback points to a different commit")
     verified_commit = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
-    if nested_sha(verified_commit, "tree") != new_tree_sha:
+    verified_commit_tree_sha = nested_sha(verified_commit, "tree")
+    if verified_commit.get("sha") != commit_sha:
+        raise Denied("CI branch commit readback identity is invalid")
+    if verified_commit_tree_sha != new_tree_sha:
         raise Denied("CI branch commit tree differs from published snapshot")
     verified_tree = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
+    if verified_tree.get("sha") != new_tree_sha:
+        raise Denied("committed CI root tree readback identity is invalid")
     tree_items = verified_tree.get("tree")
     if (verified_tree.get("truncated") is not False
             or not isinstance(tree_items, list)
