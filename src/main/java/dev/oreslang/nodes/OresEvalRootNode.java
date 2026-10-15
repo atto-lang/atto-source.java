@@ -8664,7 +8664,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (a instanceof Float || a instanceof Double || b instanceof Float || b instanceof Double)
                     throw new IllegalArgumentException("decimal and binary float arithmetic requires explicit conversion");
                 java.math.BigDecimal x = exactDecimal(a), y = exactDecimal(b);
-                return switch (op) {
+                java.math.BigDecimal result = switch (op) {
                     case '+' -> x.add(y);
                     case '-' -> x.subtract(y);
                     case '*' -> x.multiply(y);
@@ -8675,6 +8675,12 @@ public final class OresEvalRootNode extends RootNode {
                     case '%' -> x.remainder(y);
                     default -> throw new IllegalArgumentException("bad decimal numeric operator");
                 };
+                // Guard against runaway exponent/precision growth in guest code.
+                // Bounded results remain arbitrary precision up to this safety cap.
+                if (result.precision() > 1_000_000 || Math.abs((long) result.scale()) > 200_000L) {
+                    throw new ArithmeticException("decimal result exceeds precision/scale safety budget");
+                }
+                return result;
             }
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
