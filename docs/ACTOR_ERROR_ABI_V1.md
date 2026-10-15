@@ -414,3 +414,30 @@ Both source repositories' protected destination allowlists remain empty;
 cross-organizational private-source mirroring is therefore not authorized.
 Keep the actor exception PRs draft and unmerged.
 
+## Retry epoch ownership and exact-blob stress verification (2026-10-15)
+
+The scheduler's release-epoch handshake now retries **the supervisor whose
+submission failed** if a physical admission slot was freed before its
+registration. Previously, registration appended the new callback and dequeued
+some possibly older/lane-matching callback. With an existing backlog, that
+could leave the newly registering supervisor waiting forever when no further
+physical queue-slot release occurred. Existing FIFO/lane-aware wake behavior
+is unchanged for later releases; no entry is allocated for an immediate
+epoch-gap retry. The bounded registration cap remains enforced for genuinely
+pending callbacks.
+
+The regression `missedReleaseRetriesTheNewSupervisorRatherThanAnOlderWaiter`
+reproduces the two-existing-waiter case and verifies the exact new supervisor
+is retried immediately while an older waiter retains its registration.
+
+**Executed independent test:** the exact Java source file was compared against
+the GitHub blob SHA
+`fe3387a9a179597569fb88d152cfbe796d8a1281`, compiled using Java 21,
+and exercised by a 12-thread synthetic harness with **80,000 registrations,
+80,019 assertions, 0 duplicate callback deliveries and 0 retained queue
+entries**. All noncancelled callbacks were delivered. Additional assertions
+checked reentrant registration, priority of the missed-epoch caller, benign
+retry assertions and fatal VM signal propagation. This is a host-only helper
+test, **not** evidence that the full Java actor runtime, JDK25/GraalVM
+Native Image or LLVM guest runtime passed.
+
