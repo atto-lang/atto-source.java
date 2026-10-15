@@ -67,9 +67,14 @@ public final class VerifiedSccAdmission {
             Map<String, Ast.Program> sourcePrograms,
             Map<String, ExportInterfaceCodec.Header> compilerEnvironments,
             Map<String, Map<String, String>> resolvedOverrides) {
-        Objects.requireNonNull(sourcePrograms, "sourcePrograms");
-        Objects.requireNonNull(compilerEnvironments, "compilerEnvironments");
-        Objects.requireNonNull(resolvedOverrides, "resolvedOverrides");
+        // Establish one consistent source+provider identity snapshot before
+        // interface collection, semantic checking, and final hash generation.
+        // Caller-owned maps must not be read again after this point.
+        SccVerificationInputs snapshot = SccVerificationInputs.snapshot(
+                sourcePrograms, compilerEnvironments, resolvedOverrides);
+        sourcePrograms = snapshot.sources();
+        compilerEnvironments = snapshot.environments();
+        resolvedOverrides = snapshot.overrides();
 
         TwoPhaseInterfaceLinker.Declarations staged =
                 TwoPhaseInterfaceLinker.collectCheckedDeclarations(
