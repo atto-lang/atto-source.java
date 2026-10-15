@@ -1,6 +1,7 @@
 import io
 import json
 import sys
+import urllib.request
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -145,6 +146,16 @@ class MirrorGateTest(unittest.TestCase):
         for name in ("foo", "../dst", "foo/../dst", "foo/dst?x=1", "foo/dst#tag", "/dst", "src/dst/%2F"):
             with self.subTest(name=name), self.assertRaises(admission.MirrorPreflightError):
                 admission.validate_repository_name(name)
+
+    def test_redirect_handler_refuses_to_forward_authenticated_request(self):
+        request = urllib.request.Request(
+            "https://api.github.com/repos/private/src",
+            headers={"Authorization": "Bearer SECRET_CANARY"})
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "redirect refused"):
+            admission.NoRedirect().redirect_request(
+                request, None, 302, "Found",
+                {"Location": "https://untrusted.invalid/repo"},
+                "https://untrusted.invalid/repo")
 
     def test_http_response_is_bounded_and_credentials_not_reflected(self):
         key = "TEST_SECRET_CANARY"
