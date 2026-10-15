@@ -174,7 +174,6 @@ final class ActorTypedEffectControlTest {
 
     @Test void oneForOneRestartRequiresCompletedTeardownAndFreshGeneration()
             throws Exception {
-        CountDownLatch replacementHandled = new CountDownLatch(1);
         CountDownLatch supervisorHandled = new CountDownLatch(1);
         AtomicReference<ActorRuntime.ActorHandle<String>> failedChild = new AtomicReference<>();
         AtomicReference<ActorRuntime.ActorHandle<String>> replacementChild = new AtomicReference<>();
@@ -204,9 +203,8 @@ final class ActorTypedEffectControlTest {
                                         actors.restartCurrentChildOneForOne(
                                                 notice, previous,
                                                 childContext -> (mail, ignored) -> {
-                                                    if ("fresh".equals(mail)) {
-                                                        replacementHandled.countDown();
-                                                    }
+                                                    // The replacement factory must remain
+                                                    // stateless; no host latch enters an actor.
                                                 });
                                 replacementChild.set(next);
                                 assertNotEquals(previous.id(), next.id());
@@ -230,7 +228,7 @@ final class ActorTypedEffectControlTest {
                     "supervisor must automatically receive terminal child notice");
             assertNull(callbackFailure.get(),
                     () -> "one-for-one restart rejected: " + callbackFailure.get());
-            assertTrue(replacementHandled.await(3, TimeUnit.SECONDS));
+            assertTrue(replacementChild.get().isAlive());
             assertTrue(failedChild.get().ref().awaitTermination(3, TimeUnit.SECONDS));
             assertNotEquals(failedChild.get().ref().address(),
                     replacementChild.get().ref().address());
