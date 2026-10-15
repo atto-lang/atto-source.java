@@ -103,9 +103,13 @@ public final class ActorUnaryReplyBridge<R> {
         ticket.claimDispatch(actor, generation);
         UUID responseTo = ticket.requestId();
 
-        // A stopped actor cannot run mailbox continuations. Its done barrier
-        // must revoke a ticket even if its producer Stage never settles.
-        self.getDone().whenCompleteRuntime((ignored, failure) -> ticket.cancel());
+        // A stopped actor cannot run mailbox continuations. The done
+        // barrier revokes an unresolved ticket, but must not indefinitely
+        // retain completed request tickets on a long-lived actor.
+        OresFuture.RuntimeWaiterRegistration<Void> stopWaiter =
+                self.getDone().whenCompleteRuntimeCancellable(
+                        (ignored, failure) -> ticket.cancel());
+        ticket.result().whenComplete((ignored, failure) -> stopWaiter.detach());
 
         BooleanSupplier cancelledOrRevoked = () -> {
             if (ticket.state() == ActorUnaryReplySlot.State.CANCELLED) return true;
