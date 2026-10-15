@@ -48,6 +48,7 @@ class NativeHttpTest {
     }
 
     @org.junit.jupiter.api.RepeatedTest(5)
+    @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
@@ -95,9 +96,11 @@ class NativeHttpTest {
             assertFalse(output.contains("ACCEPTED"), output);
             assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
             assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
-            // Capture teardown may omit the trailing newline even when all
-            // counters were emitted. Check final values, not flush timing.
-            assertTrue(output.stripTrailing().endsWith("1\n7\n0"), output);
+            // Supervisor counters may interleave with post-response diagnostics.
+            // Assert all three counters without masking actor-carrier teardown.
+            var numbers = output.lines().filter(line -> line.matches("[0-9]+")).toList();
+            assertEquals(4, numbers.size(), output); // port plus three counters
+            assertEquals(List.of("1", "7", "0"), numbers.subList(1, 4), output);
         }
     }
 
