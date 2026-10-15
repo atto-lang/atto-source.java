@@ -153,6 +153,77 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void foreignProducerCompletionIsEnqueuedAfterActorReceiveAndOnlyOnce()
+            throws Exception {
+        AtomicBoolean insideReceive = new AtomicBoolean();
+        AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
+        AtomicReference<Thread> producerThread = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        AtomicInteger callbacks = new AtomicInteger();
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch producerCompleted = new CountDownLatch(1);
+        CountDownLatch callbackRan = new CountDownLatch(1);
+
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                insideReceive.set(true);
+                try {
+                    var future = new OresFuture<Integer>();
+                    var target = runtime.captureCurrentContinuationTarget();
+                    runtime.enqueueOnCompletion(future, target, (value, failure) -> {
+                        try {
+                            assertFalse(insideReceive.get(),
+                                    "foreign producer reentered a live actor receive");
+                            assertNotSame(producerThread.get(), Thread.currentThread(),
+                                    "producer thread executed the guest continuation");
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                    "callback escaped serialized actor execution");
+                            assertNull(failure);
+                            assertEquals(42, value);
+                            callbacks.incrementAndGet();
+                        } catch (Throwable error) {
+                            callbackFailure.compareAndSet(null, error);
+                        } finally {
+                            callbackRan.countDown();
+                        }
+                    });
+                    pending.set(future);
+                    registered.countDown();
+                    assertTrue(producerCompleted.await(5, TimeUnit.SECONDS),
+                            "foreign producer did not settle during receive");
+                    assertEquals(0, callbacks.get(),
+                            "guest callback ran before receive relinquished its actor lane");
+                } finally {
+                    insideReceive.set(false);
+                }
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            Thread producer = Thread.startVirtualThread(() -> {
+                producerThread.set(Thread.currentThread());
+                try {
+                    assertTrue(pending.get().completeFromRuntime(42));
+                    assertFalse(pending.get().completeFromRuntime(43),
+                            "late duplicate completion must lose");
+                } catch (Throwable failure) {
+                    callbackFailure.compareAndSet(null, failure);
+                } finally {
+                    producerCompleted.countDown();
+                }
+            });
+            producer.join(5_000);
+            assertFalse(producer.isAlive());
+            assertTrue(callbackRan.await(5, TimeUnit.SECONDS),
+                    "producer completion was lost instead of enqueued");
+            assertNull(callbackFailure.get(),
+                    () -> String.valueOf(callbackFailure.get()));
+            assertEquals(1, callbacks.get());
+            actor.cancel();
+        }
+    }
+
+    @Test
     void completionRacingWaiterRegistrationIsDeliveredOnceOnFreshGuestTurn()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
