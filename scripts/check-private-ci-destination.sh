@@ -23,9 +23,8 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   if [[ "${candidate,,}" == "${target,,}" ]]; then allowed=true; fi
 done < "$policy"
 [[ "$allowed" == true ]] || fail 'destination is absent from reviewed repository policy'
-# The slug allowlist alone is not enough: a deleted/recreated repository can
-# have the same name and private visibility but a different immutable ID.
-# Keep this pin synchronized with the security-reviewed Python publisher.
+# Name/visibility alone cannot authorize a recreated repo with a different ID.
+# Keep this immutable reviewed ID pin synchronized with the Python publisher.
 case "${target,,}" in
   chapter-publishing-test/zed-pkg-integration-e2e) expected_id=1344442382 ;;
   *) fail 'destination numeric identity is not pinned in reviewed code' ;;
@@ -33,11 +32,9 @@ esac
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
 metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.id, .full_name, .visibility, (.private|tostring), (.archived|tostring), (.disabled|tostring)] | @tsv' 2>/dev/null)" ||
   fail 'cannot verify repository identity and visibility from live GitHub API'
-[[ -n "$metadata" && "$metadata" != *
-\n'* ]] ||
+[[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=
-\t' read -r actual_id actual_name visibility private_flag archived_flag disabled_flag <<< "$metadata"
+IFS=$'\t' read -r actual_id actual_name visibility private_flag archived_flag disabled_flag <<< "$metadata"
 [[ "$actual_id" =~ ^[0-9]+$ && "$actual_id" == "$expected_id" ]] ||
   fail 'GitHub repository numeric ID differs from reviewed destination'
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
