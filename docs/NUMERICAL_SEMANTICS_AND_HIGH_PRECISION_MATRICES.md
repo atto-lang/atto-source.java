@@ -61,6 +61,23 @@ val answer = Matrix.solve(rt borrow a, rt borrow rhs, ctx);
 4. Run Java and LLVM against the **same** versioned vectors. Require exact equality for BigInt and contracted decimal; define acceptable ULP and residual envelopes for floating and decomposition algorithms. Record determinism and allocation counters.
 5. CI gates: no runtime use of binary64 for exact numeric types; no unchecked `rows * cols` allocation; no leaking writable views across actor boundaries; no unexpected implicit f64 conversion.
 
+## Reference matrix kernel now staged in Java
+
+`src/main/java/dev/oreslang/math/DecimalMatrix.java` is a **host-internal**, row-major
+`BigDecimal` reference kernel, not the proposed Oreslang guest `Matrix<Decimal>`.
+It parses source decimal strings directly, accepts explicit `MathContext`, uses
+exact products and exact inner-loop accumulation followed by one final per-cell
+rounding, checks dimensions/indices, imposes dimension/cell/work/precision/scale
+budgets, and rejects aliased output. `multiplyInto` stages outputs before
+publishing them so budget errors cannot leave a partially updated matrix.
+Its numerical tests reside in `src/test/java/dev/oreslang/DecimalMatrixReferenceTest.java`.
+
+The kernel **allocates temporary BigDecimals and a destination staging array**,
+is not guest-importable through the Oreslang standard library, does not yet
+implement borrowed views or actor-local arenas, and has no LLVM implementation.
+It is an executable Java-side reference for later guest and cross-backend work,
+not proof that arbitrary-precision matrix support is complete.
+
 ## Known unresolved numerical risks (2026-10-15)
 
 - The staged Java complex-division algorithm avoids denominator squares that overflow or underflow, and power-of-two scaling preserves common extreme/zero cases. **It is not a correctly-rounded complex division algorithm.** An independent deterministic 1,500-case, wide-exponent comparison against a 100-decimal-digit oracle identified 18 cases with unacceptable relative errors for small, representable result components. Most involve extreme exponent separation and loss of a small component. This is a *development finding*, not a conformance result. A more robust complex division implementation or a dedicated high-precision fallback is required.
