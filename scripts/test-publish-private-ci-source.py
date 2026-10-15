@@ -98,6 +98,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    def test_post_readback_public_visibility_denies_success(self):
+        original = self.fake_api
+        def go_public_after_root_readback(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/trees/" + E:
+                self.visibility[0] = "public"
+            return result
+        with patch.object(pub, "gh_api", side_effect=go_public_after_root_readback):
+            with self.assertRaisesRegex(pub.Denied, "private visibility"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+        self.assertTrue(any(m == "POST" and r.endswith("/git/refs")
+                            for m, r, _ in self.route_calls))
+
+    def test_post_readback_protected_policy_revocation_denies_success(self):
+        original = self.fake_api
+        def revoke_policy_after_root_readback(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/trees/" + E:
+                self.protected_policy_sha = "f" * 40
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_policy_after_root_readback):
+            with self.assertRaisesRegex(pub.Denied, "not approved on protected source main"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+        self.assertTrue(any(m == "POST" and r.endswith("/git/refs")
+                            for m, r, _ in self.route_calls))
+
     def test_malformed_nested_git_metadata_is_denied_not_crash(self):
         bad_routes = (
             "repos/trusted/ci/git/ref/heads/main",
