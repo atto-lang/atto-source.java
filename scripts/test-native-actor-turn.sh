@@ -11,9 +11,13 @@ if [ "${ORES_NATIVE_SANITIZE:-0}" = 1 ]; then
   sanitizers="-fsanitize=address,undefined -fno-omit-frame-pointer"
 fi
 for opt in 0 2; do
-  "${CC:-cc}" -std=c11 "-O$opt" -g -Wall -Wextra -Werror -pedantic \
-    -fstack-protector-strong -pthread $sanitizers -Isrc/main/c \
-    src/main/c/oresactorturn.c src/test/c/oresactorturn_test.c \
-    -o "target/native/oresactorturn-test-O$opt"
-  "target/native/oresactorturn-test-O$opt"
+  for suite in oresactorturn_test oresactorturn_scheduler_boundary_test; do
+    # Each suite has its own main() and links the exact same native kernel.
+    # The second suite proves the VM-only ABI contract, not Java/LLVM parity.
+    "${CC:-cc}" -std=c11 "-O$opt" -g -Wall -Wextra -Werror -pedantic \
+      -fstack-protector-strong -pthread $sanitizers -Isrc/main/c \
+      src/main/c/oresactorturn.c "src/test/c/$suite.c" \
+      -o "target/native/$suite-O$opt"
+    "target/native/$suite-O$opt"
+  done
 done
