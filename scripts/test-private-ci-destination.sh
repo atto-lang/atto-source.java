@@ -9,7 +9,7 @@ cp "$original_script_dir/run-in-private-ci-destination.sh" "$work/fixture/script
 cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
-printf '# Approved for this isolated test only\ntrusted/ci\n' > "$policy"
+printf '# Approved for this isolated test only\ntrusted/ci 123\n' > "$policy"
 cat > "$work/gh" <<'MOCK'
 #!/usr/bin/env bash
 [[ "${GH_HOST:-}" == github.com ]] || exit 2
@@ -46,6 +46,10 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+export MOCK_REPOSITORY_ID=456
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+unset MOCK_REPOSITORY_ID
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
@@ -84,17 +88,25 @@ export MOCK_EXTRA_LINE=$'\nspoofed/repo\tprivate\ttrue'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
-printf 'trusted/ci\ntrusted/ci\n' > "$policy"
+printf 'trusted/ci 123\ntrusted/ci 123\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-printf 'trusted/ci\nTRUSTED/CI\n' > "$policy"
+printf 'trusted/ci 123\nTRUSTED/CI 123\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-printf 'other/repo\n' > "$policy"
+printf 'trusted/ci 123\nother/repo 123\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'other/repo 123\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 printf 'trusted/ci #bad-comment\n' > "$policy"
 expect_fail trusted/ci
+for invalid_entry in 'trusted/ci' 'trusted/ci 0' 'trusted/ci 0123' 'trusted/ci -1' 'trusted/ci 123 #comment'; do
+  printf '%s\n' "$invalid_entry" > "$policy"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+done
 printf '# intentionally empty\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
@@ -103,7 +115,7 @@ expect_fail trusted/ci
 ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
 expect_fail trusted/ci
 rm "$policy"
-printf 'trusted/ci\n' > "$policy"
+printf 'trusted/ci 123\n' > "$policy"
 mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
