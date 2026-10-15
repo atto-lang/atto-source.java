@@ -53,7 +53,12 @@ and the runner-admission diagnostic in
    matches, and the exact branch ref matches. When switching between PR #949
    and #950, update the approved SHA **first** and provision new workers.
    A new commit invalidates the previous approved SHA; do not silently
-   authorize subsequent pushes.
+   authorize subsequent pushes. On unapproved SHA in runner-opt-in mode,
+   all executable JVM/native jobs are ineligible for runner admission, and
+   a separate `deny-unapproved-runner` job fails the overall workflow
+   **on a hosted runner without checkout**. This is necessary because
+   conditional *skipped* required checks can otherwise be treated as
+   passing by GitHub; never interpret a skipped test job as verification.
 6. **Re-run the failed workflow for the already-approved exact SHA**, after
    runner provisioning. Do not push an extra commit solely to activate a
    runner, because it changes the SHA and invalidates approval. Note that
