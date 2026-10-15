@@ -69,6 +69,9 @@ static void test_one_carrier_stop_and_restart(void) {
     CHECK(ores_turn_retire(vm, first) == ORES_TURN_BUSY);
     CHECK(ores_turn_release(vm, second) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, first) == ORES_TURN_BUSY);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, first) == ORES_TURN_OK);
 
@@ -103,6 +106,9 @@ static void test_forgery_revocation_and_foreign_vm(void) {
     CHECK(ores_turn_claim_user(a, actor, &lease) == ORES_TURN_DENIED);
     CHECK(ores_turn_cancel_cleanup(a, ticket) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire(a, actor) == ORES_TURN_BUSY);
+    CHECK(ores_turn_retire_source_task(a, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(a, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(a, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(a, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(a, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(a) == ORES_TURN_OK);
@@ -161,6 +167,9 @@ static void test_one_shot_race(void) {
         CHECK(b.completion == ORES_TURN_OK);
         CHECK(b.release == ORES_TURN_OK);
     }
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -183,6 +192,9 @@ static void test_budget_and_cancellation(void) {
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_BUSY);
     CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_OK);
     CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_DENIED);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -291,6 +303,9 @@ static void test_revoke_vs_cleanup_stress(void) {
         ores_turn_lease *extra = NULL;
         CHECK(ores_turn_claim_cleanup(vm, ticket, &extra) == ORES_TURN_DENIED);
         CHECK(extra == NULL);
+        CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+        CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+        CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
         CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
         CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
         CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -455,7 +470,13 @@ static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
     CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
     CHECK(ores_turn_release(vm, lease) == ORES_TURN_OK);
     CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, foreign_source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, foreign_source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, foreign_source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, foreign_source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -523,6 +544,9 @@ static void test_completion_races_force_revoke(void) {
         CHECK(pthread_join(thread, NULL) == 0);
         CHECK(a.completion == ORES_TURN_OK || a.completion == ORES_TURN_DENIED);
         CHECK(a.release == ORES_TURN_OK);
+        CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+        CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+        CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
         CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
         CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
         CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -550,6 +574,9 @@ static void test_injected_but_unfinished_cleanup_blocks_retirement(void) {
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_BUSY);
     CHECK(ores_turn_force_revoke(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -575,6 +602,9 @@ static void test_undelivered_terminal_blocks_retirement_until_force(void) {
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_BUSY);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_BUSY);
     CHECK(ores_turn_force_revoke(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -595,6 +625,10 @@ static void test_source_task_provenance_and_retirement(void) {
           == ORES_TURN_INVALID);
     CHECK(ores_turn_register_source_task(vm, actor, 42, 7, &source)
           == ORES_TURN_OK);
+    /* A live but suspended SourceTask has no physical carrier; it still
+     * must never be retired based on that empty actor slot alone.
+     */
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
     CHECK(ores_turn_issue_cleanup(foreign, source, &ticket) == ORES_TURN_INVALID);
     CHECK(ticket == NULL);
     char fake[32] = {0};
@@ -621,6 +655,9 @@ static void test_source_task_provenance_and_retirement(void) {
           == ORES_TURN_DENIED);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_BUSY);
     CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_STALE);
     CHECK(ores_turn_issue_cleanup(vm, source, &duplicate) == ORES_TURN_STALE);
@@ -632,11 +669,17 @@ static void test_source_task_provenance_and_retirement(void) {
     CHECK(ores_turn_issue_cleanup(vm, again, &duplicate) == ORES_TURN_OK);
     CHECK(ores_turn_stop(vm, fresh) == ORES_TURN_OK);
     CHECK(ores_turn_cancel_cleanup(vm, duplicate) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, again) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, again) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, again) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, again) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, fresh) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, other) == ORES_TURN_DENIED);
     CHECK(ores_turn_stop(vm, other) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, other) == ORES_TURN_BUSY);
+    CHECK(ores_turn_retire_source_task(vm, other_source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, other_source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, other_source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, other_source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, other) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -694,6 +737,9 @@ static void test_forked_process_rejects_inherited_vm(void) {
     CHECK(ores_turn_release(vm, lease) == ORES_TURN_OK);
     CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -727,6 +773,9 @@ static void test_foreign_guesses_and_invalid_inputs(void) {
     }
     CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_OK);
     CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
