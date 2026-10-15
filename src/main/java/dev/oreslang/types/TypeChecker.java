@@ -103,6 +103,9 @@ public final class TypeChecker {
     // Scoped to the nearest callable, never a parent callback/actor turn.
     private Type questionPropagationReturn;
     private boolean checkingTrapOperand;
+    // Postfix ? exits a callable, and must not escape from deferred cleanup
+    // or finally: ordinary return cannot replace pending cleanup control.
+    private boolean checkingQuestionCleanup;
     private boolean questionSeenInCallable;
     // Async ? v1 is admitted only as the complete initializer of a binding.
     // The SourceTask evaluator then converts its early result into SourceFlow
@@ -1873,9 +1876,12 @@ public final class TypeChecker {
                         "defer cleanup lambda must accept zero parameters");
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
+            boolean previousQuestionCleanup = checkingQuestionCleanup;
+            checkingQuestionCleanup = true;
             try {
                 typeOf(defer.expression(), env, generics, self);
             } finally {
+                checkingQuestionCleanup = previousQuestionCleanup;
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
                 env.restoreInitialization(beforeDefer);
@@ -1948,7 +1954,13 @@ public final class TypeChecker {
             Map<Env.Binding, Set<String>> caughtExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(normalExit, caughtExit));
-            checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            boolean previousQuestionCleanup = checkingQuestionCleanup;
+            checkingQuestionCleanup = true;
+            try {
+                checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
+            } finally {
+                checkingQuestionCleanup = previousQuestionCleanup;
+            }
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
@@ -2302,6 +2314,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "postfix ? cannot enclose await, select, or channel suspension "
                             + "in a synchronous callable");
+                }
+                if (checkingQuestionCleanup) {
+                    throw new IllegalArgumentException(
+                            "postfix ? cannot exit from defer or finally cleanup; "
+                            + "cleanup must preserve the pending return/failure");
                 }
                 if (questionPropagationReturn == null
                         || currentMaySuspend && !currentAsyncCallable
