@@ -14,6 +14,26 @@ public final class OresPointer {
         if (checked instanceof OresPointer) {
             throw new IllegalArgumentException("nested Pointer<T> runtime targets are forbidden");
         }
+        // A guest type check cannot protect callers using the public Java
+        // runtime API directly. Reject known actor, synchronization, async and
+        // transport capabilities without cloning/wrapping their authority.
+        // This constant-size admission check does not allocate a metadata graph.
+        if (checked instanceof ActorRuntime.ActorRef<?>
+                || checked instanceof ActorRuntime.ActorHandle<?>
+                || checked instanceof ActorRuntime.ActorGroup
+                || checked instanceof ActorRuntime.ActorGroupJoinCapability
+                || checked instanceof ActorRuntime.Shared<?>
+                || checked instanceof ActorRuntime.SyncCell<?>
+                || checked instanceof ChannelRuntime.Channel<?>
+                || checked instanceof ChannelRuntime.SelectCase
+                || checked instanceof ChannelRuntime.SelectSet
+                || checked instanceof OresMutex.Lock<?>
+                || checked instanceof OresMutex.Guard<?>
+                || checked instanceof java.util.concurrent.Future<?>
+                || checked instanceof java.util.concurrent.CompletionStage<?>) {
+            throw new IllegalArgumentException(
+                    "Pointer<T> cannot own actor, channel, mutex, shared-memory or future capabilities");
+        }
         this.target = checked;
     }
 
