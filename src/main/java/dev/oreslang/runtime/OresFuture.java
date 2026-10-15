@@ -92,15 +92,20 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
 
         boolean detach() {
-            if (!claimed.compareAndSet(false, true)) return false;
+            boolean detached = claimed.compareAndSet(false, true);
+            // A concurrent settlement can have already claimed this waiter.
+            // Still remove the registration from the producer queue: claiming
+            // callback delivery and reclaiming queue retention are separate
+            // obligations. This is idempotent if the producer already polled it.
             owner.waiters.remove(this);
-            return true;
+            return detached;
         }
     }
 
-    private final BooleanSupplier cancelAdmission;
-    /** Released only after all subscribers present at settlement have returned. */
-    private final Runnable onNotificationDrained;
+    /** Released at terminal CAS so retained settled Futures cannot pin actor/channel state. */
+    private volatile BooleanSupplier cancelAdmission;
+    /** One-shot release after terminal subscribers complete; never retain owners afterwards. */
+    private volatile Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     /**
@@ -399,16 +404,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     }
 
     boolean completeFromRuntime(T value) {
-        boolean completed = settle(new Success<>(value));
-        if (completed) cancelHook.set(null);
-        return completed;
+        return settle(new Success<>(value));
     }
 
     boolean failFromRuntime(Throwable failure) {
-        boolean completed = settle(
-                new Failure(Objects.requireNonNull(failure, "failure")));
-        if (completed) cancelHook.set(null);
-        return completed;
+        return settle(new Failure(Objects.requireNonNull(failure, "failure")));
     }
 
     /**
@@ -416,7 +416,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      *
      * <p>Callbacks registered here must be scheduler plumbing only: transition a
      * dependent Future, enqueue a continuation, or release runtime accounting.
-     * They must never execute Oreslang guest code directly.</p>
+     * They must never execute Oreslang guest code directly. A terminal
+     * Future may notify a newly registered runtime waiter on this very call
+     * stack (including an actor or producer thread). Therefore, this hook
+     * must remain strictly host-only: source continuations must be queued
+     * through an owning scheduler/actor mailbox, never invoked here.</p>
      */
     void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
         whenCompleteRuntimeCancellable(callback);
@@ -452,7 +456,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
-        if (!cancelAdmission.getAsBoolean()) return false;
+        // Capture the admission capability locally: a concurrent terminal
+        // transition may clear the field, but settlement CAS remains final.
+        BooleanSupplier admission = cancelAdmission;
+        if (admission == null || !admission.getAsBoolean()) return false;
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
@@ -484,6 +491,21 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     Object runtimeTerminalStateOrNull() {
         Object observed = state.get();
         return observed == PENDING ? null : observed;
+    }
+
+    /**
+     * Select readiness must respect cancellation's revocation barrier, not
+     * merely the early state CAS. A cancelled producer is not selectable until
+     * its internal cancel hook has finished; subscribed wakeups are delivered
+     * after that barrier by the normal runtime waiter drain.
+     */
+    Object runtimeSelectReadyStateOrNull() {
+        Object observed = state.get();
+        if (observed == PENDING
+                || (observed instanceof Cancelled && !cancelRevocationComplete.get())) {
+            return null;
+        }
+        return observed;
     }
 
     /**
@@ -566,10 +588,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     CompletionStage<T> asCompletionStage() {
         CompletableFuture<T> bridge = new CompletableFuture<>();
-        whenCompleteRuntime((value, failure) -> {
-            if (failure == null) bridge.complete(value);
-            else bridge.completeExceptionally(failure);
-        });
+        RuntimeWaiterRegistration<T> waiter =
+                whenCompleteRuntimeCancellable((value, failure) -> {
+                    if (failure == null) bridge.complete(value);
+                    else bridge.completeExceptionally(failure);
+                });
+        // The bridge is only an observation adapter: cancelling it must
+        // release the producer listener, never cancel the producer itself.
+        // Registering after the producer subscription also covers a source
+        // that has already settled synchronously.
+        bridge.whenComplete((ignored, failure) -> waiter.detach());
         return bridge;
     }
 
@@ -592,6 +620,18 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     private boolean settle(Object terminal, Runnable afterStateClaimed) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
+
+        // The operation has irrevocably settled. The admission predicate may
+        // capture a SelectRegistration, its cases, channels and write values;
+        // keeping it on a completed Future retains the whole graph. A racing
+        // cancellation holds its own local predicate and must still win the
+        // terminal CAS to change the result, so releasing the stored reference
+        // here does not weaken cancellation arbitration.
+        cancelAdmission = null;
+        // Completion/failure also irrevocably defeats cancellation; release
+        // its revoker now, not after a synchronous subscriber eventually
+        // returns. Cancellation itself uses invokeCancelHook() after CAS.
+        if (!(terminal instanceof Cancelled)) cancelHook.set(null);
 
         try {
             // The winning cancellation claim runs its internal revoker before
@@ -616,7 +656,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             // Terminal state can be visible long before a synchronous waiter
             // returns. A bounded host notification permit cannot be reused
             // just because isDone() became true during a blocked callback.
-            onNotificationDrained.run();
+            Runnable drained = onNotificationDrained;
+            onNotificationDrained = null;
+            // There is exactly one winning terminal CAS, hence one release.
+            // Keep the callback live until every synchronous waiter returns.
+            if (drained != null) drained.run();
         }
     }
 
@@ -649,14 +693,23 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> waiter =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                // Timed polling must not retain one producer waiter per
+                // timeout until the producer eventually settles.
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // An interrupted host waiter is also no longer interested in
+            // settlement. The claimed flag arbitrates with completion drain.
+            // Never detach a runtime waiter while holding a channel lock.
+            waiter.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {
