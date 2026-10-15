@@ -195,6 +195,12 @@ public final class NominalMethodSlots {
     private static void requireValidUtf16(String value) {
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
+            // Public ABI records must not permit control characters in
+            // compiler-resolved owner or callable identities.
+            if (ch < 0x20 || ch == 0x7f) {
+                throw new IllegalArgumentException(
+                        "control character in nominal method identity");
+            }
             if (Character.isHighSurrogate(ch)) {
                 if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i))) {
                     throw new IllegalArgumentException("invalid UTF-16 method slot identity");
