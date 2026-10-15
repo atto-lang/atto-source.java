@@ -7,6 +7,10 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/check_private_ci_destination.py'
+      - 'tests/test_private_ci_destination.py'
+      - 'tests/test_actor_ci_checkout_proof.py'
+      - 'scripts/verify_actor_exception_jvm.sh'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -17,6 +21,10 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/check_private_ci_destination.py'
+      - 'tests/test_private_ci_destination.py'
+      - 'tests/test_actor_ci_checkout_proof.py'
+      - 'scripts/verify_actor_exception_jvm.sh'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/CODEOWNERS'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -37,4 +45,8 @@ jobs:
           for attempt in 1 2 3; do
             echo "Private publisher adversarial pass ${attempt}/3"
             python3 scripts/test-publish-private-ci-source.py
+      - name: Verify cross-organization mirror policy fail-closed
+        run: python3 -m unittest discover -s tests -p 'test_private_ci_destination.py' -v
+      - name: Verify exact-source SHA and clean-tree assertions
+        run: python3 -m unittest discover -s tests -p 'test_actor_ci_checkout_proof.py' -v
           done
