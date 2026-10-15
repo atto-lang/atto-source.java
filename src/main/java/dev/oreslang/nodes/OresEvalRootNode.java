@@ -856,6 +856,15 @@ public final class OresEvalRootNode extends RootNode {
             return (List<Object>) args;
         }
 
+        /** Canonical runtime representation for exact numeric widening. */
+        private Object canonicalDeclaredDecimal(Ast.TypeRef type, Object value) {
+            if (type != null && type.name().equals("decimal")
+                    && value instanceof Number number && isIntegral(number)) {
+                return java.math.BigDecimal.valueOf(number.longValue());
+            }
+            return value;
+        }
+
         private void bindCallableArguments(
                 Env env,
                 List<Ast.Param> parameters,
@@ -1960,7 +1969,7 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                env.define(binding.name(), canonicalDeclaredDecimal(binding.declaredType(), value), binding.kind());
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -5084,7 +5093,7 @@ public final class OresEvalRootNode extends RootNode {
                     env.reserve(binding.name(), binding.kind());
                     env.initialize(binding.name(), eval(binding.initializer(), env));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(binding.name(), canonicalDeclaredDecimal(binding.declaredType(), eval(binding.initializer(), env)), binding.kind());
                 }
                 return;
             }
