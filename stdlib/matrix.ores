@@ -1,0 +1,70 @@
+// Row-major high-precision decimal matrices.
+// Dimensions are checked before products/indices to prevent i64 overflow.
+// Each cell accumulation is exact: decimal add and multiply never round.
+define module matrix as
+
+  pub fnc dot(Array<decimal> left, Array<decimal> right): Result<decimal, String> {
+    if left.size != right.size; do
+      return Err("dot vector lengths must match");
+    fi
+    if left.size > 262144; do
+      return Err("dot vector exceeds supported element budget");
+    fi
+    let decimal result = 0d;
+    for (let i = 0; i < left.size; i = i + 1) {
+      result = result + left.get(i) * right.get(i);
+    }
+    return Ok(result);
+  }
+
+  pub fnc add(int rows, int cols, Array<decimal> left, Array<decimal> right): Result<Array<decimal>, String> {
+    if rows <= 0 || cols <= 0 || rows > 512 || cols > 512; do
+      return Err("matrix dimensions must be within 1..512");
+    fi
+    if left.size != rows * cols || right.size != rows * cols; do
+      return Err("matrix element count does not match dimensions");
+    fi
+    let mut Array<decimal> result = new Array<decimal>();
+    for (let i = 0; i < left.size; i = i + 1) {
+      result.add(left.get(i) + right.get(i));
+    }
+    return Ok(result);
+  }
+
+  pub fnc transpose(int rows, int cols, Array<decimal> values): Result<Array<decimal>, String> {
+    if rows <= 0 || cols <= 0 || rows > 512 || cols > 512; do
+      return Err("matrix dimensions must be within 1..512");
+    fi
+    if values.size != rows * cols; do
+      return Err("matrix element count does not match dimensions");
+    fi
+    let mut Array<decimal> result = new Array<decimal>();
+    for (let j = 0; j < cols; j = j + 1) {
+      for (let i = 0; i < rows; i = i + 1) {
+        result.add(values.get(i * cols + j));
+      }
+    }
+    return Ok(result);
+  }
+
+  pub fnc multiply(int rows, int shared, int cols, Array<decimal> left, Array<decimal> right): Result<Array<decimal>, String> {
+    if rows <= 0 || shared <= 0 || cols <= 0 || rows > 512 || shared > 512 || cols > 512; do
+      return Err("matrix dimensions must be within 1..512");
+    fi
+    if left.size != rows * shared || right.size != shared * cols; do
+      return Err("matrix element count does not match dimensions");
+    fi
+    let mut Array<decimal> result = new Array<decimal>();
+    for (let i = 0; i < rows; i = i + 1) {
+      for (let j = 0; j < cols; j = j + 1) {
+        let decimal cell = 0d;
+        for (let k = 0; k < shared; k = k + 1) {
+          cell = cell + left.get(i * shared + k) * right.get(k * cols + j);
+        }
+        result.add(cell);
+      }
+    }
+    return Ok(result);
+  }
+
+end
