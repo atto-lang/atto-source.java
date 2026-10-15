@@ -673,6 +673,8 @@ public final class OresScheduler implements AutoCloseable {
         private NativeActorTurnKernel.SourceTask nativeSource;
         /** Terminal publication must not outrun successful native retirement. */
         private final AtomicBoolean nativeRetirementConfirmed = new AtomicBoolean();
+        /** Includes the trusted onQuiescent callback, not just C retirement. */
+        private final AtomicBoolean nativeQuiescenceCallbackFinished = new AtomicBoolean();
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
@@ -1125,8 +1127,12 @@ public final class OresScheduler implements AutoCloseable {
                 try {
                     onQuiescent.run();
                 } finally {
-                    deadlineQuiescenceRetired.set(true);
-                    releaseDeadlineSlotIfRetired();
+                    try {
+                        deadlineQuiescenceRetired.set(true);
+                        releaseDeadlineSlotIfRetired();
+                    } finally {
+                        nativeQuiescenceCallbackFinished.set(true);
+                    }
                 }
             }
         }
@@ -1135,7 +1141,8 @@ public final class OresScheduler implements AutoCloseable {
             if (phase.get() != TERMINAL || completion.isDone()) return;
             // A failed JNI terminal witness is not permission to publish
             // DONE. Failure retains the task in the scheduler live set.
-            if (nativeSource != null && !nativeRetirementConfirmed.get()) return;
+            if (nativeSource != null && (!nativeRetirementConfirmed.get()
+                    || !nativeQuiescenceCallbackFinished.get())) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
             if (outcome instanceof TerminalSuccess<?> success) {
                 @SuppressWarnings("unchecked")
