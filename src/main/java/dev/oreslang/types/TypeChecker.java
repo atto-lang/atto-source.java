@@ -123,6 +123,21 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        // Parser/AST admission alone must NEVER activate new enum values,
+        // constructors, pattern exhaustiveness, or serialization semantics.
+        // Until the complete enum type/ownership/runtime lowering from #623
+        // is integrated, fail before annotation expansion can rewrite, erase,
+        // or manufacture declaration provenance.
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl
+                        || declaration instanceof Ast.PatternDecl) {
+                    throw new IllegalArgumentException(
+                            "enum and named pattern declarations are syntax-only; "
+                            + "type checking and runtime execution are not enabled");
+                }
+            }
+        }
         program = AnnotationExpander.expand(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
