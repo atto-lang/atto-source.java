@@ -1,0 +1,36 @@
+package dev.oreslang.parser;
+
+/** Shared checked-i64 source negotiation before any lexer/token or compiler work. */
+public final class CheckedI64SourceHeader {
+    private CheckedI64SourceHeader() { }
+
+    /**
+     * A misspelled, displaced or CRLF checked directive is an error, not a
+     * request to silently execute wrapping arithmetic. Normal unmarked
+     * sources remain unchanged. Only full comment lines are directives.
+     */
+    public static boolean isEnabled(String text) {
+        final String prefix = "// oreslang:checked-i64";
+        final String directive = "// oreslang:checked-i64-v1";
+        final boolean enabled = text.startsWith(directive + "\n");
+        for (int pos = 0; pos < text.length();) {
+            int end = text.indexOf('\n', pos);
+            int stop = end < 0 ? text.length() : end;
+            int offset = pos;
+            // A UTF-8 BOM is not part of the exact source opt-in.
+            if (pos == 0 && text.charAt(0) == '\uFEFF') ++offset;
+            while (offset < stop && (text.charAt(offset) == ' '
+                    || text.charAt(offset) == '\t')) ++offset;
+            if (text.startsWith(prefix, offset)
+                    && (!enabled || pos != 0 || offset != 0
+                        || !text.substring(pos, stop).equals(directive))) {
+                throw new IllegalArgumentException(
+                    "checked-i64-v1: malformed, duplicated, displaced or unsupported directive");
+            }
+            if (end < 0) break;
+            pos = end + 1;
+        }
+        return enabled;
+    }
+
+}
