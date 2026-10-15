@@ -21,7 +21,9 @@ The audit runs `oresfmt --stdout <file>` for each non-symlink `.ores` file,
 compares bytes without ever writing a source file, and reports changed versus
 rejected fixtures. Rejected parser/formatter fixtures can be intentionally
 invalid. `--strict` is opt-in and is **not** currently a default CI gate.
-A JSON inventory can be written with `--json <report-file>`.
+A JSON inventory can be written with `--json <new-report-file>`.
+JSON reports use exclusive creation: existing files, `.ores` sources,
+symlinks, and hardlink aliases cannot be overwritten.
 
 ## Initialization-safe unused imports
 
