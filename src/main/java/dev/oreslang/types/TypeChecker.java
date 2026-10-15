@@ -8230,7 +8230,12 @@ public final class TypeChecker {
             Type candidate = actual.members().get(required.getKey());
             if (candidate == null) return false;
             if (expected.readOnly()) {
-                if (!assignable(candidate, required.getValue())) return false;
+                // Unknown and unresolved generic source fields may *not*
+                // masquerade as a proven concrete readonly field, even if
+                // the general inference relation admits uncertainty.
+                if (!candidate.equals(required.getValue())
+                        && (Types.containsUncertainType(candidate)
+                                || !assignable(candidate, required.getValue()))) return false;
             } else if (!candidate.equals(required.getValue())) {
                 return false;
             }
