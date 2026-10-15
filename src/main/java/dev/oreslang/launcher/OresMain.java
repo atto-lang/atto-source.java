@@ -198,7 +198,11 @@ public final class OresMain {
 
         final RuntimePermissions permissions;
         if (touchedPermissions.isEmpty()) {
-            permissions = RuntimePermissions.fromCapabilities(policy.capabilities());
+            // Public CLI entry points start without privileged host I/O.
+            // Coarse isolate capabilities are ceilings, never implicit grants.
+            // The fromCapabilities bridge exists for explicit legacy embedders,
+            // not a Deno-style executable with no --allow-* flags.
+            permissions = RuntimePermissions.denyAll();
         } else {
             permissions = permissionBuilder.build();
 
