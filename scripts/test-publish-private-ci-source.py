@@ -90,6 +90,70 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    def test_created_branch_confirmation_must_point_to_commit(self):
+        original = self.fake_api
+        def changed_ref(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs":
+                self.route_calls.append((method, route, payload))
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": A}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed_ref):
+            with self.assertRaisesRegex(pub.Denied, "created CI branch"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+
+    def test_branch_readback_must_point_to_created_commit(self):
+        original = self.fake_api
+        def changed_ref(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                self.route_calls.append((method, route, payload))
+                return {"object": {"sha": A}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed_ref):
+            with self.assertRaisesRegex(pub.Denied, "branch readback"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+
+    def test_branch_commit_readback_must_match_published_tree(self):
+        original = self.fake_api
+        def wrong_commit_tree(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/commits/" + C:
+                self.route_calls.append((method, route, payload))
+                return {"tree": {"sha": B}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_commit_tree):
+            with self.assertRaisesRegex(pub.Denied, "commit tree differs"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+
+    def test_committed_subtree_readback_must_match_pinned_source(self):
+        original = self.fake_api
+        def wrong_root_tree(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees/" + E:
+                self.route_calls.append((method, route, payload))
+                return {"tree": [{"path": pub.PREFIX, "mode": "040000",
+                                  "type": "tree", "sha": B}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_root_tree):
+            with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+
+    def test_committed_subtree_must_not_have_duplicate_entries(self):
+        original = self.fake_api
+        def ambiguous_root_tree(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees/" + E:
+                self.route_calls.append((method, route, payload))
+                item = {"path": pub.PREFIX, "mode": "040000", "type": "tree",
+                        "sha": self.expected_tree}
+                return {"tree": [item, dict(item)]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=ambiguous_root_tree):
+            with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree)
+
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
         # A new isolated source tree MUST NOT be based on that default tree.
