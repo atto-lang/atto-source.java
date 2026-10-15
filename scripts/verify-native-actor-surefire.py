@@ -23,6 +23,25 @@ REQUIRED = {
         "ActorStopMailboxRaceTest": 1,
     },
 }
+REQUIRED_METHODS = {
+    "NativeActorTurnSchedulerJniTest": frozenset({
+        "pendingCleanupTicketBlocksFutureUntilTrustedTerminalRetry",
+        "throwingTrustedJavaCleanupDoesNotStrandOtherTaskCancellation",
+        "nativeRetirementFailureCannotPreventOtherTaskShutdown",
+        "failingTrustedQuiescenceCallbackIsObservableButNeverReplayed",
+        "nativeActorWitnessRejectsSecondSchedulerOwnerWithoutBreakingFirst",
+        "nativeActorWitnessRejectsMultiplePhysicalSchedulerLanes",
+        "nativeCloseFromTrustedQuiescenceCannotClaimCleanupCompleted",
+        "nativeRetryMustNotReportIdleForSuspendedLiveSourceTask",
+        "nativeRetryRefusesToReportIdleWhileTrustedQuiescenceIsRunning",
+        "nativeTerminalPublicationWaitsForTrustedQuiescenceCallback",
+        "concurrentNativeKernelOwnerClaimsAreExclusive",
+        "stopTerminalInjectionAndCleanupLeaseMustPrecedeFutureDone",
+        "actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit",
+        "nativeStopDeniesActualScheduledResumeAndStillRetiresSource",
+        "rejectedNativeClaimDoesNotPublishAnotherTaskAsDone",
+    }),
+}
 MAX_REPORT_SIZE = 8 * 1024 * 1024
 MAX_REPORTS = 512
 
@@ -79,6 +98,13 @@ def verify(report_dir, group):
         failures = positive_integer(root.get("failures"), "failures")
         skipped = positive_integer(root.get("skipped"), "skipped")
         cases = root.findall("testcase")
+        method_names = [case.get("name") for case in cases]
+        if (any(not name for name in method_names)
+                or len(set(method_names)) != len(method_names)):
+            raise VerificationFailure(f"missing or duplicate testcase names: {short_name}")
+        required_methods = REQUIRED_METHODS.get(short_name)
+        if required_methods is not None and set(method_names) != required_methods:
+            raise VerificationFailure(f"required JNI testcase methods absent or replaced: {short_name}")
         if (executed < expected[short_name] or len(cases) != executed
                 or errors or failures or skipped
                 or any(any(case.find(tag) is not None for tag in
