@@ -237,6 +237,37 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void retiredParentCountsUnconsumedControlNoticesForHostAudit()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> (message, context) -> {
+                        ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                childContext -> (mail, ignored) -> {
+                                    throw GuestActorEffectSignal.raise();
+                                });
+                        child.set(next);
+                        next.send("fail");
+                        childCreated.countDown();
+                    });
+            parent.send("spawn");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            assertTrue(child.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0L, actors.childFailureControlNoticesDropped());
+            // No automatic handler and no manual poll: parent shutdown must
+            // not silently discard a queued terminal CONTROL notification.
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1L, actors.childFailureControlNoticesDropped());
+            assertEquals(0L, actors.actorFailureNoticesDropped(),
+                    "global host-audit queue remains independent");
+            assertEquals(child.get().id(),
+                    actors.pollActorFailureNotice().orElseThrow().actorId());
+        }
+    }
+
     @Test void automaticSupervisionEscalatesFromChildRaiseToParentPanic()
             throws Exception {
         CountDownLatch rootNotified = new CountDownLatch(1);
