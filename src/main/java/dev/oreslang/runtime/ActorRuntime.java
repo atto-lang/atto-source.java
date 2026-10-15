@@ -6858,7 +6858,8 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 final long target = nextUserMessageSequence - 1L;
                 if (lastProcessedUserMessageSequence >= target
-                        && !carrierActive && activeTurns == 0 && !scheduled.get()) {
+                        && !carrierActive && activeTurns == 0 && !scheduled.get()
+                        && !hasQueuedWorkLocked()) {
                     return OresFuture.completed(null);
                 }
                 if (pendingCarrierQuiescence.size() >= MAX_PENDING_DRAIN_WAITERS) {
@@ -6874,7 +6875,8 @@ public final class ActorRuntime implements AutoCloseable {
         // Caller holds lifecycleLock. Never publish success while any
         // TurnExecutor has the physical carrier or a scheduled turn is queued.
         private void collectCarrierQuiescenceLocked(List<OresFuture<Void>> ready) {
-            if (carrierActive || activeTurns != 0 || scheduled.get()) return;
+            if (carrierActive || activeTurns != 0 || scheduled.get()
+                    || hasQueuedWorkLocked()) return;
             for (int i = pendingCarrierQuiescence.size() - 1; i >= 0; i--) {
                 DrainWaiter waiter = pendingCarrierQuiescence.get(i);
                 if (finalized || lastProcessedUserMessageSequence >= waiter.sequence()) {
