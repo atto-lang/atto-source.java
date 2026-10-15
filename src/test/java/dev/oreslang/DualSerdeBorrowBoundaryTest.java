@@ -51,7 +51,7 @@ final class DualSerdeBorrowBoundaryTest {
         assertEquals("NetworkCodec", network.name());
         assertEquals("ActorMessageCodec", actor.name());
         assertEquals(2, network.members().size());
-        assertEquals(3, actor.members().size());
+        assertEquals(2, actor.members().size());
     }
 
     @Test
