@@ -71,8 +71,9 @@ final class NativeActorTurnSchedulerJniTest {
     @Test
     void throwingTrustedJavaCleanupDoesNotStrandOtherTaskCancellation() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(128)) {
-            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
-                    1, Runnable::run, kernel)) {
+            OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel);
+            try {
                 var started = new CountDownLatch(2);
                 var failingCleanup = new AtomicInteger();
                 var firstGate = new OresFuture<Integer>();
@@ -101,6 +102,11 @@ final class NativeActorTurnSchedulerJniTest {
                         "trusted callback must not be replayed on shutdown");
                 assertEquals(1, scheduler.nativeQuiescenceFailures());
                 kernel.stop();
+            } finally {
+                // A second close may not claim success while unresolved
+                // trusted cleanup remains in the native scheduler live set.
+                var repeated = assertThrows(IllegalStateException.class, scheduler::close);
+                assertTrue(repeated.getMessage().contains("unresolved SourceTasks"));
             }
         }
     }
@@ -181,8 +187,9 @@ final class NativeActorTurnSchedulerJniTest {
     @Test
     void failingTrustedQuiescenceCallbackIsObservableButNeverReplayed() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
-            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
-                    1, Runnable::run, kernel)) {
+            OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel);
+            try {
                 var calls = new AtomicInteger();
                 OresFuture<Integer> result = scheduler.start(
                         resume -> OresScheduler.done(99),
@@ -209,6 +216,11 @@ final class NativeActorTurnSchedulerJniTest {
                         "close must report the failed cleanup callback");
                 assertEquals(1, calls.get(), "shutdown must not replay failed cleanup");
                 kernel.stop();
+            } finally {
+                // A second close may not claim success while unresolved
+                // trusted cleanup remains in the native scheduler live set.
+                var repeated = assertThrows(IllegalStateException.class, scheduler::close);
+                assertTrue(repeated.getMessage().contains("unresolved SourceTasks"));
             }
         }
     }
