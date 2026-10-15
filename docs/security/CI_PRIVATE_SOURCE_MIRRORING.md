@@ -193,3 +193,30 @@ Resetting branch references did **not** remove the Git objects: commits were
 still retrievable by SHA. Administrators must restrict public access and seek
 GitHub Support assistance for retained Git objects, Actions caches/logs, and
 other copies before resolving the incident.
+
+## CODEOWNERS coverage must be independently verified
+
+The publisher now reads `.github/CODEOWNERS` from authenticated source
+`main`, checks the returned Git blob SHA-1 and size against the actual
+base64-decoded file bytes, and requires a terminal block of exact
+`@ORESoftware` ownership entries for the CODEOWNERS file itself,
+destination and source-snapshot approval ledgers, export entry point,
+destination guard, audit tests and private-mirror CI workflow.
+
+The terminal ordering is intentional: in CODEOWNERS a later matching rule
+wins. An earlier security rule followed by an unreviewed wildcard or
+specific-file rule must not silently remove the review requirement.
+Missing, renamed, tampered, overridden or malformed ownership fails closed
+**before** the private compiler source snapshot is read.
+
+This is additional verification, not authorization by itself: protected
+source `main`, effective independent review enforcement, immutable source
+commit/tree approval, and numeric destination repository ID must also pass.
+Current `main` does not yet contain the proposed source-snapshot policy
+ownership line, and no private export is authorized. CODEOWNERS checks
+cannot prove that a repository owner configured GitHub permissions correctly,
+or that later users with administrative access cannot alter settings.
+
+The targeted new function was locally checked against 14 isolated cases
+with an exact-function fingerprint match; the full checked-in Python/Bash
+suite still requires an executing authorized runner.
