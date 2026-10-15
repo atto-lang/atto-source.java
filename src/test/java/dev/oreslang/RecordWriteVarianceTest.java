@@ -51,6 +51,38 @@ final class RecordWriteVarianceTest {
     }
 
     @Test
+    void unknownSourceFieldCannotPretendToBeConcreteReadonlyField() {
+        Record unknown = new Record(Map.of("value", Types.Unknown.INSTANCE));
+        Record concrete = new Record(Map.of("value", Types.Primitive.INT), true);
+        assertFalse(Types.isAssignable(unknown, concrete));
+        assertTrue(Types.isAssignable(unknown,
+                new Record(Map.of("value", Types.Unknown.INSTANCE), true)));
+    }
+
+    @Test
+    void structuralPatternDoesNotGrantWriteAccessOnMutableRecords() {
+        for (String shape : new String[]{"{ bar: string }", "Readable"}) {
+            String source = """
+                    define trait Readable as
+                      bar: string;
+                    end
+                    fnc bad({ bar: string } value): void {
+                      match value over
+                        on structural %s narrowed -> {
+                          narrowed.bar = "after";
+                        }
+                        on _ -> { return; }
+                      end
+                      return;
+                    }
+                    """.formatted(shape);
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("readonly"), failure.getMessage());
+        }
+    }
+
+    @Test
     void readonlySourceCannotRegainWriteAuthority() {
         Record readonly = new Record(Map.of("value", Types.Primitive.INT), true);
         Record writable = new Record(Map.of("value", Types.Primitive.INT), false);
