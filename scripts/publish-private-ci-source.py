@@ -160,7 +160,7 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
 
-def collect_source(root, trusted_root):
+def collect_source(root, trusted_root, *, omit_checkout_metadata=False):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
 
     O_NOFOLLOW on the final file is insufficient when a parent directory can
@@ -179,6 +179,8 @@ def collect_source(root, trusted_root):
         relative = source.relative_to(trusted)
     except (OSError, RuntimeError, ValueError) as exc:
         raise Denied("source directory escapes trusted checkout") from exc
+    if omit_checkout_metadata and relative.parts:
+        raise Denied("Git metadata may only be omitted at the checkout root")
 
     directories = []
     entries = []
@@ -208,7 +210,20 @@ def collect_source(root, trusted_root):
             raise Denied("source directory cannot be listed safely") from exc
         names.sort()
         for name in names:
-            if (name in (".", "..", ".git")
+            if name == ".git":
+                # Git metadata is not part of HEAD^{tree}. Omit it only at
+                # the exact checkout root; nested .git entries stay forbidden.
+                if not (omit_checkout_metadata and depth == 0):
+                    raise Denied("source path contains unsupported name")
+                try:
+                    metadata = os.stat(name, dir_fd=directory_fd,
+                                       follow_symlinks=False)
+                except OSError as exc:
+                    raise Denied("source Git metadata cannot be inspected") from exc
+                if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+                    raise Denied("source Git metadata must not be a symlink or special file")
+                continue
+            if (name in (".", "..")
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
                     or "\\" in name):
                 raise Denied("source path contains unsupported name")
@@ -381,7 +396,7 @@ def publish(repository, source, branch, trusted_root):
         resolved_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
+    files = collect_source(source, trusted_root, omit_checkout_metadata=True)
     source_commit, exact_source_tree = require_source_tree_match(source, trusted_root, files)
     base = checked_repo(repository)
     default = base.get("default_branch")
