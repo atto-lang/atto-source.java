@@ -43,14 +43,16 @@ public final class Types {
      */
     public record Record(Map<String, Type> members, boolean readOnly) implements Type {
         public Record {
-            // The product binder's source slots must follow declaration
-            // order. Map.copyOf is immutable but does not preserve iteration
-            // order; relying on its iteration can silently reorder the
-            // compiler's checked record fields relative to the guest AST.
-            // Keep Map.copyOf's fail-closed null validation.
-            Map.copyOf(members);
-            members = java.util.Collections.unmodifiableMap(
-                    new java.util.LinkedHashMap<>(members));
+            // Snapshot first: validation must inspect the very same map that
+            // becomes the immutable record. Checking a caller-controlled map
+            // before copying it would permit a changing entrySet() to expose
+            // unchecked null fields or reorder the source evaluation slots.
+            // Preserve the insertion order; Map.copyOf is used only to
+            // reject null keys and values, not as the stored representation.
+            java.util.LinkedHashMap<String, Type> snapshot =
+                    new java.util.LinkedHashMap<>(members);
+            Map.copyOf(snapshot);
+            members = java.util.Collections.unmodifiableMap(snapshot);
         }
         public Record(Map<String, Type> members) { this(members, false); }
     }
