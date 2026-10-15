@@ -293,9 +293,9 @@ final class NominalMethodSlotsTest {
         assertThrows(IllegalArgumentException.class, () ->
                 new Slot(Domain.INSTANCE, "bad" + (char) 0, List.of(color)));
         assertThrows(IllegalArgumentException.class, () ->
-                new Slot(Domain.INSTANCE, "bad\\nname", List.of(color)));
+                new Slot(Domain.INSTANCE, "bad\nname", List.of(color)));
         assertThrows(IllegalArgumentException.class, () ->
-                a.linkSymbol("root\\nClass"));
+                a.linkSymbol("root\nClass"));
         assertThrows(IllegalArgumentException.class, () ->
                 a.linkSymbol("root" + (char) 0x7f));
 
