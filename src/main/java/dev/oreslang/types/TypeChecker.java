@@ -2475,6 +2475,12 @@ public final class TypeChecker {
                 return Primitive.VOID;
             }
             if (call.callee() instanceof Ast.NameExpr name
+                    && currentActorKind != Ast.ActorKind.NONE
+                    && name.name().equals("on_throw")) {
+                throw new IllegalArgumentException(
+                        "on_throw is a reserved actor lifecycle hook and cannot be called directly");
+            }
+            if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
                         "init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
@@ -3247,6 +3253,13 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && member.member().equals("on_throw")
+                    && member.receiver() instanceof Ast.NameExpr actorName
+                    && actorName.name().equals("self")) {
+                throw new IllegalArgumentException(
+                        "self.on_throw cannot be accessed outside runtime lifecycle dispatch");
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
