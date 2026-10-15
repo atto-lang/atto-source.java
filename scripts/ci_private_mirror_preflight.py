@@ -15,7 +15,9 @@ import urllib.request
 
 
 MAX_RESPONSE_BYTES = 131072
+MAX_TOKEN_LENGTH = 4096
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z", re.ASCII)
+BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
 
 
 class MirrorPreflightError(Exception):
@@ -50,10 +52,17 @@ def validate_metadata(actual, expected_name, expected_id):
         raise MirrorPreflightError("repository active status is missing or inactive")
 
 
+def validate_token(token):
+    # Bearer token68 characters only. Deny controls, whitespace, Unicode and
+    # header-breaking payloads before constructing any HTTP request.
+    if (not isinstance(token, str) or not 1 <= len(token) <= MAX_TOKEN_LENGTH
+            or not BEARER_TOKEN.fullmatch(token)):
+        raise MirrorPreflightError("authenticated repository visibility required")
+
+
 def fetch_metadata(name, token, opener=None):
     owner, repository = validate_repository_name(name)
-    if not token or not isinstance(token, str) or token.isspace():
-        raise MirrorPreflightError("authenticated repository visibility required")
+    validate_token(token)
     req = urllib.request.Request(
         f"https://api.github.com/repos/{owner}/{repository}",
         headers={
@@ -74,7 +83,7 @@ def fetch_metadata(name, token, opener=None):
             data = response.read(MAX_RESPONSE_BYTES + 1)
             if len(data) > MAX_RESPONSE_BYTES:
                 raise MirrorPreflightError("repository metadata response too large")
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         # Never include raw HTTP exception text: it can contain request data.
         raise MirrorPreflightError("repository metadata unavailable") from None
     try:
@@ -93,6 +102,9 @@ def verify(source, destination, source_id, destination_id, source_token, destina
             or source_id <= 0 or destination_id <= 0
             or source_id == destination_id):
         raise MirrorPreflightError("expected numeric repository identities must be distinct and positive")
+    # Require both credentials before either private repository is queried.
+    validate_token(source_token)
+    validate_token(destination_token)
     for name, expected_id, token in (
         (source, source_id, source_token),
         (destination, destination_id, destination_token),
