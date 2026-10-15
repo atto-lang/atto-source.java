@@ -373,6 +373,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(swapped[0])
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_same_inode_mutation_between_stat_and_open_is_rejected(self):
+        # The original inode may be rewritten in place before it is opened;
+        # compare size/mtime/ctime and mode, not only dev+inode.
+        original = self.source / "hello.ores"
+        raw_open = pub.os.open
+        changed = [False]
+
+        def mutate_before_open(name, flags, *args, **kwargs):
+            if name == "hello.ores" and kwargs.get("dir_fd") is not None and not changed[0]:
+                changed[0] = True
+                original.write_text("same inode, different and longer source bytes")
+            return raw_open(name, flags, *args, **kwargs)
+
+        with patch.object(pub.os, "open", side_effect=mutate_before_open):
+            with self.assertRaisesRegex(pub.Denied, "source file changed"):
+                self.publish()
+        self.assertTrue(changed[0])
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_file_mutation_during_snapshot_is_rejected_before_upload(self):
         # Wrap the opened source reader and mutate the same inode after read;
         # size or nanosecond timestamps must not silently change.
