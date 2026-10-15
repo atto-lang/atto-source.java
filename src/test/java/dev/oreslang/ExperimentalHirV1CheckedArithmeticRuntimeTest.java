@@ -323,4 +323,25 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
                 """)));
     }
 
+
+    @Test
+    void parserRejectsMalformedCheckedHeadersBeforeLexing() {
+        String program = "pub fnc main(): int { return 43; }";
+        String[] malformed = {
+            "\uFEFF// oreslang:checked-i64-v1\n" + program,
+            "// oreslang:checked-i64-v1\r\n" + program,
+            "\n// oreslang:checked-i64-v1\n" + program,
+            " // oreslang:checked-i64-v1\n" + program,
+            "// oreslang:checked-i64-v2\n" + program
+        };
+        for (String source : malformed) {
+            var parsed = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parse(source));
+            assertTrue(parsed.getMessage().contains("checked-i64-v1"),
+                    "Lexer must not obscure checked-profile admission");
+            var diagnostic = assertThrows(IllegalArgumentException.class,
+                    () -> dev.oreslang.parser.Parser.parseWithWarnings(source));
+            assertTrue(diagnostic.getMessage().contains("checked-i64-v1"));
+        }
+    }
 }
