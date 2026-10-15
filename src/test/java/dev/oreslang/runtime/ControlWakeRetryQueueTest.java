@@ -20,6 +20,26 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void missedReleaseRetriesTheNewSupervisorRatherThanAnOlderWaiter() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(3);
+        StringBuilder order = new StringBuilder();
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> order.append('A'), epoch, 0));
+        assertTrue(queue.register(() -> order.append('B'), epoch, 0));
+        // One slot release wakes A while B remains registered.
+        queue.slotReleased(0);
+        assertEquals("A", order.toString());
+        assertEquals(1, queue.pending());
+        // The new parent observed the old epoch before attempting to
+        // schedule. It must retry itself immediately, not consume B's slot.
+        assertTrue(queue.register(() -> order.append('C'), epoch, 0));
+        assertEquals("AC", order.toString());
+        assertEquals(1, queue.pending(), "older B must retain its registration");
+        queue.slotReleased(0);
+        assertEquals("ACB", order.toString());
+        assertEquals(0, queue.pending());
+    }
+
     @Test void registeredWakeRunsOnlyAfterOneSlotIsFreed() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         AtomicInteger called = new AtomicInteger();
