@@ -5,6 +5,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         IDENT,
         INT,
         FLOAT,
+        DECIMAL,
         IMAG,
         STRING,
         SYMBOL_LITERAL,
