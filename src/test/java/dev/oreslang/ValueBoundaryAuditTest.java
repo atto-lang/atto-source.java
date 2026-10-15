@@ -230,6 +230,19 @@ final class ValueBoundaryAuditTest {
                 """));
     }
 
+    @Test
+    void nestedLambdaBindingsDoNotBecomeTheOuterConditionHead() throws Exception {
+        assertEquals("1", run("""
+                pub fnc main(): void {
+                  if (|| -> {
+                    if 1 as let v when v eq 1 { return true; }
+                    else { return false; } fi
+                  })() { stdio.stdout.write(1); } fi
+                  return;
+                }
+                """));
+    }
+
     private static void check(String source) {
         OwnershipChecker.check(TypeChecker.check(Parser.parse(source)));
     }

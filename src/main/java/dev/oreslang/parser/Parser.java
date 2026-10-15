@@ -2737,11 +2737,15 @@ public final class Parser {
 
     private boolean hasParenthesizedConditionBinding() {
         int depth = 0;
+        int nestedValues = 0;
         for (int i = current; i + 1 < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
             if (type == LPAREN) depth++;
             if (type == RPAREN && --depth == 0) return false;
-            if (depth == 1 && type == AS && tokens.get(i + 1).type() == LET) return true;
+            if (type == LBRACE || type == LBRACKET) nestedValues++;
+            if (type == RBRACE || type == RBRACKET) nestedValues--;
+            if (depth == 1 && nestedValues == 0 && type == AS
+                    && tokens.get(i + 1).type() == LET) return true;
         }
         return false;
     }
