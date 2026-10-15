@@ -146,7 +146,7 @@ public final class ActorMiddlewareValuePipeline<T> {
             try {
                 return Objects.requireNonNull(terminal.run(request)).thenApply(v -> {
                     if (cancelled.getAsBoolean()) throw new IllegalStateException("request cancelled");
-                    return new Reply<T>(v);
+                    return new Reply<T>(v, response);
                 });
             } catch (Throwable t) { return CompletableFuture.failedFuture(t); }
         }
