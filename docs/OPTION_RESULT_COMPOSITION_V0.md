@@ -43,7 +43,13 @@ A future phase may infer result types with a sound return-flow proof.
   unproved generic owners fail closed until consuming ownership semantics
   and exact active-variant drops exist. There is no implicit deep copy.
 - Callback values must satisfy a statically checked one-argument function
-  signature with the requested result type.
+  signature with the requested result type. Invocation uses Oreslang's
+  existing tail-call trampoline, not a raw `Invokable.call`; this also
+  preserves proper results for callbacks ending in tail calls.
+- Canonical snake_case aliases: `flat_map` alongside `and_then` for
+  Option/Result; `Future.and_then`, `Future.flat_map` and
+  `Future.on_success` preserve existing scheduler-backed behavior.
+  Legacy `flatMap` / `onSuccess` remain compatible.
 - Source callbacks can still carry effects; **this PR does not implement
   transitive pure/effect-row checking**. Do not describe the combinators as
   automatically pure. Once `with` effect upper bounds are enforced, callback
