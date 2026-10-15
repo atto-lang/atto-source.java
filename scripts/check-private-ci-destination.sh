@@ -17,10 +17,15 @@ policy="$policy_dir/private-ci-approved-repositories.txt"
 [[ -f "$policy" && -r "$policy" && ! -L "$policy" ]] ||
   fail 'reviewed policy file is missing, unreadable or symlinked'
 allowed=false
+declare -A reviewed_destinations=()
 while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   [[ -z "$candidate" || "$candidate" =~ ^# ]] && continue
   [[ "$candidate" =~ $slug_pattern ]] || fail 'repository policy contains an invalid entry'
-  if [[ "${candidate,,}" == "${target,,}" ]]; then allowed=true; fi
+  normalized="${candidate,,}"
+  [[ ! -v reviewed_destinations["$normalized"] ]] ||
+    fail 'repository policy contains duplicate destination entries'
+  reviewed_destinations["$normalized"]=1
+  if [[ "$normalized" == "${target,,}" ]]; then allowed=true; fi
 done < "$policy"
 [[ "$allowed" == true ]] || fail 'destination is absent from reviewed repository policy'
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
