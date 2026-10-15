@@ -202,6 +202,79 @@ final class FutureChannelSelectTest {
         assertEquals(0, producer.pendingRuntimeWaiterCount());
     }
 
+
+    @Test
+    void cancellationBeforeRegistrationNeverAttachesOrConsumes() {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var selected = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.await(producer), ChannelRuntime.read(channel))
+                .selectAsyncForTesting(ChannelRuntime.SelectPolicy.PRIORITY,
+                        future -> assertTrue(future.cancel(false)),
+                        () -> { throw new AssertionError("cancelled registration ran"); });
+        assertTrue(selected.isCancelled());
+        assertThrows(CancellationException.class, selected::join);
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, channel.pendingRegistrations());
+        assertFalse(producer.isDone());
+        assertTrue(channel.tryWrite(19));
+        assertEquals(19, channel.tryRead().orElseThrow());
+    }
+
+    @Test
+    void hundredCancellationVersusProducerFailureRacesLeaveNoWaiters()
+            throws Exception {
+        for (int round = 0; round < 100; round++) {
+            var producer = new OresFuture<Integer>();
+            var channel = new ChannelRuntime.Channel<Integer>(0);
+            var failure = new IllegalStateException("round " + round);
+            var selected = ChannelRuntime.SelectSet.of(
+                    ChannelRuntime.await(producer), ChannelRuntime.await(producer),
+                    ChannelRuntime.read(channel))
+                    .selectAsync(ChannelRuntime.SelectPolicy.PRIORITY);
+            assertEquals(2, producer.pendingRuntimeWaiterCount());
+            var go = new CountDownLatch(1);
+            var errors = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            Thread canceller = Thread.startVirtualThread(() -> {
+                try {
+                    awaitStart(go);
+                    selected.cancel(false);
+                } catch (Throwable ex) {
+                    errors.compareAndSet(null, ex);
+                }
+            });
+            Thread settler = Thread.startVirtualThread(() -> {
+                try {
+                    awaitStart(go);
+                    if (!producer.failFromRuntime(failure)) {
+                        throw new AssertionError("duplicate producer settlement");
+                    }
+                } catch (Throwable ex) {
+                    errors.compareAndSet(null, ex);
+                }
+            });
+            go.countDown();
+            canceller.join(5_000);
+            settler.join(5_000);
+            assertFalse(canceller.isAlive(), "cancel stalled: " + round);
+            assertFalse(settler.isAlive(), "settlement stalled: " + round);
+            if (errors.get() != null) {
+                throw new AssertionError("race failed in round " + round, errors.get());
+            }
+            assertTrue(selected.isDone(), "pending selection in round " + round);
+            if (selected.isCancelled()) {
+                assertThrows(CancellationException.class, selected::join);
+            } else {
+                var result = assertThrows(CompletionException.class, selected::join);
+                assertEquals(failure, result.getCause());
+            }
+            assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                    "retained Future listener: " + round);
+            assertEquals(0, channel.pendingRegistrations(),
+                    "retained channel credit: " + round);
+        }
+    }
+
     @Test
     void cancelledSelectionDetachesAllFutureWaitersWithoutCancellingSources() {
         var first = new OresFuture<Integer>();
