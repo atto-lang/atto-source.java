@@ -29,7 +29,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls = []
         self.visibility = ["private"] * 100
         self.repository_ids = [71001] * 100
-        self.preflight = patch.object(pub, "require_preflight")
+        self.preflight = patch.object(pub, "require_preflight", return_value=71001)
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
 
@@ -117,6 +117,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.publish()
                 self.assertFalse(any(method == "POST"
                                      for method, _, _ in self.route_calls))
+
+    def test_repo_replaced_between_admission_and_snapshot_rejected(self):
+        # The checked-in policy approved immutable ID 71001; even if the
+        # destination is private with the same slug, a first-upload ID
+        # change must halt before the very first Git blob write.
+        self.repository_ids = [71002]
+        with self.assertRaisesRegex(pub.Denied, "identity"):
+            self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
 
     def test_same_slug_recreated_under_different_repo_id_aborts_transfer(self):
         # First lookup is the pre-upload binding; after one uploaded blob
