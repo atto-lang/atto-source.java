@@ -25,6 +25,52 @@ final class SourceActorMiddlewareBoundaryTest {
     }
 
     @Test
+    void trustedComposedMiddlewareRunsInOrderOnOneActorTurn() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = image(store);
+            var calls = new java.util.ArrayList<String>();
+            ActorRuntime.ActorCodeExecutor delegate = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    return new OwnedState(context.self().id());
+                }
+                @Override public void receiveActor(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    calls.add("receive");
+                    assertEquals("HI", mail.value());
+                    assertEquals(mail, context.currentMail().orElseThrow());
+                    context.self().stop();
+                }
+            };
+            var decorated = ActorMailboxMiddlewareBridge.wrap(delegate, java.util.List.of(
+                    (mail, context) -> {
+                        calls.add("trim");
+                        assertEquals(context.self().id(), ActorRuntime.currentActorId().orElseThrow());
+                        return new ActorRuntime.ActorInboxMail<>(
+                                mail.recipient(), mail.sender(), mail.sequence(),
+                                ((String) mail.value()).strip());
+                    },
+                    (mail, context) -> {
+                        calls.add("uppercase");
+                        return new ActorRuntime.ActorInboxMail<>(
+                                mail.recipient(), mail.sender(), mail.sequence(),
+                                ((String) mail.value()).toUpperCase(java.util.Locale.ROOT));
+                    }));
+            var worker = runtime.spawnCodeActor(
+                    ActorRuntime.ActorKind.PRIVATE, IsolatePolicy.developer(), decorated, "Worker");
+            worker.ready().join();
+            worker.send("  hi  ");
+            assertTrue(worker.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(worker.failure().isEmpty(), worker.failure().toString());
+            assertEquals(java.util.List.of("trim", "uppercase", "receive"), calls);
+        }
+    }
+
+    @Test
     void middlewareRunsWithinActorTurnAndNormalizesOnlyTheValue() throws Exception {
         for (ActorRuntime.ActorKind kind : ActorRuntime.ActorKind.values()) {
             try (SharedCodeImageStore store = new SharedCodeImageStore();
