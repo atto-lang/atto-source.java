@@ -425,6 +425,73 @@ final class NativeActorTurnSchedulerJniTest {
         }
     }
 
+
+    @Test
+    void concurrentNativeKernelOwnerClaimsAreExclusive() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            var ready = new CountDownLatch(2);
+            var fire = new CountDownLatch(1);
+            OresScheduler[] schedulers = new OresScheduler[2];
+            Throwable[] errors = new Throwable[2];
+            Thread[] claimers = new Thread[2];
+            try {
+                for (int i = 0; i < claimers.length; i++) {
+                    final int index = i;
+                    claimers[i] = Thread.ofPlatform().name("jni-owner-race-" + i)
+                            .unstarted(() -> {
+                                ready.countDown();
+                                try {
+                                    if (!fire.await(5, TimeUnit.SECONDS)) {
+                                        throw new AssertionError("owner claim race timed out");
+                                    }
+                                    schedulers[index] = OresScheduler.managedWithNativeTurnWitness(
+                                            1, Runnable::run, kernel);
+                                } catch (Throwable failure) {
+                                    errors[index] = failure;
+                                }
+                            });
+                    claimers[i].start();
+                }
+                assertTrue(ready.await(5, TimeUnit.SECONDS));
+                fire.countDown();
+                for (Thread claimer : claimers) {
+                    claimer.join(5_000);
+                    assertFalse(claimer.isAlive(), "native owner claimer blocked indefinitely");
+                }
+                int wins = 0;
+                int denials = 0;
+                OresScheduler winner = null;
+                for (int i = 0; i < schedulers.length; i++) {
+                    if (schedulers[i] != null) {
+                        assertNull(errors[i], "a successful claim must not also throw");
+                        winner = schedulers[i];
+                        wins++;
+                    } else {
+                        assertInstanceOf(IllegalStateException.class, errors[i]);
+                        assertTrue(errors[i].getMessage().contains("already bound"),
+                                "loser must be rejected for native ownership");
+                        denials++;
+                    }
+                }
+                assertEquals(1, wins, "native actor VM cannot have two scheduler owners");
+                assertEquals(1, denials, "one competing scheduler must be rejected");
+                assertEquals(811, winner.start(resume -> OresScheduler.done(811))
+                        .get(5, TimeUnit.SECONDS));
+            } finally {
+                fire.countDown();
+                for (Thread claimer : claimers) {
+                    if (claimer != null) claimer.join(5_000);
+                }
+                for (OresScheduler scheduler : schedulers) {
+                    if (scheduler != null) scheduler.close();
+                }
+            }
+            assertThrows(IllegalStateException.class,
+                    () -> OresScheduler.managedWithNativeTurnWitness(1, Runnable::run, kernel));
+            kernel.stop();
+        }
+    }
+
     @Test
     void actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
