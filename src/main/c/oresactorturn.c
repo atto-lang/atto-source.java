@@ -31,7 +31,7 @@ struct ores_source_task_cap {
     struct ores_source_task_cap *next;
     struct ores_actor_cap *actor;
     uint64_t task_id, generation;
-    bool retired, ticket_issued, ticket_closed, ticket_claimed;
+    bool retired, settled, ticket_issued, ticket_closed, ticket_claimed;
     bool terminal_injected, cleanup_completed, terminal_aborted;
 };
 struct ores_cleanup_cap {
@@ -282,7 +282,8 @@ ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
     if (status == ORES_TURN_OK) {
         ores_actor_cap *actor = source->actor;
         if (actor->stopped || actor->revoked || actor->retired
-                || source->ticket_issued) status = ORES_TURN_DENIED;
+                || source->settled || source->ticket_issued)
+            status = ORES_TURN_DENIED;
         else if (vm->used_objects == vm->max_objects) status = ORES_TURN_EXHAUSTED;
         else {
             ores_cleanup_cap *ticket = calloc(1, sizeof(*ticket));
@@ -303,14 +304,39 @@ ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
     return status;
 }
 
+/* A Future may suspend and leave actor->active == NULL while its guest
+ * SourceTask is logically alive. Only the trusted scheduler can assert the
+ * terminal/quiescence witness; physical idle is never sufficient by itself.
+ * The VM adapter MUST call this from a terminal task callback, not an await
+ * or cancellation-notification callback.
+ */
+ores_turn_status ores_turn_note_source_settled(ores_turn_vm *vm,
+                                               ores_source_task_cap *source) {
+    if (!same_process(vm)) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = require_live_source(vm, source);
+    if (status == ORES_TURN_OK) {
+        if (source->settled) status = ORES_TURN_DENIED;
+        else if (source->actor->active
+                 || (source->ticket_issued && !source->ticket_closed)
+                 || (source->ticket_claimed
+                     && !source->cleanup_completed
+                     && !source->terminal_aborted))
+            status = ORES_TURN_BUSY;
+        else source->settled = true;
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
 ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
                                               ores_source_task_cap *source) {
     if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
-        if (source->actor->active || (source->ticket_issued
-                                         && !source->ticket_closed)
+        if (!source->settled || source->actor->active
+                || (source->ticket_issued && !source->ticket_closed)
                 || (source->ticket_claimed
                     && !source->cleanup_completed
                     && !source->terminal_aborted))
