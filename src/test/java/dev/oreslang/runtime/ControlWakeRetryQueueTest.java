@@ -747,6 +747,13 @@ final class ControlWakeRetryQueueTest {
                 else queue.cancel(callback);
                 assertEquals(0, queue.retained(),
                         "revoking an in-transit ticket must refund quota");
+                java.lang.reflect.Field liveTickets =
+                        ControlWakeRetryQueue.class.getDeclaredField("aboutToInvoke");
+                liveTickets.setAccessible(true);
+                synchronized (queue) {
+                    assertTrue(((java.util.Set<?>)liveTickets.get(queue)).isEmpty(),
+                            "cancel/close must promptly unlink in-transit tickets");
+                }
             } finally {
                 continueCarrier.countDown();
             }
