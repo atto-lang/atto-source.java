@@ -189,6 +189,17 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
+        assertTrue(queue.register(() -> {
+            throw new InternalError("fatal host VM condition");
+        }, queue.epoch()));
+        assertThrows(InternalError.class, queue::slotReleased);
+        assertEquals(0, queue.callbacksFailed(),
+                "fatal VM errors must not be converted to ordinary retry failures");
+        assertEquals(0, queue.pending());
+    }
+
     @Test void failedRetryCallbackDoesNotPreventCurrentCarrierFromRunning() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         AtomicInteger second = new AtomicInteger();
