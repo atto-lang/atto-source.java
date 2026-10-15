@@ -202,7 +202,25 @@ public final class Ast {
         }
     }
 
-    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+    /**
+     * Delivery describes what a callback-taking API may do with a callback.
+     * It is orthogonal to the callback's async/suspends callable effect.
+     */
+    public enum CallbackDelivery { UNSPECIFIED, INLINE, DEFERRED, MAYBE_INLINE }
+
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable,
+                        CallbackDelivery callbackDelivery) {
+        public Param {
+            java.util.Objects.requireNonNull(type, "parameter type");
+            java.util.Objects.requireNonNull(callbackDelivery, "callback delivery");
+            if (callbackDelivery != CallbackDelivery.UNSPECIFIED && (structural || mutable)) {
+                throw new IllegalArgumentException(
+                        "callback delivery parameters cannot be structural or mutable");
+            }
+        }
+        public Param(TypeRef type, String name, boolean structural, boolean mutable) {
+            this(type, name, structural, mutable, CallbackDelivery.UNSPECIFIED);
+        }
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
