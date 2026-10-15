@@ -6420,6 +6420,21 @@ public final class ActorRuntime implements AutoCloseable {
         return 64L;
     }
 
+    /**
+     * Narrow mailbox middleware normalization grammar. Actor IDs, symbols,
+     * enum types and capability-bearing scalar objects are intentionally
+     * excluded: their meaning can carry authorization/identity rather than
+     * ordinary input cleanup.
+     */
+    private static boolean isMiddlewareScalarReplacement(Object value) {
+        return value instanceof String || value instanceof Boolean
+                || value instanceof Character || value instanceof Byte
+                || value instanceof Short || value instanceof Integer
+                || value instanceof Long || value instanceof Float
+                || value instanceof Double || value instanceof BigInteger
+                || value instanceof BigDecimal;
+    }
+
     private static boolean isScalar(Object value) {
         return value == null || value instanceof String || value instanceof OresSymbol
                 || value instanceof Boolean || value instanceof Character
@@ -7478,7 +7493,7 @@ public final class ActorRuntime implements AutoCloseable {
                                         // replacement requires a versioned actor-owned
                                         // memory loan and lifetime transfer; mere
                                         // graph traversal is insufficient.
-                                        if (!isScalar(prepared.value())) {
+                                        if (!isMiddlewareScalarReplacement(prepared.value())) {
                                             throw new SecurityException(
                                                     "source middleware may replace only immutable scalar payloads "
                                                             + "until checked actor-owned aggregate transfers are available");
