@@ -65,6 +65,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     protected CallTarget parse(ParsingRequest request) {
         var source = request.getSource();
         String text = source.getCharacters().toString();
+        // Exact opt-in per source unit. Default arithmetic retains legacy semantics.
+        boolean experimentalCheckedI64 = text.startsWith("// oreslang:checked-i64-v1\n");
         Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         String codeUnitId = source.getPath();
         if (codeUnitId == null || codeUnitId.isBlank()) {
@@ -77,7 +79,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             }
         }
         if (codeUnitId == null || codeUnitId.isBlank()) codeUnitId = "<anonymous>";
-        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId).getCallTarget();
+        RootCallTarget evaluator = new OresEvalRootNode(this, program, codeUnitId, experimentalCheckedI64).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }
