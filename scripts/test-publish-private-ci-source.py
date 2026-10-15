@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -134,6 +135,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             pub.publish("trusted/ci", self.source,
                                         "ci/oreslang-test", self.root)
                     self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_shell_preflight_pins_match_reviewed_python_publisher(self):
+        # A second caller may trust the Bash preflight without invoking the
+        # Python publisher. Their immutable destination pins must stay equal.
+        script = MODULE.with_name("check-private-ci-destination.sh").read_text()
+        listed = re.findall(
+            r"^  ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\\) expected_id=([0-9]+) ;;$",
+            script, flags=re.MULTILINE)
+        self.assertEqual({name: int(repo_id) for name, repo_id in listed},
+                         pub.PINNED_DESTINATION_IDS)
 
     def test_same_slug_but_different_destination_id_aborts_before_upload(self):
         self.destination_ids = [987654321]
