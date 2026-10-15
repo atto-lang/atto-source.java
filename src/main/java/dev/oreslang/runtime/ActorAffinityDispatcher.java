@@ -17,15 +17,24 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final List<ExecutorService> lanes;
     private final int[] cpus;
     private final Semaphore queueSlots;
+    /** Bounded, physically reserved admission for supervisor CONTROL turns. */
+    private final Semaphore controlQueueSlots;
     private final AtomicInteger nextLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
                             IntFunction<ExecutorService> factory) {
-        if (parallelism < 1 || capacity < 1) throw new IllegalArgumentException("invalid lane limits");
+        this(parallelism, capacity, 0, cpus, factory);
+    }
+
+    ActorAffinityDispatcher(int parallelism, int capacity, int controlCapacity, int[] cpus,
+                            IntFunction<ExecutorService> factory) {
+        if (parallelism < 1 || capacity < 1 || controlCapacity < 0)
+            throw new IllegalArgumentException("invalid lane limits");
         this.cpus = cpus.clone();
         for (int cpu : cpus) NativeCarrierExecutor.requireAllowedCpu(cpu);
         this.queueSlots = new Semaphore(capacity);
+        this.controlQueueSlots = new Semaphore(controlCapacity);
         var created = new ArrayList<ExecutorService>();
         try {
             for (int i = 0; i < parallelism; i++) created.add(Objects.requireNonNull(factory.apply(i)));
@@ -41,9 +50,22 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
 
     void executeOnLane(int lane, Runnable command) {
+        executeOnLane(lane, command, queueSlots);
+    }
+
+    /** Only the supervisor CONTROL scheduler calls this; guest mail cannot. */
+    void executeControlOnLane(int lane, Runnable command) {
+        executeOnLane(lane, command, controlQueueSlots);
+    }
+
+    private void executeOnLane(int lane, Runnable command, Semaphore permits) {
         Objects.requireNonNull(command);
-        if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
-        QueuedTurn task = new QueuedTurn(command);
+        if (lane < 0 || lane >= lanes.size()) {
+            throw new IllegalArgumentException("invalid actor lane");
+        }
+        if (closed.get() || !permits.tryAcquire())
+            throw new RejectedExecutionException("actor lane admission unavailable");
+        QueuedTurn task = new QueuedTurn(command, permits);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
             lanes.get(lane).execute(task);
@@ -55,9 +77,13 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
 
     private final class QueuedTurn implements Runnable {
         private final Runnable command;
+        private final Semaphore permits;
         private final AtomicBoolean released = new AtomicBoolean();
-        private QueuedTurn(Runnable command) { this.command = command; }
-        private void releaseSlot() { if (released.compareAndSet(false, true)) queueSlots.release(); }
+        private QueuedTurn(Runnable command, Semaphore permits) {
+            this.command = command;
+            this.permits = permits;
+        }
+        private void releaseSlot() { if (released.compareAndSet(false, true)) permits.release(); }
         @Override public void run() {
             releaseSlot();
             command.run();
