@@ -68,6 +68,48 @@ final class ActorUnaryReplyLaneIntegrationTest {
     }
 
     @Test
+    void completedUnaryRequestDetachesActorDoneObserverWhileActorRemainsAlive() throws Exception {
+        var replied = new CountDownLatch(1);
+        var checked = new CountDownLatch(1);
+        var problem = new AtomicReference<Throwable>();
+        var initialWaiters = new java.util.concurrent.atomic.AtomicInteger(-1);
+        var bridge = new ActorUnaryReplyBridge<>(
+                new ActorMiddlewareValuePipeline<Integer>(
+                        List.of(), List.of(), Set.of(),
+                        req -> CompletableFuture.completedFuture(7)));
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                try {
+                    if (message == 1) {
+                        initialWaiters.set(
+                                context.self().getDone().pendingRuntimeWaiterCount());
+                        var slot = new ActorUnaryReplySlot<
+                                ActorMiddlewareValuePipeline.Reply<Integer>>(
+                                context.self().id(), context.self().generation(),
+                                UUID.randomUUID());
+                        bridge.dispatchActorOwned(context, slot, request(), () -> false)
+                                .whenComplete((result, failure) -> replied.countDown());
+                    } else {
+                        assertEquals(initialWaiters.get(),
+                                context.self().getDone().pendingRuntimeWaiterCount(),
+                                "completed requests must not accumulate stop waiters");
+                        checked.countDown();
+                    }
+                } catch (Throwable failure) {
+                    problem.set(failure);
+                    checked.countDown();
+                }
+            });
+            actor.send(1);
+            assertTrue(replied.await(3, TimeUnit.SECONDS));
+            actor.send(2);
+            assertTrue(checked.await(3, TimeUnit.SECONDS));
+            assertNull(problem.get(), () -> String.valueOf(problem.get()));
+            assertTrue(actor.isAlive());
+        }
+    }
+
+    @Test
     void actorTerminationCancelsPendingUnaryTicketBeforeProducerSettles() throws Exception {
         var dispatched = new CountDownLatch(1);
         var thrown = new AtomicReference<Throwable>();
