@@ -68,6 +68,49 @@ class NativeHttpTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(3)
+    void shutdownRevokesAlreadyAcceptedRequestBeforeLatePooledDispatch() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    await request.respond(200, "text/plain", "unexpected");
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(server.port);
+                  val request = await server.accept();
+                  await server.shutdown(0);
+                  try {
+                    handler.dispatch(rt borrow mut request);
+                    stdio.println("LATE-DISPATCH-ACCEPTED");
+                  } catch (err) {
+                    stdio.println("late-dispatch-rejected");
+                  }
+                  stdio.println(handler.created);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    // A transport stopped during an active request may send
+                    // 503 or close the socket. Neither permits guest delivery.
+                    try {
+                        HttpResponse<String> response = request(port, "GET", "/", "");
+                        assertNotEquals(200, response.statusCode());
+                    } catch (java.io.IOException expectedStop) {
+                        // The connection may close before a 503 is sent.
+                    }
+                });
+            assertFalse(output.contains("LATE-DISPATCH-ACCEPTED"), output);
+            assertTrue(output.stripTrailing().endsWith("late-dispatch-rejected\n0\n0"),
+                    output);
+        }
+    }
+
     @Test void pooledWorkerDeathReleasesRequestAndReplacementServesFollowingRequests() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
             String output = run("""
