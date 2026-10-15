@@ -120,7 +120,11 @@ final class ControlWakeRetryQueue {
             // admitted turn whose physical queue slot just became free.
             // Do not catch VirtualMachineError or ThreadDeath: process-fatal
             // conditions must retain their normal emergency semantics.
-            synchronized (this) { ++callbacksFailed; }
+            synchronized (this) {
+                // Like ActorRuntime's CONTROL loss counters, diagnostics
+                // must never wrap negative after sustained failures.
+                if (callbacksFailed != Long.MAX_VALUE) ++callbacksFailed;
+            }
         }
     }
 }
