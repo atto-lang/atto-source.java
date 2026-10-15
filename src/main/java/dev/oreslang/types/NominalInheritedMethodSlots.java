@@ -107,6 +107,14 @@ public final class NominalInheritedMethodSlots {
                     if (classes.putIfAbsent(qualified, cls) != null) {
                         throw new IllegalArgumentException("duplicate class identity " + qualified);
                     }
+                    // IdentityHashMap would otherwise overwrite provenance
+                    // when an external AST builder aliases one declaration
+                    // object under two distinct modules. Never let the last
+                    // registration silently claim ownership of both.
+                    if (qualifiedNames.containsKey(cls)) {
+                        throw new IllegalArgumentException(
+                                "class declaration reused under distinct module identities");
+                    }
                     qualifiedNames.put(cls, namespace + module.name() + "::" + cls.name());
                     moduleNames.put(cls, module.name());
                     if (!ambiguous.contains(cls.name())) {
