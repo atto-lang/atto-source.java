@@ -64,6 +64,9 @@ public final class ActorUnaryReplyBridge<R> {
             middleware.invoke(request, cancelledOrRevoked).whenComplete(
                     (outcome, failure) ->
                             settle(actor, generation, responseTo, ticket, outcome, failure));
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            ticket.cancel();
+            throw fatal;
         } catch (Throwable failure) {
             ticket.reject(actor, generation, responseTo, failure);
         }
@@ -212,7 +215,20 @@ public final class ActorUnaryReplyBridge<R> {
             ActorMiddlewareValuePipeline.Outcome<R> outcome,
             Throwable failure) {
         if (failure != null) {
-            ticket.reject(actor, generation, responseTo, failure);
+            Throwable reason = OresFuture.unwrap(failure);
+            if (reason instanceof VirtualMachineError fatal) {
+                ticket.cancel();
+                throw fatal;
+            }
+            if (reason instanceof ThreadDeath fatal) {
+                ticket.cancel();
+                throw fatal;
+            }
+            if (reason instanceof LinkageError fatal) {
+                ticket.cancel();
+                throw fatal;
+            }
+            ticket.reject(actor, generation, responseTo, reason);
         } else if (outcome instanceof ActorMiddlewareValuePipeline.Reply<?> reply) {
             @SuppressWarnings("unchecked")
             ActorMiddlewareValuePipeline.Reply<R> result =
