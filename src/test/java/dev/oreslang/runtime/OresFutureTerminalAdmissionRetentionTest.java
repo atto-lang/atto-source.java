@@ -8,6 +8,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -23,6 +24,64 @@ final class OresFutureTerminalAdmissionRetentionTest {
         Field field = OresFuture.class.getDeclaredField("cancelAdmission");
         field.setAccessible(true);
         return (BooleanSupplier) field.get(future);
+    }
+
+    private static Runnable cancellationHook(OresFuture<?> future) throws Exception {
+        Field field = OresFuture.class.getDeclaredField("cancelHook");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        AtomicReference<Runnable> hook =
+                (AtomicReference<Runnable>) field.get(future);
+        return hook.get();
+    }
+
+    private static Runnable drainedCallback(OresFuture<?> future) throws Exception {
+        Field field = OresFuture.class.getDeclaredField("onNotificationDrained");
+        field.setAccessible(true);
+        return (Runnable) field.get(future);
+    }
+
+    @Test
+    void terminalCallbacksRunOnceAndTheirCapturesAreReleased() throws Exception {
+        AtomicInteger successRevocation = new AtomicInteger();
+        AtomicInteger successDrain = new AtomicInteger();
+        OresFuture<Integer> success = new OresFuture<>(
+                () -> true, successRevocation::incrementAndGet,
+                successDrain::incrementAndGet);
+        assertNotNull(cancellationHook(success));
+        assertNotNull(drainedCallback(success));
+        assertTrue(success.completeFromRuntime(7));
+        assertNull(cancellationHook(success));
+        assertNull(drainedCallback(success));
+        assertEquals(0, successRevocation.get());
+        assertEquals(1, successDrain.get());
+        assertFalse(success.completeFromRuntime(8));
+        assertEquals(1, successDrain.get());
+
+        AtomicInteger failedRevocation = new AtomicInteger();
+        AtomicInteger failedDrain = new AtomicInteger();
+        OresFuture<Integer> failed = new OresFuture<>(
+                () -> true, failedRevocation::incrementAndGet,
+                failedDrain::incrementAndGet);
+        assertTrue(failed.failFromRuntime(new IllegalStateException("failed")));
+        assertNull(cancellationHook(failed));
+        assertNull(drainedCallback(failed));
+        assertEquals(0, failedRevocation.get());
+        assertEquals(1, failedDrain.get());
+
+        AtomicInteger cancelRevocation = new AtomicInteger();
+        AtomicInteger cancelDrain = new AtomicInteger();
+        OresFuture<Integer> canceled = new OresFuture<>(
+                () -> true, cancelRevocation::incrementAndGet,
+                cancelDrain::incrementAndGet);
+        assertTrue(canceled.cancel(false));
+        assertNull(cancellationHook(canceled));
+        assertNull(drainedCallback(canceled));
+        assertEquals(1, cancelRevocation.get());
+        assertEquals(1, cancelDrain.get());
+        assertFalse(canceled.cancel(false));
+        assertEquals(1, cancelRevocation.get());
+        assertEquals(1, cancelDrain.get());
     }
 
     @Test
@@ -122,6 +181,10 @@ final class OresFutureTerminalAdmissionRetentionTest {
             assertTrue(future.isDone());
             assertNull(admission(future),
                     "terminal CAS must drop the admission closure before callbacks");
+            assertNull(cancellationHook(future),
+                    "successful CAS must release cancel hook before listener drain");
+            assertNotNull(drainedCallback(future),
+                    "notification drain release must wait until subscribers return");
             assertFalse(future.cancel(false));
         } finally {
             releaseCallback.countDown();
@@ -129,6 +192,8 @@ final class OresFutureTerminalAdmissionRetentionTest {
         }
         assertFalse(settler.isAlive(), "subscriber drain stalled");
         assertNull(workerError.get(), () -> "settlement failure: " + workerError.get());
+        assertNull(drainedCallback(future),
+                "completed notification drain must release callback ownership");
         assertEquals(101, future.get(5, TimeUnit.SECONDS));
     }
 }
