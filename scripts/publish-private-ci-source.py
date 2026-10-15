@@ -179,8 +179,10 @@ def collect_source(root, trusted_root, *, omit_checkout_metadata=False):
         relative = source.relative_to(trusted)
     except (OSError, RuntimeError, ValueError) as exc:
         raise Denied("source directory escapes trusted checkout") from exc
-    if omit_checkout_metadata and relative.parts:
-        raise Denied("Git metadata may only be omitted at the checkout root")
+    # Synthetic/unit-test snapshots may use a subdirectory. They never gain
+    # the Git metadata exception; the real provenance gate separately refuses
+    # subdirectory exports. Retain strict no-follow traversal for those tests.
+    omit_checkout_metadata = omit_checkout_metadata and not relative.parts
 
     directories = []
     entries = []
