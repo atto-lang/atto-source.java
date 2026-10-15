@@ -2,6 +2,64 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-15 — source-local exact-tree CI recovery gate
+
+A direct source-repository runner can execute all targeted actor-turn
+validation without uploading the private Git tree to another organization.
+The script is `scripts/test-native-actor-exact-tree-ci.sh`. It requires:
+
+- An independently reviewed full **40-hex source COMMIT SHA** supplied as
+  `ORES_CI_EXPECTED_COMMIT_SHA`, and separately reviewed full **40-hex
+  source Git TREE SHA** as `ORES_CI_EXPECTED_TREE_SHA`. Do **not**
+  derive these pins from the unchecked working tree in the test command.
+- A clean fresh private checkout on an isolated Linux x64 runner with
+  JDK21+, GCC, Clang, Maven and native sanitizer runtime support.
+  The runner must be attached directly to the authorized private source
+  repository, or separately authorized by maintainers/security. This
+  script does **not** approve or implement a cross-organization mirror.
+- Independent runner/repository identity attestation and protected
+  review of the pinned source before execution. Git pins and a shell
+  script alone are not an identity or permission attestation.
+
+After proving HEAD and its Git tree match the supplied immutable pins,
+the gate **denies any modified or untracked checkout inputs** across
+the whole repository. It runs the offline adversarial preflight tests,
+cleans stale Maven/native artifacts, then executes:
+
+1. The original C actor-turn and scheduler-boundary suites at O0/O2
+   for GCC, Clang, ASan/UBSan and GCC ThreadSanitizer (all mandatory).
+2. The strict JDK21 `NativeActorTurnKernelStandaloneSmoke` and
+   Maven-free **real** `OresScheduler` JNI smoke.
+3. The opt-in real `NativeActorTurnSchedulerJniTest` Maven/JUnit suite
+   against the same shared JNI library built by the preceding step.
+
+The success marker is
+`ORES_NATIVE_ACTOR_EXACT_TREE_CI_PASS commit=... tree=...`.
+A failed shell command, sanitizer issue, missing dependency or failed
+JUnit test prevents that marker. The repo's native-turn workflow also
+runs `scripts/test-native-actor-ci-preflight.sh` as a separate first
+job step once a GitHub Actions runner actually starts.
+
+**Executed evidence (local fixture, not guest runtime):** both source
+scripts passed POSIX `sh -n`, and the offline preflight suite
+produced `NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=8` after
+successfully rejecting missing pins, malformed SHA, mismatched commit,
+mismatched tree, changed tracked source, injected untracked C source,
+untracked non-code project inputs and missing Maven. Local inspected
+script bytes matched GitHub's exact blob identities
+`ca17b338d228aa772dc7f18db9d54bf6b85b33b7` and
+`c52b071c7380af9ab3e3eea57e3b9c4f16d4e385`.
+These tests do **not** prove native C, JNI, Maven, Truffle or LLVM passes.
+
+**Runner blocker:** a manual rerun of the source-organization JNI job
+was accepted but concluded as another zero-step failure on attempt 2.
+The source private-CI allowlist on protected main still contains no
+approved destination. No cross-organization private-source transfer
+occurred. Keep PR #917 draft and native enforcement disabled pending
+real exact-head executable evidence.
+
+
+
 ## 2026-10-15 audit — physical-park test barriers and reentrant close
 
 **Test fidelity.** The JDK21 dependency-light real-scheduler JNI smoke
