@@ -140,6 +140,9 @@ public final class VerifiedSccAdmission {
                     String local = ImportRules.localName(use, name);
                     Ast.FunctionDecl formerlyResolved = checkedAgainst.get(local);
                     Ast.FunctionDecl verifiedProvider = uniquelyExportedFunction(provider, name);
+                    // Expansion must not move a peer outside the primitive
+                    // effect-free subset after an importer was typechecked.
+                    LinkedFunctionContract.requirePrimitiveContract(verifiedProvider);
                     if (!sameLinkedFunctionSignature(formerlyResolved, verifiedProvider)) {
                         throw new IllegalArgumentException(
                                 "provider exported signature changed during SCC admission: " + name);
@@ -195,6 +198,7 @@ public final class VerifiedSccAdmission {
                 && before.nonLexical() == after.nonLexical()
                 && before.trapped() == after.trapped()
                 && before.genericParameters().equals(after.genericParameters())
+                && before.annotations().equals(after.annotations())
                 && before.parameters().equals(after.parameters())
                 && Objects.equals(before.returnType(), after.returnType());
     }
