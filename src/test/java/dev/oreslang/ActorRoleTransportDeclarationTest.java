@@ -64,7 +64,7 @@ final class ActorRoleTransportDeclarationTest {
     void networkRolesNormalizeIndependentlyOfReplyRole() {
         assertEquals(Ast.ActorTransport.HTTP,
                 actor("define http actor H as end").actorTransport());
-        assertEquals(Ast.ActorReplyRole.INFER,
+        assertEquals(Ast.ActorReplyRole.STREAM,
                 actor("define http actor H as end").actorReplyRole());
         assertEquals(Ast.ActorTransport.TCP,
                 actor("define tcp actor T as end").actorTransport());
