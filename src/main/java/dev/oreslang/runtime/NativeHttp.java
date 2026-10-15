@@ -320,12 +320,20 @@ public final class NativeHttp implements AutoCloseable {
             stopAccepting();
             try {
                 io.execute(() -> {
-                    try { transport.stop((int) (((long) graceMillis + 999) / 1000)); }
-                    finally {
+                    RuntimeException stopFailure = null;
+                    try {
+                        transport.stop((int) (((long) graceMillis + 999) / 1000));
+                    } catch (RuntimeException failure) {
+                        stopFailure = failure;
+                    } finally {
                         synchronized (this) { transportStopped = true; }
                         for (State state : active) state.abort(503);
                         servers.remove(this);
-                        completeDrain();
+                        // A transport exception must never turn into a
+                        // successful shutdown Future merely because all HTTP
+                        // states were subsequently force-aborted.
+                        if (stopFailure != null) drained.failFromRuntime(stopFailure);
+                        else completeDrain();
                     }
                 });
             } catch (RejectedExecutionException unavailable) {
