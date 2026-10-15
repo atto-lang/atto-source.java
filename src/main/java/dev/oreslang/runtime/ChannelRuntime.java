@@ -1017,13 +1017,31 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // Peer preference must make the same stable observation of repeated
+        // Future arms as primary arbitration. A producer can settle outside
+        // COORDINATOR while we probe aliases of that producer: without an
+        // identity snapshot, an earlier alias can see PENDING while a later
+        // alias sees READY in the very same PRIORITY/FAIR preference pass.
+        java.util.IdentityHashMap<OresFuture<?>, Boolean> observedFutureReadiness =
+                new java.util.IdentityHashMap<>();
+
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
                     findRegistration(selection, index);
-            if (registration != null && basicReadyLocked(registration)) {
+            if (registration == null) continue;
+
+            if (selectCase instanceof FutureCase<?> futureCase) {
+                OresFuture<?> producer = futureCase.future();
+                Boolean ready = observedFutureReadiness.get(producer);
+                if (ready == null) {
+                    ready = producer.runtimeSelectReadyStateOrNull() != null;
+                    observedFutureReadiness.put(producer, ready);
+                }
+                if (ready) return registration;
+            } else if (basicReadyLocked(registration)) {
                 return registration;
             }
         }
