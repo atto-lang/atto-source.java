@@ -297,4 +297,54 @@ final class NominalInheritedMethodSlotsTest {
                         program, "Child", Domain.INSTANCE, "pick", 1,
                         Map.of(0, enumIds.get("Color"), 1, enumIds.get("Mode"))));
     }
+
+    @Test
+    void interfaceBearingOwnersAreNotMisreportedAsFullyProved() {
+        String source = """
+                pub interface Lookup {
+                    fnc pick(Color value) => int;
+                }
+                define class Base implements Lookup as
+                    pub pick(Color x): int { return 1; }
+                end
+                define class Child extends Base as
+                    pub pick(Mode x): int { return 2; }
+                end
+                """;
+        IllegalArgumentException rejected = rejectProof(
+                source, "Child", Domain.INSTANCE, "pick", 1);
+        assertTrue(rejected.getMessage().contains("interface contracts"),
+                rejected::getMessage);
+    }
+
+    @Test
+    void inheritedFieldAndMethodNameConflictFailsBeforeSlotPublication() {
+        String source = """
+                define class Base as
+                    pub val pick: int = 10;
+                end
+                define class Child extends Base as
+                    pub pick(Color x): int { return 20; }
+                end
+                """;
+        IllegalArgumentException rejected = rejectProof(
+                source, "Child", Domain.INSTANCE, "pick", 1);
+        assertTrue(rejected.getMessage().contains("field and nominal method"),
+                rejected::getMessage);
+    }
+
+    @Test
+    void concreteClassCannotClaimUnimplementedAbstractSlot() {
+        String source = """
+                define abstract class Base as
+                    pub abstract pick(Color x): int;
+                end
+                define class Child extends Base as
+                end
+                """;
+        IllegalArgumentException rejected = rejectProof(
+                source, "Child", Domain.INSTANCE, "pick", 1);
+        assertTrue(rejected.getMessage().contains("unresolved abstract"),
+                rejected::getMessage);
+    }
 }
