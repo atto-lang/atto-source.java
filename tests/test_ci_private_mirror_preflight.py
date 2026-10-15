@@ -106,7 +106,7 @@ class MirrorGateTest(unittest.TestCase):
 
     def test_malformed_tokens_fail_before_an_http_request(self):
         malformed = (None, "", " ", " has-space", "trailing-space ",
-                     "line\\nsecond", "carriage\\rreturn", "tab\\tvalue",
+                     "line\nsecond", "carriage\rreturn", "tab\tvalue",
                      "nonascii-雪", "bad:colon", "A" * (admission.MAX_TOKEN_LENGTH + 1),
                      123, False)
         for token in malformed:
@@ -126,7 +126,7 @@ class MirrorGateTest(unittest.TestCase):
                 def fetch(name, token):
                     calls.append(name)
                     return metadata(name, 21 if name == "private/src" else 34)
-                source_token = "a" if bad_side != "source" else "bad\\nheader"
+                source_token = "a" if bad_side != "source" else "bad\nheader"
                 destination_token = "b" if bad_side != "destination" else None
                 with self.assertRaisesRegex(admission.MirrorPreflightError, "authenticated"):
                     admission.verify("private/src", "private/dst", 21, 34,
