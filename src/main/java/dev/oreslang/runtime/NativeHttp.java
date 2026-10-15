@@ -385,13 +385,11 @@ public final class NativeHttp implements AutoCloseable {
                         // exchange has been visited by abort cleanup. Otherwise
                         // an asynchronous State.release() can finish a successful
                         // shutdown while a later abort still reports failure.
-                        try {
-                            abortAllActiveOnShutdown();
-                        } finally {
+                        finishShutdownCleanup(this::abortAllActiveOnShutdown, () -> {
                             synchronized (this) { transportStopped = true; }
                             servers.remove(this);
                             completeDrain();
-                        }
+                        });
                     }
                 });
             } catch (RejectedExecutionException unavailable) {
@@ -493,9 +491,7 @@ public final class NativeHttp implements AutoCloseable {
             try {
                 transport.stop(0);
             } finally {
-                try {
-                    abortAllActiveOnShutdown();
-                } finally {
+                finishShutdownCleanup(this::abortAllActiveOnShutdown, () -> {
                     synchronized (this) { transportStopped = true; }
                     // The listener must release its bidirectional references
                     // even when stop or an abort fails exceptionally.
@@ -505,7 +501,7 @@ public final class NativeHttp implements AutoCloseable {
                     pooledWorkers.clear();
                     servers.remove(this);
                     completeDrain();
-                }
+                });
             }
         }
     }
@@ -793,6 +789,18 @@ public final class NativeHttp implements AutoCloseable {
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
             return result;
         }
+    }
+
+    /**
+     * Do not publish a stopped transport (and allow a successful drain) until
+     * every accepted exchange has been visited by cleanup. The publication
+     * action still runs on failed cleanup to unblock exceptional teardown.
+     */
+    static void finishShutdownCleanup(Runnable cleanup, Runnable publishStopped) {
+        Objects.requireNonNull(cleanup, "cleanup");
+        Objects.requireNonNull(publishStopped, "publishStopped");
+        try { cleanup.run(); }
+        finally { publishStopped.run(); }
     }
 
     /**
