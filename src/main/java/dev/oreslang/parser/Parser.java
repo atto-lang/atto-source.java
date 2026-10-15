@@ -1236,11 +1236,12 @@ public final class Parser {
                 if (abstractSeen) throw error(previous(), "duplicate 'abstract' modifier");
                 abstractSeen = true;
                 isAbstract = true;
-            } else if (isContextualIdentifier("sealed") && (checkNext(CLASS) || checkNext(INTERFACE) || checkNext(TRAIT))) {
+            } else if (isContextualIdentifier("sealed") && (checkNext(CLASS) || checkNext(INTERFACE)
+                    || checkNext(TRAIT) || checkNextLexeme("final"))) {
                 if (isSealed) throw error(previous(), "duplicate 'sealed' modifier");
                 advance();
                 isSealed = true;
-            } else if (isContextualIdentifier("final") && checkNext(CLASS)) {
+            } else if (isContextualIdentifier("final") && (checkNext(CLASS) || checkNextLexeme("sealed"))) {
                 if (isFinal) throw error(previous(), "duplicate 'final' modifier");
                 advance();
                 isFinal = true;
