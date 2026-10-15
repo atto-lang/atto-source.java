@@ -1606,6 +1606,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return false;
             }
+            if (expr instanceof Ast.PropagateExpr propagated) {
+                return expressionContainsPotentialSuspension(propagated.expression(), seen);
+            }
             if (expr instanceof Ast.TrapExpr trapped) {
                 return expressionContainsPotentialSuspension(trapped.expression(), seen);
             }
@@ -3197,6 +3200,10 @@ public final class OresEvalRootNode extends RootNode {
                                 }
                             });
                     return;
+                }
+
+                if (expr instanceof Ast.PropagateExpr) {
+                    throw new IllegalStateException("postfix '?' is not admitted in a suspended SourceTask or async continuation");
                 }
 
                 if (expr instanceof Ast.TrapExpr trapped) {
@@ -4855,6 +4862,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
+            if (failure instanceof ReturnSignal || failure instanceof TailCallSignal
+                    || failure instanceof BreakSignal || failure instanceof ContinueSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
@@ -4874,6 +4883,8 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
+            if (failure instanceof ReturnSignal || failure instanceof TailCallSignal
+                    || failure instanceof BreakSignal || failure instanceof ContinueSignal) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
@@ -6244,6 +6255,21 @@ public final class OresEvalRootNode extends RootNode {
                 return truth(eval(conditional.condition(), env))
                         ? eval(conditional.whenTrue(), env)
                         : eval(conditional.whenFalse(), env);
+            }
+            if (expr instanceof Ast.PropagateExpr propagated) {
+                // Static admission allows synchronous owned Option/Result locals only.
+                // ReturnSignal travels through LIFO defer and finally; a returned
+                // Err/None is never a catchable guest throw or a supervisor panic.
+                Object carrier = eval(propagated.expression(), env);
+                if (carrier instanceof OptionValue option) {
+                    if (!option.present()) throw new ReturnSignal(option);
+                    return option.value();
+                }
+                if (carrier instanceof ResultValue result) {
+                    if (!result.ok()) throw new ReturnSignal(result);
+                    return result.value();
+                }
+                throw new IllegalStateException("postfix '?' expected typed Option/Result at runtime");
             }
             if (expr instanceof Ast.TrapExpr trapped) {
                 try {
