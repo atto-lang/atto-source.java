@@ -12,6 +12,7 @@ on:
       - "src/main/java/dev/oreslang/runtime/OresFuture.java"
       - "src/test/java/dev/oreslang/runtime/OresSchedulerTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorForceSourceCleanupRevocationTest.java"
+      - "src/test/java/dev/oreslang/runtime/ActorStructuredCancellationTest.java"
       - "src/test/java/dev/oreslang/ActorContinuationTeardownTest.java"
       - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
       - "src/test/java/dev/oreslang/SourceTerminalFlowPolicyTest.java"
@@ -56,7 +57,7 @@ jobs:
       - name: Execute guest-source continuation and state-handoff regressions
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorStructuredCancellationTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
             test
       - name: Execute full Maven regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
