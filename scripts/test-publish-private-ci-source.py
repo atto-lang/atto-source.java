@@ -1054,7 +1054,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_bulk_plan_is_bounded_and_binary_never_inlined(self):
         files = [(f"src/file-{i:03}.ores", b"x" * 8192, "100644")
                  for i in range(70)]
-        files[35] = ("src/file-035.ores", b"\\xff\\x00", "100644")
+        files[35] = ("src/file-035.ores", b"\xff\x00", "100644")
         batches = pub.prepare_source_tree_batches(files)
         self.assertGreater(len(batches), 1)
         self.assertEqual(sum(map(len, batches)), 70)
@@ -1069,7 +1069,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             for batch in batches if len(batch) > 1))
 
     def test_many_file_snapshot_batches_reauthorize_and_match_pinned_tree(self):
-        for i in range(50):
+        for i in range(140):
             (self.source / f"many-{i:03}.ores").write_text("pub fnc f(): int { return 42; }")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         self.set_reviewed_snapshot()
@@ -1092,7 +1092,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=bulk_api):
             sha, count = pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                      self.root, self.expected_tree, D)
-        self.assertEqual((sha, count), (C, 51))
+        self.assertEqual((sha, count), (C, 141))
         self.assertEqual(len(partial), len(planned))
         self.assertNotIn("base_tree", partial[0])
         self.assertEqual(partial[1]["base_tree"], f"{1:040x}")
