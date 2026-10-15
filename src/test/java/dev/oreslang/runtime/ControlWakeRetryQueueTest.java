@@ -325,6 +325,36 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0L, queue.callbacksFailed());
     }
 
+    @Test void closingInsideRetryRevokesAlreadyDequeuedDeferredWake() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        AtomicInteger later = new AtomicInteger();
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            queue.slotReleased(); // dequeues second callback but defers its invocation
+            queue.close();
+        }, epoch));
+        assertTrue(queue.register(later::incrementAndGet, epoch));
+        queue.slotReleased();
+        assertEquals(0, later.get(), "close must revoke deferred CONTROL wakeups");
+        assertEquals(0, queue.pending());
+        assertFalse(queue.register(later::incrementAndGet, queue.epoch()));
+    }
+
+    @Test void cancellingInsideRetryRevokesSameCarrierDeferredWake() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        AtomicInteger later = new AtomicInteger();
+        Runnable callback = later::incrementAndGet;
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            queue.slotReleased();
+            queue.cancel(callback);
+        }, epoch));
+        assertTrue(queue.register(callback, epoch));
+        queue.slotReleased();
+        assertEquals(0, later.get(), "cancel must revoke same-carrier deferred retry");
+        assertEquals(0, queue.pending());
+    }
+
     @Test void nonfatalReentrantFailureCannotLoseSubsequentWake() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         AtomicInteger delivered = new AtomicInteger();
