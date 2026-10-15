@@ -44,12 +44,45 @@ public final class NominalEnumOverloads {
                 }
                 // Directly constructed keys must agree with signature() aliases.
                 if (id.equals("String")) id = "string";
-            } else if (!id.contains("::") || id.startsWith("::")
-                    || id.endsWith("::") || id.contains("::::")) {
-                throw new IllegalArgumentException(
-                        "nominal enum overload ID must be declaration-qualified: " + id);
+            } else {
+                // Match the native ABI selector's bounded, ASCII-only,
+                // declaration-qualified enum identity contract.
+                if (id.length() > 1024 || id.contains("::::")) {
+                    throw new IllegalArgumentException("invalid nominal enum overload ID: " + id);
+                }
+                int boundary = id.lastIndexOf("::");
+                if (boundary <= 0 || boundary + 2 >= id.length()) {
+                    throw new IllegalArgumentException(
+                            "nominal enum overload ID must be declaration-qualified: " + id);
+                }
+                for (int i = 0; i < id.length(); i++) {
+                    char ch = id.charAt(i);
+                    if (!asciiLetter(ch) && !asciiDigit(ch)
+                            && ch != '_' && ch != '.' && ch != '/'
+                            && ch != '-' && ch != ':') {
+                        throw new IllegalArgumentException("invalid nominal enum identity character");
+                    }
+                }
+                if (!asciiLetter(id.charAt(boundary + 2))
+                        && id.charAt(boundary + 2) != '_') {
+                    throw new IllegalArgumentException("invalid enum declaration identifier");
+                }
+                for (int i = boundary + 3; i < id.length(); i++) {
+                    char ch = id.charAt(i);
+                    if (!asciiLetter(ch) && !asciiDigit(ch) && ch != '_') {
+                        throw new IllegalArgumentException("invalid enum declaration identifier");
+                    }
+                }
             }
         }
+    }
+
+    private static boolean asciiLetter(char value) {
+        return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z';
+    }
+
+    private static boolean asciiDigit(char value) {
+        return value >= '0' && value <= '9';
     }
 
     /** Not a value-dependent selection key: all enum IDs are compiler known. */
