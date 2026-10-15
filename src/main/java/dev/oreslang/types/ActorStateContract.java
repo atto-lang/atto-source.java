@@ -259,7 +259,9 @@ public final class ActorStateContract {
         if (activeAccess != null
                 && (node instanceof Ast.AwaitExpr || node instanceof Ast.SelectStmt
                     || node instanceof Ast.DynamicSelectExpr || node instanceof Ast.ChannelOpExpr
-                    || node instanceof Ast.YieldStmt
+                    || node instanceof Ast.YieldStmt || node instanceof Ast.DeferStmt
+                    || node instanceof Ast.ForStmt || node instanceof Ast.ForOfStmt
+                    || node instanceof Ast.ForOfDestructureStmt || node instanceof Ast.LoopStmt
                     || (node instanceof Ast.RuntimeCallExpr op
                         && op.operation().equals("cooperate")))) {
             throw new IllegalArgumentException(
