@@ -167,6 +167,47 @@ public final class OwnershipChecker {
             }
         }
 
+        // An initializer is executable code, not merely a type expression.
+        // Historically the checker visited constructors/methods but skipped
+        // class field initializer expressions entirely. Check each initializer
+        // before constructor execution so rt take, borrow and storage transfer
+        // rules cannot be bypassed by moving an operation into a field.
+        //
+        // Actor state uses a distinct initialization/capability protocol and
+        // is not included in this ordinary-class migration.
+        if (klass.actorKind() == Ast.ActorKind.NONE) {
+            Scope initializerScope = new Scope(null);
+            Ast.ConstructorDecl declaringConstructor = klass.constructor();
+            if (declaringConstructor != null) {
+                for (Ast.Param param : declaringConstructor.parameters()) {
+                    Ast.TypeRef type = param.type();
+                    String name = type.name();
+                    if (!type.isBorrow() && type.arguments().isEmpty()
+                            && !param.structural()
+                            && (name.equals("int") || name.equals("bool")
+                                    || name.equals("float") || name.equals("string"))) {
+                        initializerScope.define(param.name(), stateForParam(param));
+                    }
+                }
+            }
+            try {
+                for (Ast.FieldDecl field : klass.fields()) {
+                    if (field.initializer() == null) continue;
+                    ValueInfo value = checkExpr(field.initializer(), initializerScope, true);
+                    if (isBorrowValue(value)) {
+                        throw error("class field '" + klass.name() + "." + field.name()
+                                + "' cannot store a borrowed initializer result");
+                    }
+                    if (containsMutexGuardType(value.type)) {
+                        throw error("class field '" + klass.name() + "." + field.name()
+                                + "' cannot store a MutexGuard");
+                    }
+                }
+            } finally {
+                initializerScope.close();
+            }
+        }
+
         if (klass.constructor() != null) {
             Ast.ConstructorDecl constructor = klass.constructor();
             Scope scope = new Scope(null);
@@ -825,6 +866,34 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkExpr(Ast.Expr expr, Scope scope, boolean consuming) {
+        if (expr instanceof Ast.MatchExpr match) {
+            ValueInfo subject = checkExpr(match.subject(), scope, false);
+            VarState source = match.subject() instanceof Ast.NameExpr name
+                    ? scope.lookup(name.name()) : null;
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            ValueInfo result = null;
+            for (Ast.MatchValueArm arm : match.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                try {
+                    definePatternAliases(arm.pattern(), subject.type, source, armScope);
+                    if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                    ValueInfo value = checkExpr(arm.value(), armScope, consuming);
+                    // Do not let branch-scoped loans become expression values:
+                    // a returned borrow could outlive its pattern bindings.
+                    if (isBorrowValue(value) || value.borrowSource != null) {
+                        throw error("value match cannot return a borrowed branch-local value");
+                    }
+                    if (result == null) result = value;
+                } finally {
+                    armScope.close();
+                }
+                exits.add(stateSnapshot(scope));
+            }
+            mergeBranchState(base, exits);
+            return result;
+        }
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
@@ -839,6 +908,9 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && initializingClass != null && name.name().equals("self")) {
+                throw error("partially initialized constructor self cannot escape");
+            }
             if (consuming && isActorConfinedBorrow(state)) {
                 throw error("actor self is a non-escapable mailbox capability; access its fields/methods inside the actor turn");
             }
@@ -895,6 +967,11 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                if (initializingClass != null
+                        && unary.operand() instanceof Ast.NameExpr selfName
+                        && selfName.name().equals("self")) {
+                    throw error("constructor cannot borrow partially initialized self");
+                }
                 boolean mutable = unary.operator().equals("&mut");
                 BorrowPlace place = borrowPlace(unary.operand(), scope);
                 if (mutable && !(unary.operand() instanceof Ast.NameExpr)) {
@@ -933,6 +1010,14 @@ public final class OwnershipChecker {
                 throw error("rt " + runtime.operation() + " expects exactly one argument");
             }
             Ast.Expr argument = runtime.arguments().getFirst();
+            if (initializingClass != null
+                    && argument instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self")) {
+                if (runtime.operation().equals("borrow")) {
+                    throw error("constructor cannot borrow partially initialized self");
+                }
+                throw error("constructor cannot apply runtime operation to partially initialized self");
+            }
             if (runtime.operation().equals("fail")) {
                 checkExpr(argument, scope, false);
                 return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
@@ -1290,6 +1375,39 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        // A constructor owns an unpublished, incompletely initialized object.
+        // Calling any instance method on self can transitively read absent
+        // fields, publish the receiver or invoke suspension. No transitive
+        // constructor-safe method effect summaries exist yet, so fail closed.
+        if (initializingClass != null) {
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals("self")) {
+                throw error("constructor cannot invoke methods on partially initialized self");
+            }
+            for (Ast.Expr argument : call.arguments()) {
+                // Some intrinsic and first-class callable paths inspect their
+                // arguments without consuming them. That is appropriate for
+                // fully initialized borrows, but not for the constructor's
+                // unpublishable self capability.
+                if (argument instanceof Ast.NameExpr name && name.name().equals("self")) {
+                    throw error("constructor cannot pass partially initialized self to a call");
+                }
+                if (argument instanceof Ast.UnaryExpr unary
+                        && (unary.operator().equals("&") || unary.operator().equals("&mut"))
+                        && unary.operand() instanceof Ast.NameExpr name
+                        && name.name().equals("self")) {
+                    throw error("constructor cannot borrow partially initialized self for a call");
+                }
+                if (argument instanceof Ast.RuntimeCallExpr runtime
+                        && runtime.operation().equals("borrow")
+                        && runtime.arguments().size() == 1
+                        && runtime.arguments().getFirst() instanceof Ast.NameExpr name
+                        && name.name().equals("self")) {
+                    throw error("constructor cannot borrow partially initialized self for a call");
+                }
+            }
+        }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 checkExpr(argument, scope, false);
@@ -1352,7 +1470,7 @@ public final class OwnershipChecker {
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
@@ -1368,7 +1486,7 @@ public final class OwnershipChecker {
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
@@ -2529,7 +2647,13 @@ public final class OwnershipChecker {
             return;
         }
         if (pattern instanceof Ast.TypePattern typed) {
-            if (typed.binding() != null) defineRefinementAlias(typed.binding(), typed.type(), source, destination);
+            if (typed.binding() != null) {
+                // A negative predicate rules out a type but must never grant
+                // the capabilities of the excluded positive type.
+                Ast.TypeRef bindingType = typed.type().isComplement()
+                        ? subjectType : typed.type();
+                defineRefinementAlias(typed.binding(), bindingType, source, destination);
+            }
             return;
         }
         if (pattern instanceof Ast.StructuralPattern structural) {
@@ -2922,19 +3046,38 @@ public final class OwnershipChecker {
             Ast.CallExpr call,
             Scope scope,
             Map<String, Ast.TypeRef> initialBindings) {
+        return specializeCall(allGenericNames, explicitGenericNames, parameters, result,
+                call, scope, initialBindings, List.of());
+    }
+
+    private CallSignature specializeCall(
+            List<String> allGenericNames,
+            List<String> explicitGenericNames,
+            List<Ast.Param> parameters,
+            Ast.TypeRef result,
+            Ast.CallExpr call,
+            Scope scope,
+            Map<String, Ast.TypeRef> initialBindings,
+            List<Ast.GenericParameter> genericSpecs) {
         Map<String, Ast.TypeRef> bindings = new HashMap<>(initialBindings);
         Set<String> fixed = new HashSet<>(initialBindings.keySet());
-        if (!call.typeArguments().isEmpty() && call.typeArguments().size() == explicitGenericNames.size()) {
-            for (int i = 0; i < explicitGenericNames.size(); i++) {
-                bindings.put(explicitGenericNames.get(i), call.typeArguments().get(i));
-                fixed.add(explicitGenericNames.get(i));
-            }
-        }
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(explicitGenericNames, call.typeArguments(), "generic call");
+        bindings.putAll(bound.explicitTypes());
+        fixed.addAll(bound.explicitTypes().keySet());
         List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
         }
+        GenericCallArguments.applyDefaults(
+                explicitGenericNames, genericSpecs, bindings, bound.inferenceHoles(),
+                ref -> ref,
+                this::substituteType,
+                ref -> GenericCallArguments.containsUnresolvedAstGeneric(
+                        ref, Set.copyOf(allGenericNames)),
+                "generic call");
+        GenericCallArguments.requireBound(explicitGenericNames, bindings, "generic call");
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),

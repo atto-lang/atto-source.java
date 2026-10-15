@@ -238,7 +238,7 @@ both with a hint to use `do select` or `do nb select`. The existing
 `nb cb writech ... || -> { ... }` is different: it actually supplies a
 callback function and remains supported.
 
-Canonical explicit no-result static syntax:
+Canonical blocking procedural syntax:
 
 ```ores
 do select {

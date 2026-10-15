@@ -63,7 +63,7 @@ final class SelectSourceFlowSafetyTest {
     @Test
     void proceduralReturnPreservesTryFinallyBeforeCallableExit() throws Exception {
         String source = """
-                pub fnc main(): void {
+                pub fnc compute(): int {
                   do select {
                     default: {
                       try {

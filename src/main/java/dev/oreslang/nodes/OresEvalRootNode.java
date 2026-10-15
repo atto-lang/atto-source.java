@@ -2761,6 +2761,16 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt select,
                 Env env,
                 SourceFlowCont continuation) {
+            // Reject detached static selection before evaluating case operands
+            // or registering a winning read/write. Cancelling a Future after
+            // selectAsync() may be too late to undo an immediate commit.
+            if (select.mode() == Ast.WaitMode.NONBLOCKING
+                    && !ActorRuntime.inActorExecution()) {
+                continuation.accept(task, SourceFlow.throwing(
+                        new IllegalStateException(
+                                "nonblocking static select requires actor execution")));
+                return;
+            }
             // A blocking/nonblocking select arms callback or Future state.
             // Validate before selecting: late rejection could consume a
             // message, publish a send, or leave an armed callback behind.
@@ -2796,15 +2806,7 @@ public final class OresEvalRootNode extends RootNode {
             OresFuture<ChannelRuntime.SelectResult> future =
                     set.selectAsync(policy);
             if (select.mode() == Ast.WaitMode.NONBLOCKING) {
-                if (!ActorRuntime.inActorExecution()) {
-                    future.cancel(false);
-                    continuation.accept(
-                            task,
-                            SourceFlow.throwing(
-                                    new IllegalStateException(
-                                            "nonblocking static select requires actor execution")));
-                    return;
-                }
+                // Actor admission was checked before buildStaticSelectSet.
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 context.actors().enqueueOnCompletion(
@@ -4793,7 +4795,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 List<?> captured = fn.async()
-                        ? detachAsyncArguments(normalized)
+                        ? detachAsyncArguments(normalized, fn.parameters())
                         : List.copyOf(normalized);
                 GeneratorRuntime.Producer<Object> producer = emitter -> {
                     GeneratorRuntime.Emitter<Object> boundaryEmitter = fn.async()
@@ -4815,7 +4817,7 @@ public final class OresEvalRootNode extends RootNode {
                             startSourceFunctionTask(
                                     fn,
                                     fn.async()
-                                            ? detachAsyncArguments(normalized)
+                                            ? detachAsyncArguments(normalized, fn.parameters())
                                             : normalized);
 
                     if (fn.async()) {
@@ -4894,10 +4896,37 @@ public final class OresEvalRootNode extends RootNode {
             return objectArguments(args);
         }
 
-        private List<?> detachAsyncArguments(List<?> args) {
+        private List<?> detachAsyncArguments(
+                List<?> args,
+                List<Ast.Param> parameters) {
+            if (args.size() != parameters.size()) {
+                throw new IllegalArgumentException(
+                        "async task argument count differs from its formal parameters");
+            }
             ArrayList<Object> detached = new ArrayList<>(args.size());
-            for (Object arg : args) {
-                detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
+            for (int i = 0; i < args.size(); i++) {
+                Object arg = args.get(i);
+                if (arg instanceof ChannelRuntime.Channel<?> channel) {
+                    // Channel<T> is an Ores-owned synchronized, copyable handle
+                    // within an execution domain. Preserve its coordinator
+                    // identity across local async source task arguments, but
+                    // require the *formal* to explicitly declare Channel<T>.
+                    // This runtime gate also protects host-entered callables
+                    // that might bypass source expression type checking.
+                    Ast.TypeRef formal = parameters.get(i).type();
+                    if (formal == null || formal.isBorrow()
+                            || !"Channel".equals(formal.name())
+                            || formal.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "async task channel argument " + (i + 1)
+                                        + " requires an explicit Channel<T> parameter");
+                    }
+                    // Actor/mailbox boundary capabilities remain forbidden.
+                    // Nested channel capabilities still fail detachAsyncValue.
+                    detached.add(channel);
+                } else {
+                    detached.add(detachAsyncValue(arg, new IdentityHashMap<>()));
+                }
             }
             return List.copyOf(detached);
         }
@@ -5042,7 +5071,7 @@ public final class OresEvalRootNode extends RootNode {
                         startSourceFunctionTask(
                                 fn,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
@@ -5563,6 +5592,14 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.SelectStmt selected,
                 Env env,
                 boolean tailBarrier) {
+            // Fail before evaluating channel/payload expressions or committing
+            // a ready operation. Future cancellation is not rollback.
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && !ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "static nb select branches require an actor execution context; "
+                                + "use 'nb select from cases' when you only need a Future");
+            }
             ChannelRuntime.SelectSet set = buildStaticSelectSet(selected, env);
             ChannelRuntime.SelectPolicy policy = runtimeSelectPolicy(selected.policy());
 
@@ -5584,13 +5621,7 @@ public final class OresEvalRootNode extends RootNode {
                     set.selectAsync(policy);
 
             if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
-                if (!ActorRuntime.inActorExecution()) {
-                    future.cancel(false);
-                    throw new IllegalStateException(
-                            "static nb select branches require an actor execution context; "
-                                    + "use 'nb select from cases' when you only need a Future");
-                }
-
+                // Execution-domain admission occurred before selectAsync().
                 ActorRuntime.ContinuationTarget target =
                         context.actors().captureCurrentContinuationTarget();
                 Env captured = env.snapshot();
@@ -6222,6 +6253,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object eval(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.MatchExpr valueMatch) {
+                Object subject = eval(valueMatch.subject(), env);
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!patternMatches(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    bindings.forEach((name, value) ->
+                            armEnv.define(name, value, Ast.BindingKind.VAL));
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    // The arm's return is the result of this expression;
+                    // do not throw the enclosing callable's Return signal.
+                    return eval(arm.value(), armEnv);
+                }
+                throw new IllegalStateException(
+                        "exhaustive value match invariant violated at runtime");
+            }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
@@ -7593,7 +7640,7 @@ public final class OresEvalRootNode extends RootNode {
                                 fn,
                                 null,
                                 fn.async()
-                                        ? detachAsyncArguments(args)
+                                        ? detachAsyncArguments(args, fn.parameters())
                                         : args);
                 return returnSourceTaskResult(future, fn.async());
             }
@@ -7846,12 +7893,25 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
                     Object value;
-                    if (i < args.size()) value = args.get(i);
-                    else if (field.initializer() != null) {
+                    if (i < args.size()) {
+                        // Runtime defense in depth: reject fixed-slot injection
+                        // even if this path is reached through a linked program
+                        // or an AST that skipped the static type checker.
+                        if (field.initializer() != null
+                                && field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException(
+                                    "positional construction cannot override initialized final class field '"
+                                            + klass.name() + "." + field.name() + "'");
+                        }
+                        value = args.get(i);
+                    } else if (field.initializer() != null) {
                         OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
                         Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                        // The object must remain unobservable while fields
+                        // are being initialized. Static analysis never binds
+                        // self in field initializer scope; the runtime must
+                        // enforce that same boundary for linked/unchecked code.
                         Env initializerEnv = new Env(null, false, fieldOwner);
-                        initializerEnv.define("self", object, Ast.BindingKind.VAL);
                         value = eval(field.initializer(), initializerEnv);
                     } else {
                         throw new IllegalArgumentException(
@@ -7880,17 +7940,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             OresObject object = new OresObject(this, klass, fields);
 
-            // Field initializers run before the constructor body and with the
-            // declaring class's private-member authority.
-            for (Ast.FieldDecl field : classFields) {
-                if (field.initializer() == null) continue;
-                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
-                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
-                Env initializerEnv = new Env(null, false, fieldOwner);
-                initializerEnv.define("self", object, Ast.BindingKind.VAL);
-                fields.put(field.name(), eval(field.initializer(), initializerEnv));
-            }
-
+            // Bind constructor parameters before evaluating field initializers.
+            // The object is not returned or published until all initializers
+            // and constructor-body validation have completed.
             Env constructorEnv = new Env(null, false, klass, object);
             constructorEnv.define("self", object, Ast.BindingKind.VAL);
             bindCallableArguments(
@@ -7898,6 +7950,45 @@ public final class OresEvalRootNode extends RootNode {
                     constructor.parameters(),
                     args,
                     "constructor " + klass.name());
+
+            // Deliberately narrower than the constructor-body environment.
+            // A reference, borrow or move-only parameter cannot be injected
+            // into a declaration initializer without a checked transfer
+            // proof. The implicit arguments tuple is likewise unavailable.
+            // Initializer parameter frames carry no constructor authority:
+            // they cannot authorize a write to an uninitialized object slot.
+            Env scalarInitializerArgs = new Env(null, false, klass);
+            for (int i = 0; i < constructor.parameters().size(); i++) {
+                Ast.Param param = constructor.parameters().get(i);
+                Ast.TypeRef parameterType = param.type();
+                String typeName = parameterType.name();
+                if (!parameterType.isBorrow()
+                        && parameterType.arguments().isEmpty()
+                        && !param.structural()
+                        && (typeName.equals("int") || typeName.equals("bool")
+                                || typeName.equals("float") || typeName.equals("string"))) {
+                    scalarInitializerArgs.define(
+                            param.name(), args.get(i),
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+
+            // Field initializers run before the constructor body and with the
+            // declaring class's private-member authority. Only the declaring
+            // class may read its own constructor arguments, not inherited
+            // parent-field initializers.
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() == null) continue;
+                OwnedField owned = findField(klass, field.name(), new LinkedHashSet<>());
+                Ast.ClassDecl fieldOwner = owned == null ? klass : owned.owner();
+                // Do not bind self. Constructor parameters are scalar-only,
+                // and the partly built instance is not an initializer value.
+                Env initializerEnv = new Env(
+                        fieldOwner == klass ? scalarInitializerArgs : null,
+                        false, fieldOwner, null);
+                fields.put(field.name(), eval(field.initializer(), initializerEnv));
+            }
+
             try {
                 executeBlock(constructor.body(), constructorEnv);
             } catch (ReturnSignal signal) {
@@ -8458,6 +8549,9 @@ public final class OresEvalRootNode extends RootNode {
          * (directly or through the narrow JNI bridge), never JVM Class.isInstance/instanceof.
          */
         private boolean oresTypeMatches(Object value, Ast.TypeRef target) {
+            if (target.isComplement()) {
+                return !oresTypeMatches(value, target.complementedType());
+            }
             if (target.isUnion()) {
                 for (Ast.TypeRef option : target.arguments()) {
                     if (oresTypeMatches(value, option)) return true;
@@ -8731,7 +8825,19 @@ public final class OresEvalRootNode extends RootNode {
                     return left.doubleValue() == right.doubleValue();
                 }
             }
-            if (isIntegral(left) && isIntegral(right)) return left.longValue() == right.longValue();
+            boolean integralLeft = isIntegral(left);
+            boolean integralRight = isIntegral(right);
+            if (integralLeft && integralRight) return left.longValue() == right.longValue();
+            if (integralLeft != integralRight) {
+                // Converting a long above 2^53 to double silently merges
+                // distinct numeric values. Compare exact finite decimal
+                // representations instead, matching static subsumption.
+                Number integer = integralLeft ? left : right;
+                Number floating = integralLeft ? right : left;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
             return left.doubleValue() == right.doubleValue();
         }
 

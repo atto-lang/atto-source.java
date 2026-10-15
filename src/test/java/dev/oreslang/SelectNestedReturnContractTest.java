@@ -46,11 +46,11 @@ final class SelectNestedReturnContractTest {
                       do select {
                         default: {
                           stdio.stdout.write("inner:");
-                          return 1;
+                          return;
                         }
                       }
                       stdio.stdout.write("outer:");
-                      return 2;
+                      return;
                     }
                   }
                   return 3;
