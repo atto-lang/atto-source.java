@@ -421,6 +421,8 @@ final class NoZalgoCallbackDispatchTest {
                 releaseReceive.countDown();
             }
             assertTrue(receiveReturned.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "actor must fully finalize before checking callback suppression");
             assertNull(receiveFailure.get(),
                     () -> String.valueOf(receiveFailure.get()));
             assertEquals(0, guestCallbacks.get(),
