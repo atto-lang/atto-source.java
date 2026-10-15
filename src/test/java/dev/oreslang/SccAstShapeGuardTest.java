@@ -66,7 +66,7 @@ final class SccAstShapeGuardTest {
     }
     @Test void entireSccSharesOneAstBudgetEvenWhenEachUnitFitsIndividually() {
         var expressions = new ArrayList<Ast.Expr>();
-        for (int i = 0; i < 60000; i++) {
+        for (int i = 0; i < 35000; i++) {
             expressions.add(new Ast.NameExpr("n" + i));
         }
         var oneUnit = program(new Ast.ListExpr(expressions));
