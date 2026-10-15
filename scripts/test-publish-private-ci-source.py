@@ -1306,6 +1306,84 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(route.endswith("/git/refs")
                              for method, route, _ in self.route_calls if method == "POST"))
 
+    def test_failures_at_every_pre_ref_write_do_not_create_ci_branch(self):
+        # Inject an authenticated API failure at each of the four writes
+        # preceding ref creation: blob, isolated tree, carrier root tree,
+        # and commit. No branch can be published after any one fails.
+        for fail_at in range(1, 5):
+            with self.subTest(fail_at=fail_at):
+                self.route_calls.clear()
+                attempted = []
+                original = self.fake_api
+
+                def fault(route, method="GET", payload=None):
+                    if method == "POST":
+                        attempted.append(route)
+                        if len(attempted) == fail_at:
+                            self.route_calls.append((method, route, payload))
+                            raise pub.Denied("injected GitHub API failure")
+                    return original(route, method, payload)
+
+                with patch.object(pub, "gh_api", side_effect=fault):
+                    with self.assertRaisesRegex(pub.Denied, "injected GitHub API failure"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+                self.assertEqual(len(attempted), fail_at)
+                self.assertFalse(any(route.endswith("/git/refs")
+                                     for route in attempted),
+                                 "partial source objects must never publish a CI ref")
+
+    def test_ref_creation_failure_never_reports_success(self):
+        # GitHub might reject ref creation after all trees/commit are made;
+        # this must fail closed and never report PRIVATE_CI_SNAPSHOT_CREATED.
+        attempted = []
+        original = self.fake_api
+
+        def ref_failure(route, method="GET", payload=None):
+            if method == "POST":
+                attempted.append(route)
+                if route == "repos/trusted/ci/git/refs":
+                    self.route_calls.append((method, route, payload))
+                    raise pub.Denied("injected ref failure")
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=ref_failure):
+            with self.assertRaisesRegex(pub.Denied, "injected ref failure"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual(attempted[-1], "repos/trusted/ci/git/refs")
+        self.assertFalse(any(method == "GET"
+                             and route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test"
+                             for method, route, _ in self.route_calls))
+
+    def test_bulk_carrier_codeowner_revocation_blocks_next_batch(self):
+        # Approval can disappear between two inline tree POSTs. The first
+        # isolated partial tree cannot justify publishing the full snapshot.
+        for i in range(70):
+            (self.source / f"revocation-{i:03}.ores").write_text("safe")
+        self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
+        batches = pub.prepare_source_tree_batches(pub.collect_source(self.source, self.root))
+        self.assertGreater(len(batches), 1)
+        attempted_trees = []
+        original = self.fake_api
+
+        def revoke(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/trees" and method == "POST":
+                attempted_trees.append(route)
+                if len(attempted_trees) == 1:
+                    self.carrier_codeowners_errors = [{"line": 2, "message": "review revoked"}]
+            return response
+
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaisesRegex(pub.Denied, "validation errors"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual(len(attempted_trees), 1)
+        self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
+                             for method, route, _ in self.route_calls))
+
     def test_git_tree_sha_matches_known_git_write_tree_result(self):
         # Verified independently with git init, git add, git write-tree
         # (main.ores contains hello\n; nested/file.ores contains world\n
