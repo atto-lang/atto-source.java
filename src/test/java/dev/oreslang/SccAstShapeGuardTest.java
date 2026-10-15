@@ -42,6 +42,9 @@ final class SccAstShapeGuardTest {
         admitted(new Ast.LiteralExpr(3L));
         admitted(new Ast.LiteralExpr(new BigDecimal("3.14")));
         admitted(new Ast.LiteralExpr(new Ast.Imaginary(2.0)));
+        admitted(new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process("ready")));
+        admitted(new Ast.PatternTestExpr(new Ast.NameExpr("x"),
+                new Ast.LiteralPattern(dev.oreslang.runtime.OresSymbol.process("ready"))));
         admitted(new Ast.UnaryExpr("-",new Ast.LiteralExpr(7L)));
         admitted(new Ast.ListExpr(List.of(new Ast.LiteralExpr("ok"),
                 new Ast.LiteralExpr(4L))));
