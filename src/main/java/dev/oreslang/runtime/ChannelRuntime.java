@@ -598,7 +598,8 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        /** Captured under COORDINATOR at admission, after preceding FAIR commits. */
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         /**
@@ -619,7 +620,6 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
             this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
             int foundDefault = -1;
@@ -780,6 +780,11 @@ public final class ChannelRuntime {
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
 
+        // A reusable SelectSet may have had another selection commit after
+        // this registration object was constructed. Capture the fairness
+        // cursor at atomic admission, not at construction, so overlapping
+        // invocations observe all earlier committed rotations.
+        selection.order = selection.set.initialOrder(selection.policy);
         selection.registered = true;
         ACTIVE.add(selection);
 
