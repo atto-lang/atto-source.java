@@ -123,7 +123,11 @@ final class ControlWakeRetryQueue {
             synchronized (this) {
                 // Like ActorRuntime's CONTROL loss counters, diagnostics
                 // must never wrap negative after sustained failures.
-                if (callbacksFailed != Long.MAX_VALUE) ++callbacksFailed;
+                if (callbacksFailed < 0 || callbacksFailed == Long.MAX_VALUE) {
+                    callbacksFailed = Long.MAX_VALUE;
+                } else {
+                    ++callbacksFailed;
+                }
             }
         }
     }
