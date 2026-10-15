@@ -58,19 +58,32 @@ public final class ActorMailboxMiddlewareBridge implements ActorRuntime.ActorCod
         ActorRuntime.ActorInboxMail<Object> current = Objects.requireNonNull(
                 delegate.prepareActorMail(actorTypeName, state, mail, context),
                 "wrapped source executor returned null mailbox");
+        requireOriginalIdentity(mail, current);
         for (Stage stage : stages) {
             current = Objects.requireNonNull(
                     stage.apply(current, context),
                     "actor middleware stage returned null mailbox");
             // Reject forged sender, recipient or sequence *before* the next
             // trusted stage is invoked, preventing internal chain confusion.
-            if (!mail.recipient().equals(current.recipient())
-                    || !mail.sender().equals(current.sender())
-                    || mail.sequence() != current.sequence()) {
-                throw new SecurityException("actor middleware stage attempted to change mailbox identity");
-            }
+            requireOriginalIdentity(mail, current);
         }
         return current;
+    }
+
+    /**
+     * Include the delegate's output in the check. A forged envelope may
+     * never be handed to the first sanitizer, not merely rejected by the
+     * outer ActorRuntime after all middleware has executed.
+     */
+    private static void requireOriginalIdentity(
+            ActorRuntime.ActorInboxMail<Object> original,
+            ActorRuntime.ActorInboxMail<Object> prepared) {
+        if (!original.recipient().equals(prepared.recipient())
+                || !original.sender().equals(prepared.sender())
+                || original.sequence() != prepared.sequence()) {
+            throw new SecurityException(
+                    "actor middleware stage attempted to change mailbox identity");
+        }
     }
 
     @Override
