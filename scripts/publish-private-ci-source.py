@@ -264,10 +264,10 @@ def collect_source(root, trusted_root):
             except OSError as exc:
                 raise Denied("source path changed or cannot be opened safely") from exc
         directory_after = os.fstat(directory_fd)
-        if (directory_before.st_dev, directory_before.st_ino,
+        if ((directory_before.st_dev, directory_before.st_ino,
                 directory_before.st_mtime_ns, directory_before.st_ctime_ns)
                 != (directory_after.st_dev, directory_after.st_ino,
-                    directory_after.st_mtime_ns, directory_after.st_ctime_ns):
+                    directory_after.st_mtime_ns, directory_after.st_ctime_ns)):
             raise Denied("source directory changed during traversal")
 
     try:
