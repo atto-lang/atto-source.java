@@ -71,6 +71,87 @@ final class SourceActorMiddlewareBoundaryTest {
     }
 
     @Test
+    void forgedWrappedDelegateEnvelopeIsRejectedBeforeFirstMiddleware() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = image(store);
+            var stages = new AtomicInteger();
+            var called = new AtomicInteger();
+            ActorRuntime.ActorCodeExecutor delegate = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    return new OwnedState(context.self().id());
+                }
+                @Override public ActorRuntime.ActorInboxMail<Object> prepareActorMail(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    return new ActorRuntime.ActorInboxMail<>(
+                            mail.recipient(), mail.sender(), mail.sequence() + 1, mail.value());
+                }
+                @Override public void receiveActor(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    called.incrementAndGet();
+                }
+            };
+            var wrapped = ActorMailboxMiddlewareBridge.wrap(delegate, java.util.List.of(
+                    (mail, context) -> {
+                        stages.incrementAndGet();
+                        return mail;
+                    }));
+            var ref = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), wrapped, "Worker");
+            ref.ready().join();
+            ref.send("safe");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0, stages.get(), "first middleware must not see forged identity");
+            assertEquals(0, called.get());
+            assertTrue(ref.failure().isPresent());
+        }
+    }
+
+    @Test
+    void unsafeIntermediateValueDoesNotReachLaterMiddleware() throws Exception {
+        try (SharedCodeImageStore store = new SharedCodeImageStore();
+             ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var image = image(store);
+            var later = new AtomicInteger();
+            ActorRuntime.ActorCodeExecutor delegate = new ActorRuntime.ActorCodeExecutor() {
+                @Override public SharedCodeImageStore.CodeImage codeImage() { return image; }
+                @Override public ActorRuntime.ActorOwnedGuestState initializeActor(
+                        String type, ActorRuntime.ActorContext<Object> context) {
+                    return new OwnedState(context.self().id());
+                }
+                @Override public void receiveActor(
+                        String type, ActorRuntime.ActorOwnedGuestState state,
+                        ActorRuntime.ActorInboxMail<Object> mail,
+                        ActorRuntime.ActorContext<Object> context) {
+                    fail("actor must not receive invalid intermediate payload");
+                }
+            };
+            var wrapped = ActorMailboxMiddlewareBridge.wrap(delegate, java.util.List.of(
+                    (mail, context) -> new ActorRuntime.ActorInboxMail<>(
+                            mail.recipient(), mail.sender(), mail.sequence(),
+                            new java.util.ArrayList<>(java.util.List.of("mutable"))),
+                    (mail, context) -> {
+                        later.incrementAndGet();
+                        return mail;
+                    }));
+            var ref = runtime.spawnCodeActor(ActorRuntime.ActorKind.PRIVATE,
+                    IsolatePolicy.developer(), wrapped, "Worker");
+            ref.ready().join();
+            ref.send("safe");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0, later.get());
+            assertTrue(ref.failure().orElseThrow().toString()
+                    .contains("bounded string sanitization"));
+        }
+    }
+
+    @Test
     void middlewareRunsWithinActorTurnAndNormalizesOnlyTheValue() throws Exception {
         for (ActorRuntime.ActorKind kind : ActorRuntime.ActorKind.values()) {
             try (SharedCodeImageStore store = new SharedCodeImageStore();
