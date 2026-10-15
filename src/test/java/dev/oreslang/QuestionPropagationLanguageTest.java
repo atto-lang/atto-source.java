@@ -209,6 +209,30 @@ final class QuestionPropagationLanguageTest {
     }
 
     @Test
+    void awaitedErrorRunsDeferredCleanupWithoutResumingTheBody() throws Exception {
+        String program = """
+                async fnc remote_result(): Result<int, String> {
+                  return Err("failed");
+                }
+
+                async fnc consume(): Result<int, String> {
+                  defer stdio.stdout.write("defer:");
+                  val int item = (await remote_result())?;
+                  stdio.stdout.write("UNEXPECTED-AFTER:");
+                  return Ok(item);
+                }
+
+                pub fnc main(): void {
+                  val Result<int, String> result = await consume();
+                  stdio.stdout.write(result.is_err());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("defer:true", run(program));
+    }
+
+    @Test
     void asyncQuestionOnlyAcceptsDirectBindingInitializer() {
         reject("""
                 async fnc invalid(Option<int> input): Option<int> {
