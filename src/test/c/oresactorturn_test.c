@@ -62,6 +62,7 @@ static void test_one_carrier_stop_and_restart(void) {
     CHECK(ores_turn_check_cleanup_effects(vm, second) == ORES_TURN_OK);
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
     CHECK(ores_turn_complete_cleanup(vm, second, source) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, second) == ORES_TURN_DENIED);
     CHECK(ores_turn_complete_cleanup(vm, second, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_claim_cleanup(vm, ticket, &lease) == ORES_TURN_DENIED);
     CHECK(lease == NULL);
