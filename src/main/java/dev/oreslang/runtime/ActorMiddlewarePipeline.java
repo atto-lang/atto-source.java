@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -179,11 +180,11 @@ public final class ActorMiddlewarePipeline {
     public CompletionStage<Outcome> invoke(Envelope request, BooleanSupplier cancelled) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(cancelled, "cancelled");
-        return run(0, request, cancelled, new HashSet<>());
+        return run(0, request, cancelled, new HashMap<>());
     }
 
     private CompletionStage<Outcome> run(int position, Envelope request,
-                                         BooleanSupplier cancelled, Set<Key> supervisorReceipts) {
+                                         BooleanSupplier cancelled, Map<Key, Envelope> supervisorReceipts) {
         if (cancelled.getAsBoolean()) {
             return CompletableFuture.failedFuture(new IllegalStateException("middleware request cancelled"));
         }
@@ -204,9 +205,10 @@ public final class ActorMiddlewarePipeline {
         Stage stage = inSupervisor ? supervisor.get(position) : actor.get(position - supervisorCount);
         // No client-header proof is examined. The current invocation created
         // this receipt when the supervisor stage invoked its trusted next.
+        // Subsequent context mutation invalidates the exact-envelope proof.
         if (!inSupervisor && stage.maySkipAfterSupervisor()
                 && verifiedEquivalence.contains(stage.key())
-                && supervisorReceipts.contains(stage.key())) {
+                && Objects.equals(supervisorReceipts.get(stage.key()), request)) {
             return run(position + 1, request, cancelled, supervisorReceipts);
         }
         AtomicBoolean advanced = new AtomicBoolean();
@@ -228,7 +230,7 @@ public final class ActorMiddlewarePipeline {
             if (inSupervisor && verifiedEquivalence.contains(stage.key())) {
                 // Proof becomes usable only after the trusted supervisor
                 // middleware reaches its continuation, not at admission.
-                supervisorReceipts.add(stage.key());
+                supervisorReceipts.put(stage.key(), updated);
             }
             CompletionStage<Outcome> invoked = run(
                     position + 1, Objects.requireNonNull(updated), cancelled, supervisorReceipts);
