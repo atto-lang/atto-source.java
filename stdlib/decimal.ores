@@ -12,8 +12,8 @@ define module decimal as
   }
 
   pub fnc pow_nonnegative(decimal value, int exponent): Result<decimal, String> {
-    if exponent < 0 || exponent > 4096; do
-      return Err("decimal exponent must be between 0 and 4096");
+    if exponent < 0 || exponent > 128; do
+      return Err("decimal exponent must be between 0 and 128");
     fi
     let decimal result = 1d;
     let decimal base = value;
