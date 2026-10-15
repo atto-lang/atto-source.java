@@ -492,6 +492,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ArrayBlockingQueue<ActorFailureNotice> actorFailureNotices =
             new ArrayBlockingQueue<>(1024);
     private final AtomicLong actorFailureNoticesDropped = new AtomicLong();
+    /** Parent-owned CONTROL notices lost to full/retired supervisor inboxes. */
+    private final AtomicLong childFailureControlNoticesDropped = new AtomicLong();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -608,6 +610,12 @@ public final class ActorRuntime implements AutoCloseable {
     public long actorFailureNoticesDropped() {
         requireSupervisorContext("inspect dropped actor failure CONTROL notices");
         return actorFailureNoticesDropped.get();
+    }
+
+    /** Host-visible aggregate even after the owning parent has been retired. */
+    public long childFailureControlNoticesDropped() {
+        requireSupervisorContext("inspect dropped parent-owned CONTROL notices");
+        return childFailureControlNoticesDropped.get();
     }
 
     /**
@@ -6747,6 +6755,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) {
                     childFailureControlDropped.incrementAndGet();
+                    childFailureControlNoticesDropped.incrementAndGet();
                     return false;
                 }
                 ArrayBlockingQueue<ActorFailureNotice> inbox =
@@ -6757,6 +6766,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 if (inbox.offer(notice)) return true;
                 childFailureControlDropped.incrementAndGet();
+                childFailureControlNoticesDropped.incrementAndGet();
                 return false;
             }
         }
@@ -7159,7 +7169,16 @@ public final class ActorRuntime implements AutoCloseable {
             drainMailboxReservations();
             ArrayBlockingQueue<ActorFailureNotice> retiredControl =
                     childFailureControlInbox.getAndSet(null);
-            if (retiredControl != null) retiredControl.clear();
+            if (retiredControl != null) {
+                // The parent is no longer allowed to poll. Record otherwise
+                // invisible discarded notices for the host's CONTROL monitor.
+                int undelivered = retiredControl.size();
+                if (undelivered != 0) {
+                    childFailureControlDropped.addAndGet(undelivered);
+                    childFailureControlNoticesDropped.addAndGet(undelivered);
+                }
+                retiredControl.clear();
+            }
             staticSelectCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
