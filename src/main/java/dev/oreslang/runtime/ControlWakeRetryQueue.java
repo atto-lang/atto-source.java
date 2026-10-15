@@ -101,8 +101,11 @@ final class ControlWakeRetryQueue {
                 RetryDispatch dispatch = retryDispatch.get();
                 if (dispatch != null && dispatch.active) {
                     if (retainedCallbacks >= capacity) return false;
-                    ++retainedCallbacks;
                     dispatch.later.addLast(new Retry(callback, lane, true));
+                    // Acquire the quota only once ticket construction and
+                    // enqueue have succeeded. Allocation failure must not
+                    // strand an admission slot.
+                    ++retainedCallbacks;
                     return true;
                 }
                 if (directHandoffs >= capacity) return false;
