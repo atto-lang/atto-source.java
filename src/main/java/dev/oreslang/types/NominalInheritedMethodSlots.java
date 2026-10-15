@@ -58,6 +58,7 @@ public final class NominalInheritedMethodSlots {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Set<String> ambiguous = new HashSet<>();
         private final IdentityHashMap<Ast.ClassDecl, String> qualifiedNames = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, String> moduleNames = new IdentityHashMap<>();
         private final Map<String, String> enums;
 
         private Planner(Ast.Program program) {
@@ -72,6 +73,7 @@ public final class NominalInheritedMethodSlots {
                         throw new IllegalArgumentException("duplicate class identity " + qualified);
                     }
                     qualifiedNames.put(cls, namespace + module.name() + "::" + cls.name());
+                    moduleNames.put(cls, module.name());
                     if (!ambiguous.contains(cls.name())) {
                         Ast.ClassDecl old = classes.putIfAbsent(cls.name(), cls);
                         if (old != null && old != cls) {
@@ -84,19 +86,17 @@ public final class NominalInheritedMethodSlots {
         }
 
         private Ast.ClassDecl resolve(String name, Ast.ClassDecl current) {
+            // Local lexical module wins even when the simple spelling occurs
+            // in several modules; never guess among ambiguous foreign owners.
+            if (current != null && !name.contains(".")) {
+                Ast.ClassDecl local = classes.get(moduleNames.get(current) + "." + name);
+                if (local != null) return local;
+            }
             if (ambiguous.contains(name)) {
                 throw new IllegalArgumentException("ambiguous class declaration identity " + name);
             }
             Ast.ClassDecl found = classes.get(name);
             if (found != null) return found;
-            if (current != null && !name.contains(".")) {
-                String owner = qualifiedNames.get(current);
-                int separator = owner.lastIndexOf("::");
-                int moduleSeparator = owner.lastIndexOf("::", separator - 1);
-                String module = owner.substring(moduleSeparator + 2, separator);
-                found = classes.get(module + "." + name);
-                if (found != null) return found;
-            }
             throw new IllegalArgumentException(
                     "nominal method proof cannot import or resolve class " + name);
         }
