@@ -3353,6 +3353,10 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
+            if (sumReceiver instanceof Function) {
+                throw new IllegalArgumentException("unknown function member '" + member.member()
+                        + "'; invoke directly or spread a statically known tuple with f(...args)");
+            }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
                 return switch (member.member()) {
@@ -3502,7 +3506,7 @@ public final class TypeChecker {
                     return member;
                 }
                 if (record.members().isEmpty()) return Unknown.INSTANCE;
-                return record.members().values().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return indexedElementUnion(record.members().values());
             }
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -3515,7 +3519,7 @@ public final class TypeChecker {
                     }
                     return tuple.elements().get(constant.intValue());
                 }
-                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
                     "indexing requires an array/list, tuple, or closed struct with a statically known string key");
@@ -5967,8 +5971,7 @@ public final class TypeChecker {
             };
         }
         if (receiver instanceof Tuple tuple) {
-            Type element = tuple.elements().stream()
-                    .reduce(Unknown.INSTANCE, this::commonType);
+            Type element = indexedElementUnion(tuple.elements());
             return switch (member) {
                 case "size" -> Primitive.INT;
                 case "get" -> new Function(List.of(Primitive.INT), element);
@@ -6135,6 +6138,11 @@ public final class TypeChecker {
         // Match the newer iterator prototype: for-await also admits synchronous
         // iterables, but execution still crosses the runtime-owned Future boundary.
         return iterableElementType(iterable);
+    }
+
+    private Type indexedElementUnion(java.util.Collection<Type> elements) {
+        return elements.stream().map(this::widenCollectionElement)
+                .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
     }
 
     /** Folds trivial signed integer literals without performing guest arithmetic. */

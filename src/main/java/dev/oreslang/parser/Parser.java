@@ -22,6 +22,9 @@ public final class Parser {
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
     private boolean suppressRefinementOperators;
+    // A match guard's outer '->' delimits an arm, not a lambda that happens
+    // to follow a parenthesized guard expression.
+    private int matchGuardStartToken = -1;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1807,11 +1810,20 @@ public final class Parser {
         if (match(WHILE)) {
             // Route the while backedge through the existing source-task
             // ForStmt trampoline: one continuation and one budget mechanism.
-            Ast.Expr condition = check(LPAREN)
-                    ? parseParenthesizedWhileCondition()
-                    : parseCondition();
+            ConditionHead head = parseConditionHead(true);
             match(SEMICOLON);
-            return new Ast.ForStmt(null, condition, null, parseLoopBody());
+            List<Ast.Stmt> body = parseLoopBody();
+            if (head.binding() == null) {
+                return new Ast.ForStmt(null, head.predicate(), null, body);
+            }
+            // Re-enter the binding scope on every test, including after continue.
+            List<Ast.Stmt> turn = new ArrayList<>();
+            turn.add(head.binding());
+            turn.add(new Ast.IfStmt(List.of(new Ast.IfBranch(
+                    new Ast.UnaryExpr("!", head.predicate()),
+                    List.of(new Ast.BreakStmt()))), List.of()));
+            turn.addAll(body);
+            return new Ast.ForStmt(null, new Ast.LiteralExpr(true), null, turn);
         }
         if (match(IF)) return parseIf();
         // Procedural dispatch returns from its enclosing callable. Keep this
@@ -2600,23 +2612,28 @@ public final class Parser {
         return token.type() == IDENT && token.lexeme().equals("_");
     }
 
-    private Ast.IfStmt parseIf() {
+    private Ast.Stmt parseIf() {
         List<Ast.IfBranch> branches = new ArrayList<>();
-        Ast.Expr condition = parseCondition();
+        List<Ast.BindingStmt> bindings = new ArrayList<>();
+        ConditionHead head = parseConditionHead(false);
+        bindings.add(head.binding());
+        Ast.Expr condition = head.predicate();
 
         // Brace form still obeys the universal Oreslang invariant: every if closes with fi.
         // Braces delimit branch bodies; they never replace the structural terminator.
         if (check(LBRACE)) {
             branches.add(new Ast.IfBranch(condition, parseBlock()));
             while (matchConditionalBranch()) {
-                condition = parseCondition();
+                head = parseConditionHead(false);
+                bindings.add(head.binding());
+                condition = head.predicate();
                 branches.add(new Ast.IfBranch(condition, parseBlock()));
             }
 
             List<Ast.Stmt> elseBody = List.of();
             if (match(ELSE)) elseBody = parseBlock();
             consume(FI, "expected 'fi' to close if");
-            return new Ast.IfStmt(branches, elseBody);
+            return lowerConditionBindings(branches, bindings, elseBody);
         }
 
         // Canonical keyword-delimited form:
@@ -2635,7 +2652,9 @@ public final class Parser {
         branches.add(new Ast.IfBranch(condition, body));
 
         while (matchConditionalBranch()) {
-            condition = parseCondition();
+            head = parseConditionHead(false);
+            bindings.add(head.binding());
+            condition = head.predicate();
             match(SEMICOLON);
             consumeConditionalThen("elif");
             body = parseUntil(ELSEIF, ELSE, FI);
@@ -2645,7 +2664,7 @@ public final class Parser {
         List<Ast.Stmt> elseBody = List.of();
         if (match(ELSE)) elseBody = parseUntil(FI);
         consume(FI, "expected 'fi' to close if");
-        return new Ast.IfStmt(branches, elseBody);
+        return lowerConditionBindings(branches, bindings, elseBody);
     }
 
     private void consumeConditionalThen(String branch) {
@@ -2676,11 +2695,80 @@ public final class Parser {
         return false;
     }
 
-    private Ast.Expr parseParenthesizedWhileCondition() {
-        consume(LPAREN, "expected '(' before while condition");
-        Ast.Expr condition = parseCondition();
-        consume(RPAREN, "expected ')' after while condition");
-        return condition;
+    private record ConditionHead(Ast.BindingStmt binding, Ast.Expr predicate) { }
+
+    private ConditionHead parseConditionHead(boolean whileHead) {
+        boolean wrapped = check(LPAREN) && ((whileHead && wholeConditionParentheses()) || hasParenthesizedConditionBinding());
+        if (wrapped) advance();
+        Ast.Expr value = parseLogicalOr();
+        Ast.BindingStmt binding = null;
+        Ast.Expr predicate;
+        if (check(AS) && checkNext(LET)) {
+            advance();
+            advance();
+            String name = consume(IDENT, "condition binding requires a name").lexeme();
+            if (!matchContextualKeyword("when")) {
+                throw error(peek(), "condition binding requires 'when' and a boolean predicate");
+            }
+            binding = new Ast.BindingStmt(Ast.BindingKind.LET, null, name, value, false);
+            predicate = parseCondition();
+        } else {
+            predicate = normalizeLegacyConditionPipe(value);
+            while (match(COMMA)) {
+                predicate = new Ast.BinaryExpr("&&", predicate,
+                        normalizeLegacyConditionPipe(parseLogicalOr()));
+            }
+        }
+        if (wrapped) consume(RPAREN, "expected ')' after condition");
+        return new ConditionHead(binding, predicate);
+    }
+
+    private boolean wholeConditionParentheses() {
+        int depth = 0;
+        for (int i = current; i + 1 < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            if (type == RPAREN && --depth == 0) {
+                Token.Type next = tokens.get(i + 1).type();
+                // A postfix index/call/member or infix operator continues the
+                // expression; its '(' belongs to that value, not the head.
+                return next == LBRACE || next == DO || next == SEMICOLON;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasParenthesizedConditionBinding() {
+        int depth = 0;
+        int nestedValues = 0;
+        for (int i = current; i + 1 < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            if (type == RPAREN && --depth == 0) return false;
+            if (type == LBRACE || type == LBRACKET) nestedValues++;
+            if (type == RBRACE || type == RBRACKET) nestedValues--;
+            if (depth == 1 && nestedValues == 0 && type == AS
+                    && tokens.get(i + 1).type() == LET) return true;
+        }
+        return false;
+    }
+
+    private Ast.Stmt lowerConditionBindings(List<Ast.IfBranch> branches,
+            List<Ast.BindingStmt> bindings, List<Ast.Stmt> elseBody) {
+        if (bindings.stream().allMatch(java.util.Objects::isNull)) {
+            return new Ast.IfStmt(branches, elseBody);
+        }
+        // A later initializer is evaluated only if every preceding test failed.
+        List<Ast.Stmt> fallback = elseBody;
+        Ast.Stmt result = null;
+        for (int i = branches.size() - 1; i >= 0; i--) {
+            result = new Ast.IfStmt(List.of(branches.get(i)), fallback);
+            if (bindings.get(i) != null) {
+                result = new Ast.BlockStmt(List.of(bindings.get(i), result));
+            }
+            fallback = List.of(result);
+        }
+        return result;
     }
 
     private Ast.Expr parseCondition() {
@@ -2754,7 +2842,16 @@ public final class Parser {
                 pattern = parsePattern();
             }
 
-            Ast.Expr guard = matchWhenKeyword() ? parseExpression() : null;
+            Ast.Expr guard = null;
+            if (matchWhenKeyword()) {
+                int previousGuardStart = matchGuardStartToken;
+                matchGuardStartToken = current;
+                try {
+                    guard = parseExpression();
+                } finally {
+                    matchGuardStartToken = previousGuardStart;
+                }
+            }
             if (check(FAT_ARROW)) {
                 throw error(peek(), "match implementations use the slim arrow '->'; '=>' is reserved for type definitions");
             }
@@ -3087,6 +3184,9 @@ public final class Parser {
                 expr = new Ast.PatternTestExpr(expr, parsePattern());
                 continue;
             }
+            // In a condition head, `as let name when ...` ends the value.
+            // Other `as T` uses retain ordinary checked-cast precedence.
+            if (check(AS) && checkNext(LET)) break;
             if (!suppressRefinementOperators && match(AS)) {
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
@@ -3635,6 +3735,31 @@ public final class Parser {
     }
 
     private boolean looksLikeLambda() {
+        if (matchGuardStartToken >= 0 && current >= matchGuardStartToken) {
+            // At the guard's own lexical depth a following '->' belongs to
+            // the match arm. Preserve real nested lambdas in calls/groups:
+            // their parentheses are at positive depth from the guard start.
+            int depth = 0;
+            for (int i = matchGuardStartToken; i < current; i++) {
+                Token.Type type = tokens.get(i).type();
+                if (type == LPAREN || type == LBRACKET || type == LBRACE) depth++;
+                else if (type == RPAREN || type == RBRACKET || type == RBRACE) depth--;
+            }
+            if (depth == 0) return false;
+        }
+        // An arm's slim arrow may follow a parenthesized expression, e.g.
+        // 'when await (nb readch gate) -> { ... }'. A closing ')' followed
+        // by '->' is not sufficient evidence of a lambda declaration:
+        // lambda parameters require declaration syntax, never these
+        // expression-only prefix operators.
+        if (current + 1 < tokens.size()) {
+            Token.Type first = tokens.get(current + 1).type();
+            if (first == NB || first == AWAIT || first == READCH
+                    || first == WRITECH || first == RT || first == TRAP
+                    || first == TRY || first == SELECT || first == BANG) {
+                return false;
+            }
+        }
         int depth = 0;
         for (int i = current; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
