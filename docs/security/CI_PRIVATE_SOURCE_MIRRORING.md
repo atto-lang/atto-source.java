@@ -243,3 +243,35 @@ Python/Bash publisher suite, Java/GraalVM tests, or a real source transfer.
 Security reviewers must separately verify GitHub's CODEOWNERS diagnostics
 and that a qualified **independent** reviewer can approve a change, rather
 than relying solely on a valid CODEOWNERS text entry.
+
+## GitHub API rate-limit preflight
+
+The audited publisher re-authenticates immutable source identity, live
+source and destination branch protections, destination repository ID and
+CODEOWNERS before **each** Git object write. This is deliberately more
+expensive than a simple unauthenticated blob copy and is separate from
+GitHub Actions minute limits.
+
+For a source snapshot containing `N` files, the publisher checks the
+authenticated GitHub `core.remaining` budget after verifying the local
+snapshot's pinned tree but **before creating its first destination blob**.
+The conservative lower bound is `16 * N + 128` core API requests, allowing
+for fifteen repeated authorization reads plus the blob write and fixed
+tree/commit/ref creation and verification. Invalid, unavailable or
+insufficient rate-limit metadata fails closed. This check does not reserve
+quota, guarantee no concurrent usage or eliminate GitHub secondary limits.
+If resources drop later, further writes still fail closed and unreferenced
+destination Git objects may require owner retention review.
+
+For example, 554 files require at least **8,992** available core requests
+at admission. A working alternative Actions organization may still lack
+this API allowance or approved branch protections. Do not bypass
+authorization or reduce per-write checks to fit a smaller allowance
+without a separate reviewed security design.
+
+The exact new `require_private_ci_api_budget` function passed isolated
+local unit tests covering quotas at/above/below boundaries, malformed
+responses and invalid file counts. Its checked source length was 1,058
+characters and FNV-1a fingerprint was `5e0257e7`. The complete
+repository Python/Bash suites have not yet passed on a working source
+CI runner.
