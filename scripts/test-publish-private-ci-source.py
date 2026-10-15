@@ -54,8 +54,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
-            "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/commits": {"sha": C},
+            "repos/trusted/ci/git/commits/"+C: {"tree": {"sha": E}},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test", "object": {"sha": C}},
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+                "object": {"sha": C}},
+            "repos/trusted/ci/git/trees/"+E: {
+                "tree": [{"path": pub.PREFIX, "mode": "040000",
+                          "type": "tree", "sha": self.expected_tree}]},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -67,7 +74,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
-        self.assertEqual((sha, count), (A, 1))
+        self.assertEqual((sha, count), (C, 1))
         writes = [(m, r, p) for m, r, p in self.route_calls if m == "POST"]
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
