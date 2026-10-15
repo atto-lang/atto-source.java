@@ -29,6 +29,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.approval.write_text("trusted/ci\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.protected_policy = b"trusted/ci\n"
+        self.main_protected = True
+        self.protection_rules = {
+            "required_pull_request_reviews": {
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "required_approving_review_count": 1},
+            "required_status_checks": {"strict": True, "contexts": ["private-ci-policy"]},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False}}
         self.route_calls = []
         self.visibility = ["private"] * 200
         self.destination_ids = [123456789] * 200
@@ -57,6 +67,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return dict(id=self.source_ids.pop(0),
                         full_name=pub.SOURCE_REPOSITORY, visibility="private",
                         private=True, archived=False, disabled=False)
+        if route == "repos/" + pub.SOURCE_REPOSITORY + "/branches/main":
+            return {"protected": self.main_protected}
+        if route == "repos/" + pub.SOURCE_REPOSITORY + "/branches/main/protection":
+            return self.protection_rules
         if route == pub.PROTECTED_POLICY_ROUTE:
             raw = self.protected_policy
             return dict(type="file", encoding="base64", size=len(raw),
@@ -88,6 +102,61 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_unprotected_source_main_cannot_authorize_export(self):
+        self.main_protected = False
+        with self.assertRaisesRegex(pub.Denied, "not protected"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_insufficient_source_main_review_controls_denied(self):
+        invalid = [
+            ("required_pull_request_reviews", None),
+            ("required_status_checks", None),
+            ("enforce_admins", None),
+            ("allow_force_pushes", {"enabled": True}),
+            ("allow_deletions", {"enabled": True}),
+        ]
+        for key, value in invalid:
+            with self.subTest(key=key):
+                self.route_calls.clear()
+                original = self.protection_rules[key]
+                self.protection_rules[key] = value
+                try:
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                    self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+                finally:
+                    self.protection_rules[key] = original
+        for field, value in [
+            ("require_code_owner_reviews", False),
+            ("dismiss_stale_reviews", False),
+            ("required_approving_review_count", 0),
+        ]:
+            with self.subTest(field=field):
+                self.route_calls.clear()
+                reviews = self.protection_rules["required_pull_request_reviews"]
+                original = reviews[field]
+                reviews[field] = value
+                try:
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                    self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+                finally:
+                    reviews[field] = original
+
+    def test_source_main_protection_revoked_mid_transfer(self):
+        original = self.fake_api
+        def change_after_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.main_protected = False
+            return result
+        with patch.object(pub, "gh_api", side_effect=change_after_blob):
+            with self.assertRaisesRegex(pub.Denied, "not protected"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"], ["repos/trusted/ci/git/blobs"])
 
     def test_checkout_cannot_self_approve_when_protected_main_does_not(self):
         # The local file is approved, but protected main is still deny-by-default.
