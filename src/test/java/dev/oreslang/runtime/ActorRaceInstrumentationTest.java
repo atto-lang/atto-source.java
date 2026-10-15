@@ -176,6 +176,22 @@ final class ActorRaceInstrumentationTest {
     }
 
     @Test
+    void completedActorAndGuestMemoryCanBeRetired() {
+        ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
+        Object actor = new Object();
+        Object memory = new Object();
+        probe.enterActor(actor);
+        assertThrows(IllegalStateException.class, () -> probe.retireActor(actor));
+        probe.write(memory, "counter");
+        probe.exitActor(actor);
+        probe.retireActor(actor);
+        probe.retireMemoryDomain(memory);
+        // A fresh incarnation must reestablish its own clock and physical lease.
+        probe.enterActor(new Object());
+        assertEquals(1, probe.snapshot().actorOverlapViolations());
+    }
+
+    @Test
     void exitByNonownerMustNotReleaseLease() throws Exception {
         ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
         Object actor = new Object();
