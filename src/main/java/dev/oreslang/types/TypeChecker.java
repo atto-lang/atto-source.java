@@ -425,6 +425,16 @@ public final class TypeChecker {
 
     private static void verifyPermittedChildren(
             String kind, String name, List<String> permitted, Set<String> actual) {
+        // The AST may come from a compiler extension or linked metadata rather
+        // than the source parser. Admission must independently reject invalid
+        // allowlists instead of assuming the parser always ran.
+        Set<String> unique = new LinkedHashSet<>();
+        for (String specified : permitted) {
+            if (specified == null || specified.isBlank() || !unique.add(specified)) {
+                throw new IllegalArgumentException("sealed " + kind + " '" + name
+                        + "' contains an invalid or duplicate permitted subtype");
+            }
+        }
         if (actual.isEmpty()) {
             throw new IllegalArgumentException("sealed " + kind + " '" + name
                     + "' must have at least one direct subtype in the same module");
