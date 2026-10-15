@@ -44,7 +44,12 @@ root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
-branches, including `main`, are never updated.
+branches, including `main`, are never updated. Before declaring success,
+it verifies that the ref-creation response, fresh ref readback, commit tree,
+and committed `private-oreslang-source/` subtree all refer to the expected
+commit and pinned source SHA. Malformed GitHub metadata is denied rather
+than escaping the publisher as an unhandled exception. Destination CI must
+independently repeat source-subtree verification before running tests.
 
 The publisher requires a caller-pinned full Git-tree SHA as a mandatory
 argument. It reconstructs the Git tree hash from all source file paths, bytes
@@ -88,7 +93,11 @@ and destination confidentiality require operational controls and retention
 review. Approval from an untrusted PR checkout is never valid.
 
 API failure before ref creation can leave unreferenced Git objects in
-the private destination; a follow-up retention policy is still needed.
+the private destination. A failed **post-creation readback** can leave a
+new but unverified `ci/oreslang-*` ref; never use such a branch as test
+evidence. Inspect and clean up only that isolated private ref under the
+approved incident/retention process. A follow-up automated retention policy
+is still needed.
 
 It does **not** intercept arbitrary connector/API tool writes, cannot
 completely prevent visibility changes between API checks, and cannot
