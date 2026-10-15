@@ -3096,6 +3096,17 @@ public final class Parser {
     private Ast.Expr parseConditional() {
         Ast.Expr condition = parseLogicalOr();
         if (!match(QUESTION)) return condition;
+        // QUESTION is already the ternary delimiter; do not silently reinterpret
+        // it as postfix Result/Option early propagation before checked lowering
+        // and control-flow/unwind semantics are integrated.
+        if (check(SEMICOLON) || check(RPAREN) || check(RBRACE)
+                || check(RBRACKET) || check(COMMA) || check(EOF)
+                || check(DOT)) {
+            throw error(previous(),
+                    "postfix '?' Result/Option propagation is not yet admitted; "
+                            + "use explicit match/return, and keep 'condition ? yes : no' "
+                            + "or 'value as? Type' for their existing meanings");
+        }
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
         Ast.Expr whenFalse = parseConditional();
