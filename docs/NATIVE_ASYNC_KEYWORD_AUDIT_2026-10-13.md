@@ -1,3 +1,5 @@
+> Historical audit: its opt-in/default policy is superseded by [mandatory nonblocking I/O](MANDATORY_NONBLOCKING_IO_2026-10-15.md). Blocking compatibility is now forbidden.
+
 # Native async I/O and ownership/keyword audit — 2026-10-13
 
 ## Result and scope

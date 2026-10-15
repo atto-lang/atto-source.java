@@ -37,5 +37,14 @@ pub routine main(): void {
   if fail_fast.total != 2 | fail_fast.passed != 1 | fail_fast.failed != 1; do
     invariant_failure("fail-fast did not stop after the first failure");
   fi
+  if fail_fast.events.size != 2; do
+    invariant_failure("fail-fast retained an extra event");
+  fi
+  if fail_fast.events.get(1).status != "FAIL" | fail_fast.events.get(1).detail != "expected fail-fast sentinel"; do
+    invariant_failure("failure report lost native event detail");
+  fi
+  if filtered.events.size != 1 | filtered.events.get(0).full_name != "meta/third"; do
+    invariant_failure("filtered event stream is incorrect");
+  fi
   return;
 }

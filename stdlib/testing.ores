@@ -33,12 +33,20 @@ pub define class TestOptions as
   pub val bool machine;
 end
 
+// Structured guest-owned reporting; transport is a separate async concern.
+pub define class TestEvent as
+  pub val String status;
+  pub val String full_name;
+  pub val String detail;
+end
+
 pub define class RunSummary as
   pub val int total;
   pub val int passed;
   pub val int failed;
   pub val int skipped;
   pub val int filtered;
+  pub val List<TestEvent> events;
 end
 
 pub fnc pass(): TestOutcome {
@@ -115,67 +123,6 @@ fnc selected(String full_name, String only): bool {
   return full_name == only;
 }
 
-fnc emit_status(String status, String full_name, String detail, bool machine): void {
-  if machine; do
-    stdio.stdout.write("ORES_TEST|");
-    stdio.stdout.write(status);
-    stdio.stdout.write("|");
-    stdio.stdout.write(full_name);
-    stdio.stdout.write("|");
-    stdio.stdout.println(detail);
-    return;
-  fi
-
-  stdio.stdout.write(status);
-  stdio.stdout.write(" ");
-  stdio.stdout.write(full_name);
-  if detail != ""; do
-    stdio.stdout.write(" -- ");
-    stdio.stdout.write(detail);
-  fi
-  stdio.stdout.println("");
-  return;
-}
-
-fnc emit_summary(&RunSummary summary, bool machine): void {
-  let int total = summary.total;
-  let int passed_count = summary.passed;
-  let int failed_count = summary.failed;
-  let int skipped_count = summary.skipped;
-  let int filtered_count = summary.filtered;
-
-  if machine; do
-    stdio.stdout.write("ORES_TEST|SUMMARY|total=");
-    stdio.stdout.write(total);
-    stdio.stdout.write("|passed=");
-    stdio.stdout.write(passed_count);
-    stdio.stdout.write("|failed=");
-    stdio.stdout.write(failed_count);
-    stdio.stdout.write("|skipped=");
-    stdio.stdout.write(skipped_count);
-    stdio.stdout.write("|filtered=");
-    stdio.stdout.println(filtered_count);
-    return;
-  fi
-
-  stdio.stdout.write("test result: ");
-  if failed_count == 0; do
-    stdio.stdout.write("ok");
-  else
-    stdio.stdout.write("FAILED");
-  fi
-  stdio.stdout.write(". ");
-  stdio.stdout.write(passed_count);
-  stdio.stdout.write(" passed; ");
-  stdio.stdout.write(failed_count);
-  stdio.stdout.write(" failed; ");
-  stdio.stdout.write(skipped_count);
-  stdio.stdout.write(" skipped; ");
-  stdio.stdout.write(filtered_count);
-  stdio.stdout.println(" filtered");
-  return;
-}
-
 pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   let int total = 0;
   let int passed_count = 0;
@@ -187,7 +134,9 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
   let List<TestCase> tests = suite.tests;
   let String only = options.only;
   let bool fail_fast = options.fail_fast;
-  let bool machine = options.machine;
+  let mut List<TestEvent> events = new List<TestEvent>();
+  // options.machine is retained for source construction compatibility;
+  // formatting and asynchronous output belong to a separate consumer.
 
   for const test_case of tests do
     let String full_name = suite_name + "/" + test_case.name;
@@ -201,7 +150,7 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
 
     if test_case.skipped; do
       skipped_count = skipped_count + 1;
-      emit_status("SKIP", full_name, test_case.skip_reason, machine);
+      events.add(new TestEvent("SKIP", full_name, test_case.skip_reason));
       continue;
     fi
 
@@ -209,21 +158,15 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
 
     if outcome.passed; do
       passed_count = passed_count + 1;
-      emit_status("PASS", full_name, "", machine);
+      events.add(new TestEvent("PASS", full_name, ""));
     else
       failed_count = failed_count + 1;
-      emit_status("FAIL", full_name, outcome.message, machine);
+      events.add(new TestEvent("FAIL", full_name, outcome.message));
 
       if fail_fast; do
-        let RunSummary early = new RunSummary(
-          total,
-          passed_count,
-          failed_count,
-          skipped_count,
-          filtered_count
-        );
-        emit_summary(&early, machine);
-        return early;
+        // Leave the loop first: the owning event list moves exactly once
+        // into the final summary, never out of a repeating scope.
+        break;
       fi
     fi
   done
@@ -233,9 +176,9 @@ pub fnc run_suite(&TestSuite suite, &TestOptions options): RunSummary {
     passed_count,
     failed_count,
     skipped_count,
-    filtered_count
+    filtered_count,
+    events
   );
-  emit_summary(&summary, machine);
   return summary;
 }
 

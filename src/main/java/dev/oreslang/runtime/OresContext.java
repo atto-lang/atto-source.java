@@ -80,21 +80,27 @@ public final class OresContext implements AutoCloseable {
             return result;
         }
         opening.whenCompleteRuntime((reactor, failure) -> {
-            boolean closed;
+            boolean closeReactor;
             synchronized (nioLifecycle) {
                 --nioOpening;
                 nioPendingOpens.remove(result);
-                closed = nioContextClosed;
-                if (!closed && failure == null) nioListeners.add(reactor);
+                closeReactor = nioContextClosed;
+                if (failure != null) result.failFromRuntime(failure);
+                else if (closeReactor)
+                    result.failFromRuntime(new IllegalStateException("TCP context closed during listener admission"));
+                else {
+                    nioListeners.add(reactor);
+                    // Register after insertion: already-settled termination must
+                    // remove the entry rather than leave a dead listener charged.
+                    reactor.onTerminated(() -> {
+                        synchronized (nioLifecycle) { nioListeners.remove(reactor); }
+                    });
+                    // Publish atomically against context close. These are runtime
+                    // subscribers; guest code only resumes on its scheduler.
+                    result.completeFromRuntime(reactor);
+                }
             }
-            if (failure != null) { result.failFromRuntime(failure); return; }
-            reactor.onTerminated(() -> {
-                synchronized (nioLifecycle) { nioListeners.remove(reactor); }
-            });
-            if (closed) {
-                reactor.close();
-                result.failFromRuntime(new IllegalStateException("TCP context closed during listener admission"));
-            } else result.completeFromRuntime(reactor);
+            if (closeReactor && reactor != null) reactor.close();
         });
         return result;
     }

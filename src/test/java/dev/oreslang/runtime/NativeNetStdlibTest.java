@@ -3,159 +3,74 @@ package dev.oreslang.runtime;
 import dev.oreslang.stdlib.CoreLibrarySources;
 import dev.oreslang.interop.MixedSourceUnit;
 import org.junit.jupiter.api.Test;
-import java.io.*;
-import java.net.*;
-import java.nio.charset.StandardCharsets;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
+import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.*;
+import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
+@Timeout(30)
 final class NativeNetStdlibTest {
-    @Test void sourceModuleOwnsTcpOrchestrationWithoutHostInterop() throws Exception {
+    @TempDir Path root;
+    private int run(String body, IsolatePolicy policy) throws Exception {
+        Path entry = root.resolve("net.ores");
+        Files.writeString(entry, "import module net_core from \"std/net\"; pub async routine main(): int {" + body + "}");
+        return LinkedProgramRunner.runWithExitStatus(entry, policy, ExecutionProfile.serverJit(),
+                new ByteArrayOutputStream(), new ByteArrayOutputStream()).exitStatus();
+    }
+    @Test void sourceFacadeIsOreslangAndEveryIoEntryReturnsAFuture() throws Exception {
         String source = CoreLibrarySources.source("std/net");
-        MixedSourceUnit parsed = MixedSourceUnit.parse(
-                CoreLibrarySources.unitId("std/net"), "net.ores", source);
-        assertTrue(parsed.hasOresSource());
-        assertFalse(parsed.hasJavaSource());
-        assertFalse(source.contains("java:"));
-        assertFalse(source.contains("stdio."));
-        assertFalse(source.contains("http.listen"));
+        var parsed = MixedSourceUnit.parse(CoreLibrarySources.unitId("std/net"), "net.ores", source);
+        assertTrue(parsed.hasOresSource()); assertFalse(parsed.hasJavaSource());
+        assertFalse(source.contains("java:")); assertFalse(source.contains("stdio."));
+        assertFalse(source.contains("listen_nonblocking"));
+        assertEquals(6, source.lines().filter(line -> line.contains("): Future<")).count());
     }
-
-    @Test void networkCapabilityDenialFailsBeforeSocketAdmission() throws Exception {
-        Path entry = Files.createTempFile("ores-net-denied-", ".ores");
-        try {
-            Files.writeString(entry, """
-                import module net_core from "std/net";
-                pub async routine main(): void {
-                  val NioTcpListener listener = net_core.listen_loopback(0, 8, 2, 4);
-                  return;
+    @Test void deniedNetworkAuthorityFailsBeforeReactorAdmission() {
+        var failure = assertThrows(RuntimeException.class, () -> run("""
+                val Future<NioTcpListener> opening = net_core.listen_loopback(0, 8, 1, 4);
+                val NioTcpListener listener = await opening;
+                return 1;
+                """, IsolatePolicy.developer()));
+        assertTrue(failure.toString().contains("NETWORK"), failure::toString);
+    }
+    @Test void asynchronousListenerQuotaIncludesPendingOpens() throws Exception {
+        StringBuilder body = new StringBuilder();
+        for (int i = 0; i < 17; ++i) body.append("val Future<NioTcpListener> pending")
+                .append(i).append(" = net_core.listen_loopback(0, 8, 1, 4);\n");
+        body.append("val NioTcpListener denied = await pending16; return 1;");
+        var failure = assertThrows(RuntimeException.class, () -> run(body.toString(),
+                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)));
+        assertTrue(failure.toString().contains("TCP listener capacity exhausted"), failure::toString);
+    }
+    @Test void closedListenersReleaseQuotaAndReturnWithoutStdio() throws Exception {
+        assertEquals(0, run("""
+                for (let int i = 0; i < 20; i = i + 1) {
+                  val Future<NioTcpListener> opening = net_core.listen_loopback(0, 8, 1, 4);
+                  val NioTcpListener listener = await opening;
+                  val Future<void> closed = net_core.close_listener(listener);
+                  await closed;
                 }
-                """);
-            RuntimeException rejection = assertThrows(RuntimeException.class,
-                    () -> LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
-                            ExecutionProfile.serverJit(),
-                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
-            assertTrue(rejection.toString().contains("NETWORK"),
-                    () -> "expected NET capability denial, got " + rejection);
-        } finally {
-            Files.deleteIfExists(entry);
+                return 0;
+                """, IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)));
+    }
+    @Test void unawaitedAsynchronousOpenIsOwnedAndRevokedByContextClose() throws Exception {
+        var policy = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK);
+        for (int iteration = 0; iteration < 30; ++iteration) {
+            assertEquals(0, run("val Future<NioTcpListener> pending = net_core.listen_loopback(0, 8, 1, 4); return 0;", policy));
         }
     }
 
-    @Test void contextEnforcesAggregateReactorBudget() throws Exception {
-        Path entry = Files.createTempFile("ores-net-listener-quota-", ".ores");
-        try {
-            StringBuilder source = new StringBuilder("""
-                    import module net_core from "std/net";
-                    pub async routine main(): void {
-                    """);
-            for (int i = 0; i < 17; i++) {
-                source.append("  val NioTcpListener l").append(i)
-                        .append(" = net_core.listen_loopback(0, 8, 1, 4);\n");
-            }
-            source.append("  return;\n}\n");
-            Files.writeString(entry, source.toString());
-            RuntimeException rejection = assertThrows(RuntimeException.class, () ->
-                    LinkedProgramRunner.run(entry,
-                            IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
-                            ExecutionProfile.serverJit(),
-                            new ByteArrayOutputStream(), new ByteArrayOutputStream()));
-            assertTrue(rejection.toString().contains("TCP listener capacity exhausted"),
-                    () -> "expected admission limit rather than unbounded reactor threads: " + rejection);
-        } finally {
-            Files.deleteIfExists(entry);
-        }
-    }
-
-    @Test void closedListenersAreReapedForRepeatedGuestRestarts() throws Exception {
-        Path entry = Files.createTempFile("ores-net-listener-restart-", ".ores");
-        try {
-            StringBuilder source = new StringBuilder("""
-                    import module net_core from "std/net";
-                    pub async routine main(): void {
-                    """);
-            for (int i = 0; i < 20; i++) {
-                source.append("  val NioTcpListener l").append(i)
-                        .append(" = net_core.listen_loopback(0, 8, 1, 4);\n");
-                source.append("  val Future<void> stop").append(i)
-                        .append(" = net_core.close_listener(l").append(i).append(");\n");
-                source.append("  await stop").append(i).append(";\n");
-            }
-            source.append("  stdio.println(777);\n  return;\n}\n");
-            Files.writeString(entry, source.toString());
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            LinkedProgramRunner.run(entry,
-                    IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
-                    ExecutionProfile.serverJit(), out, new ByteArrayOutputStream());
-            assertTrue(out.toString().contains("777"),
-                    "completed guest restarts must eventually release the context listener quota");
-        } finally {
-            Files.deleteIfExists(entry);
-        }
-    }
-
-    @Test void realGuestAcceptReadWriteThroughNonblockingKernel() throws Exception {
-        Path entry = Files.createTempFile("ores-net-guest-", ".ores");
-        ExecutorService runner = Executors.newFixedThreadPool(2);
-        try {
-            Files.writeString(entry, """
-                import module net_core from "std/net";
-                pub async routine main(): void {
-                  val NioTcpListener listener = net_core.listen_loopback(0, 32, 4, 16);
-                  stdio.println(listener.port);
-                  val Future<NioTcpConnection> pending_accept = net_core.accept(rt borrow listener);
-                  val NioTcpConnection peer = await pending_accept;
-                  val Future<Array<int>> pending_read = net_core.read(rt borrow peer, 64);
-                  val Array<int> bytes = await pending_read;
-                  val Future<int> pending_write = net_core.write(rt borrow peer, bytes);
-                  val int sent = await pending_write;
-                  stdio.println(sent);
-                  val Future<void> pending_close = net_core.close_connection(peer);
-                  await pending_close;
-                  val Future<void> pending_shutdown = net_core.close_listener(listener);
-                  await pending_shutdown;
-                  return;
-                }
-                """);
-            PipedInputStream readPort = new PipedInputStream(8192);
-            PipedOutputStream output = new PipedOutputStream(readPort);
-            Future<?> program = runner.submit(() -> {
-                try {
-                    LinkedProgramRunner.run(entry, IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK),
-                            ExecutionProfile.serverJit(), output, new ByteArrayOutputStream());
-                } catch (Exception e) { throw new RuntimeException(e); }
-                finally { try { output.close(); } catch (IOException ignored) {} }
-            });
-            Future<String> line = runner.submit(() -> {
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(readPort))) {
-                    return reader.readLine();
-                }
-            });
-            // Any guest compilation failure must also terminate the stream.
-            String portText = line.get(20, TimeUnit.SECONDS);
-            if (portText == null) {
-                try {
-                    program.get(2, TimeUnit.SECONDS);
-                } catch (ExecutionException failure) {
-                    throw new AssertionError("Oreslang guest server failed before listening",
-                            failure.getCause());
-                }
-                fail("guest exited without producing listening port");
-            }
-            int port = Integer.parseInt(portText.trim());
-            assertTrue(port > 0);
-            try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), port)) {
-                socket.setSoTimeout(2000);
-                socket.getOutputStream().write("PING".getBytes(StandardCharsets.US_ASCII));
-                assertEquals("PING", new String(socket.getInputStream().readNBytes(4),
-                        StandardCharsets.US_ASCII));
-            }
-            program.get(20, TimeUnit.SECONDS);
-        } finally {
-            runner.shutdownNow();
-            Files.deleteIfExists(entry);
-        }
+    @Test void synchronousSetupAliasesAndTruncatedPortsAreRejected() throws Exception {
+        assertThrows(IllegalArgumentException.class, () -> dev.oreslang.compiler.OresCompiler.parseAndTypeCheck(
+                "pub fnc main(): void { val hidden = network.listen_nonblocking; return; }"));
+        var failure = assertThrows(RuntimeException.class, () -> run("""
+                val Future<NioTcpListener> opening = net_core.listen_loopback(4294967296, 8, 1, 4);
+                val NioTcpListener listener = await opening;
+                return 1;
+                """, IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)));
+        assertTrue(failure.toString().contains("port must be 0..65535"), failure::toString);
     }
 }

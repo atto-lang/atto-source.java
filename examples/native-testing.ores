@@ -39,5 +39,17 @@ pub routine main(): void {
   val TestOptions options = new TestOptions("", false, true);
   val RunSummary summary = run_suite(&suite, &options);
   require_success(&summary);
+  if summary.total != 4 | summary.passed != 3 | summary.failed != 0 | summary.skipped != 1; do
+    val Result<bool, String> invalid = Err("native test summary mismatch");
+    invalid.expect("structured test report");
+  fi
+  if summary.events.size != 4; do
+    val Result<bool, String> invalid = Err("native test event count mismatch");
+    invalid.expect("structured test events");
+  fi
+  if summary.events.get(3).status != "SKIP"; do
+    val Result<bool, String> invalid = Err("native skip event missing");
+    invalid.expect("structured test events");
+  fi
   return;
 }

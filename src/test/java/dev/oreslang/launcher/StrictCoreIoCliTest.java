@@ -15,7 +15,7 @@ final class StrictCoreIoCliTest {
         Files.writeString(entry, "pub fnc main(): void { fs.write_text_async(\""
                 + destination + "\", \"bad\"); return; }");
         assertEquals(1, OresMain.exitStatusForArgs(new String[]{
-                "--core-io=native-async-only", "--allow-write", entry.toString()}));
+                "--allow-write", entry.toString()}));
         assertFalse(Files.exists(destination));
     }
 
@@ -24,13 +24,14 @@ final class StrictCoreIoCliTest {
         Files.writeString(entry, """
                 import module net_core from "std/net";
                 pub async routine main(): void {
-                  val NioTcpListener listener = net_core.listen_loopback(0, 8, 1, 4);
+                  val Future<NioTcpListener> opening = net_core.listen_loopback(0, 8, 1, 4);
+                  val NioTcpListener listener = await opening;
                   val Future<void> closed = net_core.close_listener(listener);
                   await closed; return;
                 }
                 """);
         assertEquals(0, OresMain.exitStatusForArgs(new String[]{
-                "--core-io=native-async-only", "--allow-net", entry.toString()}));
+                "--allow-net", entry.toString()}));
     }
 
     @Test void duplicateAndUnknownCliPoliciesAreUsageErrors() {

@@ -13,6 +13,19 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NativeNioFutureReactorTest {
+    @Test void synchronousListenerFactoryIsNotAvailable() {
+        assertThrows(NoSuchMethodException.class, () -> NativeNioFutureReactor.class.getDeclaredMethod(
+                "loopback", int.class, int.class, int.class, int.class));
+    }
+
+    @Test void asynchronousBindFailureSettlesInsteadOfStrandingAnOpenFuture() throws Exception {
+        try (var reserved = new java.net.ServerSocket(0, 8, InetAddress.getLoopbackAddress())) {
+            var opening = NativeNioFutureReactor.loopbackAsync(reserved.getLocalPort(), 8, 1, 4);
+            var failed = assertThrows(ExecutionException.class, () -> opening.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IOException.class, failed.getCause());
+        }
+    }
+
     @Test void oversizedConnectionBudgetIsRefusedBeforeOpeningKernelResources() {
         assertThrows(ExecutionException.class,
                 () -> NativeNioFutureReactor.loopbackAsync(0, 8, Integer.MAX_VALUE, 1).get(2, TimeUnit.SECONDS));

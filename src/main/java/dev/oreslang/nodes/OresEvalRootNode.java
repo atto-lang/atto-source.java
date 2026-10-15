@@ -6578,10 +6578,10 @@ public final class OresEvalRootNode extends RootNode {
                             if (!(args.get(i) instanceof Number))
                                 throw new IllegalArgumentException("nonblocking TCP limits must be integers");
                         return context.listenNioLoopbackAsync(host,
-                                ((Number) args.get(1)).intValue(),
-                                ((Number) args.get(2)).intValue(),
-                                ((Number) args.get(3)).intValue(),
-                                ((Number) args.get(4)).intValue());
+                                checkedIoInt(args.get(1), 0, 65535, "port"),
+                                checkedIoInt(args.get(2), 1, 65535, "backlog"),
+                                checkedIoInt(args.get(3), 1, 65536, "max_connections"),
+                                checkedIoInt(args.get(4), 1, 65536, "max_pending"));
                     };
                     case "connect" -> (Invokable) network::connect;
                     case "connect_async" -> (Invokable) args -> {
@@ -6626,7 +6626,7 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.getFirst() instanceof Number maximum))
                             throw new IllegalArgumentException("read size must be an integer");
                         context.requireNioOwner(connection, "net.read");
-                        return connection.readBytesAsync(maximum.intValue());
+                        return connection.readBytesAsync(checkedIoInt(maximum, 1, 65536, "read size"));
                     };
                     case "write_bytes_async" -> (Invokable) args -> {
                         requireOne(args, "NioTcpConnection.write_bytes_async");
@@ -9498,6 +9498,15 @@ public final class OresEvalRootNode extends RootNode {
             return emitStdout(context, args, "stdio.println", true);
         }
     }
+    private static int checkedIoInt(Object value, int minimum, int maximum, String name) {
+        if (!(value instanceof Long) && !(value instanceof Integer))
+            throw new IllegalArgumentException(name + " must be an integer");
+        long number = ((Number) value).longValue();
+        if (number < minimum || number > maximum)
+            throw new IllegalArgumentException(name + " must be " + minimum + ".." + maximum);
+        return (int) number;
+    }
+
     private static Object emitStdout(OresContext context, List<Object> args, String operation, boolean newline) {
         context.requireCapability(IsolatePolicy.Capability.STDOUT, operation);
         requireOne(args, operation);

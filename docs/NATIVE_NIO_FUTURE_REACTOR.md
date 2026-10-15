@@ -1,3 +1,5 @@
+> Updated October 15: nonblocking core I/O is mandatory. Listener creation is asynchronous; see [current policy and verification](MANDATORY_NONBLOCKING_IO_2026-10-15.md). Legacy Java transports cannot be selected.
+
 # Experimental NIO Future reactor — nonblocking substrate
 
 `NativeNioFutureReactor` bridges nonblocking JDK NIO sockets to Oreslang's runtime-owned `OresFuture`, without executing guest callbacks on the reactor. A dedicated daemon **host reactor**, never an actor or ROOT carrier, waits for selector readiness; accept/read/write operations submit bounded commands and produce futures immediately.

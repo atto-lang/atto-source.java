@@ -24,7 +24,7 @@ final class StrictCoreIoPolicyTest {
                 IsolatePolicy.Capability.JAVA_INTEROP);
         String[] base = policy.applicationArguments(ExecutionProfile.serverJit());
         String[] args = Arrays.copyOf(base, base.length + 1);
-        args[base.length] = "--ores-core-io=native-async-only";
+        args = base; // No opt-in flag: every context is strict by default.
         return Context.newBuilder(OresLanguage.ID).allowAllAccess(false)
                 .arguments(OresLanguage.ID, args)
                 .in(new InputStream() { public int read() { fail("stdin touched"); return -1; } })
@@ -47,7 +47,7 @@ final class StrictCoreIoPolicyTest {
             try (Context context = strictContext()) {
                 var failure = assertThrows(PolyglotException.class,
                         () -> context.eval(OresLanguage.ID, "pub fnc main(): void { " + expression + "; return; }"), expression);
-                assertTrue(failure.getMessage().contains("blocking host I/O"), failure::toString);
+                assertTrue(failure.getMessage().contains("blocking I/O"), failure::toString);
             }
         }
         assertFalse(Files.exists(destination));
@@ -61,7 +61,7 @@ final class StrictCoreIoPolicyTest {
                       hidden("/tmp"); return;
                     }
                     """));
-            assertTrue(failure.getMessage().contains("blocking host I/O"), failure::toString);
+            assertTrue(failure.getMessage().contains("blocking I/O"), failure::toString);
         }
     }
 
@@ -80,7 +80,8 @@ final class StrictCoreIoPolicyTest {
         Files.writeString(entry, """
                 import module net_core from "std/net";
                 pub async routine main(): void {
-                  val NioTcpListener listener = net_core.listen_loopback(0, 8, 1, 4);
+                  val Future<NioTcpListener> opening = net_core.listen_loopback(0, 8, 1, 4);
+                  val NioTcpListener listener = await opening;
                   val Future<void> stopped = net_core.close_listener(listener);
                   await stopped; return;
                 }
@@ -90,6 +91,23 @@ final class StrictCoreIoPolicyTest {
                 RuntimePermissions.fromCapabilities(policy.capabilities()), PermissionCheckMode.COMPILE,
                 ExecutionProfile.serverJit(), Set.of(), System.getenv(),
                 new ByteArrayOutputStream(), new ByteArrayOutputStream(), CoreIoPolicy.NATIVE_ASYNC_ONLY).exitStatus());
+    }
+
+    @Test void defaultIsStrictAndLegacyCannotBeRequested() {
+        assertEquals(CoreIoPolicy.NATIVE_ASYNC_ONLY, CoreIoPolicy.fromApplicationArguments(new String[0]));
+        assertThrows(IllegalArgumentException.class, () -> CoreIoPolicy.fromApplicationArguments(
+                new String[]{"--ores-core-io=legacy-blocking"}));
+    }
+
+    @Test void retiredWorkerCannotExecuteEvenEmbeddingWork() throws Exception {
+        var ran = new java.util.concurrent.atomic.AtomicBoolean();
+        try (var worker = new AsyncNativeIo()) {
+            var future = worker.submit("legacy work", () -> { ran.set(true); return 1; });
+            var rejected = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> future.get(1, java.util.concurrent.TimeUnit.SECONDS));
+            assertInstanceOf(UnsupportedOperationException.class, rejected.getCause());
+            assertFalse(ran.get());
+        }
     }
 
     @Test void invalidOrDuplicatePoliciesFailClosed() {
