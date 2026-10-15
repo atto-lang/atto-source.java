@@ -184,6 +184,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
+    def test_duplicate_policy_entries_fail_before_any_source_upload(self):
+        for duplicate in ("trusted/ci", "TRUSTED/CI"):
+            with self.subTest(duplicate=duplicate):
+                self.route_calls.clear()
+                self.approval.write_text("trusted/ci\\n" + duplicate + "\\n")
+                with self.assertRaisesRegex(pub.Denied, "duplicate destination"):
+                    self.publish()
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
     def test_initial_unapproved_policy_fails_even_with_stale_preflight(self):
         self.approval.write_text("# reviewer removed the destination")
         with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
