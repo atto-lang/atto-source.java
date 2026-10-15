@@ -39,6 +39,61 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void awaitTerminationDoesNotOvertakePendingDoneObservers()
+            throws Exception {
+        // A terminal Future callback runs before the actor is removed from
+        // the registry. If unregisterActor() occurs too early, the host's
+        // awaitTermination() incorrectly returns true while this callback
+        // still owns the actor's finalization barrier.
+        CountDownLatch observerEntered = new CountDownLatch(1);
+        CountDownLatch releaseObserver = new CountDownLatch(1);
+        CountDownLatch waiterStarted = new CountDownLatch(1);
+        CountDownLatch waiterFinished = new CountDownLatch(1);
+        AtomicReference<Throwable> waiterFailure = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> actor = actors.spawnShared(
+                    () -> (mail, context) -> {
+                        throw GuestActorEffectSignal.raise();
+                    });
+            actor.done().whenCompleteRuntime((value, failure) -> {
+                observerEntered.countDown();
+                try {
+                    if (!releaseObserver.await(3, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("observer gate expired");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            actor.send("fail");
+            assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
+            Thread waiter = new Thread(() -> {
+                waiterStarted.countDown();
+                try {
+                    if (!actor.awaitTermination(3, TimeUnit.SECONDS)) {
+                        waiterFailure.set(new AssertionError("actor never finalized"));
+                    }
+                } catch (Throwable failure) {
+                    waiterFailure.set(failure);
+                } finally {
+                    waiterFinished.countDown();
+                }
+            }, "actor-termination-barrier-test");
+            waiter.setDaemon(true);
+            waiter.start();
+            try {
+                assertTrue(waiterStarted.await(3, TimeUnit.SECONDS));
+                assertFalse(waiterFinished.await(100, TimeUnit.MILLISECONDS),
+                        "awaitTermination returned before done observer completed");
+            } finally {
+                releaseObserver.countDown();
+            }
+            assertTrue(waiterFinished.await(3, TimeUnit.SECONDS));
+            assertNull(waiterFailure.get(),
+                    () -> "termination barrier failed: " + waiterFailure.get());
+        }
+    }
+
     @Test void parentShutdownBarrierCannotOvertakeChildDoneFuture() throws Exception {
         // Force a parent cancellation while its child is executing. The
         // child-done observer must run before the parent completes teardown;
