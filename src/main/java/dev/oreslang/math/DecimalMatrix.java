@@ -42,7 +42,12 @@ public final class DecimalMatrix {
             throw new IllegalArgumentException("matrix cell count mismatches shape");
         }
         for (int i = 0; i < values.length; i++) {
-            BigDecimal value = new BigDecimal(Objects.requireNonNull(values[i], "decimal cell"));
+            String literal = Objects.requireNonNull(values[i], "decimal cell");
+            // Reject excessively long input before BigDecimal(String) allocates.
+            if (literal.length() > MAX_DIGITS_PER_CELL + 32) {
+                throw new IllegalArgumentException("decimal literal budget exceeded");
+            }
+            BigDecimal value = new BigDecimal(literal);
             validateDecimal(value);
             matrix.cells[i] = value;
         }
