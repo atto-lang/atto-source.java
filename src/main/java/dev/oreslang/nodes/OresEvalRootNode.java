@@ -39,6 +39,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
@@ -1925,13 +1926,12 @@ public final class OresEvalRootNode extends RootNode {
             // The statement's completion can enter another statement or finish
             // the entire source task. If that downstream work throws, do not
             // misreport it as a second completion for the current statement.
-            final boolean[] delivered = {false};
+            final AtomicBoolean delivered = new AtomicBoolean();
             SourceFlowCont once = (t, flow) -> {
-                if (delivered[0]) {
+                if (!delivered.compareAndSet(false, true)) {
                     throw new IllegalStateException(
                             "source statement continuation completed more than once");
                 }
-                delivered[0] = true;
                 continuation.accept(t, flow);
             };
             runSuspendableStatementDispatch(task, stmt, env, defers, once, delivered);
@@ -2296,7 +2296,7 @@ public final class OresEvalRootNode extends RootNode {
                 // The downstream consumer owns any exception after delivery.
                 // In particular, avoid executing catch/finally/defer twice
                 // when the consumer itself terminates with an error.
-                if (delivered[0]) throw failure;
+                if (delivered.get()) throw failure;
                 continuation.accept(
                         task,
                         SourceFlow.throwing(failure));
@@ -3070,13 +3070,12 @@ public final class OresEvalRootNode extends RootNode {
             // A downstream callback can synchronously throw while completing
             // a different source statement (or resuming a waiting Future).
             // Never reinterpret that throwable as a second expression failure.
-            final boolean[] delivered = {false};
+            final AtomicBoolean delivered = new AtomicBoolean();
             SourceValueCont once = (t, value, failure) -> {
-                if (delivered[0]) {
+                if (!delivered.compareAndSet(false, true)) {
                     throw new IllegalStateException(
                             "source expression continuation completed more than once");
                 }
-                delivered[0] = true;
                 continuation.accept(t, value, failure);
             };
             evalSuspendableExprDispatch(task, expr, env, once, delivered);
@@ -3643,7 +3642,7 @@ public final class OresEvalRootNode extends RootNode {
                 // If delivery already began, the throwable belongs to the
                 // downstream continuation. Reporting it here would call the
                 // same continuation twice, replaying cleanup or callbacks.
-                if (delivered[0]) throw failure;
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
