@@ -3039,7 +3039,8 @@ public final class OwnershipChecker {
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),
-                        param.name(), param.structural(), param.mutable()))
+                        param.name(), param.structural(), param.mutable(),
+                        param.callbackDelivery()))
                 .toList();
         return new CallSignature(specialized, substituteType(result, bindings));
     }
