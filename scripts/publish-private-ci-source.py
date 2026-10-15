@@ -255,7 +255,7 @@ def require_reviewed_source_snapshot(expected_commit, expected_tree, destination
         raise Denied("reviewed source-snapshot policy is not valid UTF-8/base64") from exc
     if len(raw) > 16 * 1024 or metadata.get("size") != len(raw):
         raise Denied("reviewed source-snapshot policy has invalid size")
-    digest = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw).hexdigest()
+    digest = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw).hexdigest()
     if valid_sha(metadata.get("sha")) != digest:
         raise Denied("reviewed source-snapshot policy blob SHA does not match its bytes")
     if reviewed_blob_sha is not None and digest != reviewed_blob_sha:
