@@ -106,6 +106,39 @@ final class ActorMiddlewareDeclarationTest {
     }
 
     @Test
+    void misplacedMiddlewareDecoratorsAreNeverSilentlyIgnored() {
+        String[] sources = {
+                """
+                @ActorMiddleware(Clean)
+                define module App as
+                    pub fnc foo(): int { return 1; }
+                end
+                """,
+                """
+                define actor Foo as
+                    @ActorMiddleware(Clean)
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                """,
+                """
+                @ActorMiddleware(Clean)
+                pub fnc work(): int { return 1; }
+                """,
+                """
+                define class Bag as
+                    @ActorMiddleware(Clean)
+                    let int field;
+                end
+                """
+        };
+        for (String source : sources) {
+            var failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(failure.getMessage().contains("@ActorMiddleware"), failure.getMessage());
+        }
+    }
+
+    @Test
     void unknownMiddlewareCannotCompileAsAWorkingDecorator() {
         var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 @ActorMiddleware(Nonexistent)
