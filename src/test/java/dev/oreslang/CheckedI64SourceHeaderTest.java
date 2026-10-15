@@ -74,6 +74,22 @@ final class CheckedI64SourceHeaderTest {
     }
 
     @Test
+    void deterministicMalformedSpacingInsideAndOutsideNestedComments() {
+        for (int i = 0; i < 4096; i++) {
+            String gap = i % 3 == 0
+                    ? " ".repeat(i % 5 + 2)
+                    : (i % 3 == 1 ? "\t" : " \t");
+            String malformed = "//" + gap + "oreslang:checked-i64-v1\n";
+            rejected(malformed + MAIN);
+            rejected(DIRECTIVE + malformed + MAIN);
+            String hidden = "/* outer /* nested\n" + malformed + "*/ outer */\n";
+            assertFalse(CheckedI64SourceHeader.isEnabled(hidden + MAIN));
+            assertTrue(CheckedI64SourceHeader.isEnabled(
+                    DIRECTIVE + hidden + MAIN));
+        }
+    }
+
+    @Test
     void deterministicManyLinePrefixesDoNotChangeExactOptIn() {
         Random random = new Random(20261015L);
         for (int i = 0; i < 4096; i++) {
