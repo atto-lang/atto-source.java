@@ -78,6 +78,53 @@ final class ReservedControlDispatcherTest {
     }
 
     @Test
+    void assertionInControlRetryDoesNotAbortAlreadyAdmittedAffinityTurn() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ActorAffinityDispatcher lanes = new ActorAffinityDispatcher(
+                1, 1, 1, new int[0], ignored -> worker);
+        AtomicInteger executed = new AtomicInteger();
+        try {
+            lanes.executeOnLane(0, executed::incrementAndGet);
+            long observedEpoch = lanes.controlRetryEpoch();
+            assertTrue(lanes.registerControlRetry(0, () -> {
+                throw new AssertionError("synthetic host-only scheduler bug");
+            }, observedEpoch));
+            // This is the actual QueuedTurn.run() path: the host retry
+            // throws during permit release, but the actor turn must proceed.
+            worker.runNext();
+            assertEquals(1, executed.get());
+            assertEquals(0, worker.pending());
+            lanes.executeControlOnLane(0, executed::incrementAndGet);
+            worker.runNext();
+            assertEquals(2, executed.get());
+        } finally {
+            lanes.shutdownNow();
+        }
+    }
+
+    @Test
+    void assertionInControlRetryDoesNotAbortAlreadyAdmittedNonAffinityTurn() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ReservedActorDispatcher dispatcher = new ReservedActorDispatcher(worker, 1, 1);
+        AtomicInteger executed = new AtomicInteger();
+        try {
+            dispatcher.execute(executed::incrementAndGet);
+            long epoch = dispatcher.controlRetryEpoch();
+            assertTrue(dispatcher.registerControlRetry(
+                    () -> { throw new AssertionError("synthetic host-only scheduler bug"); },
+                    epoch));
+            worker.runNext();
+            assertEquals(1, executed.get());
+            assertEquals(0, worker.pending());
+            dispatcher.executeControl(executed::incrementAndGet);
+            worker.runNext();
+            assertEquals(2, executed.get());
+        } finally {
+            dispatcher.shutdownNow();
+        }
+    }
+
+    @Test
     void laneControlHasSeparateBudgetAndPreservesLaneIdentity() {
         RecordingExecutor worker = new RecordingExecutor();
         ActorAffinityDispatcher lanes = new ActorAffinityDispatcher(
