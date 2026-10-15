@@ -109,6 +109,70 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void concurrentRegistrationsCancellationsAndReleasesRemainBounded()
+            throws Exception {
+        final int total = 4096;
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(total);
+        java.util.concurrent.atomic.AtomicIntegerArray deliveries =
+                new java.util.concurrent.atomic.AtomicIntegerArray(total);
+        java.util.concurrent.atomic.AtomicInteger cancellations =
+                new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch start =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService workers =
+                java.util.concurrent.Executors.newFixedThreadPool(8);
+        try {
+            java.util.List<java.util.concurrent.Future<?>> tasks =
+                    new java.util.ArrayList<>();
+            for (int producer = 0; producer < 4; ++producer) {
+                final int stride = producer;
+                tasks.add(workers.submit(() -> {
+                    start.await();
+                    for (int i = stride; i < total; i += 4) {
+                        final int index = i;
+                        Runnable callback = () -> deliveries.incrementAndGet(index);
+                        long epoch = queue.epoch();
+                        if (!queue.register(callback, epoch, index % 7)) {
+                            throw new AssertionError("unexpected retry queue exhaustion");
+                        }
+                        if (index % 13 == 0) {
+                            queue.cancel(callback);
+                            cancellations.incrementAndGet();
+                        }
+                    }
+                    return null;
+                }));
+            }
+            for (int consumer = 0; consumer < 4; ++consumer) {
+                final int lane = consumer;
+                tasks.add(workers.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < total; ++i) {
+                        queue.slotReleased((lane + i) % 7);
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var task : tasks) task.get(10, TimeUnit.SECONDS);
+            // Any registrations after the concurrent releases must still be
+            // drained by later real queue-slot-release events.
+            for (int i = 0; i < total; ++i) queue.slotReleased(i % 7);
+            int observed = 0;
+            for (int i = 0; i < total; ++i) {
+                int count = deliveries.get(i);
+                assertTrue(count <= 1, "CONTROL callback ran twice for " + i);
+                observed += count;
+            }
+            assertEquals(0, queue.pending());
+            assertTrue(observed >= total - cancellations.get(),
+                    "a noncancelled registered callback was lost");
+        } finally {
+            start.countDown();
+            workers.shutdownNow();
+        }
+    }
+
     @Test void failedRetryCallbackDoesNotPreventCurrentCarrierFromRunning() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         AtomicInteger second = new AtomicInteger();
