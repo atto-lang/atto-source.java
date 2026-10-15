@@ -608,11 +608,28 @@ public final class OresScheduler implements AutoCloseable {
         // arbitrary waiter may block. A blocked subscriber for task A must
         // not prevent task B's await registration from being detached, or
         // prevent B from retaining only live physical execution resources.
+        NativeActorTurnKernel.NativeStatusFailure nativeShutdownFailure = null;
         for (TaskRunner<?> task : admitted) {
-            task.revokeFromSchedulerClose();
+            try {
+                task.revokeFromSchedulerClose();
+            } catch (NativeActorTurnKernel.NativeStatusFailure failure) {
+                // Native settlement may wait for cleanup tickets, but every
+                // other task MUST still be revoked before Future notification.
+                if (nativeShutdownFailure == null) nativeShutdownFailure = failure;
+                else if (nativeShutdownFailure != failure)
+                    nativeShutdownFailure.addSuppressed(failure);
+            }
         }
         for (TaskRunner<?> task : admitted) {
-            task.publishCancelledFromSchedulerClose();
+            try {
+                task.publishCancelledFromSchedulerClose();
+            } catch (NativeActorTurnKernel.NativeStatusFailure failure) {
+                // A synchronous cancel callback may attempt native retirement
+                // again. Never let that stop cancellation of other tasks.
+                if (nativeShutdownFailure == null) nativeShutdownFailure = failure;
+                else if (nativeShutdownFailure != failure)
+                    nativeShutdownFailure.addSuppressed(failure);
+            }
         }
         // Do not clear tasks here: cancelled Futures may settle while guest
         // carriers still execute. Each TaskRunner removes itself only after
@@ -636,6 +653,11 @@ public final class OresScheduler implements AutoCloseable {
                 }
             }
         }
+        // The native witness has NOT retired: report this after revoking
+        // every admitted task and shutting down the physical executor.
+        // An authorized host may close its pending cleanup ticket and call
+        // retryNativeQuiescentTasks(); this does not rerun guest code.
+        if (nativeShutdownFailure != null) throw nativeShutdownFailure;
     }
 
     private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
