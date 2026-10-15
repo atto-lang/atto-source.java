@@ -187,6 +187,9 @@ def collect_source(root, trusted_root):
     def walk(directory_fd, prefix, depth):
         nonlocal total, visited, entered_dirs
         entered_dirs += 1
+        directory_before = os.fstat(directory_fd)
+        if not stat.S_ISDIR(directory_before.st_mode):
+            raise Denied("source directory changed during traversal")
         if depth > 64 or entered_dirs > MAX_DIRECTORIES:
             raise Denied("source directory nesting or count exceeds safety limit")
         # scandir() can stream entries from an opened descriptor. Do not use
@@ -243,9 +246,11 @@ def collect_source(root, trusted_root):
                             raise Denied("file exceeds source mirror limit")
                         data = stream.read(MAX_SINGLE + 1)
                         after_read = os.fstat(stream.fileno())
-                        if (opened_file.st_size, opened_file.st_mtime_ns, opened_file.st_ctime_ns,
-                                opened_file.st_mode) != (after_read.st_size, after_read.st_mtime_ns,
-                                after_read.st_ctime_ns, after_read.st_mode):
+                        if (len(data) != opened_file.st_size
+                                or (opened_file.st_size, opened_file.st_mtime_ns,
+                                    opened_file.st_ctime_ns, opened_file.st_mode)
+                                != (after_read.st_size, after_read.st_mtime_ns,
+                                    after_read.st_ctime_ns, after_read.st_mode)):
                             raise Denied("source file changed while snapshotting")
                     if len(data) > MAX_SINGLE:
                         raise Denied("file exceeds source mirror limit")
@@ -258,6 +263,12 @@ def collect_source(root, trusted_root):
                     raise Denied("source contains symlink or special file")
             except OSError as exc:
                 raise Denied("source path changed or cannot be opened safely") from exc
+        directory_after = os.fstat(directory_fd)
+        if (directory_before.st_dev, directory_before.st_ino,
+                directory_before.st_mtime_ns, directory_before.st_ctime_ns)
+                != (directory_after.st_dev, directory_after.st_ino,
+                    directory_after.st_mtime_ns, directory_after.st_ctime_ns):
+            raise Denied("source directory changed during traversal")
 
     try:
         anchor_fd = os.open(trusted, directory_flags)
