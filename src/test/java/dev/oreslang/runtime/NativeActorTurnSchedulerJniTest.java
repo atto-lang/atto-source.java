@@ -137,6 +137,11 @@ final class NativeActorTurnSchedulerJniTest {
                         "retry must not invoke a non-idempotent trusted callback twice");
                 assertEquals(1, liveTaskCountForTest(scheduler),
                         "unresolved callback failure must remain visible to VM supervisor");
+                var shutdown = assertThrows(IllegalStateException.class,
+                        scheduler::close);
+                assertTrue(shutdown.getMessage().contains("trusted native quiescence"),
+                        "close must report the failed cleanup callback");
+                assertEquals(1, calls.get(), "shutdown must not replay failed cleanup");
                 kernel.stop();
             }
         }
