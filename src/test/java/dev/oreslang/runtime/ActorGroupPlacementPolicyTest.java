@@ -198,6 +198,44 @@ final class ActorGroupPlacementPolicyTest {
     }
 
     @Test
+    void rejectedActorOwnedPoliciesDoNotLeakCreatorMembershipQuota() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var rejectedPolicy = new ActorGroupPlacementPolicy(
+                    ActorGroupPlacementPolicy.CpuAffinity.PREFER_SAME_CORE,
+                    Integer.MAX_VALUE,
+                    ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0);
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            var creator = runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    factoryContext -> (message, context) -> {
+                        try {
+                            for (int i = 0; i < 128; i++) {
+                                assertThrows(UnsupportedOperationException.class,
+                                        () -> context.runtime().createActorGroup(rejectedPolicy));
+                            }
+                            var admitted = context.runtime().createActorGroup();
+                            assertEquals(ActorGroupPlacementPolicy.unrestricted(),
+                                    admitted.placementPolicy());
+                            assertEquals(1, context.runtime().actorGroupCount());
+                            admitted.close();
+                            assertEquals(0, context.runtime().actorGroupCount());
+                        } catch (Throwable failure) {
+                            error.set(failure);
+                        } finally {
+                            done.countDown();
+                        }
+                    });
+            creator.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertNull(error.get(), "unsupported creator policies must not consume actor membership slots");
+            assertEquals(0, runtime.actorGroupCount());
+            creator.stop();
+            assertTrue(creator.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void placementInspectionIsMemberOrSupervisorOnly() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var group = runtime.createActorGroup();
