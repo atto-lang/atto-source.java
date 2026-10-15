@@ -133,7 +133,7 @@ def explore(owners):
 
 
 def main():
-    for owners in ((0, 0), (0, 0, 1)):
+    for owners in ((0,), (0, 1), (0, 0), (0, 0, 1), (0, 1, 0), (0, 1, 1), (0, 1, 2)):
         nodes, edges = explore(owners)
         print(f"PASS owners={owners}: {nodes} states, {edges} transitions")
     # Negative control: a write without its authenticated ledger entry.
@@ -141,6 +141,8 @@ def main():
     assert not invariant(mutant, (0,))
     bare_store = Model((Actor(data=1),), (Turn(),))
     assert not invariant(bare_store, (0,))
+    overlap = Model((Actor(readers=1, writer=0),), (Turn("write", 0),))
+    assert not invariant(overlap, (0,))
     print("PASS unsafe-write mutant rejected")
 
 
