@@ -24,6 +24,7 @@ public final class ActorRaceInstrumentation {
     private static final int MAX_TRACKED_THREADS = 4_096;
     private static final int MAX_LIVE_ACTORS = 100_000;
     private static final int MAX_SYNC_DOMAINS = 100_000;
+    private static final long MAX_ACCESS_EPOCHS = 1_000_000L;
     private static final ActorRaceInstrumentation RUNTIME = new ActorRaceInstrumentation();
     // The public test CLI sets ORES_RACE_REQUIRED=1 for its child backend.
     // Activation does not itself imply that all guest memory accesses are probed.
@@ -62,6 +63,7 @@ public final class ActorRaceInstrumentation {
     private final IdentityHashMap<Object, Map<String, Location>> memory = new IdentityHashMap<>();
     private final IdentityHashMap<Object, Clock> synchronization = new IdentityHashMap<>();
     private int locations;
+    private long trackedAccessEpochs;
     private long accesses;
     private long races;
     private long actorChecks;
@@ -140,7 +142,12 @@ public final class ActorRaceInstrumentation {
     public synchronized void retireMemoryDomain(Object memoryOwner) {
         Objects.requireNonNull(memoryOwner, "memory owner identity");
         Map<String, Location> fields = memory.remove(memoryOwner);
-        if (fields != null) locations -= fields.size();
+        if (fields != null) {
+            locations -= fields.size();
+            for (Location location : fields.values()) {
+                trackedAccessEpochs -= location.reads.size() + location.writes.size();
+            }
+        }
     }
 
     /** Host synchronization release. Caller must guarantee real external synchronization. */
@@ -201,6 +208,13 @@ public final class ActorRaceInstrumentation {
                 }
             }
         }
+        boolean firstEpoch = write
+                ? !location.writes.containsKey(thread)
+                : !location.reads.containsKey(thread);
+        if (firstEpoch && trackedAccessEpochs >= MAX_ACCESS_EPOCHS) {
+            throw new IllegalStateException("race monitor access epoch capacity exceeded");
+        }
+        if (firstEpoch) trackedAccessEpochs++;
         if (conflict) races++;
         if (write) {
             location.writes.put(thread, clock.time(thread));
