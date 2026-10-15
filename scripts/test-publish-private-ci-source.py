@@ -24,7 +24,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
-        self.approval.write_text("trusted/ci\n")
+        self.approval.write_text("trusted/ci 123\n")
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
@@ -123,7 +123,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_preflight_repository_identity_pin_cannot_change_before_source_publish(self):
         # Simulate a valid earlier authorization for a different numeric ID.
         with patch.object(pub, "require_preflight", return_value=321):
-            with self.assertRaisesRegex(pub.Denied, "numeric repository identity"):
+            with self.assertRaisesRegex(pub.Denied, "numeric ID differs from reviewed approval policy"):
                 self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
@@ -185,14 +185,34 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_duplicate_policy_entries_fail_before_any_source_upload(self):
-        for duplicate in ("trusted/ci", "TRUSTED/CI"):
+        for duplicate in ("trusted/ci 123", "TRUSTED/CI 123", "other/ci 123"):
             with self.subTest(duplicate=duplicate):
                 self.route_calls.clear()
-                self.approval.write_text("trusted/ci\n" + duplicate + "\n")
-                with self.assertRaisesRegex(pub.Denied, "duplicate destination"):
+                self.approval.write_text("trusted/ci 123\n" + duplicate + "\n")
+                with self.assertRaisesRegex(pub.Denied, "duplicate repository names or IDs"):
                     self.publish()
                 self.assertFalse(any(method == "POST"
                                      for method, _, _ in self.route_calls))
+
+    def test_policy_numeric_identity_mismatch_blocks_before_source_read(self):
+        # A name-only review cannot authorize a recreated repository.
+        self.approval.write_text("trusted/ci 456\\n")
+        with self.assertRaisesRegex(pub.Denied, "numeric ID differs from reviewed approval policy"):
+            self.publish()
+        self.assertEqual(self.route_calls, [])
+
+    def test_name_only_or_malformed_numeric_policy_never_authorizes(self):
+        for malformed in (
+            "trusted/ci\\n", "trusted/ci 0\\n", "trusted/ci -1\\n",
+            "trusted/ci 0123\\n", "trusted/ci\\t123\\n",
+            "trusted/ci 123 # misleading comment\\n", "trusted/ci 123 \\n"
+        ):
+            with self.subTest(malformed=malformed):
+                self.approval.write_text(malformed)
+                self.route_calls.clear()
+                with self.assertRaisesRegex(pub.Denied, "numeric repository ID"):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_initial_unapproved_policy_fails_even_with_stale_preflight(self):
         self.approval.write_text("# reviewer removed the destination")
@@ -309,7 +329,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_symlink_swap_between_check_and_read_rejected(self):
         outside = self.root / "outside-approved-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 123\n")
         self.approval.write_text("# no approval\n")
         original_read = Path.read_bytes
         def malicious_read(path):
@@ -330,7 +350,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_parent_directory_swap_rejected(self):
         outside = self.root / "external-approved-dir"
         outside.mkdir()
-        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci\n")
+        (outside / "private-ci-approved-repositories.txt").write_text("trusted/ci 123\n")
         self.approval.write_text("# no approval\n")
         original_open = pub.os.open
         replaced = [False]
@@ -419,7 +439,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         import os
         import threading
         outside = self.root / "outside-policy"
-        outside.write_text("trusted/ci\n")
+        outside.write_text("trusted/ci 123\n")
         self.approval.write_text("# no approval\n")
         stop = threading.Event()
         def attacker():
