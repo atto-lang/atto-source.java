@@ -19,6 +19,7 @@ final class SourceAdmissionBudgetTest {
     @Test void rejectsTooManySourceUnits() {
         SourceAdmissionBudget budget = new SourceAdmissionBudget();
         for (int i = 0; i < SourceAdmissionBudget.MAX_UNITS; i++) budget.admit(0, 0);
+        assertThrows(IllegalArgumentException.class, () -> budget.checkCanAdmitUnit(0));
         assertThrows(IllegalArgumentException.class, () -> budget.admit(0, 0));
     }
 
