@@ -237,6 +237,61 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void cancellationDuringSupervisorCallbackRejectsOneForOneRestart()
+            throws Exception {
+        CountDownLatch callbackEntered = new CountDownLatch(1);
+        CountDownLatch releaseCallback = new CountDownLatch(1);
+        CountDownLatch callbackFinished = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> failedChild = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> child = actors.spawnChildShared(
+                                    ignored -> (mail, childContext) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            failedChild.set(child);
+                            child.send("fail");
+                        }
+
+                        @Override public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            callbackEntered.countDown();
+                            try {
+                                if (!releaseCallback.await(3, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException("callback gate expired");
+                                }
+                                assertThrows(java.util.concurrent.CancellationException.class,
+                                        () -> actors.restartCurrentChildOneForOne(
+                                                notice, failedChild.get(),
+                                                ignored -> (mail, ignoredContext) -> {}),
+                                        "cancellation must reject restart before it consumes notice");
+                            } catch (Throwable failure) {
+                                callbackFailure.set(failure);
+                            } finally {
+                                callbackFinished.countDown();
+                            }
+                        }
+                    });
+            parent.send("spawn");
+            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+            try {
+                assertTrue(parent.cancel(), "structured cancellation should win");
+            } finally {
+                releaseCallback.countDown();
+            }
+            assertTrue(callbackFinished.await(3, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(),
+                    () -> "cancelled supervisor restart admitted: " + callbackFailure.get());
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(failedChild.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void oneForOneRestartBudgetFailsClosedAfterThreeFailures()
             throws Exception {
         CountDownLatch budgetReached = new CountDownLatch(1);
