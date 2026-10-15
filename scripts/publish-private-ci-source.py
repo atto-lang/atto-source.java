@@ -33,6 +33,7 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
+SOURCE_PROTECTION_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 PROTECTED_POLICY_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
     ".github/private-ci-approved-repositories.txt?ref=main"
@@ -178,6 +179,43 @@ def checked_policy_fingerprint(root, repository):
     return hashlib.sha256(contents).digest(), approved_id, git_blob_sha
 
 
+def require_independent_merge_gates(rules):
+    """Deny transfer when classic branch protection omits key review gates."""
+    if not isinstance(rules, dict):
+        raise Denied("source branch protection rules are unavailable")
+    reviews = rules.get("required_pull_request_reviews")
+    checks = rules.get("required_status_checks")
+    admins = rules.get("enforce_admins")
+    if (not isinstance(reviews, dict)
+            or type(reviews.get("required_approving_review_count")) is not int
+            or reviews["required_approving_review_count"] < 1
+            or reviews.get("dismiss_stale_reviews") is not True):
+        raise Denied("source branch lacks enforced independent fresh reviews")
+    bypass = reviews.get("bypass_pull_request_allowances", {})
+    if (not isinstance(bypass, dict)
+            or any(not isinstance(bypass.get(key, []), list) or bypass.get(key)
+                   for key in ("users", "teams", "apps"))):
+        raise Denied("source branch permits review bypass")
+    if not isinstance(checks, dict) or checks.get("strict") is not True:
+        raise Denied("source branch lacks strict required CI checks")
+    contexts = checks.get("contexts", [])
+    entries = checks.get("checks", [])
+    if (not isinstance(contexts, list) or not isinstance(entries, list)
+            or not (contexts or entries)
+            or any(not isinstance(v, str) or not v.strip() for v in contexts)
+            or any(not isinstance(v, dict)
+                   or not isinstance(v.get("context"), str)
+                   or not v["context"].strip() for v in entries)):
+        raise Denied("source branch has no valid required checks")
+    if not isinstance(admins, dict) or admins.get("enabled") is not True:
+        raise Denied("source branch lacks administrator protection")
+    for key in ("allow_force_pushes", "allow_deletions"):
+        setting = rules.get(key)
+        if setting is not None and (not isinstance(setting, dict)
+                                    or setting.get("enabled") is not False):
+            raise Denied("source branch allows unsafe ref changes")
+
+
 def require_protected_main_policy(approved_policy):
     """Require a known private source and protected main, not just its blob.
 
@@ -200,6 +238,7 @@ def require_protected_main_policy(approved_policy):
             or not isinstance(branch.get("commit"), dict)):
         raise Denied("source main branch is not protected")
     valid_sha(branch["commit"].get("sha"))
+    require_independent_merge_gates(gh_api(SOURCE_PROTECTION_ROUTE))
     metadata = gh_api(PROTECTED_POLICY_ROUTE)
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):

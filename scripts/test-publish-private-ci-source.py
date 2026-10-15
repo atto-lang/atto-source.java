@@ -40,6 +40,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_private = [True] * 100
         self.source_visibility = ["private"] * 100
         self.source_protected = [True] * 100
+        self.protection_rules = {
+            "required_pull_request_reviews": {
+                "required_approving_review_count": 1,
+                "dismiss_stale_reviews": True,
+                "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []}},
+            "required_status_checks": {"strict": True, "contexts": ["ci/test"]},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
         self.visibility = ["private"] * 100
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
@@ -58,6 +68,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
                         commit={"sha": A})
+        if route == pub.SOURCE_PROTECTION_ROUTE:
+            return self.protection_rules
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == f"repos/{pub.SOURCE_REPOSITORY}/git/commits/" + D:
@@ -137,6 +149,53 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                 self.root, self.expected_tree, bad)
                 self.assertEqual(self.route_calls, [])
+
+    def test_unsafe_merge_admission_rules_block_all_source_writes(self):
+        import copy
+        invalid = [
+            ("required_pull_request_reviews", None),
+            ("required_pull_request_reviews", {
+                "required_approving_review_count": 0,
+                "dismiss_stale_reviews": True}),
+            ("required_pull_request_reviews", {
+                "required_approving_review_count": 1,
+                "dismiss_stale_reviews": False}),
+            ("required_status_checks", {"strict": True, "contexts": []}),
+            ("required_status_checks", {"strict": False, "contexts": ["ci/test"]}),
+            ("enforce_admins", {"enabled": False}),
+            ("allow_force_pushes", {"enabled": True}),
+            ("allow_deletions", {"enabled": True}),
+        ]
+        for key, value in invalid:
+            with self.subTest(key=key, value=value):
+                existing = self.protection_rules
+                self.protection_rules = copy.deepcopy(existing)
+                self.protection_rules[key] = value
+                self.route_calls.clear()
+                try:
+                    with self.assertRaises(pub.Denied):
+                        self.publish()
+                    self.assertFalse(any(method == "POST"
+                                         for method, _, _ in self.route_calls))
+                finally:
+                    self.protection_rules = existing
+
+    def test_review_bypass_is_never_transfer_authorization(self):
+        import copy
+        for kind in ("users", "teams", "apps"):
+            with self.subTest(kind=kind):
+                existing = self.protection_rules
+                self.protection_rules = copy.deepcopy(existing)
+                self.protection_rules["required_pull_request_reviews"][
+                    "bypass_pull_request_allowances"][kind] = [{"login": "bypass"}]
+                self.route_calls.clear()
+                try:
+                    with self.assertRaisesRegex(pub.Denied, "review bypass"):
+                        self.publish()
+                    self.assertFalse(any(method == "POST"
+                                         for method, _, _ in self.route_calls))
+                finally:
+                    self.protection_rules = existing
 
     def test_unprotected_source_main_denies_without_source_write(self):
         self.source_protected = [False] * 100
