@@ -6875,8 +6875,11 @@ public final class ActorRuntime implements AutoCloseable {
         // Caller holds lifecycleLock. Never publish success while any
         // TurnExecutor has the physical carrier or a scheduled turn is queued.
         private void collectCarrierQuiescenceLocked(List<OresFuture<Void>> ready) {
+            // Finalization discards queued work rather than processing it.
+            // Waiting for that mailbox to drain successfully would strand
+            // cancellation/shutdown observers after the actor is terminated.
             if (carrierActive || activeTurns != 0 || scheduled.get()
-                    || hasQueuedWorkLocked()) return;
+                    || (!finalized && hasQueuedWorkLocked())) return;
             for (int i = pendingCarrierQuiescence.size() - 1; i >= 0; i--) {
                 DrainWaiter waiter = pendingCarrierQuiescence.get(i);
                 if (finalized || lastProcessedUserMessageSequence >= waiter.sequence()) {
