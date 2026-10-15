@@ -664,14 +664,23 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         requireBlockingAllowed();
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
-
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        RuntimeWaiterRegistration<T> waiter =
+                whenCompleteRuntimeCancellable((value, failure) -> done.countDown());
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                // Timed polling must not retain one producer waiter per
+                // timeout until the producer eventually settles.
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // An interrupted host waiter is also no longer interested in
+            // settlement. The claimed flag arbitrates with completion drain.
+            // Never detach a runtime waiter while holding a channel lock.
+            waiter.detach();
         }
-        return state.get();
     }
 
     private static void requireBlockingAllowed() {

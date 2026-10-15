@@ -34,8 +34,8 @@ jobs:
           distribution: graalvm
           version: '25.3'
           cache: maven
-      - name: Compile, typecheck and execute the same fixture on JVM
-        run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest' test
+      - name: Compile and execute the same fixture plus Future waiter lifecycle regressions
+        run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest' test
   native-compiled-guest:
     needs: syntax-and-guest
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
