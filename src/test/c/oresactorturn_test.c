@@ -430,7 +430,7 @@ static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
     CHECK(ores_turn_note_terminal_injected(vm, lease, foreign_source)
           == ORES_TURN_DENIED);
     struct terminal_identity_args probe = {vm, lease, source,
-            ORES_TURN_INVALID, ORES_TURN_INVALID};
+            ORES_TURN_INVALID, ORES_TURN_INVALID, ORES_TURN_INVALID};
     pthread_t thread;
     CHECK(pthread_create(&thread, NULL, wrong_carrier_terminal_probe,
                          &probe) == 0);
