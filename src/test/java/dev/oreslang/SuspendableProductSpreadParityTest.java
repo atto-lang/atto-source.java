@@ -365,7 +365,7 @@ final class SuspendableProductSpreadParityTest {
 
     @Test
     void standaloneOwnershipRejectsRebindableAndAliasedRecordPacks() {
-        String function = "fnc add(int a, int b): int { return a + b; }\\n";
+        String function = "fnc add(int a, int b): int { return a + b; }\n";
         for (String local : new String[] {
                 "let args = (b: 23, a: 19);",
                 "const source = (b: 23, a: 19); const args = source;",
