@@ -101,6 +101,44 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     /** Extract the actual YAML job property at exactly four-space indentation. */
+    @Test
+    void disguisedOrDuplicatedAdmissionConditionsAreNotAccepted() throws Exception {
+        String workflow = Files.readString(WORKFLOW);
+        String job = workflow.substring(workflow.indexOf("  validate-exact-main:"));
+        String reviewed = jobProperty(job, "if");
+
+        // A presence-only assertion would accept the reviewed gate in a YAML
+        // comment while letting the executable job run unconditionally.
+        String permissive = job.replace("    " + reviewed + "\n",
+                "    if: ${{ true }}\n    # " + reviewed + "\n");
+        assertEquals("if: ${{ true }}", jobProperty(permissive, "if"));
+        assertNotEquals(reviewed, jobProperty(permissive, "if"));
+
+        String duplicate = job.replace("    " + reviewed + "\n",
+                "    " + reviewed + "\n    " + reviewed + "\n");
+        assertThrows(AssertionError.class, () -> jobProperty(duplicate, "if"),
+                "duplicate conditions must not pass as a single reviewed guard");
+
+        String injectedTrigger = workflow.replace("\non:\n",
+                "\non:\n  pull_request:\n");
+        assertNotEquals("\non:\n  workflow_dispatch:\n",
+                between(injectedTrigger, "\non:\n", "\npermissions:"));
+    }
+
+    @Test
+    void securityCriticalFilesMustRequestCodeOwnerReview() throws Exception {
+        String owners = Files.readString(Path.of(".github/CODEOWNERS"));
+        for (String exact : new String[] {
+                "/.github/CODEOWNERS @ORESoftware",
+                "/.github/workflows/private-exact-main-validation.yml @ORESoftware",
+                "/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware",
+                "/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware"
+        }) {
+            assertTrue(owners.lines().anyMatch(exact::equals),
+                    "missing private-runner CODEOWNERS rule: " + exact);
+        }
+    }
+
     private static String jobProperty(String job, String property) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(
                 "(?m)^    " + java.util.regex.Pattern.quote(property) + ": ([^\\r\\n]+)$")
