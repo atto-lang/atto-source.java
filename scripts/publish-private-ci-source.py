@@ -279,7 +279,7 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
     def git(*args):
         try:
             response = subprocess.run(
-                ["git", "-c", "core.fsmonitor=false",
+                ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
                  "-c", "core.hooksPath=/dev/null", "-C", str(base), *args],
                 capture_output=True, text=True, env=verified_child_env(),
                 timeout=12, check=False)
@@ -299,14 +299,63 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
         ".github/private-ci-approved-repositories.txt",
         ".github/private-ci-approved-source-snapshots.txt",
     )
-    for rel in protected_paths:
-        # A tracked, unmodified file is required. Untracked replacement and
-        # staged/unstaged edits both fail before opening any private source.
-        tracked = git("ls-files", "--error-unmatch", "--", rel)
-        if tracked != rel:
-            raise Denied("reviewed publisher code or policy is not Git-tracked")
-    if git("status", "--porcelain", "--untracked-files=no", "--", *protected_paths):
-        raise Denied("reviewed publisher code or source policy was modified")
+    # Git status is NOT an integrity proof. A caller can mark an index entry
+    # --skip-worktree or --assume-unchanged and edit its executable bytes while
+    # status --porcelain reports a clean checkout. Compare the real file
+    # bytes with the blob named by the pinned, non-replaced HEAD tree.
+    if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+        raise Denied("OS cannot safely authenticate publisher files")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        root_fd = os.open(base, directory_flags)
+        try:
+            for rel in protected_paths:
+                tracked = git("ls-tree", "HEAD", "--", rel)
+                metadata, separator, actual_path = tracked.partition("\t")
+                fields = metadata.split(" ")
+                if (not separator or actual_path != rel or len(fields) != 3
+                        or fields[0] not in ("100644", "100755")
+                        or fields[1] != "blob"):
+                    raise Denied("publisher file is not a regular tracked Git blob")
+                expected_sha = valid_sha(fields[2])
+                parent_fd = os.dup(root_fd)
+                try:
+                    components = rel.split("/")
+                    for component in components[:-1]:
+                        next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+                        os.close(parent_fd)
+                        parent_fd = next_fd
+                    leaf_fd = os.open(components[-1], file_flags, dir_fd=parent_fd)
+                    try:
+                        before = os.fstat(leaf_fd)
+                        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                                or before.st_size > 2 * 1024 * 1024
+                                or ("100755" if before.st_mode & stat.S_IXUSR
+                                    else "100644") != fields[0]):
+                            raise Denied("publisher file type, permissions or size changed")
+                        with os.fdopen(leaf_fd, "rb", closefd=False) as stream:
+                            raw = stream.read(2 * 1024 * 1024 + 1)
+                        after = os.fstat(leaf_fd)
+                        if (len(raw) != before.st_size
+                                or (before.st_dev, before.st_ino, before.st_size,
+                                    before.st_mtime_ns, before.st_ctime_ns)
+                                != (after.st_dev, after.st_ino, after.st_size,
+                                    after.st_mtime_ns, after.st_ctime_ns)):
+                            raise Denied("publisher file changed during authentication")
+                    finally:
+                        os.close(leaf_fd)
+                finally:
+                    os.close(parent_fd)
+                actual_sha = hashlib.sha1(
+                    b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+                ).hexdigest()
+                if actual_sha != expected_sha:
+                    raise Denied("reviewed publisher code or policy bytes differ from HEAD")
+        finally:
+            os.close(root_fd)
+    except OSError as exc:
+        raise Denied("publisher file cannot be opened without following links") from exc
     return reviewed_main_sha
 
 
