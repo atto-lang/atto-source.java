@@ -80,6 +80,10 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    // The runtime conservatively treats imported member dispatch as possibly
+    // suspending. Track all imports, not only value-producing imported names,
+    // or the ? preflight can disagree with SourceTask admission.
+    private boolean questionImportsPresent;
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -194,6 +198,7 @@ public final class TypeChecker {
     }
 
     private void validateImports(Ast.Program program) {
+        questionImportsPresent = !program.imports().isEmpty();
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
@@ -6218,8 +6223,10 @@ public final class TypeChecker {
                         }
                     }
                 }
-                // Unknown imports cannot prove a callable is synchronous.
-                return !importedValues.isEmpty();
+                // Match runtime SourceTask's opaque imported-member admission.
+                // Type-only and qualified imports may not populate the
+                // value-name index, so importedValues alone is unsound.
+                return questionImportsPresent || !importedValues.isEmpty();
             }
             if (call.callee() instanceof Ast.NameExpr name) {
                 Ast.FunctionDecl target = findFunction(name.name(), call.arguments().size());
