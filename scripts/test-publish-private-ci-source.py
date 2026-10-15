@@ -188,7 +188,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         for duplicate in ("trusted/ci", "TRUSTED/CI"):
             with self.subTest(duplicate=duplicate):
                 self.route_calls.clear()
-                self.approval.write_text("trusted/ci\\n" + duplicate + "\\n")
+                self.approval.write_text("trusted/ci\n" + duplicate + "\n")
                 with self.assertRaisesRegex(pub.Denied, "duplicate destination"):
                     self.publish()
                 self.assertFalse(any(method == "POST"
