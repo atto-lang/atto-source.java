@@ -24,6 +24,13 @@ or continues a postfix chain. `condition ? a : b` remains ternary.
 Use parentheses around adjacent `?` before infix operators:
 `(parse()?) + 1`.
 
+The checker rejects `?` inside `finally` and `defer` cleanup
+expressions. Cleanup must not introduce an implicit early return that can
+replace the pending result or conceal an earlier failure; this restriction
+applies equally to synchronous and async callables. Ordinary errors
+raised by cleanup still follow the runtime's explicit failure-precedence
+rules, not `?` value propagation.
+
 ## Explicit exclusions (not full v1)
 
 - Only scalar/nested scalar sum payloads are admitted. No affine
