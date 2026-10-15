@@ -97,10 +97,14 @@ public final class ExperimentalHirV1Exporter {
             // Existing GraalVM integer operations wrap on overflow. Export as
             // checked-i64 only when interval analysis proves wrap impossible
             // for EVERY possible i64 parameter value.
+            // Validate structural limits and function-local parameter scope
+            // before interval analysis: a malformed or oversized AST must
+            // never be published as HIR or consume unbounded proof work.
+            Map<String, Object> body = expression(ret.value(), 0, new int[]{0}, paramNames);
             if (!checkedI64Runtime) proveI64Safe(ret.value(), 0);
             emitted.add(object("name", function.name(), "params", params,
                     "result_type", type(function.returnType()),
-                    "body", expression(ret.value(), 0, new int[]{0})));
+                    "body", body));
         }
         // HIR v1 forbids direct and mutual recursion. Fail at emission,
         // rather than publishing an artifact that the shared verifier rejects.
@@ -129,7 +133,8 @@ public final class ExperimentalHirV1Exporter {
         return json + "\n";
     }
 
-    private static Map<String, Object> expression(Ast.Expr expr, int depth, int[] budget) {
+    private static Map<String, Object> expression(Ast.Expr expr, int depth, int[] budget,
+                                                  Set<String> parameters) {
         if (depth > 48 || ++budget[0] > 2048) throw unsupported("expression depth/size");
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
@@ -140,7 +145,10 @@ public final class ExperimentalHirV1Exporter {
             }
             throw unsupported("non-i64 literal");
         }
-        if (expr instanceof Ast.NameExpr name && identifier(name.name())) {
+        if (expr instanceof Ast.NameExpr name) {
+            if (!identifier(name.name()) || !parameters.contains(name.name())) {
+                throw unsupported("unbound or invalid scalar parameter reference");
+            }
             return object("kind", "var", "name", name.name());
         }
         if (expr instanceof Ast.BinaryExpr binary) {
@@ -150,15 +158,15 @@ public final class ExperimentalHirV1Exporter {
                 default -> throw unsupported("binary operator: " + binary.operator());
             };
             return object("kind", "bin", "op", op,
-                    "lhs", expression(binary.left(), depth + 1, budget),
-                    "rhs", expression(binary.right(), depth + 1, budget));
+                    "lhs", expression(binary.left(), depth + 1, budget, parameters),
+                    "rhs", expression(binary.right(), depth + 1, budget, parameters));
         }
         if (expr instanceof Ast.CallExpr call
                 && !call.typeArgumentsPresent()
                 && call.callee() instanceof Ast.NameExpr name && identifier(name.name())) {
             List<Object> args = new ArrayList<>();
             if (call.arguments().size() > 32) throw unsupported("call arity");
-            for (Ast.Expr arg : call.arguments()) args.add(expression(arg, depth + 1, budget));
+            for (Ast.Expr arg : call.arguments()) args.add(expression(arg, depth + 1, budget, parameters));
             return object("kind", "call", "function", name.name(), "args", args);
         }
         throw unsupported("expression outside experimental typed HIR subset");
