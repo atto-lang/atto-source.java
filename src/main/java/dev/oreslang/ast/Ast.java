@@ -1,6 +1,7 @@
 package dev.oreslang.ast;
 
 import java.util.List;
+import java.util.HashSet;
 
 public final class Ast {
     private Ast() { }
@@ -206,6 +207,15 @@ public final class Ast {
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
 
+    /** A source generic name and its optional compile-time default type. */
+    public record GenericParameter(String name, TypeRef defaultType) {
+        public GenericParameter {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
+                throw new IllegalArgumentException("invalid generic parameter name");
+            }
+        }
+    }
+
     public record FunctionDecl(
             String name,
             CallableKind kind,
@@ -221,7 +231,21 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
-            List<Stmt> body) implements Decl {
+            List<Stmt> body,
+            List<GenericParameter> genericSpecs) implements Decl {
+        /** Preserve the pre-default FunctionDecl constructor ABI. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean suspends, boolean generator, boolean structural,
+                            boolean nonLexical, boolean trapped, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body) {
+            this(name, kind, visibility, async, suspends, generator, structural,
+                    nonLexical, trapped, actorKind, genericParameters, parameters,
+                    returnType, annotations, body,
+                    genericParameters.stream().map(n -> new GenericParameter(n, null)).toList());
+        }
+
         /** Preserve all existing AST construction sites without an explicit effect. */
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             boolean generator, boolean structural, boolean nonLexical, boolean trapped,
@@ -234,6 +258,13 @@ public final class Ast {
 
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
+            genericSpecs = List.copyOf(genericSpecs);
+            if (!genericSpecs.stream().map(GenericParameter::name).toList().equals(genericParameters)) {
+                throw new IllegalArgumentException("generic parameter specifications must match their declared slots");
+            }
+            if (new HashSet<>(genericParameters).size() != genericParameters.size()) {
+                throw new IllegalArgumentException("duplicate generic parameter names");
+            }
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
@@ -774,7 +805,7 @@ public final class Ast {
         public LoopStmt { body = List.copyOf(body); }
     }
 
-    public enum ChannelOperation { READ, WRITE, DEFAULT }
+    public enum ChannelOperation { READ, WRITE, AWAIT, DEFAULT }
     public enum WaitMode { BLOCKING, NONBLOCKING, IMMEDIATE }
     public enum SelectPolicy { FAIR, PRIORITY, RANDOM }
 
@@ -785,10 +816,14 @@ public final class Ast {
             BindingKind bindingKind,
             String bindingName,
             List<Stmt> body,
-            boolean mutableReferent) {
+            boolean mutableReferent,
+            TypeRef bindingType) {
         public SelectArm {
             if (operation == ChannelOperation.DEFAULT && mutableReferent) {
                 throw new IllegalArgumentException("default select arm cannot carry mutable binding");
+            }
+            if (bindingType != null && (bindingName == null || operation == ChannelOperation.DEFAULT || operation == ChannelOperation.WRITE)) {
+                throw new IllegalArgumentException("typed select binding requires a readable arm and a name");
             }
             body = List.copyOf(body);
             if (operation == ChannelOperation.DEFAULT) {
@@ -797,8 +832,8 @@ public final class Ast {
                 }
             } else {
                 if (channel == null) throw new IllegalArgumentException("channel select arm requires a channel");
-                if (operation == ChannelOperation.READ && value != null) {
-                    throw new IllegalArgumentException("read select arm cannot carry a write value");
+                if ((operation == ChannelOperation.READ || operation == ChannelOperation.AWAIT) && value != null) {
+                    throw new IllegalArgumentException("read/await select arm cannot carry a write value");
                 }
                 if (operation == ChannelOperation.WRITE && value == null) {
                     throw new IllegalArgumentException("write select arm requires a value");
@@ -812,9 +847,14 @@ public final class Ast {
             }
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
+                         BindingKind bindingKind, String bindingName, List<Stmt> body,
+                         boolean mutableReferent) {
+            this(operation, channel, value, bindingKind, bindingName, body, mutableReferent, null);
+        }
+        public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body) {
             this(operation, channel, value, bindingKind, bindingName, body,
-                    bindingKind == BindingKind.VAL);
+                    bindingKind == BindingKind.VAL, null);
         }
     }
 
@@ -950,8 +990,8 @@ public final class Ast {
             boolean callback,
             List<Stmt> callbackBody) implements Expr {
         public ChannelOpExpr {
-            if (operation == ChannelOperation.DEFAULT) {
-                throw new IllegalArgumentException("default is not a standalone channel operation");
+            if (operation != ChannelOperation.READ && operation != ChannelOperation.WRITE) {
+                throw new IllegalArgumentException("only readch/writech are standalone channel operations");
             }
             if (channel == null) throw new IllegalArgumentException("channel operation requires a channel");
             if (operation == ChannelOperation.READ && value != null) {

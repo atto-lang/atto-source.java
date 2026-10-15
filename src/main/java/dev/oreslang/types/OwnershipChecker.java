@@ -601,9 +601,18 @@ public final class OwnershipChecker {
                     elementTypes.add(Ast.TypeRef.inferred());
                     continue;
                 }
-                ValueInfo channel = checkExpr(arm.channel(), scope, false);
-                Ast.TypeRef element = channelElementType(channel.type);
-                elementTypes.add(element);
+                ValueInfo source = checkExpr(arm.channel(), scope, false);
+                Ast.TypeRef element;
+                if (arm.operation() == Ast.ChannelOperation.AWAIT) {
+                    if (!source.type.name().equals("Future")
+                            || source.type.arguments().size() != 1) {
+                        throw error("select await requires Future<T> inside this actor domain");
+                    }
+                    element = source.type.arguments().getFirst();
+                } else {
+                    element = channelElementType(source.type);
+                }
+                elementTypes.add(arm.bindingType() == null ? element : arm.bindingType());
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
                     // Blocking/immediate select can conditionally move only the winning
                     // send. Nonblocking select returns before settlement, so its
@@ -648,7 +657,8 @@ public final class OwnershipChecker {
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
                     }
-                } else if (arm.operation() == Ast.ChannelOperation.READ
+                } else if ((arm.operation() == Ast.ChannelOperation.READ
+                        || arm.operation() == Ast.ChannelOperation.AWAIT)
                         && arm.bindingName() != null) {
                     Ast.TypeRef element = elementTypes.get(i);
                     armScope.define(
@@ -1443,7 +1453,7 @@ public final class OwnershipChecker {
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
@@ -1459,7 +1469,7 @@ public final class OwnershipChecker {
             if (fn != null) {
                 CallSignature signature = specializeCall(
                         fn.genericParameters(), fn.genericParameters(),
-                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                        fn.parameters(), fn.returnType(), call, scope, Map.of(), fn.genericSpecs());
                 if (fn.suspends()) checkSuspensionBorrows(scope, "suspends call " + fn.name());
                 checkArguments(
                         call.arguments(),
@@ -3023,19 +3033,38 @@ public final class OwnershipChecker {
             Ast.CallExpr call,
             Scope scope,
             Map<String, Ast.TypeRef> initialBindings) {
+        return specializeCall(allGenericNames, explicitGenericNames, parameters, result,
+                call, scope, initialBindings, List.of());
+    }
+
+    private CallSignature specializeCall(
+            List<String> allGenericNames,
+            List<String> explicitGenericNames,
+            List<Ast.Param> parameters,
+            Ast.TypeRef result,
+            Ast.CallExpr call,
+            Scope scope,
+            Map<String, Ast.TypeRef> initialBindings,
+            List<Ast.GenericParameter> genericSpecs) {
         Map<String, Ast.TypeRef> bindings = new HashMap<>(initialBindings);
         Set<String> fixed = new HashSet<>(initialBindings.keySet());
-        if (!call.typeArguments().isEmpty() && call.typeArguments().size() == explicitGenericNames.size()) {
-            for (int i = 0; i < explicitGenericNames.size(); i++) {
-                bindings.put(explicitGenericNames.get(i), call.typeArguments().get(i));
-                fixed.add(explicitGenericNames.get(i));
-            }
-        }
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(explicitGenericNames, call.typeArguments(), "generic call");
+        bindings.putAll(bound.explicitTypes());
+        fixed.addAll(bound.explicitTypes().keySet());
         List<Ast.TypeRef> actualTypes = syntacticCallArgumentTypes(call.arguments(), scope);
         for (int i = 0; i < Math.min(parameters.size(), actualTypes.size()); i++) {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
         }
+        GenericCallArguments.applyDefaults(
+                explicitGenericNames, genericSpecs, bindings, bound.inferenceHoles(),
+                ref -> ref,
+                this::substituteType,
+                ref -> GenericCallArguments.containsUnresolvedAstGeneric(
+                        ref, Set.copyOf(allGenericNames)),
+                "generic call");
+        GenericCallArguments.requireBound(explicitGenericNames, bindings, "generic call");
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),

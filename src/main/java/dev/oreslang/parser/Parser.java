@@ -468,7 +468,8 @@ public final class Parser {
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
         annotations = structural.annotations();
         String name = consumeCallableName("expected callable name");
-        List<String> generics = parseGenericParameters();
+        List<Ast.GenericParameter> specs = parseGenericParameterSpecs();
+        List<String> generics = specs.stream().map(Ast.GenericParameter::name).toList();
 
         if (match(EQUAL)) {
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
@@ -480,7 +481,7 @@ public final class Parser {
                     : parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body);
+                    generics, params, returnType, annotations, body, specs);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -490,7 +491,7 @@ public final class Parser {
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body);
+                returnType, annotations, body, specs);
     }
 
     private Ast.ClassDecl parseClass(
@@ -1326,6 +1327,22 @@ public final class Parser {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
     }
 
+    private List<Ast.GenericParameter> parseGenericParameterSpecs() {
+        if (!match(LT)) return List.of();
+        List<Ast.GenericParameter> specs = new ArrayList<>();
+        java.util.Set<String> declared = new java.util.HashSet<>();
+        do {
+            String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if (name.equals("_") || !declared.add(name)) {
+                throw error(previous(), "invalid or duplicate generic parameter '" + name + "'");
+            }
+            Ast.TypeRef defaultType = match(EQUAL) ? parseTypeRef() : null;
+            specs.add(new Ast.GenericParameter(name, defaultType));
+        } while (match(COMMA));
+        consume(GT, "expected '>' after generic parameters");
+        return List.copyOf(specs);
+    }
+
     private List<String> parseGenericParameters() {
         if (!match(LT)) return List.of();
         List<String> names = new ArrayList<>();
@@ -1915,26 +1932,30 @@ public final class Parser {
                 Ast.Expr value = null;
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
+                Ast.TypeRef bindingType = null;
                 boolean mutableReferent = false;
 
-                if (match(READCH)) {
-                    operation = Ast.ChannelOperation.READ;
+                if (match(READCH) || match(AWAIT)) {
+                    Token.Type op = previous().type();
+                    operation = op == READCH ? Ast.ChannelOperation.READ : Ast.ChannelOperation.AWAIT;
                     channel = parseExpression();
-                    consume(COLON, "readch select arm requires ':'");
-                    if (isBindingKind(peek().type())) {
-                        bindingKind = parseBindingKind();
-                        mutableReferent = parseReferentMutability(bindingKind);
-                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
-                        match(SEMICOLON);
-                    }
+                    consume(COLON, (op == READCH ? "readch" : "await") + " select arm requires ':'");
+                    SelectReadBinding binding = parseSelectReadBinding();
+                    bindingKind = binding.kind();
+                    bindingName = binding.name();
+                    bindingType = binding.type();
+                    mutableReferent = binding.mutableReferent();
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
                     channel = parseExpression();
                     consume(COMMA, "writech select arm requires 'channel, value'");
                     value = parseExpression();
                     consume(COLON, "writech select arm requires ':'");
+                    // Typed write arms have no value binding. Arrow is optional
+                    // compatibility syntax and cannot alter send admission.
+                    match(ARROW);
                 } else {
-                    // Binding-first select arm: when [const|val|let] [mut] msg = readch(ch) -> { ... }
+                    // Legacy binding-first: when const msg = readch(input) -> { ... }
                     if (match(MUT)) {
                         bindingKind = Ast.BindingKind.LET;
                         mutableReferent = true;
@@ -1955,8 +1976,16 @@ public final class Parser {
                     operation = Ast.ChannelOperation.READ;
                 }
 
+                // Accept the canonical '->' arm boundary while preserving
+                // legacy arrowless select arms through the formatter migration.
+                // Fat arrows remain reserved for type-level callable signatures.
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select executable arms use the slim arrow '->'; '=>' is not an arm delimiter");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
-                    throw error(peek(), "select arm requires a braced body '{ ... }'");
+                    throw error(peek(), "select arm requires a braced body '{ ... }', optionally introduced by '->'");
                 }
                 List<Ast.Stmt> body = parseBlock();
                 arms.add(new Ast.SelectArm(
@@ -1966,12 +1995,18 @@ public final class Parser {
                         bindingKind,
                         bindingName,
                         body,
-                        mutableReferent));
+                        mutableReferent,
+                        bindingType));
                 continue;
             }
 
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select default arms use the slim arrow '->'; '=>' is not an arm delimiter");
+                }
+                match(ARROW);
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
@@ -1991,6 +2026,40 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    private record SelectReadBinding(
+            Ast.BindingKind kind, String name, Ast.TypeRef type, boolean mutableReferent) { }
+
+    /**
+     * Typed arrow bindings deliberately require a result type; the legacy
+     * untyped `const name { ... }` form remains source compatible.
+     * This parser never speculatively consumes an event while checking types.
+     */
+    private SelectReadBinding parseSelectReadBinding() {
+        if (check(LBRACE) || match(ARROW)) {
+            // A typed operation can return void; it has no value to bind.
+            return new SelectReadBinding(null, null, null, false);
+        }
+        Ast.BindingKind kind = Ast.BindingKind.CONST;
+        boolean mutable = false;
+        if (isBindingKind(peek().type())) {
+            kind = parseBindingKind();
+            mutable = parseReferentMutability(kind);
+            if (check(IDENT) && (checkNext(LBRACE) || checkNext(ARROW) || checkNext(FAT_ARROW))) {
+                String name = advance().lexeme();
+                return new SelectReadBinding(kind, name, null, mutable);
+            }
+        }
+        Ast.TypeRef type = parseTypeRef();
+        String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
+        if (!match(ARROW)) {
+            if (!check(LBRACE)) {
+                throw error(peek(), "select arm requires a braced body '{ ... }'");
+            }
+            throw error(peek(), "typed select arm requires '->' before its body");
+        }
+        return new SelectReadBinding(kind, name, type, mutable);
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
@@ -3263,8 +3332,21 @@ public final class Parser {
     private List<Ast.TypeRef> parseCallTypeArguments() {
         consume(LT, "expected '<' before call type arguments");
         List<Ast.TypeRef> arguments = new ArrayList<>();
+        boolean seenNamed = false;
         if (!check(GT)) {
-            do arguments.add(parseTypeRef()); while (match(COMMA));
+            do {
+                if (check(IDENT) && checkNext(EQUAL)) {
+                    String name = advance().lexeme();
+                    consume(EQUAL, "expected '=' after named generic argument");
+                    arguments.add(Ast.TypeRef.namedParameter(name, parseTypeRef()));
+                    seenNamed = true;
+                } else {
+                    if (seenNamed) {
+                        throw error(peek(), "positional generic arguments must precede named arguments");
+                    }
+                    arguments.add(parseTypeRef());
+                }
+            } while (match(COMMA));
         }
         consume(GT, "expected '>' after call type arguments");
         return List.copyOf(arguments);
@@ -3283,7 +3365,10 @@ public final class Parser {
                 depth--;
                 if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
                 if (depth < 0) return false;
-            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON || type == EOF) {
+            } else if (type == SEMICOLON || type == QUESTION || type == COLON || type == EOF
+                    || (type == EQUAL && (depth == 0 || i == 0
+                            || tokens.get(i - 1).type() != IDENT))) {
+                // '=' is allowed only after a generic parameter name inside <...>.
                 return false;
             }
         }
