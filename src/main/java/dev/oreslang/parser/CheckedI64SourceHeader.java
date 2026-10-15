@@ -19,8 +19,11 @@ public final class CheckedI64SourceHeader {
             int offset = pos;
             // A UTF-8 BOM is not part of the exact source opt-in.
             if (pos == 0 && text.charAt(0) == '\uFEFF') ++offset;
+            // The lexer also ignores CR before comments. Do not allow a
+            // CR-prefixed checked directive to select legacy wrapping i64.
             while (offset < stop && (text.charAt(offset) == ' '
-                    || text.charAt(offset) == '\t')) ++offset;
+                    || text.charAt(offset) == '\t'
+                    || text.charAt(offset) == '\r')) ++offset;
             if (text.startsWith(prefix, offset)
                     && (!enabled || pos != 0 || offset != 0
                         || !text.substring(pos, stop).equals(directive))) {
