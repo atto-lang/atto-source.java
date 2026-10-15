@@ -598,6 +598,99 @@ final class ControlWakeRetryQueueTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void freshEpochReentrantRegistrationsShareFiniteRetainedCapacity() {
+        final int budget = 4;
+        final int attempts = 10_000;
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(budget);
+        AtomicInteger admitted = new AtomicInteger();
+        AtomicInteger delivered = new AtomicInteger();
+        assertTrue(queue.register(() -> {
+            for (int i = 0; i < attempts; ++i) {
+                // Register into the ordinary pending queue, then synchronously
+                // release that slot while the original callback is running.
+                // The pending queue empties every time, but the deferred
+                // dispatcher must still retain no more than budget callbacks.
+                boolean accepted = queue.register(
+                        delivered::incrementAndGet, queue.epoch());
+                if (accepted) {
+                    admitted.incrementAndGet();
+                    queue.slotReleased();
+                }
+                assertTrue(queue.retained() <= budget,
+                        "CONTROL queue budget exceeded by deferred callbacks");
+            }
+            assertEquals(budget, queue.retained());
+            assertEquals(0, queue.pending());
+        }, queue.epoch()));
+        queue.slotReleased();
+        assertEquals(budget, admitted.get());
+        assertEquals(budget, delivered.get());
+        assertEquals(0, queue.retained());
+        assertEquals(0, queue.pending());
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void deferredWakeRetainsCapacityAcrossCarrierThreads() throws Exception {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        AtomicInteger delivered = new AtomicInteger();
+        java.util.concurrent.CountDownLatch saturated =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch resume =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        assertTrue(queue.register(() -> {
+            for (int i = 0; i < 2; ++i) {
+                if (!queue.register(delivered::incrementAndGet, queue.epoch())) {
+                    throw new AssertionError("unexpected deferred admission rejection");
+                }
+                queue.slotReleased();
+            }
+            saturated.countDown();
+            try {
+                if (!resume.await(3, TimeUnit.SECONDS)) {
+                    throw new AssertionError("carrier release deadline");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+        }, queue.epoch()));
+
+        Thread carrier = new Thread(() -> {
+            try {
+                queue.slotReleased();
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        }, "actor-retry-budget-carrier");
+        carrier.setDaemon(true);
+        carrier.start();
+        try {
+            assertTrue(saturated.await(3, TimeUnit.SECONDS));
+            assertEquals(2, queue.retained());
+            assertEquals(0, queue.pending());
+            // B's thread-local has no pending callbacks, but the global
+            // CONTROL admission reserve is consumed on carrier A.
+            assertFalse(queue.register(delivered::incrementAndGet, queue.epoch()));
+        } finally {
+            resume.countDown();
+        }
+        carrier.join(3000);
+        assertFalse(carrier.isAlive());
+        assertNull(failure.get(), () -> "carrier failed: " + failure.get());
+        assertEquals(2, delivered.get());
+        assertEquals(0, queue.retained());
+        assertTrue(queue.register(delivered::incrementAndGet, queue.epoch()));
+        queue.slotReleased();
+        assertEquals(3, delivered.get());
+        assertEquals(0, queue.retained());
+    }
+
     @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         assertTrue(queue.register(() -> {
