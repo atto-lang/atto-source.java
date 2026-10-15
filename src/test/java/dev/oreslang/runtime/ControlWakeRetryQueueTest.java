@@ -303,6 +303,71 @@ final class ControlWakeRetryQueueTest {
         }
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void deeplyReentrantSlotReleaseDrainsWithoutJavaStackOverflow() {
+        // Before the retry trampoline, every synchronous release recursively
+        // invoked the next callback. On a 512 KiB stack this failed after
+        // ~2,800 deliveries, leaving thousands of notices stranded.
+        final int releases = 20_000;
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(releases);
+        AtomicInteger delivered = new AtomicInteger();
+        long epoch = queue.epoch();
+        for (int i = 0; i < releases; ++i) {
+            assertTrue(queue.register(() -> {
+                delivered.incrementAndGet();
+                queue.slotReleased();
+            }, epoch));
+        }
+        queue.slotReleased();
+        assertEquals(releases, delivered.get());
+        assertEquals(0, queue.pending());
+        assertEquals(0L, queue.callbacksFailed());
+    }
+
+    @Test void nonfatalReentrantFailureCannotLoseSubsequentWake() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        AtomicInteger delivered = new AtomicInteger();
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            queue.slotReleased();
+            throw new AssertionError("host callback failed after releasing a slot");
+        }, epoch));
+        assertTrue(queue.register(delivered::incrementAndGet, epoch));
+        queue.slotReleased();
+        assertEquals(1, delivered.get(),
+                "a later admitted retry must survive an earlier callback failure");
+        assertEquals(1L, queue.callbacksFailed());
+        assertEquals(0, queue.pending());
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void interleavedRetryQueuesDoNotBuildUnboundedNestedStacks() {
+        final int each = 10_000;
+        ControlWakeRetryQueue first = new ControlWakeRetryQueue(each);
+        ControlWakeRetryQueue second = new ControlWakeRetryQueue(each);
+        AtomicInteger seenFirst = new AtomicInteger();
+        AtomicInteger seenSecond = new AtomicInteger();
+        long firstEpoch = first.epoch();
+        long secondEpoch = second.epoch();
+        for (int i = 0; i < each; ++i) {
+            assertTrue(first.register(() -> {
+                seenFirst.incrementAndGet();
+                second.slotReleased();
+            }, firstEpoch));
+            assertTrue(second.register(() -> {
+                seenSecond.incrementAndGet();
+                first.slotReleased();
+            }, secondEpoch));
+        }
+        first.slotReleased();
+        assertEquals(each, seenFirst.get());
+        assertEquals(each, seenSecond.get());
+        assertEquals(0, first.pending());
+        assertEquals(0, second.pending());
+    }
+
     @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         assertTrue(queue.register(() -> {
