@@ -246,9 +246,9 @@ def require_protected_source_codeowners():
         text = raw.decode("utf-8")
     except (ValueError, UnicodeError) as exc:
         raise Denied("protected source CODEOWNERS content invalid") from exc
-    if (len(raw) != metadata["size"] or b"\\x00" in raw
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
             or hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
-                            + b"\\0" + raw).hexdigest()
+                            + bytes([0]) + raw).hexdigest()
             != valid_sha(metadata.get("sha"))):
         raise Denied("protected source CODEOWNERS digest or size mismatch")
     effective = []
