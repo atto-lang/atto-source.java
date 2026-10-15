@@ -35,3 +35,16 @@ Audit performed 2026-10-15 against the draft pointer branch; **not** a completed
 - Current org Actions failures have reported zero executed steps on inspected runs; do not present these as passing compiler tests. Use an authorized private CI runner or local exact-tree builds for executable evidence.
 
 Keep this PR draft until the release gates pass; these changes alone do not establish safe native pointers or zero-allocation pointer creation.
+
+## 2026-10-15 follow-up: runtime admission hardening
+
+Additional Java changes on this draft branch:
+
+- `OresPointer` denies scalar/Copy targets, nested `OresPointer` values, and directly supplied known actor/mailbox/shared-memory/channel/mutex/future capabilities even when a host bypasses the guest compiler.
+- `ActorRuntime.validateMessageGraph` refuses `OresPointer` in incoming payloads, including lists, maps, sets and arrays, before copying/freeze or mailbox message-byte reservations. Failure still occurs after the bounded mailbox slot pre-reservation, which the existing `finally` releases.
+- `requireSharedMutexPayloadSafe` rejects pointer capabilities inside a host-created `SharedMutex` graph. Do not rely on language-level `Send` checks to protect these host-facing entry points.
+- New regression suite `ActorPointerTransportTest` exercises freeze, private/shared mailbox, nested container payloads, and SharedMutex wrapping; `RuntimePointerTest` covers host-created scalar, async/channel/mutex, nested and null targets.
+
+**Residual risk:** The Java wrapper's `public OresPointer(Object)` and `public Object target()` remain host-visible. These checks are defense in depth, **not** a provenance, generation, actor-domain or borrow-lease proof for arbitrary Java objects or mutable host graphs. Do not advertise safe guest interop from raw Java pointers. A compiler-only proof cannot constrain trusted or hostile host code directly mutating a raw referent; production host interop requires a separate capability-scoped API with domain and lifetime enforcement.
+
+**Verification boundary:** Targeted isolated Java 21 constructor smoke compiled and executed against representative runtime-type stubs. This is *not* a full Graal/Java 25 build, not an actor integration test, and not a zero-allocation benchmark. The new JUnit/LLVM matrices are checked in but have not been executed successfully in current source-repo CI.
