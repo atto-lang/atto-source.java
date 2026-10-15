@@ -1291,6 +1291,30 @@ public final class TypeChecker {
             boolean actorStartupHook = method.name().equals("on_start");
             boolean actorReceiveHook = klass.actorKind() != Ast.ActorKind.NONE
                     && method.name().equals("receive");
+            boolean actorThrowHook = method.name().equals("on_throw");
+            if (actorThrowHook) {
+                // Actor-local, synchronous and fail-closed. The Error is never
+                // transported to the supervisor; returning true acknowledges
+                // only the current receive-turn's uncaught guest throw.
+                if (klass.actorKind() == Ast.ActorKind.NONE || method.isStatic()
+                        || method.visibility() == Ast.Visibility.PUBLIC
+                        || method.isAbstract() || method.async() || method.suspends()
+                        || !method.genericParameters().isEmpty()
+                        || method.parameters().size() != 1
+                        || !method.returnType().name().equals("bool")
+                        || !method.returnType().arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor on_throw must be a private synchronous instance "
+                                    + "on_throw(Error error): bool handler");
+                }
+                Ast.Param error = method.parameters().getFirst();
+                if (error.mutable() || error.structural()
+                        || !error.type().name().equals("Error")
+                        || !error.type().arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor on_throw parameter must be an immutable nominal Error");
+                }
+            }
             if (actorStartupHook) {
                 if (klass.actorKind() == Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
@@ -2688,7 +2712,8 @@ public final class TypeChecker {
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
                 if (actorSelf && (member.member().equals("on_start")
-                        || member.member().equals("receive"))) {
+                        || member.member().equals("receive")
+                        || member.member().equals("on_throw"))) {
                     throw new IllegalArgumentException(
                             member.member()
                                     + " is a reserved actor lifecycle hook and cannot be called directly");
