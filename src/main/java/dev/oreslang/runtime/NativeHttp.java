@@ -115,6 +115,12 @@ public final class NativeHttp implements AutoCloseable {
             Worker attached = worker;
             worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
                 for (State state : List.copyOf(attached.requests)) state.abort(500);
+                // Fully retired workers must not remain retained by a long-
+                // lived server that has handled many worker generations.
+                for (Server server : List.copyOf(attached.served)) {
+                    server.pooledWorkers.remove(attached);
+                }
+                attached.served.clear();
             });
             return worker;
         }
@@ -126,6 +132,7 @@ public final class NativeHttp implements AutoCloseable {
         private final class Worker {
             final ActorRuntime.ActorRef<Object> actor;
             final Set<State> requests = ConcurrentHashMap.newKeySet();
+            final Set<Server> served = ConcurrentHashMap.newKeySet();
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
@@ -141,7 +148,12 @@ public final class NativeHttp implements AutoCloseable {
                         // Response transport may finish before the receive
                         // exits TurnExecutor. Remember each pooled incarnation
                         // that ran mail for this particular listener.
-                        exchange.state.server.pooledActors.add(worker.actor);
+                        exchange.state.server.pooledWorkers.add(worker);
+                        worker.served.add(exchange.state.server);
+                        if (worker.actor.done().isDone()) {
+                            exchange.state.server.pooledWorkers.remove(worker);
+                            worker.served.remove(exchange.state.server);
+                        }
                         // Reused workers have no per-request startup. Do not retain
                         // one actor.done callback per completed request.
                         exchange.state.readyNanos = exchange.state.spawnNanos;
@@ -206,7 +218,7 @@ public final class NativeHttp implements AutoCloseable {
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
-        private final Set<ActorRuntime.ActorRef<?>> pooledActors = ConcurrentHashMap.newKeySet();
+        private final Set<Handler.Worker> pooledWorkers = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
         private boolean stopped, transportStopped, pooledBarrierStarted;
         private OresFuture<Object> drained;
@@ -321,9 +333,10 @@ public final class NativeHttp implements AutoCloseable {
             // A transport-complete response is not an actor-carrier-exit proof.
             // Snapshot the workers used by THIS server. Never cancel a shared
             // handler pool simply because one of its listeners is stopping.
-            List<ActorRuntime.ActorRef<?>> actors = List.copyOf(pooledActors);
-            pooledActors.clear();
-            if (actors.isEmpty()) {
+            List<Handler.Worker> workers = List.copyOf(pooledWorkers);
+            pooledWorkers.clear();
+            for (Handler.Worker worker : workers) worker.served.remove(this);
+            if (workers.isEmpty()) {
                 drained.completeFromRuntime(null);
                 return;
             }
@@ -339,11 +352,11 @@ public final class NativeHttp implements AutoCloseable {
                         waitMillis, TimeUnit.MILLISECONDS);
                 drained.whenCompleteRuntime((ignored, failure) -> timeout.cancel(false));
                 io.execute(() -> {
-                    AtomicInteger pending = new AtomicInteger(actors.size());
+                    AtomicInteger pending = new AtomicInteger(workers.size());
                     AtomicReference<Throwable> firstError = new AtomicReference<>();
-                    for (ActorRuntime.ActorRef<?> actor : actors) {
+                    for (Handler.Worker worker : workers) {
                         try {
-                            context.actors().quiesceAcceptedMessages(actor)
+                            context.actors().quiesceAcceptedMessages(worker.actor)
                                     .whenCompleteRuntime((ignored, failure) -> {
                                 if (failure != null) {
                                     firstError.compareAndSet(null, OresFuture.unwrap(failure));
@@ -375,6 +388,12 @@ public final class NativeHttp implements AutoCloseable {
             stopAccepting(); transport.stop(0);
             synchronized (this) { transportStopped = true; }
             for (State state : active) state.abort(503);
+            // Context teardown must not leave reusable workers retaining dead
+            // server instances, regardless of whether guest awaited shutdown.
+            for (Handler.Worker worker : List.copyOf(pooledWorkers)) {
+                worker.served.remove(this);
+            }
+            pooledWorkers.clear();
             servers.remove(this); completeDrain();
         }
     }
