@@ -27,6 +27,10 @@ jobs:
           cache: maven
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Validate opt-in actor field race probes
+        env:
+          ORES_RACE_REQUIRED: '1'
+        run: mvn -B -ntp -Dtest=ActorRaceInstrumentationTest,SourceActorRaceProbeTest test
       - name: Run examples
         run: |
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
