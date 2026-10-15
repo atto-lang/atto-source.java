@@ -220,6 +220,54 @@ final class NominalMethodSlotsTest {
     }
 
     @Test
+    void localClassMethodCountMustFailBeforeBuildingCandidateMaps() {
+        Ast.Program input = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                end
+                """);
+        Ast.ClassDecl original = owner(input);
+        Ast.MethodDecl item = original.methods().getFirst();
+        var excessive = java.util.Collections.nCopies(
+                NominalMethodSlots.MAX_LOCAL_METHOD_DECLARATIONS + 1, item);
+        Ast.ClassDecl large = new Ast.ClassDecl(
+                original.name(), original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(),
+                original.parents(), original.interfaces(), original.fields(),
+                original.constructor(), excessive);
+        var rebuiltModules = new java.util.ArrayList<Ast.ModuleDecl>();
+        for (Ast.ModuleDecl module : input.modules()) {
+            var declarations = new java.util.ArrayList<Ast.Decl>();
+            for (Ast.Decl declaration : module.declarations()) {
+                declarations.add(declaration == original ? large : declaration);
+            }
+            rebuiltModules.add(new Ast.ModuleDecl(module.name(), module.annotations(),
+                    module.contracts(), declarations));
+        }
+        Ast.Program forged = new Ast.Program(
+                input.namespace(), input.imports(), rebuiltModules);
+        var denied = assertThrows(IllegalArgumentException.class,
+                () -> NominalMethodSlots.proveLocalSameArityFamilies(forged, large));
+        assertTrue(denied.getMessage().contains("declaration limit"),
+                denied.getMessage());
+    }
+
+    @Test
+    void methodAndOwnerNameByteLimitsApplyToMultibyteCharacters() {
+        var color = new NominalEnumOverloads.Position(
+                NominalEnumOverloads.Kind.ENUM, "root::Color");
+        Slot accepted = new Slot(Domain.INSTANCE, "é".repeat(128), List.of(color));
+        assertEquals(NominalMethodSlots.MAX_METHOD_NAME_BYTES,
+                accepted.name().getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(Domain.INSTANCE, "é".repeat(129), List.of(color)));
+        Slot shortName = new Slot(Domain.INSTANCE, "get", List.of(color));
+        assertNotNull(shortName.linkSymbol("é".repeat(512)));
+        assertThrows(IllegalArgumentException.class, () ->
+                shortName.linkSymbol("é".repeat(513)));
+    }
+
+    @Test
     void forgedOrMalformedSlotNamesDoNotProduceCollidingAbiSymbols() {
         var color = new NominalEnumOverloads.Position(
                 NominalEnumOverloads.Kind.ENUM, "root::Color");
