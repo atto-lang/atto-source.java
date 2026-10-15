@@ -56,6 +56,101 @@ final class NativeActorTurnKernel implements AutoCloseable {
         }
     }
 
+    /** Terminal cleanup grants are disjoint from ordinary source execution. */
+    static final class CleanupTicket {
+        private final NativeActorTurnKernel owner;
+        private final SourceTask source;
+        private final long handle;
+        private boolean claimed;
+        private boolean closed;
+
+        private CleanupTicket(NativeActorTurnKernel owner, SourceTask source, long handle) {
+            this.owner = owner;
+            this.source = source;
+            this.handle = handle;
+        }
+    }
+
+    static final class CleanupTurn {
+        private final NativeActorTurnKernel owner;
+        private final CleanupTicket ticket;
+        private final long handle;
+        private final Thread carrier;
+        private boolean released;
+        private boolean completed;
+
+        private CleanupTurn(NativeActorTurnKernel owner, CleanupTicket ticket, long handle) {
+            this.owner = owner;
+            this.ticket = ticket;
+            this.handle = handle;
+            this.carrier = Thread.currentThread();
+        }
+    }
+
+    synchronized CleanupTicket issueCleanup(SourceTask task) {
+        checkLiveTask(task);
+        if (stopped) throw new IllegalStateException("actor already stopped");
+        return new CleanupTicket(this, task,
+                checkedPointer(nIssueCleanup(vm, task.handle)));
+    }
+
+    synchronized CleanupTurn claimCleanup(CleanupTicket ticket) {
+        checkTicket(ticket);
+        if (Thread.currentThread().isVirtual()) {
+            throw new IllegalStateException("native cleanup requires a platform carrier thread");
+        }
+        if (ticket.claimed || ticket.closed) throw new IllegalStateException("cleanup ticket closed");
+        long nativeLease = checkedPointer(nClaimCleanup(vm, ticket.handle));
+        ticket.claimed = true;
+        return new CleanupTurn(this, ticket, nativeLease);
+    }
+
+    synchronized void terminalInjected(CleanupTurn turn) {
+        checkCleanupTurn(turn);
+        check(nTerminalInjected(vm, turn.handle, turn.ticket.source.handle));
+    }
+
+    /** Point-in-time check only, NOT authority for a later guest effect. */
+    synchronized void checkCleanupEffects(CleanupTurn turn) {
+        checkCleanupTurn(turn);
+        check(nCheckCleanupEffects(vm, turn.handle));
+    }
+
+    synchronized void completeCleanup(CleanupTurn turn) {
+        checkCleanupTurn(turn);
+        check(nCompleteCleanup(vm, turn.handle, turn.ticket.source.handle));
+        turn.completed = true;
+        turn.ticket.closed = true;
+    }
+
+    synchronized void releaseCleanup(CleanupTurn turn) {
+        checkCleanupTurn(turn);
+        check(nRelease(vm, turn.handle));
+        turn.released = true;
+    }
+
+    synchronized void cancelCleanup(CleanupTicket ticket) {
+        checkTicket(ticket);
+        if (ticket.claimed || ticket.closed) throw new IllegalStateException("cleanup already claimed");
+        check(nCancelCleanup(vm, ticket.handle));
+        ticket.closed = true;
+    }
+
+    private void checkTicket(CleanupTicket ticket) {
+        ensureOpen();
+        if (Objects.requireNonNull(ticket, "ticket").owner != this || ticket.closed) {
+            throw new IllegalStateException("foreign or closed cleanup ticket");
+        }
+    }
+
+    private void checkCleanupTurn(CleanupTurn turn) {
+        ensureOpen();
+        if (Objects.requireNonNull(turn, "turn").owner != this || turn.released
+                || turn.carrier != Thread.currentThread()) {
+            throw new IllegalStateException("foreign, released or wrong-carrier cleanup lease");
+        }
+    }
+
     synchronized SourceTask register(long taskId, long generation) {
         ensureOpen();
         if (stopped) throw new IllegalStateException("actor already stopped");
@@ -140,6 +235,12 @@ final class NativeActorTurnKernel implements AutoCloseable {
         if (code != 0) throw new IllegalStateException("native actor-turn status=" + code);
     }
 
+    private static native long nIssueCleanup(long vm, long source);
+    private static native long nClaimCleanup(long vm, long ticket);
+    private static native int nTerminalInjected(long vm, long lease, long source);
+    private static native int nCheckCleanupEffects(long vm, long lease);
+    private static native int nCompleteCleanup(long vm, long lease, long source);
+    private static native int nCancelCleanup(long vm, long ticket);
     private static native long nVmNew(long capacity);
     private static native int nVmDestroy(long vm);
     private static native long nRegisterActor(long vm, long hi, long lo, long incarnation);
