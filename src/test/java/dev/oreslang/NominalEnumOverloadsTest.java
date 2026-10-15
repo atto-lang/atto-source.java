@@ -315,6 +315,21 @@ final class NominalEnumOverloadsTest {
                 new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.ENUM, "Color"));
         assertThrows(IllegalArgumentException.class, () ->
                 new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "Any"));
+        // Guard forged compiler-internal record construction, including
+        // identity characters and limits rejected by the LLVM ABI selector.
+        for (String malformed : List.of(
+                "pkg/a.ores::0Color",
+                "pkg/a.ores::Bad-Case",
+                "pkg/a.ores::Color\\n",
+                "pkg::::Color",
+                "pkg/a.ores::" + "A".repeat(1024))) {
+            assertThrows(IllegalArgumentException.class, () ->
+                    new NominalEnumOverloads.Position(
+                            NominalEnumOverloads.Kind.ENUM, malformed), malformed);
+        }
+        assertEquals("pkg/a.ores::Color",
+                new NominalEnumOverloads.Position(
+                        NominalEnumOverloads.Kind.ENUM, "pkg/a.ores::Color").id());
         assertEquals(
                 new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "string"),
                 new NominalEnumOverloads.Position(NominalEnumOverloads.Kind.PRIMITIVE, "String"));
