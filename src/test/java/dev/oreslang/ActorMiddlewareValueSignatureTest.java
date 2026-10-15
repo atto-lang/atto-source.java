@@ -88,6 +88,21 @@ final class ActorMiddlewareValueSignatureTest {
     }
 
     @Test
+    void mismatchedUnaryReplyTypeCannotEnterMiddlewarePipeline() {
+        rejects("""
+                @ActorMiddleware(Clean)
+                define unary actor Worker as
+                    run(int value): int { return value; }
+                end
+                define class Clean as
+                    async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<String> {
+                        return null;
+                    }
+                end
+                """, "reply type must match unary actor");
+    }
+
+    @Test
     void streamCannotUseValueOnlyMiddlewareThatWouldBeIgnored() {
         rejects("""
                 @ActorMiddleware(Clean)
