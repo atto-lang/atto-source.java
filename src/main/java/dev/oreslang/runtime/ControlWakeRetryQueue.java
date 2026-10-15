@@ -58,11 +58,19 @@ final class ControlWakeRetryQueue {
         synchronized (this) {
             if (closed) return false;
             if (releaseEpoch != observedEpoch) {
-                // The slot opened between this *caller's* failed submit
-                // and registration. Retry that callback, not an older
-                // queued waiter: waking another parent can strand this one
-                // indefinitely if no further queue slots are released.
-                // Nothing is enqueued, so the pending-capacity bound holds.
+                // A slot was released after this caller observed its epoch.
+                // Retry *this* parent rather than taking an unrelated waiter.
+                // During a synchronous retry callback, a caller can repeat
+                // stale-epoch registrations arbitrarily many times. Without
+                // a quota these bypass the bounded pending queue and append
+                // unbounded Runnable references to the thread-local retry
+                // trampoline. Enforce a second, capacity-sized bound here.
+                RetryDispatch dispatch = retryDispatch.get();
+                if (dispatch != null && dispatch.active) {
+                    if (dispatch.later.size() >= capacity) return false;
+                    dispatch.later.addLast(callback);
+                    return true;
+                }
                 ready = callback;
             } else {
                 if (pending.size() >= capacity) return false;
