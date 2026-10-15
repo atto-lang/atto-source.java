@@ -40,6 +40,36 @@ public final class LinkedFunctionContract {
         }
     }
 
+    /**
+     * Reject any externally visible signature drift between the declaration
+     * used to check importers and the provider's final checked declaration.
+     * Function bodies intentionally do not participate: this is an *interface*
+     * proof, never an optimized object-code cache key.
+     */
+    public static void requireStableSignature(
+            Ast.FunctionDecl initiallyResolved, Ast.FunctionDecl finallyChecked) {
+        requirePrimitiveContract(initiallyResolved);
+        requirePrimitiveContract(finallyChecked);
+        if (!Objects.equals(initiallyResolved.name(), finallyChecked.name())
+                || initiallyResolved.kind() != finallyChecked.kind()
+                || initiallyResolved.visibility() != finallyChecked.visibility()
+                || initiallyResolved.actorKind() != finallyChecked.actorKind()
+                || initiallyResolved.async() != finallyChecked.async()
+                || initiallyResolved.suspends() != finallyChecked.suspends()
+                || initiallyResolved.generator() != finallyChecked.generator()
+                || initiallyResolved.structural() != finallyChecked.structural()
+                || initiallyResolved.nonLexical() != finallyChecked.nonLexical()
+                || initiallyResolved.trapped() != finallyChecked.trapped()
+                || !initiallyResolved.genericParameters().equals(
+                        finallyChecked.genericParameters())
+                || !initiallyResolved.annotations().equals(finallyChecked.annotations())
+                || !initiallyResolved.parameters().equals(finallyChecked.parameters())
+                || !Objects.equals(initiallyResolved.returnType(), finallyChecked.returnType())) {
+            throw new IllegalArgumentException(
+                    "linked provider signature changed during SCC verification");
+        }
+    }
+
     private static boolean simplePrimitive(Ast.TypeRef ref, boolean allowVoid) {
         if (ref == null || ref.name() == null
                 || ref.inferArguments() || !ref.arguments().isEmpty()) return false;
