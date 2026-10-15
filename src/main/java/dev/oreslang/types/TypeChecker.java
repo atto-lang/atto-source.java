@@ -1166,9 +1166,21 @@ public final class TypeChecker {
             resolve(parent, classGenerics, self);
             Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
             if (resolvedParent != null && klass.actorKind() != resolvedParent.actorKind()) {
-                throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
+                throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: 
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
+            }
+            if (resolvedParent != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                if (klass.actorReplyRole() != Ast.ActorReplyRole.INFER
+                        && resolvedParent.actorReplyRole() != Ast.ActorReplyRole.INFER
+                        && klass.actorReplyRole() != resolvedParent.actorReplyRole()) {
+                    throw new IllegalArgumentException("actor reply role mismatch across inheritance: "
+                            + klass.name() + " and " + resolvedParent.name());
+                }
+                if (klass.actorTransport() != resolvedParent.actorTransport()) {
+                    throw new IllegalArgumentException("actor transport mismatch across inheritance: "
+                            + klass.name() + " and " + resolvedParent.name());
+                }
             }
             if (resolvedParent != null && resolvedParent.constructor() != null) {
                 throw new IllegalArgumentException(
@@ -1185,6 +1197,14 @@ public final class TypeChecker {
                 klass, nominalClassType(klass), new LinkedHashSet<>())) {
             effectiveFieldNames.add(field.field().name());
         }
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && (klass.actorReplyRole() != Ast.ActorReplyRole.INFER
+                    || klass.actorTransport() != Ast.ActorTransport.GENERIC)
+                && !effectiveFieldNames.isEmpty()) {
+            throw new IllegalArgumentException("specialized actor '" + klass.name()
+                    + "' cannot inherit ordinary persistent instance fields; use sealed state {}");
+        }
+
         Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
         collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
         for (String name : effectiveFieldNames) {
@@ -1200,6 +1220,25 @@ public final class TypeChecker {
         // shared by AOT and JIT. Multiple-inheritance collisions require the
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && klass.actorReplyRole() != Ast.ActorReplyRole.INFER) {
+            Map<Ast.MethodArity, Ast.MethodDecl> effective =
+                    effectiveInstanceMethods(klass, new LinkedHashSet<>());
+            long runs = effective.keySet().stream().filter(m -> m.name().equals("run")).count();
+            long receives = effective.keySet().stream().filter(m -> m.name().equals("receive")).count();
+            if (runs > 1 || receives > 1 || (runs != 0 && receives != 0)) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' cannot mix or overload inherited unary/stream handlers");
+            }
+            if (klass.actorReplyRole() == Ast.ActorReplyRole.STREAM && runs != 0) {
+                throw new IllegalArgumentException("stream actor '" + klass.name()
+                        + "' cannot inherit a unary run handler");
+            }
+            if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY && receives != 0) {
+                throw new IllegalArgumentException("unary actor '" + klass.name()
+                        + "' cannot inherit a stream receive handler");
+            }
+        }
 
         // Declaration-site initialization may read constructor arguments in
         // the declaring class. Unlike constructor-body assignment, the
