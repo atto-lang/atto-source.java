@@ -9,7 +9,7 @@ fnc create(): Pointer<Box> {
 pub routine main(): void {
   const Pointer<Box> pointer = create();
   block {
-    const Box view = rt unref pointer;
+    const Box view = rt deref pointer;
     const same = rt deref(pointer);
     stdio.stdout.write(view.value + same.value);
   }
