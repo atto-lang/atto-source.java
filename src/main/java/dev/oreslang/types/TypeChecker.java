@@ -4671,7 +4671,7 @@ public final class TypeChecker {
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
         if (Set.of("fs", "File", "TcpConnection", "http", "HttpServer", "HttpExchange", "HttpHandler",
-                "stdio.stdout", "stdio.stdin").contains(named.name()))
+                "stdio", "stdio.stdout", "stdio.stdin").contains(named.name()))
             throw unsupportedBlockingIo(named.name() + "." + name);
         if (named.name().equals("env")) {
             return switch (name) {

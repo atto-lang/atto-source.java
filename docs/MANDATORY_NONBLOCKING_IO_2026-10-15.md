@@ -79,3 +79,8 @@ actor-owned transferable socket handles and full LLVM guest-I/O continuation
 lowering remain incomplete. Idle reactor readiness waits and compiler/source
 loading are distinct from guest blocking-I/O fallbacks. No Native Image/AOT or
 production-completeness claim is made by this slice.
+
+The all-backend source corpus additionally exposed a stdio namespace admission
+gap: unknown direct members such as stdio.read_line previously compiled as
+unknown calls. The mandatory type gate now rejects these and namespace aliases
+before execution, while supported non-I/O source and packaged stdlib still pass.

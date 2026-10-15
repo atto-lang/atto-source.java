@@ -18,10 +18,16 @@ final class MandatoryStdlibAdmissionTest {
     @Test void permissionIndependentCompilerGateCoversAliasesAndUnreachableCode() {
         for (String expression : java.util.List.of("fs.read_text", "File.write_text_async",
                 "http.get_text_async", "network.connect_async", "network.listen_nonblocking",
-                "stdio.println", "stdio.stdout.write", "stdio.stdin.read_line", "print")) {
+                "stdio.println", "stdio.read_line", "stdio.read_line_async", "stdio.unknown_io", "stdio.stdout.write", "stdio.stdin.read_line", "print")) {
             var failure = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
                     "pub fnc main(): void { return; val hidden = " + expression + "; }"), expression);
             assertTrue(failure.getMessage().contains("blocking I/O"), failure::toString);
         }
     }
+    @Test void stdioNamespaceAliasesCannotBecomeUnknownCallableIo() {
+        var failure = assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck(
+                "pub fnc main(): void { val input = stdio; val read = input.read_line; return; }"));
+        assertTrue(failure.getMessage().contains("blocking I/O"), failure::toString);
+    }
+
 }
