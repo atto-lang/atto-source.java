@@ -228,7 +228,14 @@ public final class ReturnCleanupChecker {
                     expression(arm.value(), scope, inDefer, state);
                     Scope armScope = new Scope(scope);
                     if (arm.bindingName() != null) armScope.define(arm.bindingName());
-                    statements(arm.body(), armScope, inFinally, inDefer, trackReturns, state);
+                    // A nonblocking static arm runs as a detached continuation.
+                    // Its arm-local return never becomes the already-returned
+                    // caller's pending result. Keep scanning effects/finally,
+                    // but do not mark its return operand as a caller return.
+                    boolean returnsToCaller = trackReturns
+                            && select.mode() != Ast.WaitMode.NONBLOCKING;
+                    statements(arm.body(), armScope, inFinally, inDefer,
+                            returnsToCaller, state);
                 }
             }
         }
@@ -288,6 +295,8 @@ public final class ReturnCleanupChecker {
         } else if (expr instanceof Ast.BinaryExpr binary) {
             expression(binary.left(), scope, inDefer, state);
             expression(binary.right(), scope, inDefer, state);
+        } else if (expr instanceof Ast.TrapExpr trapped) {
+            expression(trapped.expression(), scope, inDefer, state);
         } else if (expr instanceof Ast.UnaryExpr unary) {
             expression(unary.operand(), scope, inDefer, state);
         } else if (expr instanceof Ast.ConditionalExpr conditional) {

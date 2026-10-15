@@ -7,6 +7,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         FLOAT,
         IMAG,
         STRING,
+        SYMBOL_LITERAL,
 
         DEFINE, CLASS, MODULE, CONTRACT, CONFORMS, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
         TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
@@ -16,7 +17,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         GPU, CPU, QUANTUM,
 
         LPAREN, RPAREN, LBRACE, RBRACE, LBRACKET, RBRACKET,
-        COMMA, DOT, ELLIPSIS, SEMICOLON, COLON, QUESTION, AT, BACKTICK,
+        COMMA, DOT, ELLIPSIS, SEMICOLON, COLON, DOUBLE_COLON, QUESTION, AT, BACKTICK,
         PLUS, MINUS, STAR, SLASH, PERCENT, PIPE, AMP, CARET, TILDE, BANG,
         EQUAL, EQUAL_EQUAL, BANG_EQUAL,
         LT, LTE, GT, GTE,
