@@ -154,6 +154,34 @@ final class DualSerdeBorrowBoundaryTest {
     }
 
     @Test
+    void unknownNominalsCannotLaunderUnverifiedActorDataShapes() {
+        for (String type : new String[]{
+                "OpaqueHandle",
+                "OpaqueHandle<int>",
+                "Option<OpaqueHandle>",
+                "Result<OpaqueHandle, String>",
+                "Namespace.ExternalCapability",
+                "List<Namespace.ExternalCapability>"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "actor fnc bad(" + type + " value): void { return; }")),
+                    type);
+            assertTrue(failure.getMessage().contains("unresolved nominal type"),
+                    () -> type + ": " + failure.getMessage());
+        }
+    }
+
+    @Test
+    void knownCompilerDataIdentifiersRemainAdmissible() {
+        for (String type : new String[]{"ActorId", "ActorKind", "Symbol"}) {
+            assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                    "actor fnc inspect(" + type + " value): void { return; }")), type);
+        }
+    }
+
+    @Test
     void supervisorToActorMailboxDeclCannotCarryCodecOrPointer() {
         for (String type : new String[]{
                 "NetworkCodec<int>", "ActorMessageCodec<int>",
