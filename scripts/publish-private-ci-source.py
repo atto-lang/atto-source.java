@@ -194,6 +194,14 @@ def checked_source_main_protection():
             or not (isinstance(checks.get("contexts"), list) and checks["contexts"]
                     or isinstance(checks.get("checks"), list) and checks["checks"])):
         raise Denied("source main lacks mandatory independent security review and CI")
+    # Explicit bypass allowances negate the code-owner review guarantee.
+    bypass = reviews.get("bypass_pull_request_allowances")
+    if bypass is not None:
+        if (not isinstance(bypass, dict)
+                or any(not isinstance(bypass.get(kind, []), list)
+                       or bypass.get(kind, [])
+                       for kind in ("users", "teams", "apps"))):
+            raise Denied("source main permits unreviewed pull request bypass")
     for setting in ("allow_force_pushes", "allow_deletions"):
         entry = rules.get(setting)
         if not isinstance(entry, dict) or entry.get("enabled") is not False:
