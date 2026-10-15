@@ -49,6 +49,15 @@ private-branch rules fail closed. A passing API read is not a substitute for iss
 synthetic-PR demonstration that direct pushes and unreviewed merges are blocked.
 Do not turn the repository public to gain protection features.
 
+The publisher's POSIX transfer wrapper starts Python in isolated mode and
+drops inherited Bash startup, Python import-path and dynamic-loader variables.
+The publisher also removes shell/Git startup and configuration overrides
+from child-process environments, and resolves `bash`, `git`, and `gh` from
+system executable directories. These checks mitigate ambient environment
+injection; the invoking runner/host and its system executable directories
+must themselves be trusted. Do not execute the transfer from an untrusted
+PR-controlled environment.
+
 The publisher itself must run from an **unmodified Git checkout of the same
 protected source-main commit** reported by GitHub. It checks the actual Git
 repository root, `HEAD`, and tracked code/policy paths before reading private
