@@ -1288,6 +1288,9 @@ public final class TypeChecker {
             List<Type> constructorArgumentTypes = new ArrayList<>(constructor.parameters().size());
             for (Ast.Param param : constructor.parameters()) {
                 Type parameterType = resolveParam(param, classGenerics, self);
+                validateCallbackDeliveryParameter(param, parameterType,
+                        constructor.visibility() == Ast.Visibility.PUBLIC,
+                        klass.name() + ".constructor");
                 constructorArgumentTypes.add(parameterType);
                 constructorEnv.define(
                         param.name(),
