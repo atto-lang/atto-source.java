@@ -139,6 +139,8 @@ public final class OresScheduler implements AutoCloseable {
     private final Object taskAdmissionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong watchdogOverruns = new AtomicLong();
+    /** Diagnostics for opt-in native source retirement failures. */
+    private final AtomicLong nativeRetirementFailures = new AtomicLong();
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -304,6 +306,43 @@ public final class OresScheduler implements AutoCloseable {
     /** Number of physical dispatch turns flagged by the independent watchdog. */
     public long watchdogOverruns() {
         return watchdogOverruns.get();
+    }
+
+    /** Trusted audit counter; a failed native witness must never publish DONE. */
+    long nativeRetirementFailures() {
+        return nativeRetirementFailures.get();
+    }
+
+    /**
+     * VM-only retry after an external native cleanup-ticket barrier closes.
+     * Terminal tasks retain their native identities on failed retirement;
+     * none is restarted or given a second guest turn. Never guest-callable.
+     *
+     * Failed retries remain in the live set; other terminal tasks are still
+     * attempted, rather than one BUSY source starving their retirement.
+     */
+    int retryNativeQuiescentTasks() {
+        if (nativeTurnKernel == null) {
+            throw new IllegalStateException("native SourceTask witness not configured");
+        }
+        int retired = 0;
+        RuntimeException failure = null;
+        for (TaskRunner<?> task : Set.copyOf(tasks)) {
+            if (task.phase.get() != TaskRunner.TERMINAL
+                    || task.executing.get() || task.nativeRetirementConfirmed.get()) {
+                continue;
+            }
+            try {
+                task.retireWhenQuiescent();
+                task.publishTerminalIfReady();
+                if (task.nativeRetirementConfirmed.get()) retired++;
+            } catch (RuntimeException e) {
+                if (failure == null) failure = e;
+                else failure.addSuppressed(e);
+            }
+        }
+        if (failure != null) throw failure;
+        return retired;
     }
 
     /** Poll records forward progress without claiming a physical carrier handoff. */
@@ -1054,6 +1093,7 @@ public final class OresScheduler implements AutoCloseable {
                         // A pending cleanup ticket/legacy carrier may keep the
                         // source BUSY. Permit a later terminal/close retry;
                         // never publish the terminal Future on this failure.
+                        nativeRetirementFailures.incrementAndGet();
                         quiescenceNotified.set(false);
                         throw failure;
                     }
