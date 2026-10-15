@@ -1213,11 +1213,30 @@ public final class TypeChecker {
                             && params.get(0).type().name().equals("MiddlewareContext")
                             && params.get(1).type().name().equals("MiddlewareResponseDraft")
                             && params.get(2).type().name().equals("MiddlewareNext");
+                    Ast.TypeRef result = method.returnType();
                     if ((!legacy && !canonical)
-                            || !method.returnType().name().equals("MiddlewareOutcome")) {
+                            || !result.name().equals("MiddlewareOutcome")
+                            || result.arguments().size() > 1) {
                         throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
                                 + "' requires async next(ctx, next) or async next(ctx, res, next)"
                                 + " returning MiddlewareOutcome<T>");
+                    }
+                    if (result.arguments().size() == 1) {
+                        Ast.TypeRef declared = result.arguments().getFirst();
+                        if (declared.isComplement()) {
+                            throw new IllegalArgumentException("middleware next outcome may not use !void");
+                        }
+                        Ast.MethodDecl run = klass.methods().stream()
+                                .filter(m -> !m.isStatic() && m.name().equals("run"))
+                                .findFirst().orElse(null);
+                        if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY
+                                && run != null && !declared.equals(run.returnType())) {
+                            throw new IllegalArgumentException("middleware next result type must match unary actor return type");
+                        }
+                        if (klass.actorReplyRole() == Ast.ActorReplyRole.STREAM
+                                && !declared.name().equals("void")) {
+                            throw new IllegalArgumentException("stream middleware next must return MiddlewareOutcome<void>");
+                        }
                     }
                 }
             }
