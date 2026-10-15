@@ -69,6 +69,43 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeRetirementFailureCannotPreventOtherTaskShutdown() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(128)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var started = new CountDownLatch(2);
+                var firstSource = new AtomicReference<NativeActorTurnKernel.SourceTask>();
+                var gate1 = new OresFuture<Integer>();
+                var gate2 = new OresFuture<Integer>();
+                OresFuture<Integer> first = scheduler.start(resume -> {
+                    firstSource.set(currentNativeSourceForTest());
+                    started.countDown();
+                    return OresScheduler.<Integer>await(gate1);
+                });
+                OresFuture<Integer> second = scheduler.start(resume -> {
+                    started.countDown();
+                    return OresScheduler.<Integer>await(gate2);
+                });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                var ticket = kernel.issueCleanup(firstSource.get());
+
+                // First native source cannot settle with an open ticket.
+                // Both task Future cancellations must still be delivered.
+                assertThrows(NativeActorTurnKernel.NativeStatusFailure.class,
+                        scheduler::close);
+                assertTrue(first.isDone(), "first task cancellation not delivered");
+                assertTrue(second.isDone(), "another task was stranded by first failure");
+                assertTrue(scheduler.nativeRetirementFailures() >= 1);
+
+                kernel.cancelCleanup(ticket);
+                assertEquals(1, scheduler.retryNativeQuiescentTasks());
+                assertEquals(0, scheduler.retryNativeQuiescentTasks());
+                kernel.stop(); // Kernel.close will enforce no live SourceTasks.
+            }
+        }
+    }
+
+    @Test
     void actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
