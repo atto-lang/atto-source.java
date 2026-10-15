@@ -265,23 +265,35 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 ? () -> cancellable.cancel(true)
                 : () -> { };
         OresFuture<T> result = new OresFuture<>(cancelHook);
-        stage.whenComplete((value, failure) -> {
-            if (failure == null) {
-                result.completeFromRuntime(value);
-                return;
-            }
+        try {
+            stage.whenComplete((value, failure) -> {
+                if (failure == null) {
+                    result.completeFromRuntime(value);
+                    return;
+                }
 
-            Throwable terminalFailure = unwrap(failure);
-            boolean cancelled = stage instanceof Future<?> hostFuture
-                    ? hostFuture.isCancelled()
-                    : terminalFailure instanceof CancellationException;
+                Throwable terminalFailure = unwrap(failure);
+                boolean cancelled = stage instanceof Future<?> hostFuture
+                        ? hostFuture.isCancelled()
+                        : terminalFailure instanceof CancellationException;
 
-            if (cancelled) {
-                result.cancel(false);
-            } else {
-                result.failFromRuntime(terminalFailure);
-            }
-        });
+                if (cancelled) {
+                    result.cancel(false);
+                } else {
+                    result.failFromRuntime(terminalFailure);
+                }
+            });
+        } catch (Throwable registrationFailure) {
+            // Foreign CompletionStage implementations can throw while their
+            // completion listener is being installed, even after invoking it
+            // synchronously. Normalize a pre-settlement exception to a failed
+            // Future, but never overwrite a completion that already won.
+            // No guest code is executed on this registration call stack.
+            if (registrationFailure instanceof VirtualMachineError fatal) throw fatal;
+            if (registrationFailure instanceof ThreadDeath fatal) throw fatal;
+            if (registrationFailure instanceof LinkageError fatal) throw fatal;
+            result.failFromRuntime(registrationFailure);
+        }
         return result;
     }
 
