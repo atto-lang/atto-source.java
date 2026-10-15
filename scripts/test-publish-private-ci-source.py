@@ -33,10 +33,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         # Synthetic, local-only approval. Production main is deliberately empty.
-        self.reviewed_snapshot = f"{D} {self.expected_tree} 123\\n".replace("\\n", "\n")
-        self.snapshot_sha = hashlib.sha1(
-            b"blob " + str(len(self.reviewed_snapshot.encode())).encode("ascii")
-            + bytes([0]) + self.reviewed_snapshot.encode()).hexdigest()
+        self.set_reviewed_snapshot()
         self.remote_source_commit = D
         self.remote_source_tree = None
         self.route_calls = []
@@ -52,6 +49,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+
+    def set_reviewed_snapshot(self, commit=D, tree=None, destination_id=123):
+        if tree is None:
+            tree = self.expected_tree
+        self.reviewed_snapshot = f"{commit} {tree} {destination_id}\\n".replace("\\n", "\n")
+        payload = self.reviewed_snapshot.encode("utf-8")
+        self.snapshot_sha = hashlib.sha1(
+            b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+        ).hexdigest()
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -108,6 +114,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_unreviewed_source_tuple_denies_before_source_read_or_upload(self):
+        self.reviewed_snapshot = "# no source tuples approved\n"
+        payload = self.reviewed_snapshot.encode()
+        self.snapshot_sha = hashlib.sha1(
+            b"blob " + str(len(payload)).encode() + b"\0" + payload
+        ).hexdigest()
+        with patch.object(pub, "collect_source", side_effect=AssertionError("read before approval")):
+            with self.assertRaisesRegex(pub.Denied, "immutable source snapshot"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_wrong_destination_tuple_denies_without_source_read(self):
+        self.set_reviewed_snapshot(destination_id=456)
+        with patch.object(pub, "collect_source", side_effect=AssertionError("read before approval")):
+            with self.assertRaisesRegex(pub.Denied, "immutable source snapshot"):
+                self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_reviewed_source_policy_revocation_denies_before_second_write(self):
+        original = self.fake_api
+        def revoke_after_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.set_reviewed_snapshot(destination_id=456)
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_blob):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [r for method, r, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_pinned_immutable_source_commit_is_authenticated_before_any_source_write(self):
         self.remote_source_commit = E
@@ -337,6 +375,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # A new isolated source tree MUST NOT be based on that default tree.
         (self.source / "current.ores").write_text("new source")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
         self.publish()
         tree_writes = [payload for method, route, payload in self.route_calls
                        if method == "POST" and route.endswith("/git/trees")]
@@ -370,6 +409,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_wrong_pinned_tree_rejects_before_any_source_upload(self):
         self.expected_tree = "f" * 40
+        self.set_reviewed_snapshot()
         with self.assertRaisesRegex(pub.Denied, "source snapshot Git tree"):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
@@ -597,6 +637,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         directory.mkdir()
         (directory / "inside.ores").write_text("safe")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
         _, count = self.publish()
         self.assertEqual(count, 2)
         new_tree = [payload for method, route, payload in self.route_calls
