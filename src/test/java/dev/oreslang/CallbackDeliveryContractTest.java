@@ -66,6 +66,38 @@ final class CallbackDeliveryContractTest {
     }
 
     @Test
+    void deferredParameterCannotBeCalledInlineBeforeSchedulerLowering() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        fnc invalid(@callback(deferred) Fnc<int, void> cb): void {
+                            cb(3);
+                            return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("@callback(deferred)"),
+                error::getMessage);
+    }
+
+    @Test
+    void deferredParameterCannotBeAliasedOrForwardedBeforeEscapeProof() {
+        for (String body : new String[] {
+                "val alias = cb;",
+                "use(cb);"
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> OresCompiler.parseAndTypeCheck("""
+                            fnc use(Fnc<int, void> cb): void { return; }
+                            fnc invalid(@callback(deferred) Fnc<int, void> cb): void {
+                                %s
+                                return;
+                            }
+                            """.formatted(body)));
+            assertTrue(error.getMessage().contains("@callback(deferred)"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
     void borrowedLocalCannotEscapeIntoDeferredCallback() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
