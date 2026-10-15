@@ -205,10 +205,11 @@ final class NominalMethodSlotsTest {
         assertEquals("$methodoverload$v1$"
                 + "11_726f6f742e5069636b6572$"
                 + "8_494e5354414e4345$"
-                + "3_676574$1$"
+                + "6_63686f6f7365$1$"
                 + "4_454e554d$"
                 + "11_726f6f743a3a436f6c6f72$",
-                a.linkSymbol("root.Picker"));
+                new Slot(Domain.INSTANCE, "choose", List.of(color))
+                        .linkSymbol("root.Picker"));
         assertNotEquals(a.linkSymbol("root.Picker"), b.linkSymbol("root.Picker"));
         assertNotEquals(a.linkSymbol("root.Picker"), a.linkSymbol("root.Other"));
         assertThrows(IllegalArgumentException.class, () ->
