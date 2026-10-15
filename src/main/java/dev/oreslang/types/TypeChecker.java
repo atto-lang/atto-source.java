@@ -981,8 +981,10 @@ public final class TypeChecker {
             // no methods execute, no owned resources are acquired, and no
             // partially initialized child can escape into user callbacks.
             if (created.type().name().equals("Array") && created.arguments().isEmpty()
+                    && !created.type().inferArguments()
+                    && !importedValues.contains("Array")
                     && findClass("Array") == null)
-                return false; // built-in zero-arg allocator, never a shadowing guest class
+                return false; // only the unshadowed built-in zero-arg allocator
             if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
                 return true;
             Ast.ClassDecl nested = findClass(created.type().name());
