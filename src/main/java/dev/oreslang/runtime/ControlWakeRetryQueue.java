@@ -18,7 +18,22 @@ import java.util.Set;
  */
 final class ControlWakeRetryQueue {
     private static final int MAX_LANE_AFFINITY_SCAN = 16;
-    private record Retry(Runnable callback, int lane) { }
+    // Identity-bearing ticket survives movement from pending to in-flight.
+    // Cancellation must be able to revoke a callback until its first instruction
+    // is admitted, even if it has already left the pending/deferred queues.
+    private static final class Retry {
+        final Runnable callback;
+        final int lane;
+        boolean retained;
+        boolean cancelled;
+        Retry(Runnable callback, int lane, boolean retained) {
+            this.callback = callback;
+            this.lane = lane;
+            this.retained = retained;
+        }
+        Runnable callback() { return callback; }
+        int lane() { return lane; }
+    }
     private final int capacity;
     private final ArrayDeque<Retry> pending = new ArrayDeque<>();
     private long releaseEpoch;
@@ -33,13 +48,17 @@ final class ControlWakeRetryQueue {
     // contains no callback reference after its outer dispatch returns.
     private static final class RetryDispatch {
         boolean active;
-        final ArrayDeque<Runnable> later = new ArrayDeque<>();
+        final ArrayDeque<Retry> later = new ArrayDeque<>();
     }
     private final ThreadLocal<RetryDispatch> retryDispatch = new ThreadLocal<>();
     // Guarded by this monitor: all currently active carrier dispatchers.
     // A parent can be cancelled by a *different* host thread after a retry
     // was dequeued but before the owner carrier invokes it.
     private final Set<RetryDispatch> activeDispatchers = new HashSet<>();
+    // Includes dequeued tickets not yet admitted into a callback, including
+    // tickets between a physical slot release and the trampoline handoff.
+    // Access, cancellation, and callback-start linearization use this monitor.
+    private final Set<Retry> aboutToInvoke = new HashSet<>();
     // Guarded by the queue monitor: bounded affinity preference over FIFO.
     private int consecutiveAffinityBypasses;
 
@@ -58,7 +77,7 @@ final class ControlWakeRetryQueue {
 
     boolean register(Runnable callback, long observedEpoch, int lane) {
         Objects.requireNonNull(callback, "callback");
-        Runnable ready = null;
+        Retry ready = null;
         synchronized (this) {
             if (closed) return false;
             if (releaseEpoch != observedEpoch) {
@@ -73,30 +92,32 @@ final class ControlWakeRetryQueue {
                 if (dispatch != null && dispatch.active) {
                     if (retainedCallbacks >= capacity) return false;
                     ++retainedCallbacks;
-                    dispatch.later.addLast(callback);
+                    dispatch.later.addLast(new Retry(callback, lane, true));
                     return true;
                 }
-                ready = callback;
+                ready = new Retry(callback, lane, false);
+                aboutToInvoke.add(ready);
             } else {
                 if (retainedCallbacks >= capacity) return false;
-                pending.addLast(new Retry(callback, lane));
+                pending.addLast(new Retry(callback, lane, true));
                 ++retainedCallbacks;
             }
         }
-        notifyRetry(ready, false);
+        notifyRetry(ready);
         return true;
     }
 
     void slotReleased() { slotReleased(-1); }
 
     void slotReleased(int lane) {
-        Runnable ready;
+        Retry ready;
         synchronized (this) {
             if (closed) return;
             ++releaseEpoch;
             ready = dequeueForLane(lane);
+            if (ready != null) aboutToInvoke.add(ready);
         }
-        notifyRetry(ready, true);
+        notifyRetry(ready);
     }
 
     /**
@@ -105,7 +126,7 @@ final class ControlWakeRetryQueue {
      * different lane even when a waiting parent's own lane is idle.
      * Scan at most 16 entries per release to bound scheduler overhead.
      */
-    private Runnable dequeueForLane(int lane) {
+    private Retry dequeueForLane(int lane) {
         if (pending.isEmpty()) {
             consecutiveAffinityBypasses = 0;
             return null;
@@ -124,37 +145,58 @@ final class ControlWakeRetryQueue {
                     cursor.remove();
                     if (candidate == oldest) consecutiveAffinityBypasses = 0;
                     else ++consecutiveAffinityBypasses;
-                    return candidate.callback();
+                    return candidate;
                 }
             }
         }
         consecutiveAffinityBypasses = 0;
-        return pending.removeFirst().callback();
+        return pending.removeFirst();
+    }
+
+    // Monitor-only helpers. The retention charge is released exactly once:
+    // either at callback-start admission or when a ticket is revoked.
+    private void releaseRetention(Retry ticket) {
+        if (ticket.retained) {
+            ticket.retained = false;
+            --retainedCallbacks;
+        }
+    }
+
+    private void revoke(Retry ticket) {
+        ticket.cancelled = true;
+        releaseRetention(ticket);
     }
 
     synchronized void cancel(Runnable callback) {
-        // Runnable identity is host-owned and one per parent actor.
-        int previouslyPending = pending.size();
-        pending.removeIf(next -> next.callback() == callback);
-        retainedCallbacks -= previouslyPending - pending.size();
-        // The cancellation thread need not be the carrier thread. Revoke
-        // deferred callbacks from *every* active dispatcher under the
-        // monitor also used to enqueue and drain deferred callbacks.
+        pending.removeIf(ticket -> {
+            if (ticket.callback() != callback) return false;
+            revoke(ticket);
+            return true;
+        });
         for (RetryDispatch state : activeDispatchers) {
-            int previouslyDeferred = state.later.size();
-            state.later.removeIf(next -> next == callback);
-            retainedCallbacks -= previouslyDeferred - state.later.size();
+            state.later.removeIf(ticket -> {
+                if (ticket.callback() != callback) return false;
+                revoke(ticket);
+                return true;
+            });
+        }
+        // A dequeued callback is still cancellable before the start gate;
+        // removing from pending/later alone is not sufficient.
+        for (Retry ticket : aboutToInvoke) {
+            if (ticket.callback() == callback) revoke(ticket);
         }
     }
 
     synchronized void close() {
         closed = true;
-        retainedCallbacks -= pending.size();
+        for (Retry ticket : pending) revoke(ticket);
         pending.clear();
         for (RetryDispatch state : activeDispatchers) {
-            retainedCallbacks -= state.later.size();
+            for (Retry ticket : state.later) revoke(ticket);
             state.later.clear();
         }
+        for (Retry ticket : aboutToInvoke) revoke(ticket);
+        aboutToInvoke.clear();
     }
 
     synchronized int pending() {
@@ -169,7 +211,7 @@ final class ControlWakeRetryQueue {
         return callbacksFailed;
     }
 
-    private void notifyRetry(Runnable ready, boolean retained) {
+    private void notifyRetry(Retry ready) {
         if (ready == null) return;
         RetryDispatch state = retryDispatch.get();
         if (state == null) {
@@ -177,18 +219,22 @@ final class ControlWakeRetryQueue {
             retryDispatch.set(state);
         }
         if (state.active) {
-            // A host wake callback can synchronously release the next
-            // physical slot. This queue is also read by cancellation from
-            // other carrier threads, so always serialize the append.
+            // A reentrant slot release has already selected this ticket.
+            // Transfer ownership without a cancellation-invisible gap.
             synchronized (this) {
-                if (!closed) state.later.addLast(ready);
-                else if (retained) --retainedCallbacks;
+                aboutToInvoke.remove(ready);
+                if (!closed && !ready.cancelled) {
+                    state.later.addLast(ready);
+                } else {
+                    revoke(ready);
+                }
             }
             return;
         }
         synchronized (this) {
-            if (closed) {
-                if (retained) --retainedCallbacks;
+            if (closed || ready.cancelled) {
+                aboutToInvoke.remove(ready);
+                revoke(ready);
                 retryDispatch.remove();
                 return;
             }
@@ -196,43 +242,40 @@ final class ControlWakeRetryQueue {
             activeDispatchers.add(state);
         }
         try {
-            Runnable next = ready;
-            boolean nextRetained = retained;
+            Retry next = ready;
             while (next != null) {
-                // Only an actually executing callback gives back its
-                // admission slot. Count dequeued-but-not-started callbacks
-                // so another registration cannot refill the same slot.
+                boolean admitted;
                 synchronized (this) {
-                    if (nextRetained) --retainedCallbacks;
-                    if (closed) break;
+                    // This lock acquisition is the callback-start boundary.
+                    // A preceding cancel/close must win and suppress the turn;
+                    // a cancellation after it cannot undo an executing turn.
+                    aboutToInvoke.remove(next);
+                    admitted = !closed && !next.cancelled;
+                    releaseRetention(next);
                 }
-                try {
-                    // The callback can only attempt scheduler admission; it
-                    // must never run a guest actor handler on this carrier.
-                    next.run();
-                } catch (RuntimeException | AssertionError failedSubmission) {
-                    // An unrelated admitted actor turn cannot be aborted by
-                    // a nonfatal supervisor retry callback failure. Process
-                    // fatal errors retain their existing propagation policy.
-                    synchronized (this) {
-                        if (callbacksFailed < 0 || callbacksFailed == Long.MAX_VALUE) {
-                            callbacksFailed = Long.MAX_VALUE;
-                        } else {
-                            ++callbacksFailed;
+                if (admitted) {
+                    try {
+                        // This callback may only attempt scheduler admission.
+                        // It must not run a guest actor handler on this carrier.
+                        next.callback().run();
+                    } catch (RuntimeException | AssertionError failedSubmission) {
+                        synchronized (this) {
+                            if (callbacksFailed < 0 || callbacksFailed == Long.MAX_VALUE) {
+                                callbacksFailed = Long.MAX_VALUE;
+                            } else {
+                                ++callbacksFailed;
+                            }
                         }
                     }
                 }
                 synchronized (this) {
                     next = state.later.pollFirst();
-                    // Every deferred callback holds a retained admission.
-                    nextRetained = next != null;
+                    if (next != null) aboutToInvoke.add(next);
                 }
             }
         } finally {
-            // Even after a fatal callback, no dispatcher may retain an
-            // executable callback or an active-state registration.
             synchronized (this) {
-                retainedCallbacks -= state.later.size();
+                for (Retry ticket : state.later) revoke(ticket);
                 state.later.clear();
                 state.active = false;
                 activeDispatchers.remove(state);
