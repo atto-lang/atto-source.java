@@ -368,6 +368,84 @@ static void test_exited_carrier_cannot_be_impersonated(void) {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
+/* A cleanup ticket may be minted only for a VM-registered, currently live
+ * SourceTask identity. The authenticated task handle belongs to one actor
+ * incarnation and generation; it cannot cross VMs or be replayed.
+ * Registration itself is trusted scheduler-only, not a guest-facing FFI.
+ */
+static void test_source_task_provenance_and_retirement(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(64), *foreign = ores_turn_vm_new(16);
+    CHECK(vm && foreign);
+    ores_actor_cap *actor = NULL, *other = NULL, *fresh = NULL;
+    ores_source_task_cap *source = NULL, *again = NULL, *other_source = NULL;
+    ores_cleanup_cap *ticket = NULL, *duplicate = NULL;
+    ores_turn_lease *lease = NULL;
+    CHECK(ores_turn_register(vm, 777, 10, 1, &actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register(vm, 777, 11, 1, &other) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 0, 1, &source)
+          == ORES_TURN_INVALID);
+    CHECK(ores_turn_register_source_task(vm, actor, 42, 0, &source)
+          == ORES_TURN_INVALID);
+    CHECK(ores_turn_register_source_task(vm, actor, 42, 7, &source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(foreign, source, &ticket) == ORES_TURN_INVALID);
+    CHECK(ticket == NULL);
+    char fake[32] = {0};
+    CHECK(ores_turn_issue_cleanup(vm, (ores_source_task_cap *)(void *)fake,
+                                  &ticket) == ORES_TURN_INVALID);
+    CHECK(ticket == NULL);
+    CHECK(ores_turn_register_source_task(vm, actor, 42, 7, &again)
+          == ORES_TURN_STALE);
+    CHECK(again == NULL);
+    CHECK(ores_turn_register_source_task(vm, actor, 42, 8, &again)
+          == ORES_TURN_BUSY);
+    CHECK(again == NULL);
+    CHECK(ores_turn_register_source_task(vm, other, 42, 7, &other_source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &duplicate) == ORES_TURN_DENIED);
+    CHECK(duplicate == NULL);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_claim_user(vm, actor, &lease) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_release(vm, lease) == ORES_TURN_OK);
+    CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 43, 1, &again)
+          == ORES_TURN_DENIED);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_BUSY);
+    CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_STALE);
+    CHECK(ores_turn_issue_cleanup(vm, source, &duplicate) == ORES_TURN_STALE);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register(vm, 777, 10, 2, &fresh) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, fresh, 42, 1, &again)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &duplicate) == ORES_TURN_STALE);
+    CHECK(ores_turn_issue_cleanup(vm, again, &duplicate) == ORES_TURN_OK);
+    CHECK(ores_turn_stop(vm, fresh) == ORES_TURN_OK);
+    CHECK(ores_turn_cancel_cleanup(vm, duplicate) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, again) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, fresh) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, other) == ORES_TURN_DENIED);
+    CHECK(ores_turn_stop(vm, other) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, other) == ORES_TURN_BUSY);
+    CHECK(ores_turn_retire_source_task(vm, other_source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, other) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(foreign) == ORES_TURN_OK);
+
+    ores_turn_vm *small = ores_turn_vm_new(1);
+    CHECK(small);
+    CHECK(ores_turn_register(small, 2, 2, 1, &actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(small, actor, 1, 1, &source)
+          == ORES_TURN_EXHAUSTED);
+    CHECK(source == NULL);
+    CHECK(ores_turn_stop(small, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(small, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(small) == ORES_TURN_OK);
+}
+
 static void test_foreign_guesses_and_invalid_inputs(void) {
     CHECK(ores_turn_vm_new(0) == NULL);
     CHECK(ores_turn_vm_new(1000001) == NULL);
@@ -411,6 +489,7 @@ int main(void) {
     test_foreign_guesses_and_invalid_inputs();
     test_carrier_identity_churn();
     test_exited_carrier_cannot_be_impersonated();
+    test_source_task_provenance_and_retirement();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
