@@ -196,6 +196,47 @@ final class NominalInheritedMethodSlotsTest {
     }
 
     @Test
+    void syntheticAnnotationChangesCannotBypassInheritedEffectContract() {
+        Ast.Program parsed = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color x): int { return 1; }
+                end
+                define class Child extends Base as
+                    pub pick(Color x): int { return 2; }
+                end
+                """);
+        Ast.ModuleDecl root = parsed.modules().getFirst();
+        java.util.ArrayList<Ast.Decl> changed = new java.util.ArrayList<>();
+        for (Ast.Decl declaration : root.declarations()) {
+            if (!(declaration instanceof Ast.ClassDecl cls)
+                    || !cls.name().equals("Child")) {
+                changed.add(declaration);
+                continue;
+            }
+            Ast.MethodDecl old = cls.methods().getFirst();
+            Ast.MethodDecl annotated = new Ast.MethodDecl(
+                    old.name(), old.visibility(), old.isStatic(), old.isAbstract(),
+                    old.async(), old.suspends(), old.structural(),
+                    old.explicitReceiverType(), old.genericParameters(),
+                    old.parameters(), old.returnType(),
+                    List.of(new Ast.Annotation("requires_capability",
+                            List.of(Ast.TypeRef.simple("Network")))),
+                    old.body());
+            changed.add(new Ast.ClassDecl(
+                    cls.name(), cls.visibility(), cls.isAbstract(), cls.actorKind(),
+                    cls.genericParameters(), cls.parents(), cls.interfaces(),
+                    cls.fields(), cls.constructor(), List.of(annotated)));
+        }
+        Ast.Program mutated = new Ast.Program(List.of(
+                new Ast.ModuleDecl(root.name(), root.annotations(),
+                        root.contracts(), changed)));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.prove(
+                        mutated, "Child", Domain.INSTANCE, "pick", 1));
+        assertTrue(error.getMessage().contains("override contract"), error.getMessage());
+    }
+
+    @Test
     void proofDoesNotEnableUnsafeExecutableMethodDispatch() {
         Ast.Program program = Parser.parse(ENUMS + """
                 define class Base as
