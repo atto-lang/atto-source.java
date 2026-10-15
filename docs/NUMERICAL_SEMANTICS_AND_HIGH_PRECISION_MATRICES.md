@@ -78,6 +78,38 @@ implement borrowed views or actor-local arenas, and has no LLVM implementation.
 It is an executable Java-side reference for later guest and cross-backend work,
 not proof that arbitrary-precision matrix support is complete.
 
+### Exact scalar runtime boundary
+
+`src/main/java/dev/oreslang/math/ExactScalarMath.java` now handles Java
+`BigInteger`/`BigDecimal` carriers without accidental conversion to binary64.
+The evaluator dispatches these carriers through this helper for arithmetic and
+unary negation; implicit mixing with binary float or complex is rejected.
+BigInteger division requires an explicitly selected result domain, while
+nonterminating BigDecimal division requires an explicit positive-precision
+`MathContext` through `ExactScalarMath.divide`. Scalar precision and scale
+budgets apply. Host-level regressions live in `ExactScalarMathTest.java`.
+
+**Limitations:** Guest-source `bigint`/`decimal`/ `f32` type checking and
+construction still need parity work. Recognizing a type name is not evidence
+that guest arithmetic uses the exact host implementation. Thus the helper is
+an exact *runtime carrier boundary*, not a claim of completed source-level
+arbitrary precision.
+
+### Resource and CI admission updates
+
+`DecimalMatrix` now bounds total significant digits per matrix in addition
+to individual per-cell quotas, checks output shape/work before allocating
+results, and checks staged output aggregate size before publication.
+JUnit regressions include aggregate input/output exhaustion and preallocation
+shape-check precedence.
+
+A source-free capacity probe succeeded with three actually executed steps in
+private `cliptown/cliptown-e2e`, but [security admission issue #962]
+(https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/962)
+explicitly **does not authorize** private Oreslang source transfer. Neither
+private source nor Git object bytes were transferred to that carrier.
+This is runner availability evidence, not Java/LLVM Oreslang test verification.
+
 ## Known unresolved numerical risks (2026-10-15)
 
 - The staged Java complex-division algorithm avoids denominator squares that overflow or underflow, and power-of-two scaling preserves common extreme/zero cases. **It is not a correctly-rounded complex division algorithm.** An independent deterministic 1,500-case, wide-exponent comparison against a 100-decimal-digit oracle identified 18 cases with unacceptable relative errors for small, representable result components. Most involve extreme exponent separation and loss of a small component. This is a *development finding*, not a conformance result. A more robust complex division implementation or a dedicated high-precision fallback is required.
