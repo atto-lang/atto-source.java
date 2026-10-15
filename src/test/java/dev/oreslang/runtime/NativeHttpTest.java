@@ -16,6 +16,149 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @org.junit.jupiter.api.RepeatedTest(5)
+    @org.junit.jupiter.api.Timeout(30)
+    void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  let int uses = 0;
+                  let String previous = "";
+                  receive(ActorMail<String> mail): void {
+                    if self.previous != ""; then
+                      try { http.claim(self.previous); stdio.println("STALE TOKEN ACCEPTED"); }
+                      catch (err) { stdio.println("stale-rejected"); }
+                    fi
+                    self.previous = mail.value;
+                    self.uses = self.uses + 1;
+                    val request = http.claim(mail.value);
+                    request.set_header("X-Reused", self.uses > 1 ? "yes" : "no");
+                    await request.respond(200, "text/plain", "ok");
+                    try { request.respond(200, "text/plain", "wrong"); stdio.println("CLOSED ACCEPTED"); }
+                    catch (err) { stdio.println("closed-rejected"); }
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < 8; i = i + 1) {
+                    val request = await server.accept();
+                    val completion = request.completion;
+                    handler.dispatch(rt borrow mut request);
+                    await completion;
+                  }
+                  await server.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    for (int i = 1; i <= 8; i++) {
+                        HttpResponse<String> response = request(port, "GET", "/", "");
+                        assertEquals(200, response.statusCode());
+                        assertEquals(i > 1 ? "yes" : "no", response.headers().firstValue("X-Reused").orElseThrow());
+                    }
+                }, 8);
+            assertFalse(output.contains("ACCEPTED"), output);
+            assertEquals(7, output.split("stale-rejected", -1).length - 1, output);
+            assertEquals(8, output.split("closed-rejected", -1).length - 1, output);
+            // Supervisor counters may interleave with post-response diagnostics.
+            var numbers = output.lines().filter(line -> line.matches("[0-9]+")).toList();
+            assertEquals(4, numbers.size(), output); // port plus three counters
+            assertEquals(List.of("1", "7", "0"), numbers.subList(1, 4), output);
+        }
+    }
+
+    @Test void pooledWorkerDeathReleasesRequestAndReplacementServesFollowingRequests() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    if request.target == "/fail"; then self.end(); return; fi
+                    await request.respond(200, "text/plain", "ok");
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < 3; i = i + 1) {
+                    val request = await server.accept();
+                    val completion = request.completion;
+                    handler.dispatch(rt borrow mut request);
+                    await completion;
+                  }
+                  await server.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    assertEquals(500, request(port, "GET", "/fail", "").statusCode());
+                    assertEquals(200, request(port, "GET", "/ok", "").statusCode());
+                    assertEquals(200, request(port, "GET", "/ok", "").statusCode());
+                });
+            assertTrue(output.endsWith("2\n1\n0\n"), output);
+        }
+    }
+
+    @Test void pooledReceiveRemainsExclusiveAcrossAwaitUnderConcurrentRequests() throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = run("""
+                define %s Worker as
+                  let bool receiving = false;
+                  val String identity = process.unique_id();
+                  receive(ActorMail<String> mail): void {
+                    val request = http.claim(mail.value);
+                    if self.receiving; then
+                      await request.respond(409, "text/plain", "overlap"); return;
+                    fi
+                    self.receiving = true;
+                    request.set_header("X-Worker", self.identity);
+                    await request.respond(200, "text/plain", "ok");
+                    self.receiving = false;
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val server = http.listen("127.0.0.1", 0, 32, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(2);
+                  stdio.println(server.port);
+                  for (let int i = 0; i < 32; i = i + 1) {
+                    val request = await server.accept();
+                    handler.dispatch(rt borrow mut request);
+                  }
+                  await server.shutdown(3000);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(server.active);
+                  return;
+                }
+                """.formatted(kind), port -> {
+                    try (HttpClient client = HttpClient.newHttpClient()) {
+                        var pending = new java.util.ArrayList<CompletableFuture<HttpResponse<String>>>();
+                        for (int i = 0; i < 32; i++) pending.add(client.sendAsync(
+                            HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
+                                .timeout(Duration.ofSeconds(8)).build(), HttpResponse.BodyHandlers.ofString()));
+                        var identities = new java.util.HashSet<String>();
+                        for (var future : pending) {
+                            var response = future.get(8, TimeUnit.SECONDS);
+                            assertEquals(200, response.statusCode());
+                            identities.add(response.headers().firstValue("X-Worker").orElseThrow());
+                        }
+                        assertEquals(2, identities.size());
+                    }
+                });
+            assertTrue(output.endsWith("2\n30\n0\n"), output);
+        }
+    }
+
     @Test void pathDecodingPreservesSegmentBoundariesAndRejectsAmbiguousBytes() {
         assertEquals(List.of(), NativeHttp.segments("/"));
         assertEquals(List.of("😀"), NativeHttp.segments("/😀"));
@@ -175,13 +318,33 @@ class NativeHttpTest {
         }
     }
     private static String run(String program, Client client) throws Exception {
+        return run(program, client, 0);
+    }
+
+    private static String run(String program, Client client, int expectedPostResponseDiagnostics)
+            throws Exception {
         CompletableFuture<Integer> port = new CompletableFuture<>();
+        CompletableFuture<Void> diagnosticBarrier = new CompletableFuture<>();
+        CompletableFuture<Void> supervisorFooterBarrier = new CompletableFuture<>();
         ByteArrayOutputStream output = new ByteArrayOutputStream() {
             @Override public synchronized void write(byte[] b, int off, int len) {
                 super.write(b, off, len);
                 String text = toString(StandardCharsets.UTF_8);
                 int end = text.indexOf('\n');
                 if (end >= 0 && !port.isDone()) port.complete(Integer.parseInt(text.substring(0, end).trim()));
+                // HTTP response completion can precede the actor's final
+                // post-response duplicate-rejection check. Keep the context
+                // alive until the diagnostic has actually been emitted, not
+                // merely until the supervisor's response Future completes.
+                if (expectedPostResponseDiagnostics > 0
+                        && text.split("closed-rejected", -1).length - 1
+                                >= expectedPostResponseDiagnostics) {
+                    diagnosticBarrier.complete(null);
+                }
+                if (expectedPostResponseDiagnostics > 0
+                        && text.lines().filter(line -> line.matches("[0-9]+")).count() >= 4) {
+                    supervisorFooterBarrier.complete(null);
+                }
             }
         };
         try (Context context = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)
@@ -194,9 +357,35 @@ class NativeHttpTest {
             try {
                 context.eval(Source.newBuilder(OresLanguage.ID, program, "native-http-test.ores").build());
                 clientWork.get(10, TimeUnit.SECONDS);
+                // A bounded actor-output completion barrier closes the race
+                // between response transport completion and receive cleanup.
+                // If a duplicate rejection never occurs, the test fails
+                // rather than silently reducing its expected assertion count.
+                if (expectedPostResponseDiagnostics > 0) {
+                    CompletableFuture.allOf(diagnosticBarrier, supervisorFooterBarrier)
+                            .get(8, TimeUnit.SECONDS);
+                    closeWhenQuiescent(context);
+                }
             } finally { clientWork.cancel(true); }
 
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private static void closeWhenQuiescent(Context context) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (true) {
+            try {
+                context.close(false);
+                return;
+            } catch (IllegalStateException busy) {
+                if (busy.getMessage() == null
+                        || !busy.getMessage().contains("currently executing on another thread")
+                        || System.nanoTime() >= deadline) {
+                    throw busy;
+                }
+                Thread.sleep(5);
+            }
+        }
     }
 }
