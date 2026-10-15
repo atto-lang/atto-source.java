@@ -38,6 +38,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ) + "\n"
         self.codeowners_fake_sha = None
         self.codeowners_errors = []
+        self.api_core_remaining = 15000
         self.codeowner_permission = "write"
         self.codeowner_login = "ORESoftware"
         self.codeowner_type = "User"
@@ -91,6 +92,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == "rate_limit":
+            return {"resources": {"core": {"remaining": self.api_core_remaining}}}
         if route == pub.SOURCE_METADATA_ROUTE:
             return dict(full_name=self.source_identity.pop(0),
                         id=self.source_ids.pop(0), private=self.source_private.pop(0),
@@ -366,6 +369,31 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
                              for method, route, _ in self.route_calls))
+
+    def test_core_api_budget_denies_before_creating_git_objects(self):
+        for remaining in (0, 100, 143, None, "15000", True, -1):
+            with self.subTest(remaining=remaining):
+                self.route_calls.clear()
+                self.api_core_remaining = remaining
+                with self.assertRaisesRegex(pub.Denied, "API budget"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.api_core_remaining = 15000
+
+    def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
+        # One source file: 16 * 1 + 128 == 144 API requests reserved.
+        self.api_core_remaining = 144
+        self.publish()
+        self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_api_budget_gate_rejects_bogus_file_counts_before_rate_lookup(self):
+        for count in (-1, 0, True, None, pub.MAX_FILES + 1):
+            with self.subTest(count=count):
+                self.route_calls.clear()
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with self.assertRaisesRegex(pub.Denied, "file count"):
+                        pub.require_private_ci_api_budget(count)
+                self.assertEqual(self.route_calls, [])
 
     def test_real_git_checkout_admission_denies_unreviewed_or_tampered_code(self):
         # No private repo files are needed: initialize a synthetic Git repository
