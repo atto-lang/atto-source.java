@@ -346,6 +346,56 @@ these passing figures describe the new focused fixture only. This is not a
 full-Git-tree Actions result, not a real compiler-lowered Oreslang actor,
 not JDK 25/AOT verification, and not Java/LLVM guest parity. Keep PR draft.
 
+### SourceTask-tagged physical lease admission (2026-10-14)
+
+The native kernel now has a trusted-scheduler-only
+`ores_turn_claim_source(vm, source, out_lease)` operation. The lease
+records an opaque SourceTask identity for its entire physical turn, rather
+than appearing as a generic actor user turn. This still observes the
+**actor-wide single-flight lane**: a second SourceTask cannot enter guest
+code while another actor turn is executing. STOP, FORCE, stale or settled
+SourceTasks cannot claim new ordinary SourceTask turns; the original
+carrier must release its physical lease before any suspension/resumption.
+
+The SourceTask records its own `active_lease`, allowing a task whose
+turn already unwound to receive its trusted terminal-settlement witness
+and retire **while a different SourceTask on the same actor owns the
+single physical lane**. Legacy *untagged* actor user leases remain a
+conservative actor-wide retirement barrier, because they may be executing
+code belonging to an otherwise unidentifiable task. Cleanup tickets also
+record their SourceTask-specific active lease. No actor executes more
+than one physical guest turn concurrently.
+
+This is still the **C admission kernel and test contract**, not a
+production Java-to-native bridge. `OresScheduler.TaskRunner` must invoke
+this claim before actual guest `resume` and release it only when the
+guest frame has completely exited; it must retain SourceTask identity
+across awaits and issue the distinct logical settlement witness only
+after real terminal quiescence. The native registry cannot independently
+attest scheduler provenance. Hooking a Java Future callback directly to
+`ores_turn_note_source_settled` would be incorrect.
+
+**Executable proof (local exact-blob source, no other GitHub organization):**
+the C kernel `ff4d95f72594b34e36b3918f7b24bcc6dbc030cf`,
+header `ff81a5e7da92a855893d0a8b129b6be824927a63`, and
+boundary fixture `0fb15b4aa1027d97623d44fee9653df486e37919`
+pass GCC 14 and Clang 17 at O0/O2 with and without ASan/UBSan
+(8/8), plus GCC O1 ThreadSanitizer (1/1). Each executable runs
+1,000 concurrent FORCE/cleanup races. The fixture additionally asserts
+two-source single-flight admission, settlement and retirement of the
+inactive source while another task owns the lane, STOP denial of resumed
+ordinary turns, and refusal of a stolen physical lease by a foreign
+carrier. Repeated GCC O2 runs added 20,000 earlier-variant stress
+iterations. These are **native fixture executions only**; they are
+not full-suite C, JVM/JDK25, GraalVM Native Image or LLVM parity evidence.
+
+`scripts/test-native-actor-turn.sh` now supports
+`ORES_NATIVE_TSAN=1` as an alternative to
+`ORES_NATIVE_SANITIZE=1` and fails closed when both are enabled.
+The script runs the original native suite plus the new fixture.
+The original suite's latest source still needs to be obtained and
+executed through an authorized exact-tree test environment.
+
 ### Next native/Java scheduler integration seam (not yet implemented)
 
 Inspect the existing `OresScheduler.TaskRunner` and
