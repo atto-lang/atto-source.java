@@ -246,4 +246,27 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
     }
 
 
+    @Test
+    void checkedProfileRejectsOversizedOrNonPortableParameterContracts() {
+        StringBuilder parameters = new StringBuilder();
+        for (int i = 0; i < 33; i++) {
+            if (i != 0) parameters.append(", ");
+            parameters.append("int x").append(i);
+        }
+        String oversized = HEADER + "pub fnc too_many(" + parameters + "): int { return x0; }\n"
+                + "pub fnc main(): int { return 43; }\n";
+        assertThrows(RuntimeException.class, () -> exit(oversized),
+                "experimental scalar call ABI cannot silently admit 33 parameters");
+
+        String[] invalidNames = {
+            HEADER + "pub fnc café(int x): int { return x; }\npub fnc main(): int { return 43; }",
+            HEADER + "pub fnc helper(int café): int { return café; }\npub fnc main(): int { return 43; }"
+        };
+        for (String source : invalidNames) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "checked profile must require portable ASCII identifiers");
+        }
+    }
+
+
 }
