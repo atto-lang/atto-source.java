@@ -147,6 +147,30 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void hexadecimalIpv4AliasesCannotEvadeExactDenyOrBecomeRules() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+        for (String alias : new String[]{
+                "0x7f.0.0.1", "0X7F.0.0.1", "0x7f000001",
+                "127.0.0.0x1", "0x7f.1", "0x7f.0.0.1."
+        }) {
+            for (String endpoint : new String[]{alias, alias + ":443"}) {
+                assertFalse(policy.allows(RuntimePermissions.Permission.NET, endpoint),
+                        "hex IPv4 alias unexpectedly authorized: " + endpoint);
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.denyAll()
+                                .withAllowed(RuntimePermissions.Permission.NET, endpoint));
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.denyAll()
+                                .withDenied(RuntimePermissions.Permission.NET, endpoint));
+            }
+        }
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "127.0.0.2:443"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "3com.example:443"));
+    }
+
+    @Test
     void malformedEndpointsDoNotUseBroadAllow() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
