@@ -78,6 +78,26 @@ final class ArrowArmBoundaryTest {
                 """));
     }
     @Test
+    void generatedSelectArmsRejectNullOperationsAndBlankBindings() {
+        var channel = new Ast.NameExpr("messages");
+        assertThrows(IllegalArgumentException.class, () -> new Ast.SelectArm(
+                null, channel, null, null, null, java.util.List.of(), false));
+        for (String invalidName : java.util.List.of("", " ", "\t")) {
+            assertThrows(IllegalArgumentException.class, () -> new Ast.SelectArm(
+                    Ast.ChannelOperation.READ, channel, null,
+                    Ast.BindingKind.CONST, invalidName, java.util.List.of(), false));
+        }
+    }
+
+    @Test
+    void generatedDestructureBindingsRejectMissingBindingKinds() {
+        assertThrows(IllegalArgumentException.class, () -> new Ast.DestructureBinding(
+                null, "field", false, false));
+        assertDoesNotThrow(() -> new Ast.DestructureBinding(
+                Ast.BindingKind.CONST, "field", false, false));
+    }
+
+    @Test
     void selectAstRejectsBindingPermissionsWithoutAnActualBinding() {
         var channel = new Ast.NameExpr("messages");
         assertThrows(IllegalArgumentException.class, () -> new Ast.SelectArm(
