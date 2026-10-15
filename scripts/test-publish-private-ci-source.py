@@ -60,6 +60,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_ref_names = ["refs/heads/main"] * 100
         self.carrier_ref_types = ["commit"] * 100
         self.carrier_default_branches = ["main"] * 100
+        self.carrier_main_protected = [True] * 100
+        self.carrier_branch_commits = [A] * 100
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -123,6 +125,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"ref": self.carrier_ref_names.pop(0),
                     "object": {"sha": self.carrier_main_shas.pop(0),
                                "type": self.carrier_ref_types.pop(0)}}
+        if route == "repos/trusted/ci/branches/main":
+            return {"name": "main", "protected": self.carrier_main_protected.pop(0),
+                    "commit": {"sha": self.carrier_branch_commits.pop(0)}}
         mapping = {
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
@@ -143,6 +148,28 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_unprotected_carrier_main_denies_before_source_read(self):
+        self.carrier_main_protected = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "carrier main is not protected"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_branch_metadata_must_match_commit_ref(self):
+        self.carrier_branch_commits = [E] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read too early")):
+            with self.assertRaisesRegex(pub.Denied, "carrier main is not protected and pinned"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_protection_revocation_denies_before_next_write(self):
+        self.carrier_main_protected = [True, False] + [False] * 98
+        with self.assertRaisesRegex(pub.Denied, "carrier main is not protected"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_default_branch_must_be_trusted_main_before_source_read(self):
         self.carrier_default_branches = ["unreviewed-feature"] * 100
