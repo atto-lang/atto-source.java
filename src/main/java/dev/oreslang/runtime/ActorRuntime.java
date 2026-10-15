@@ -6782,8 +6782,16 @@ public final class ActorRuntime implements AutoCloseable {
             // lock at spawn, and is removed only after child finalization.
             // The child passes its own runtime-owned cell, never a guest ref.
             synchronized (lifecycleLock) {
+                // Parent callbacks are published only after the child's
+                // done/finalized barriers. At that point the child is no
+                // longer in the live-child set, but the runtime-owned cell
+                // remains the authority for the terminated lineage.
+                boolean knownLiveChild = child != null && children.contains(child);
+                boolean completedChild = child != null
+                        && !actors.containsKey(child.ref.id())
+                        && child.ref.doneFuture.isDone();
                 if (child == null || child.parent != this
-                        || !children.contains(child)
+                        || (!knownLiveChild && !completedChild)
                         || !child.ref.id().equals(notice.actorId())
                         || !ref.id().equals(notice.supervisorId())) {
                     childFailureControlDropped.incrementAndGet();
@@ -7254,21 +7262,14 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
-            // Heap/state cleanup and the isolate-exit hook must complete before
-            // a supervisor can observe a terminal notice or restart the actor.
-            // Offer is bounded and cannot invoke guest callbacks. Publication
-            // precedes removal from actors and all termination observers.
-            boolean wakeParent = false;
-            if (pendingControlNotice != null) {
-                // Only the structurally owning parent receives this CONTROL
-                // notice; never route by user-supplied ID or ActorRef.
-                // ArrayBlockingQueue.offer is nonblocking and has no guest
-                // callbacks, including while this child lifecycle lock is held.
-                if (parent != null) {
-                    wakeParent = parent.acceptDirectChildFailure(this, pendingControlNotice);
-                }
-                publishActorFailureNotice(pendingControlNotice);
-                pendingControlNotice = null;
+            // Keep the host audit channel's publication ahead of termination
+            // observers, but defer delivery to a parent actor until the child
+            // is unregistered AND its terminal observers have settled.
+            // This closes the restart-after-notice / before-done race.
+            ActorFailureNotice terminalControl = pendingControlNotice;
+            pendingControlNotice = null;
+            if (terminalControl != null) {
+                publishActorFailureNotice(terminalControl);
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
@@ -7286,10 +7287,15 @@ public final class ActorRuntime implements AutoCloseable {
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
-            // Never execute or schedule guest code inline on the child
-            // finalizer. Queue a wake onto the VM's already-owned dispatcher.
-            // Child heap and exit hook are finished before this point.
-            if (wakeParent && parent != null) parent.wakeChildFailureHandler();
+            // Parent-owned CONTROL publication is last. The child is no
+            // longer registered; heap/exit hook and done/finalized barriers
+            // have completed. Only the structurally owning parent can accept
+            // this immutable data-only notice.
+            if (terminalControl != null && parent != null
+                    && parent.acceptDirectChildFailure(this, terminalControl)) {
+                // Never run guest callbacks synchronously in child teardown.
+                parent.wakeChildFailureHandler();
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
