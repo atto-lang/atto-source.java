@@ -84,6 +84,12 @@ export MOCK_EXTRA_LINE=$'\nspoofed/repo\tprivate\ttrue'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
+printf 'trusted/ci\ntrusted/ci\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
+printf 'trusted/ci\nTRUSTED/CI\n' > "$policy"
+expect_fail trusted/ci
+expect_wrapper_reject trusted/ci
 printf 'other/repo\n' > "$policy"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
