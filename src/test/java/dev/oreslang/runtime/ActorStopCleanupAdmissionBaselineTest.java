@@ -271,4 +271,61 @@ final class ActorStopCleanupAdmissionBaselineTest {
             assertEquals(0, neverCleanup.pendingRuntimeWaiterCount());
         }
     }
+
+    @Test
+    void successfulForceRevocationAfterStopPermanentlyFencesSuspendedCleanup()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> neverCleanup = new OresFuture<>();
+        CountDownLatch suspended = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        AtomicInteger guestTurns = new AtomicInteger();
+        AtomicBoolean isolationRevoked = new AtomicBoolean();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            // The synthetic host revoker models a successful VM isolation
+            // revocation. Guest work is already suspended at this boundary.
+            runtime.setForceCancellationTreeHook(request -> {
+                isolationRevoked.set(true);
+                return true;
+            });
+            var actor = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                context.runtime().ownCurrentActorFuture(context.runtime().startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) event -> {
+                            int turn = guestTurns.incrementAndGet();
+                            if (turn == 1) {
+                                suspended.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            if (turn == 2) {
+                                assertInstanceOf(CancellationException.class, event.failure());
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(neverCleanup);
+                            }
+                            throw new AssertionError(
+                                    "force-revoked actor must never resume lexical cleanup");
+                        }));
+            });
+            actor.send("start");
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone(), "suspended cleanup retains physical actor state");
+            assertTrue(actor.forceCancel(), "host isolation revocation must succeed");
+            assertTrue(isolationRevoked.get());
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "force-revoked cleanup must retire without waiting for timeout");
+            Throwable failure = actor.failure().orElseThrow();
+            assertTrue(failure.getMessage().contains(
+                    "source cleanup revoked by successful force cancellation"),
+                    "force revocation must not be reported as successful STOP");
+            assertEquals(2, guestTurns.get());
+            neverCleanup.completeFromRuntime(12);
+            assertEquals(2, guestTurns.get(),
+                    "late producer settlement cannot restart a force-revoked actor");
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertEquals(0, neverCleanup.pendingRuntimeWaiterCount());
+            assertFalse(producer.isCancelled(),
+                    "external producer ownership does not transfer on force revocation");
+        }
+    }
 }

@@ -98,6 +98,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** A successful VM isolation revocation permanently aborts lexical cleanup. */
+    private static final class SourceCleanupForceRevokedException
+            extends IllegalStateException {
+        private SourceCleanupForceRevokedException(
+                ActorId actorId, Throwable priorCause) {
+            super("actor source cleanup revoked by successful force cancellation: "
+                    + actorId, priorCause);
+        }
+    }
+
     private record ActorGroupMailmanExecution(
             ActorRuntime runtime,
             ActorGroupId groupId) { }
@@ -4877,9 +4887,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         try {
-            attempt.root.cancel(new ActorCancelledException(
-                    ref.id(),
-                    "actor " + ref.id() + " was force-cancelled"));
+            // STOP may already have sealed the root while its source cleanup
+            // remains suspended. terminateTree() is idempotent for STOP, so
+            // revoke source cleanup explicitly for EVERY isolation target,
+            // including children that were already stopped.
+            for (ActorCell<?> target : attempt.cells) {
+                target.cancel(new ActorCancelledException(
+                        target.ref.id(),
+                        "actor " + target.ref.id() + " was force-cancelled"));
+                target.revokeSourceCleanupAfterForce();
+            }
             return true;
         } finally {
             clearForceKillFence(attempt, false);
@@ -6966,7 +6983,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (failure instanceof VirtualMachineError
                     || failure instanceof ThreadDeath
                     || failure instanceof LinkageError) return 3;
-            if (failure instanceof UntrustedActorQuotaExceededException) return 2;
+            if (failure instanceof UntrustedActorQuotaExceededException
+                    || failure instanceof SourceCleanupForceRevokedException) return 2;
             if (failure instanceof SourceCleanupDeadlineExceededException) return 1;
             return 0;
         }
@@ -6979,6 +6997,17 @@ public final class ActorRuntime implements AutoCloseable {
                 Throwable timeout = new SourceCleanupDeadlineExceededException(
                         ref.id(), prior);
                 if (ref.terminationCause.compareAndSet(prior, timeout)) return;
+            }
+        }
+
+        /** Successful external isolate revocation outranks ordinary STOP and timeout. */
+        private void recordSourceCleanupForceRevokedFailure() {
+            for (;;) {
+                Throwable prior = ref.terminationCause.get();
+                if (sourceFailurePriority(prior) >= 2) return;
+                Throwable revoked = new SourceCleanupForceRevokedException(
+                        ref.id(), prior);
+                if (ref.terminationCause.compareAndSet(prior, revoked)) return;
             }
         }
 
@@ -7706,6 +7735,44 @@ public final class ActorRuntime implements AutoCloseable {
                 releaseMailboxSlot(false);
                 envelope.close();
             })) { }
+        }
+
+        /**
+         * Only after the VM revoker has confirmed the complete isolation
+         * boundary is unusable. STOP alone cannot call this routine.
+         * Keep the physical-quiescence fence until scheduler tasks retire.
+         */
+        private void revokeSourceCleanupAfterForce() {
+            final OresScheduler scheduler;
+            synchronized (lifecycleLock) {
+                if (finalized || !stopped.get()) return;
+                boolean unfinishedCleanup = !sourceCleanupTasks.isEmpty();
+                sourceCleanupRevoked = true;
+                sourceCancellationPending = true;
+                if (unfinishedCleanup) recordSourceCleanupForceRevokedFailure();
+                continuationMailbox.close(ref.terminationCause.get());
+                drainMailboxReservations();
+                scheduler = sourceScheduler;
+            }
+
+            try {
+                if (scheduler != null) scheduler.close();
+            } catch (Throwable closeFailure) {
+                synchronized (lifecycleLock) {
+                    recordDominantSourceFailure(closeFailure);
+                    CleanupFailureDiagnostics.suppress(
+                            ref.terminationCause.get(), closeFailure);
+                }
+                if (closeFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (closeFailure instanceof ThreadDeath fatal) throw fatal;
+                if (closeFailure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                synchronized (lifecycleLock) {
+                    sourceCancellationPending = false;
+                    finalizeStopLocked();
+                    lifecycleLock.notifyAll();
+                }
+            }
         }
 
         private void expireSourceCleanup() {
