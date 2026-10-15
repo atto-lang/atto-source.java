@@ -430,14 +430,28 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     boolean completeFromRuntime(T value) {
         boolean completed = settle(new Success<>(value));
-        if (completed) cancelHook.set(null);
+        if (completed && (!deferredCancellation
+                || cancellationRequest.get() == null
+                || deferredCancelHookFinished.get())) {
+            // A deferred cancel request may have linearized immediately
+            // before this producer claimed terminal state. The producer
+            // must not discard the still-pending revoker hook.
+            cancelHook.set(null);
+        }
         return completed;
     }
 
     boolean failFromRuntime(Throwable failure) {
         boolean completed = settle(
                 new Failure(Objects.requireNonNull(failure, "failure")));
-        if (completed) cancelHook.set(null);
+        if (completed && (!deferredCancellation
+                || cancellationRequest.get() == null
+                || deferredCancelHookFinished.get())) {
+            // A deferred cancel request may have linearized immediately
+            // before this producer claimed terminal state. The producer
+            // must not discard the still-pending revoker hook.
+            cancelHook.set(null);
+        }
         return completed;
     }
 

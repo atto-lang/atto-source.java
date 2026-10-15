@@ -11,6 +11,48 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresFutureCallbackTest {
 
     @Test
+    void acceptedDeferredCancellationNeverLosesItsRevokerToProducerSettlement()
+            throws Exception {
+        for (int i = 0; i < 256; i++) {
+            java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger revocations =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            AtomicBoolean cancelled = new AtomicBoolean();
+            OresFuture<Integer> future = new OresFuture<>(
+                    revocations::incrementAndGet, () -> {}, true);
+            Thread cancellation = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    cancelled.set(future.cancel(false));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            Thread producer = Thread.ofVirtual().start(() -> {
+                try {
+                    start.await();
+                    future.completeFromRuntime(7);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            });
+            start.countDown();
+            cancellation.join(TimeUnit.SECONDS.toMillis(5));
+            producer.join(TimeUnit.SECONDS.toMillis(5));
+            assertFalse(cancellation.isAlive(), "cancellation race did not finish");
+            assertFalse(producer.isAlive(), "producer race did not finish");
+            assertTrue(future.isDone());
+            assertEquals(cancelled.get() ? 1 : 0, revocations.get(),
+                    "only an accepted cancellation may revoke, exactly once");
+            assertEquals(cancelled.get(), future.isCancelled(),
+                    "producer settlement cannot erase an accepted cancel");
+        }
+    }
+
+
+    @Test
     void deferredCancelCannotNotifySubscribersUntilRevokerHasReturned()
             throws Exception {
         java.util.concurrent.CountDownLatch insideHook = new java.util.concurrent.CountDownLatch(1);
