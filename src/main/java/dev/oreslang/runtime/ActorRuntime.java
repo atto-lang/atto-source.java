@@ -1378,6 +1378,10 @@ public final class ActorRuntime implements AutoCloseable {
             return actorId;
         }
 
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
         private boolean enqueue(Runnable continuation) {
             return enqueueContinuation(actorId, continuation);
         }
@@ -1735,6 +1739,13 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(future, "future");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
+        // Actor IDs are not a substitute for the runtime that owns a
+        // ContinuationTarget. Reject foreign targets before touching the
+        // Future (including before ownFuture could cancel a shared producer).
+        if (!target.ownedBy(this)) {
+            throw new IllegalArgumentException(
+                    "continuation target belongs to a different ActorRuntime");
+        }
 
         ActorCell<?> cell = actors.get(target.actorId());
         if (cell == null || !ownFuture(cell, future)) return;
