@@ -5,7 +5,6 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.LinkedHashSet;
@@ -353,11 +352,12 @@ public final class RuntimePermissions {
         }
 
         public Builder allowCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> allow(permission, value));
+            // Parse and validate the complete list before changing authority.
+            // Java split(",") otherwise drops trailing empty entries, while
+            // filtering also masks doubled/leading comma mistakes.
+            for (String value : strictCsvScopes(permission, scopes)) {
+                allow(permission, value);
+            }
             return this;
         }
 
@@ -379,12 +379,27 @@ public final class RuntimePermissions {
         }
 
         public Builder denyCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> deny(permission, value));
+            for (String value : strictCsvScopes(permission, scopes)) {
+                deny(permission, value);
+            }
             return this;
+        }
+
+        private static List<String> strictCsvScopes(Permission permission, String scopes) {
+            if (scopes == null || scopes.isBlank()) {
+                throw new IllegalArgumentException("empty scope list for " + permission);
+            }
+            String[] parts = scopes.split(",", -1);
+            List<String> values = new ArrayList<>(parts.length);
+            for (String part : parts) {
+                String value = part.trim();
+                if (value.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "empty comma-separated scope for " + permission);
+                }
+                values.add(value);
+            }
+            return values;
         }
 
         public RuntimePermissions build() {
