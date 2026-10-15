@@ -43,7 +43,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # Keep the existing write-contract tests independent of Git checkout,
         # and separately exercise the REAL exact-tree provenance gate below.
         self.real_tree_gate = pub.require_source_tree_match
-        self.tree_gate = patch.object(pub, "require_source_tree_match", return_value=D)
+        self.tree_gate = patch.object(pub, "require_source_tree_match", return_value=(A, D))
         self.tree_gate.start()
         self.addCleanup(self.tree_gate.stop)
 
@@ -95,6 +95,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
              "type": "tree", "sha": D}])
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
+        self.assertIn("Source-Commit: " + A, writes[3][2]["message"])
+        self.assertIn("Source-Tree: " + D, writes[3][2]["message"])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
@@ -222,7 +224,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             "commit", "-qm", "fixture"],
                            check=True, capture_output=True)
             files = pub.collect_source(root, root)
-            actual = self.real_tree_gate(root, root, files)
+            source_commit, actual = self.real_tree_gate(root, root, files)
+            expected_commit = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True).stdout.strip()
+            self.assertEqual(source_commit, expected_commit)
             expected = subprocess.run(
                 ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
                 check=True, capture_output=True, text=True).stdout.strip()
