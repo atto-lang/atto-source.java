@@ -27,6 +27,12 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+# This policy must be approved on the protected source main branch, not merely
+# present in the caller's current PR/worktree.
+PROTECTED_POLICY_ROUTE = (
+    "repos/ores-truffle-oreslang/oreslang-source.java/contents/"
+    ".github/private-ci-approved-repositories.txt?ref=main"
+)
 
 
 class Denied(RuntimeError):
@@ -162,7 +168,18 @@ def checked_policy_fingerprint(root, repository):
             approved_id = int(repository_id)
     if approved_id is None:
         raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest(), approved_id
+    git_blob_sha = hashlib.sha1(
+        b"blob " + str(len(contents)).encode("ascii") + b"\0" + contents
+    ).hexdigest()
+    return hashlib.sha256(contents).digest(), approved_id, git_blob_sha
+
+
+def require_protected_main_policy(approved_policy):
+    """Fail closed if this checkout's authorization differs from source main."""
+    metadata = gh_api(PROTECTED_POLICY_ROUTE)
+    if (metadata.get("type") != "file"
+            or valid_sha(metadata.get("sha")) != approved_policy[2]):
+        raise Denied("destination policy is not approved on protected source main")
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -347,6 +364,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     # approved identity, even if a name has been deleted and recreated.
     if approved_policy[1] != approved_destination_id:
         raise Denied("destination numeric ID differs from reviewed approval policy")
+    # A PR branch can contain an allowlist entry without security approval.
+    # Require the exact policy Git blob to exist on protected source main.
+    require_protected_main_policy(approved_policy)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -367,6 +387,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
+        require_protected_main_policy(approved_policy)
         checked_repo(repository, expected_id=approved_destination_id)
 
     elements = []
