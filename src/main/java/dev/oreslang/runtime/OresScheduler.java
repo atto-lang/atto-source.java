@@ -644,13 +644,16 @@ public final class OresScheduler implements AutoCloseable {
         // arbitrary waiter may block. A blocked subscriber for task A must
         // not prevent task B's await registration from being detached, or
         // prevent B from retaining only live physical execution resources.
-        RuntimeException nativeShutdownFailure = null;
+        Throwable nativeShutdownFailure = null;
         for (TaskRunner<?> task : admitted) {
             try {
                 task.revokeFromSchedulerClose();
-            } catch (NativeActorTurnKernel.NativeStatusFailure failure) {
-                // Native settlement may wait for cleanup tickets, but every
-                // other task MUST still be revoked before Future notification.
+            } catch (RuntimeException | Error failure) {
+                if (nativeTurnKernel == null) throw failure;
+                // Native retirement may invoke the trusted onQuiescent callback
+                // after actual carrier exit; that callback can itself throw an
+                // ordinary IllegalStateException (not NativeStatusFailure).
+                // Still revoke EVERY source before notifying subscribers.
                 if (nativeShutdownFailure == null) nativeShutdownFailure = failure;
                 else if (nativeShutdownFailure != failure)
                     nativeShutdownFailure.addSuppressed(failure);
@@ -659,9 +662,10 @@ public final class OresScheduler implements AutoCloseable {
         for (TaskRunner<?> task : admitted) {
             try {
                 task.publishCancelledFromSchedulerClose();
-            } catch (NativeActorTurnKernel.NativeStatusFailure failure) {
-                // A synchronous cancel callback may attempt native retirement
-                // again. Never let that stop cancellation of other tasks.
+            } catch (RuntimeException | Error failure) {
+                if (nativeTurnKernel == null) throw failure;
+                // A reentrant synchronous callback must not starve unrelated
+                // SourceTasks of cancellation, even on a Java-side failure.
                 if (nativeShutdownFailure == null) nativeShutdownFailure = failure;
                 else if (nativeShutdownFailure != failure)
                     nativeShutdownFailure.addSuppressed(failure);
@@ -706,7 +710,8 @@ public final class OresScheduler implements AutoCloseable {
         // All admitted tasks were revoked before reporting native failure.
         // An authorized host may close its pending cleanup ticket and retry
         // native retirement; it must NOT re-run a failed cleanup callback.
-        if (nativeShutdownFailure != null) throw nativeShutdownFailure;
+        if (nativeShutdownFailure instanceof Error fatal) throw fatal;
+        if (nativeShutdownFailure instanceof RuntimeException failure) throw failure;
     }
 
     private final class TaskRunner<T> implements BiConsumer<Object, Throwable> {
