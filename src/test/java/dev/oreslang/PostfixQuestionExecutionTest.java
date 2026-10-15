@@ -133,7 +133,7 @@ final class PostfixQuestionExecutionTest {
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("true\\n", run(source));
+        assertEquals("true\n", run(source));
     }
 
     @Test
