@@ -2,6 +2,52 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-14 — executable scheduler/JNI milestone prepared, close-ack gap hardened
+
+**Current source-level hardening:** the experimental native-witness scheduler
+now keeps an explicit count of in-flight *live-set removal to trusted Java
+quiescence acknowledgement* publications. A repeated `close()` must see
+a completed shutdown sweep, an empty SourceTask live set, **and** zero
+in-flight publications. The **first** `close()` also rejects success
+while native SourceTasks or quiescence acknowledgements remain outstanding.
+An opt-in regression invokes scheduler close from inside its own trusted
+quiescence callback and proves closure is not reported complete until
+that callback has exited and its final acknowledgement was published.
+Production `ActorRuntime` remains unmodified and native enforcement OFF.
+
+**New dependency-light executable gate:** 
+`scripts/test-native-actor-scheduler-jni.sh` first executes the existing
+JNI C/Java smoke, then compiles the repository's *actual*
+`OresScheduler`, `OresFuture`, `ActorTurnWatchdog`,
+`MixedInteropBridge` and `NativeActorTurnKernel` with
+`javac -Xlint:all -Werror` under JDK21+. It runs
+`NativeActorTurnSchedulerStandaloneSmoke` against the real JNI .so,
+without downloading Maven dependencies. The smoke covers:
+ordinary await/resumption; STOP denying a user continuation; a pending
+cleanup ticket withholding normal terminal DONE until trusted settlement
+retry; and repeated close during trusted terminal callback. 
+The build uses one **temporary, nonproduction**
+`ActorRuntime.inActorExecution()` stub ONLY for the blocking host-read
+guard in `OresFuture`. It does not compile real actor guests or prove
+Truffle/GraalVM, Native Image or LLVM parity.
+
+`.github/workflows/native-actor-turn.yml` now runs this standalone
+scheduler/JNI smoke **before** the complete Maven/JUnit integration suite
+on the same Java21 toolchain. All files are pinned as ordinary Git blobs
+in the exact PR tree.
+
+**Execution evidence:** the standalone shell script passed local
+`sh -n` parsing, and the current tree's source/test/workflow structure
+can be checked with the GitHub connector. The full new Java/JNI
+standalone smoke and JUnit suite remain **UNEXECUTED** because Actions
+jobs have no step execution and the local environment lacks the
+complete exact checkout. Treat this as a new executable gate definition,
+**not** a reported green test result. The private CI transfer
+approval list on protected `main` is still empty; no cross-org mirror
+was produced.
+
+
+
 ## 2026-10-14 late audit — native quiescence and repeated-close barriers
 
 **Two experimental JNI-witness false-success conditions were hardened:**
