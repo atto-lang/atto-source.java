@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: pr949-native-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   syntax-and-guest:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -19,6 +23,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/integration/future-select-runtime-current-main-20261014"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           echo "Native contract source head: $(git rev-parse HEAD)"
           echo "Native contract source tree: $(git rev-parse HEAD^{tree})"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
@@ -31,6 +38,7 @@ jobs:
         run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest' test
   native-compiled-guest:
     needs: syntax-and-guest
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     strategy:
@@ -46,6 +54,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/integration/future-select-runtime-current-main-20261014"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           echo "Native contract source head: $(git rev-parse HEAD)"
           echo "Native contract source tree: $(git rev-parse HEAD^{tree})"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
