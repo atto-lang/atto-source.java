@@ -618,7 +618,8 @@ public final class TreeShaker {
                         constructor,
                         methods,
                         klass.actorReplyRole(),
-                        klass.actorTransport());
+                        klass.actorTransport(),
+                        klass.annotations());
             }
             return declaration;
         }
