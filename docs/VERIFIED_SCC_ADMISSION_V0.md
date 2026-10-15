@@ -56,11 +56,28 @@ units, missing/extra compilation environments, empty graphs and excessive
 import counts fail before semantic admission. This prevents mutable caller
 map references from changing what the linker checks versus what is fingerprinted.
 
-The AST values themselves are **not deeply cloned**: `Ast.Program` and
-declaration list fields are immutable records/copies, but arbitrary
-caller-constructed literal payload objects may still be mutable. The verifier
-expects trusted, non-mutating compiler-created ASTs, and this mechanism must
-not authorize persistent object-code reuse from untrusted AST inputs.
+AST values themselves are **not deeply cloned**, but the verifier now
+runs `SccAstShapeGuard.requireImmutable` before retaining them in the
+snapshot. It recursively traverses first-party AST records/lists with
+explicit node and depth budgets, and permits only immutable scalar literal
+payloads (including `BigInteger`, `BigDecimal` and `Ast.Imaginary`).
+Mutable Java literal payloads such as `byte[]`, `StringBuilder`,
+collection objects, arbitrary user classes and oversized/deep ASTs are
+rejected before SCC admission. As a conservative v0 boundary, unsupported
+non-scalar Java literal objects must be explicitly lowered by the compiler
+before they can be verified.
+
+This is a fail-closed shape/immutability admission check, **not** a claim
+that arbitrary caller-made ASTs have parser provenance or that public
+interface hashes can authenticate optimized native object code.
+
+A private exact-source JDK 21 run compiled the real `Ast`,
+`ImportRules`, `ImportGraph`, `ExportInterfaceCodec`,
+`SccAstShapeGuard` and `SccVerificationInputs` with no secrets or
+full-source mirroring. [Run 38661274743](https://github.com/scintilla-run/scintilla-run-infra/actions/runs/38661274743)
+passed 19 AST-shape checks and 20 snapshot checks. The original-source
+GraalVM/Maven full suite remains blocked by zero-step runner failures;
+tracking [issue #963](https://github.com/ores-truffle-oreslang/oreslang-source.java/issues/963).
 
 `LinkedFunctionContract.requireStableSignature` now checks both the
 originally imported declaration and the final verified provider against
