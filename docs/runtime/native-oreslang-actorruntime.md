@@ -32,11 +32,11 @@ native actor-turn capability kernel:
   native workflow now triggers on these files and has a separate JNI job.
   The script currently supports Linux/JDK 21+.
 - `NativeActorTurnSchedulerJniTest` is an additional **opt-in** JUnit
-  experiment wrapping genuine `OresScheduler.TaskRunner` work and
-  terminal/quiescence callbacks, testing await/resume and STOP. It
-  deliberately does not activate any production actor runtime and has
-  not yet been run under Maven because the local environment lacks
-  the full project dependency/runtime toolchain.
+  experiment exercising genuine `OresScheduler.TaskRunner` native
+  admission, physical-carrier exit and terminal/quiescence callbacks,
+  testing await/resume and STOP. It deliberately does not activate any
+  production actor runtime and has not yet been run under Maven because
+  the local environment lacks the full project dependency/runtime toolchain.
 
 **Local exact-source proof:** Java/JNI source blobs
 `d70f1044721af8015148b6b6151263826b7aab05`,
@@ -53,15 +53,26 @@ on another platform thread, STOP, cleanup-ticket admission, injection
 before completion, post-completion effect revocation, and retirement.
 These are Java/JNI smoke tests, **not compiled Oreslang guest executions**.
 
-**Production activation gate remains CLOSED.** The opt-in JUnit exercise
-releases its lease when a guest `Task.resume` lambda exits, while a real
-`TaskRunner` can still be unwinding its host context. That is NOT a valid
-production carrier-exit barrier. The production bridge must claim before
-guest entry and release in the actual `afterCarrierTurn` lifecycle
-after all Truffle/actor context frames unwind, then settle only from
-the `onQuiescent` terminal callback, while authenticating actor STOP,
-cleanup-only continuation admission and cancellation delivery. Direct
-wrappers around `Task.resume` must NOT be used as production enforcement.
+**Production activation gate remains CLOSED.** After the standalone JNI
+smoke, the scheduler gained an opt-in `managedWithNativeTurnWitness(...)`
+constructor. Its `TaskRunner` registers each native SourceTask under the
+scheduler admission lock; claims native authority before entering guest
+continuations; releases only from `afterCarrierTurn`, AFTER the
+`turnExecutor` and interop scope have unwound; and settles/retires only
+from the scheduler's TERMINAL + physical-quiescence path. No production
+`ActorRuntime` constructor activates this witness, and no guest can
+enable it by sending a message. The opt-in JUnit test now drives
+this **automatic** TaskRunner lifecycle, not a manually wrapped
+`Task.resume` lambda. This code has not yet passed project Maven/JDK25
+compilation and the full guest conformance suite: its hook remains
+experimental even though the JNI standalone C/Java smoke is executable.
+
+Native actor STOP/cleanup tickets, real cancellation delivery, output
+closure, actor DONE barriers, authorization of guest side effects, and
+Java/LLVM source parity are **not** wired to the actual ActorCell.
+A directly enabled native gate without the future trusted cleanup path
+would reject legitimate post-STOP cleanup continuations. Do not activate
+it for production actors until those paths are implemented and validated.
 The complete Java/GraalVM JDK25, compiled `.ores` actor, Native Image
 and LLVM-parity gates remain open.
 
