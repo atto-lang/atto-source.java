@@ -140,13 +140,11 @@ public final class VerifiedSccAdmission {
                     String local = ImportRules.localName(use, name);
                     Ast.FunctionDecl formerlyResolved = checkedAgainst.get(local);
                     Ast.FunctionDecl verifiedProvider = uniquelyExportedFunction(provider, name);
-                    // Expansion must not move a peer outside the primitive
-                    // effect-free subset after an importer was typechecked.
-                    LinkedFunctionContract.requirePrimitiveContract(verifiedProvider);
-                    if (!sameLinkedFunctionSignature(formerlyResolved, verifiedProvider)) {
-                        throw new IllegalArgumentException(
-                                "provider exported signature changed during SCC admission: " + name);
-                    }
+                    // Recheck the exact provider ABI and its admitted effect
+                    // subset after annotation expansion. Body differences
+                    // are irrelevant here: this is an interface-only proof.
+                    LinkedFunctionContract.requireStableSignature(
+                            formerlyResolved, verifiedProvider);
                 }
             }
         }
@@ -182,25 +180,6 @@ public final class VerifiedSccAdmission {
             throw new IllegalArgumentException("expected one complete strongly connected component");
         }
         return graph.components().getFirst();
-    }
-
-    private static boolean sameLinkedFunctionSignature(
-            Ast.FunctionDecl before, Ast.FunctionDecl after) {
-        return before != null && after != null
-                && before.name().equals(after.name())
-                && before.kind() == after.kind()
-                && before.visibility() == after.visibility()
-                && before.actorKind() == after.actorKind()
-                && before.async() == after.async()
-                && before.suspends() == after.suspends()
-                && before.generator() == after.generator()
-                && before.structural() == after.structural()
-                && before.nonLexical() == after.nonLexical()
-                && before.trapped() == after.trapped()
-                && before.genericParameters().equals(after.genericParameters())
-                && before.annotations().equals(after.annotations())
-                && before.parameters().equals(after.parameters())
-                && Objects.equals(before.returnType(), after.returnType());
     }
 
     private static Ast.FunctionDecl uniquelyExportedFunction(
