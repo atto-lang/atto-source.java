@@ -125,13 +125,22 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                             "checked-i64-v1 requires synchronous scalar functions; "
                             + "actor, class, import and effect lowering are unsupported");
                 }
+                // The host-native LLVM checked profile exposes a diagnostic
+                // through libc puts and synthesizes an internal guest-main
+                // symbol. These names cannot be portable checked callables.
+                if ("puts".equals(fn.name()) || "__oreslang_guest_main".equals(fn.name())) {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 rejects reserved native callable " + fn.name());
+                }
                 if (++functionCount > 32 || !declaredNames.add(fn.name())) {
                     throw new IllegalArgumentException(
                             "checked-i64-v1 rejects overloaded or duplicate functions and modules over 32 callables");
                 }
                 if ("main".equals(fn.name())) {
-                    if (!fn.parameters().isEmpty()) {
-                        throw new IllegalArgumentException("checked-i64-v1 main requires zero arguments");
+                    if (!fn.parameters().isEmpty()
+                            || !"int".equals(fn.returnType().name())) {
+                        throw new IllegalArgumentException(
+                                "checked-i64-v1 main requires zero arguments and int result");
                     }
                     hasMain = true;
                 }
@@ -148,7 +157,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                 Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
                 Set<String> parameters = new HashSet<>();
                 for (Ast.Param parameter : fn.parameters()) {
-                    parameters.add(parameter.name());
+                    if (!parameters.add(parameter.name())) {
+                        throw new IllegalArgumentException(
+                                "checked-i64-v1 duplicate scalar parameter name");
+                    }
                 }
                 Ast.ReturnStmt ret = (Ast.ReturnStmt) fn.body().getFirst();
                 Set<String> directCalls = new HashSet<>();
