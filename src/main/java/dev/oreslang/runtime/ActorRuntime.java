@@ -7380,10 +7380,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminalControl != null) {
                 publishActorFailureNotice(terminalControl);
             }
-            unregisterActor(this);
-            // Do not release the parent's structured-child barrier yet.
-            // Otherwise a stopping parent may settle its done Future before
-            // this child's own terminal observers have been resolved.
+            // The actor stays registered, although stopped and finalized,
+            // until all runtime-owned termination observers have settled.
+            // Otherwise awaitTermination() could treat early registry absence
+            // as a completed barrier before these Futures become terminal.
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
@@ -7397,6 +7397,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
+            // Removing the runtime registry entry is itself observable as an
+            // actor termination barrier. It must follow both Futures.
+            unregisterActor(this);
             // The owning parent may now complete its shutdown without racing
             // ahead of this child's terminal and finalization observers.
             if (parent != null) parent.childFinalized(this);
