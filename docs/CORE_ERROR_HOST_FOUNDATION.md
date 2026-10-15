@@ -16,7 +16,7 @@ This PR lifts the trusted **99-entry** `std/error` catalog, Java nominal metadat
 Run on the exact PR head:
 
 ```sh
-mvn -B -ntp -Dtest=CoreErrorDescriptorsTest test
+mvn -B -ntp -Dtest=CoreErrorDescriptorsTest,CoreErrorCatalogManifestTest test
 mvn -B -ntp verify
 ```
 
