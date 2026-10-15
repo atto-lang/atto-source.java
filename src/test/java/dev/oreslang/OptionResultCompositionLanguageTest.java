@@ -91,6 +91,51 @@ final class OptionResultCompositionLanguageTest {
                 "callable");
     }
 
+    @Test
+    void ordinaryCallbackFailureReachesCatchInsteadOfBecomingErr() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  try {
+                    val Result<int, String> before = Ok(7);
+                    val Result<int, String> result = before.map<int>(|int value| -> {
+                      "abc".replace_literal("", "x");
+                      return value;
+                    });
+                    stdio.stdout.write(result.unwrap());
+                  } catch (error) {
+                    stdio.stdout.write("caught");
+                  } finally {
+                    stdio.stdout.write(":finally");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("caught:finally", run(program));
+    }
+
+    @Test
+    void panicInCallbackBypassesCatchAndIsNotConvertedToErr() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  try {
+                    val Result<int, String> before = Ok(7);
+                    before.map<int>(|int value| -> {
+                      val Option<int> missing = None;
+                      return missing.unwrap();
+                    });
+                  } catch (error) {
+                    stdio.stdout.write("BAD-CATCH");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        Throwable thrown = assertThrows(Throwable.class, () -> run(program));
+        assertNotNull(thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("Option::unwrap"), thrown::getMessage);
+    }
+
     private static void reject(String program, String expected) {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
