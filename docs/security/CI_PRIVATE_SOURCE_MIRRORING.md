@@ -116,6 +116,14 @@ must also enforce administrator restrictions, strict nonempty CI status
 checks, resolved review conversations, at least one approving reviewer,
 code-owner review, stale-review dismissal, and no reviewer bypass allowances.
 Missing/denied GitHub protection responses fail closed **before reading source**.
+The carrier must also have a valid protected-main `.github/CODEOWNERS` whose
+last two non-comment rules are exactly `/.github/CODEOWNERS @ORESoftware`
+and `/.github/workflows/ @ORESoftware`, in that order. The exporter
+verifies the CODEOWNERS file's Git blob digest, checks GitHub's official
+CODEOWNERS diagnostics, and confirms that this security owner has effective
+write/admin permission on the *carrier*, not only the source. Without this
+coverage, GitHub's `require_code_owner_reviews` flag does not prove that
+changes to inherited CI workflows received security-owner review.
 These requirements are rechecked before each destination Git-object write
 along with the pinned main commit. The carrier main tree supplies Actions
 workflows that execute with the carrier's own token. Even verified branch
@@ -124,8 +132,9 @@ must still audit the carrier's effective rulesets and executable workflow
 definitions for exfiltration and unsafe privilege escalation.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated. Before declaring success,
-it verifies that the ref-creation response, fresh ref readback, commit tree,
-and committed `private-oreslang-source/` subtree all refer to the expected
+it verifies that the ref-creation response, fresh ref readback (including
+exact ref name and object type), base and newly created commit identities,
+root tree identity, and committed `private-oreslang-source/` subtree all refer to the expected
 commit and pinned source SHA. Truncated or missing tree-completeness metadata
 is denied rather than accepted as proof. Malformed GitHub metadata is denied
 rather than escaping the publisher as an unhandled exception. Destination CI must
@@ -269,14 +278,14 @@ root tree or creating a branch.
 
 After computing and verifying the complete local snapshot, the publisher
 checks `core.remaining` before its first destination write. Its conservative
-reserve is `16 * max(1, blob_posts + isolated_tree_batches - 1) + 128`.
+reserve is `24 * max(1, blob_posts + isolated_tree_batches - 1) + 160`.
 This accounts for repeated authorization checks on *each* write plus fixed
 root-tree/commit/ref creation and readback. Invalid or insufficient quota
 metadata fails closed. This is an estimate, not a reservation, and does not
 guarantee avoidance of concurrent GitHub API consumption or secondary limits.
 
 Example: 554 small UTF-8 files can fit in nine tree batches with no separate
-blob POSTs, yielding a modeled admission reserve of **256** core requests
+blob POSTs, yielding a modeled admission reserve of **352** core requests
 instead of the previous **8,992**. This is an illustrative source-free
 snapshot, **not a measured benchmark of the exact Java compiler tree**:
 real file sizes, encoding, paths and batch counts determine its actual cost.
@@ -288,3 +297,14 @@ randomized batching cases and confirmed a synthetic final tree SHA matches
 GitHub's readback. These are *targeted tests*, not a passing run of the
 full checked-in Python/Bash exporter suites. Those suites still require a
 working trusted runner and independent security review before export.
+
+On October 15, 2026, a separate source-free GitHub Actions probe in private
+`benefactor-cc/backend.rs` succeeded:
+`https://github.com/benefactor-cc/backend.rs/actions/runs/38763080924`.
+The job executed three steps and verified 141 synthetic files (including
+one binary and an executable), three bounded source-tree batches, and one
+binary blob POST: **four** Git object writes total. The SHA was identical
+to independently computed `git write-tree`. This does **not** authorize
+private Oreslang source transfers or replace the exporter regression suite.
+The Benefactor `main` branch currently remains unprotected and lacks the
+required effective CODEOWNERS entry, so it is **not** an approved carrier.
