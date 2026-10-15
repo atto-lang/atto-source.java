@@ -43,7 +43,8 @@ object write. A missing or unprotected branch denies publication. It also
 requires GitHub's protected-branch and required-review endpoints to report
 administrator enforcement, strict nonempty required CI checks, at least one
 approving reviewer, code-owner reviews enabled, stale approvals dismissed,
-and no review bypass allowlist. Missing permissions or unsupported
+**all review conversations resolved** (`required_conversation_resolution.enabled`
+must be `true`), and no review bypass allowlist. Missing permissions or unsupported
 private-branch rules fail closed. A passing API read is not a substitute for issue #904's independent
 synthetic-PR demonstration that direct pushes and unreviewed merges are blocked.
 Do not turn the repository public to gain protection features.
