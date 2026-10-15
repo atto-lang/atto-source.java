@@ -1909,26 +1909,30 @@ public final class Parser {
                 Ast.Expr value = null;
                 Ast.BindingKind bindingKind = null;
                 String bindingName = null;
+                Ast.TypeRef bindingType = null;
                 boolean mutableReferent = false;
 
-                if (match(READCH)) {
-                    operation = Ast.ChannelOperation.READ;
+                if (match(READCH) || match(AWAIT)) {
+                    Token.Type op = previous().type();
+                    operation = op == READCH ? Ast.ChannelOperation.READ : Ast.ChannelOperation.AWAIT;
                     channel = parseExpression();
-                    consume(COLON, "readch select arm requires ':'");
-                    if (isBindingKind(peek().type())) {
-                        bindingKind = parseBindingKind();
-                        mutableReferent = parseReferentMutability(bindingKind);
-                        bindingName = consume(IDENT, "readch select arm binding requires a name").lexeme();
-                        match(SEMICOLON);
-                    }
+                    consume(COLON, (op == READCH ? "readch" : "await") + " select arm requires ':'");
+                    SelectReadBinding binding = parseSelectReadBinding();
+                    bindingKind = binding.kind();
+                    bindingName = binding.name();
+                    bindingType = binding.type();
+                    mutableReferent = binding.mutableReferent();
                 } else if (match(WRITECH)) {
                     operation = Ast.ChannelOperation.WRITE;
                     channel = parseExpression();
                     consume(COMMA, "writech select arm requires 'channel, value'");
                     value = parseExpression();
                     consume(COLON, "writech select arm requires ':'");
+                    // Typed write arms have no value binding. Arrow is optional
+                    // compatibility syntax and cannot alter send admission.
+                    match(ARROW);
                 } else {
-                    // Binding-first select arm: when [const|val|let] [mut] msg = readch(ch) -> { ... }
+                    // Legacy binding-first: when const msg = readch(input) -> { ... }
                     if (match(MUT)) {
                         bindingKind = Ast.BindingKind.LET;
                         mutableReferent = true;
@@ -1960,7 +1964,8 @@ public final class Parser {
                         bindingKind,
                         bindingName,
                         body,
-                        mutableReferent));
+                        mutableReferent,
+                        bindingType));
                 continue;
             }
 
@@ -1985,6 +1990,40 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' after select");
         return new Ast.SelectStmt(mode, policy, arms, explicitDo);
+    }
+
+    private record SelectReadBinding(
+            Ast.BindingKind kind, String name, Ast.TypeRef type, boolean mutableReferent) { }
+
+    /**
+     * Typed arrow bindings deliberately require a result type; the legacy
+     * untyped `const name { ... }` form remains source compatible.
+     * This parser never speculatively consumes an event while checking types.
+     */
+    private SelectReadBinding parseSelectReadBinding() {
+        if (check(LBRACE) || match(ARROW)) {
+            // A typed operation can return void; it has no value to bind.
+            return new SelectReadBinding(null, null, null, false);
+        }
+        Ast.BindingKind kind = Ast.BindingKind.CONST;
+        boolean mutable = false;
+        if (isBindingKind(peek().type())) {
+            kind = parseBindingKind();
+            mutable = parseReferentMutability(kind);
+            if (check(IDENT) && checkNext(LBRACE)) {
+                String name = advance().lexeme();
+                return new SelectReadBinding(kind, name, null, mutable);
+            }
+        }
+        Ast.TypeRef type = parseTypeRef();
+        String name = consume(IDENT, "typed select arm requires a binding name").lexeme();
+        if (!match(ARROW)) {
+            if (!check(LBRACE)) {
+                throw error(peek(), "select arm requires a braced body '{ ... }'");
+            }
+            throw error(peek(), "typed select arm requires '->' before its body");
+        }
+        return new SelectReadBinding(kind, name, type, mutable);
     }
 
     private Ast.SelectPolicy parseSelectPolicy() {
