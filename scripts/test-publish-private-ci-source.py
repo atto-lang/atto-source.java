@@ -32,6 +32,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             b"blob " + str(len(approved_bytes)).encode("ascii")
             + b"\0" + approved_bytes
         ).hexdigest()
+        self.codeowners_text = "\n".join(
+            path + " " + pub.REQUIRED_CODEOWNER
+            for path in pub.REQUIRED_CODEOWNER_PATHS
+        ) + "\n"
+        self.codeowners_fake_sha = None
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         # Synthetic, local-only approval. Production main is deliberately empty.
@@ -100,6 +105,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "require_code_owner_reviews": True,
                     "dismiss_stale_reviews": True,
                     "bypass_pull_request_allowances": {}}
+        if route == pub.CODEOWNERS_ROUTE:
+            raw = self.codeowners_text.encode("utf-8")
+            blob_sha = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii")
+                + bytes([0]) + raw
+            ).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.codeowners_fake_sha or blob_sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
@@ -608,6 +622,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                     self.root, self.expected_tree, D)
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_protected_codeowners_must_cover_export_and_source_snapshot_policy(self):
+        baseline = self.codeowners_text
+        cases = (
+            baseline.replace(
+                "/.github/private-ci-approved-source-snapshots.txt @ORESoftware\n", ""),
+            baseline.replace(
+                "/scripts/publish-private-ci-source.py @ORESoftware\n",
+                "/scripts/publish-private-ci-source.py @Unreviewed\n"),
+            baseline + "* @Unreviewed\n",
+            baseline + "/scripts/publish-private-ci-source.py @Unreviewed\n",
+            "# no reviewed owners\n",
+        )
+        for content in cases:
+            with self.subTest(content=content[-100:]):
+                self.route_calls.clear()
+                self.codeowners_text = content
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("unreviewed source read")):
+                    with self.assertRaisesRegex(pub.Denied, "CODEOWNER"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.codeowners_text = baseline
+
+    def test_protected_codeowners_digest_is_not_caller_controlled(self):
+        self.codeowners_fake_sha = "f" * 40
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("unreviewed source read")):
+            with self.assertRaisesRegex(pub.Denied, "CODEOWNERS digest"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
         overrides = (
