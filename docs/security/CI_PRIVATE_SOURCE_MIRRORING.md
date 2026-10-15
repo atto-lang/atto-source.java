@@ -403,3 +403,30 @@ The test did **not** transport private compiler code or execute the complete
 private exporter test suite. The PR now contains 132 Python test methods
 that still require an authorized trusted runner. No private source transfer
 is authorized by this synthetic evidence.
+
+
+### Direct Git-tree manifest path hardening (2026-10-15)
+
+The frozen-source scanner already rejects path controls, DEL, backslashes and
+non-UTF-8 names. The `source_tree_sha` helper was separately hardened to
+**enforce the same restrictions for direct callers**, rather than calculating
+an object digest for an impossible source path or propagating an uncaught
+`UnicodeEncodeError`. Security regression coverage includes embedded NUL,
+newline, carriage return, ASCII control characters, DEL, backslash, and
+surrogate code points, as well as the existing file/directory collision tests.
+
+On an isolated local synthetic fixture, eight malformed path cases were
+rejected and 50 randomized valid Git tree digests matched the independent
+`git write-tree` command. The [Benefactor private Actions run #38811825352](https://github.com/benefactor-cc/backend.rs/actions/runs/38811825352)
+**passed all four job steps** on head `a75bee90f1f39ae4b2bc422e1b47333f6d184471`.
+Its logs confirmed rejection of 15 malformed synthetic manifests, 60
+randomized Git fixtures, and the repeat 554-file JSON-bounded Git API tree
+test (nine tree requests plus two blob uploads, 11 Git-object POSTs total,
+tree SHA `5fbd663e02b096ca8288cab3bb71ac1634edc76a`).
+No compiler source was copied, mirrored or executed on that carrier.
+
+The Python publisher security suite now contains **134 test methods**.
+The complete Python and Bash suites remain unexecuted because source
+GitHub Actions jobs still terminate before runner allocation. Synthetic
+carrier success is not a substitute for the exact private-source security
+suite or approval for any source transfer.
