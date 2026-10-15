@@ -514,8 +514,8 @@ public final class RuntimePermissions {
         public Builder deny(Permission permission, String scope) {
             // Denials must not accept an ambiguous empty resource either;
             // malformed serialized arguments should fail, not be reinterpreted.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty deny scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
