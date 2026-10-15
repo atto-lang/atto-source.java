@@ -16,6 +16,9 @@ public final class NativeActorTurnKernelStandaloneSmoke {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(128)) {
             var first = kernel.register(1, 1);
             var second = kernel.register(2, 1);
+            var cleanupSource = kernel.register(3, 1);
+            var ticket = kernel.issueCleanup(cleanupSource);
+            rejects(() -> kernel.claimCleanup(ticket)); // not before STOP
             // JNI leases are OS-carrier-bound: virtual-thread migration is unsafe.
             AtomicReference<Throwable> virtualFailure = new AtomicReference<>();
             Thread virtual = Thread.ofVirtual().start(() -> {
@@ -55,6 +58,16 @@ public final class NativeActorTurnKernelStandaloneSmoke {
             kernel.exit(second);
             kernel.stop();
             rejects(() -> kernel.enter(second));
+            var cleanup = kernel.claimCleanup(ticket);
+            rejects(() -> kernel.completeCleanup(cleanup)); // no injection yet
+            kernel.terminalInjected(cleanup);
+            kernel.checkCleanupEffects(cleanup);
+            kernel.completeCleanup(cleanup);
+            rejects(() -> kernel.checkCleanupEffects(cleanup)); // completion revokes effects
+            kernel.releaseCleanup(cleanup);
+            rejects(() -> kernel.terminalInjected(cleanup));
+            kernel.settled(cleanupSource);
+            kernel.retire(cleanupSource);
             kernel.settled(second);
             kernel.retire(second);
         }
