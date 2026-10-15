@@ -192,11 +192,30 @@ final class RuntimePointerTest {
         reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt unref p; val child = view[0]; child.value = 9;", "borrow");
     }
 
-    @Test void pointerTypeCannotBeRedefinedOrTransported() {
+    @Test void pointerTypeCannotBeRedefinedOrSharedWithoutProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("define class Pointer as end")));
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + "fnc bad(Channel<Pointer<Box>> messages): void { return; }")));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + "fnc local(Channel<Pointer<Box>> messages): void { return; }")));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + "fnc bad(SharedMutex<Pointer<Box>> value): void { return; }")));
         reject("const Pointer<int> p = rt ref 7;", "Pointer<T>");
+    }
+
+    @Test void localChannelTakeExecutesWithBorrowedReceiverAccess() throws Exception {
+        String code = BOX + """
+                pub routine main(): void {
+                  val Channel<Pointer<Box>> messages = Channel.new<Pointer<Box>>(1);
+                  const p = rt ref new Box();
+                  writech messages, rt take p;
+                  const received = readch messages;
+                  const view = rt deref received;
+                  stdio.stdout.write(view.value);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval("ores", code);
+        }
+        assertEquals("7", out.toString(StandardCharsets.UTF_8));
     }
 
     @Test void recursivePointerTargetGraphsFailWithADiagnostic() {

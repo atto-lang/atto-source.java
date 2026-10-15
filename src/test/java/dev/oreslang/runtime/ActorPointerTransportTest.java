@@ -13,6 +13,56 @@ import static org.junit.jupiter.api.Assertions.*;
  * host-fabricated handles, even if guest source checking was bypassed.
  */
 final class ActorPointerTransportTest {
+    private enum HiddenOwner {
+        VALUE;
+        final Object hidden = new OresPointer(new Object());
+    }
+
+    private static final class HiddenInteger extends java.math.BigInteger {
+        final Object hidden = new OresPointer(new Object());
+        HiddenInteger() { super("7"); }
+    }
+
+    @Test
+    void nominalScalarSupertypesDoNotProveTransitiveImmutability() throws Exception {
+        for (Object value : List.of(HiddenOwner.VALUE, new HiddenInteger())) {
+            assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(value));
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(Map.of("nested", List.of(value))));
+            try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+                var actor = runtime.<Object>spawnPrivate(
+                        ignored -> (message, context) -> context.self().stop());
+                assertThrows(IllegalArgumentException.class, () -> actor.send(value));
+                actor.send("ok");
+                assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+                assertTrue(actor.failure().isEmpty());
+            }
+        }
+        assertEquals(java.math.BigInteger.TEN, ActorRuntime.freeze(java.math.BigInteger.TEN));
+        assertEquals(java.math.BigDecimal.TEN, ActorRuntime.freeze(java.math.BigDecimal.TEN));
+    }
+
+    @Test
+    void localChannelPreservesPointeeIdentityButDoesNotGrantAnotherDomainAccess() throws Exception {
+        Object pointee = new Object();
+        var pointer = new OresPointer(pointee);
+        var channel = new ChannelRuntime.Channel<OresPointer>(1);
+        assertTrue(channel.tryWrite(pointer));
+        var received = channel.tryRead().orElseThrow();
+        assertSame(pointer, received);
+        assertSame(pointee, received.target());
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread other = new Thread(() -> {
+            try { received.target(); }
+            catch (Throwable error) { failure.set(error); }
+        });
+        other.start();
+        other.join(2000);
+        assertFalse(other.isAlive());
+        assertInstanceOf(IllegalStateException.class, failure.get());
+        assertSame(pointee, pointer.target());
+    }
+
     @Test
     void freezeRejectsPointerAndNestedPointerCapabilityGraphs() {
         var pointer = new OresPointer(new Object());

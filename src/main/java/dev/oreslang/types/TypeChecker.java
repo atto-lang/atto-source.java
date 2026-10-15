@@ -3392,7 +3392,7 @@ public final class TypeChecker {
             Set<Ast.ClassDecl> seen,
             Map<String, Type> genericBindings) {
         // Check the borrow wrapper BEFORE deref can erase lifetime metadata.
-        if (type instanceof Borrow || (type instanceof Named n && n.name().equals("Pointer"))) return true;
+        if (type instanceof Borrow) return true;
         type = deref(type);
         if (type instanceof SelfType receiverSelf) {
             return containsChannelBorrow(receiverSelf.bound(), seen, genericBindings);
@@ -4271,7 +4271,7 @@ public final class TypeChecker {
         if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
-                    where + " must be a concrete owned/Sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
+                    where + " must be a concrete owned/sendable data type (Sendable proof); borrows, functions, and unresolved types cannot cross an actor boundary");
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {

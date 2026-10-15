@@ -5,6 +5,7 @@ import java.util.Objects;
 /** Strong managed handle. No numeric address, manual free, or transport authority. */
 public final class OresPointer {
     private final Object target;
+    private final Object executionDomain;
 
     public OresPointer(Object target) {
         Object checked = Objects.requireNonNull(target, "pointer target");
@@ -19,8 +20,7 @@ public final class OresPointer {
         // from manufacturing Pointer<int>, Pointer<String>, or enum pointers.
         if (checked instanceof Number || checked instanceof CharSequence
                 || checked instanceof Boolean || checked instanceof Character
-                || checked instanceof Enum<?> || checked instanceof java.util.UUID
-                || checked instanceof OresSymbol) {
+                || checked instanceof Enum<?> || checked instanceof java.util.UUID) {
             throw new IllegalArgumentException(
                     "Pointer<T> requires reference-backed owned data, not a scalar/Copy value");
         }
@@ -45,7 +45,16 @@ public final class OresPointer {
                     "Pointer<T> cannot own actor, channel, mutex, shared-memory or future capabilities");
         }
         this.target = checked;
+        this.executionDomain = ActorRuntime.currentExecutionDomain();
     }
 
-    public Object target() { return target; }
+    public Object target() {
+        // Actor identity survives carrier changes. A host thread is its own
+        // domain; merely holding the Java handle grants no cross-domain loan.
+        // No allocator handoff proof exists on this branch, so fail closed.
+        if (executionDomain != ActorRuntime.currentExecutionDomain()) {
+            throw new IllegalStateException("Pointer<T> dereference requires its owning execution domain");
+        }
+        return target;
+    }
 }

@@ -25,5 +25,5 @@ jobs:
           java-version: '25'
           distribution: graalvm
           version: '25.3'
-      - name: Test Pointer and actor Sendable boundaries on exact mirrored source
-        run: mvn -B -ntp -Dtest=ActorSendabilityBoundaryTest,ActorPointerTransportTest,RuntimePointerTest test
+      - name: Verify full suite including Pointer and actor Sendable boundaries
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify

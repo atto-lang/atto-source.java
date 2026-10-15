@@ -48,3 +48,32 @@ Additional Java changes on this draft branch:
 **Residual risk:** The Java wrapper's `public OresPointer(Object)` and `public Object target()` remain host-visible. These checks are defense in depth, **not** a provenance, generation, actor-domain or borrow-lease proof for arbitrary Java objects or mutable host graphs. Do not advertise safe guest interop from raw Java pointers. A compiler-only proof cannot constrain trusted or hostile host code directly mutating a raw referent; production host interop requires a separate capability-scoped API with domain and lifetime enforcement.
 
 **Verification boundary:** Targeted isolated Java 21 constructor smoke compiled and executed against representative runtime-type stubs. This is *not* a full Graal/Java 25 build, not an actor integration test, and not a zero-allocation benchmark. The new JUnit/LLVM matrices are checked in but have not been executed successfully in current source-repo CI.
+# Transport follow-up, 2026-10-15
+
+Local `Channel<Pointer<T>>` is distinct from actor mailbox transport. The
+compiler now permits an owning pointer through a local channel and consumes
+the sender binding; borrowed views remain forbidden in buffered payloads.
+Runtime dereference is fenced to the pointer's original execution domain
+(actor identity, or its creating host thread). No cross-domain rehoming exists.
+
+The full runtime scalar admission path rejects arbitrary host enums and
+subclasses of extensible numeric classes: these can contain hidden mutable
+state or pointer authority. Only exact BigInteger/BigDecimal representations
+and explicitly known data-only ActorKind values qualify. This is not general
+guest enum/ADT lowering. This branch has no OresSymbol runtime type; a stale
+reference to that nonexistent class was removed to restore compilation.
+
+`rt copy Pointer<T>` and `rt share Pointer<T>` remain fail-closed. There is no
+compiler-proven recursive copier, immutable shared-owner conversion, lifetime
+pinning or atomic allocator-domain handoff on this branch. Neither scalar
+string transport nor same-domain pointee identity proves those features.
+Isolates/processes have no raw-pointer transport path. Java host aliases to
+the pointee remain outside guest ownership guarantees; the domain fence does
+not revoke aliases already retained by trusted host code.
+
+Added compiler tests cover local take, use-after-send, rejected copy/share,
+and Pointer nested in Option/Result/records/arrays at actor boundaries.
+Runtime tests cover local channel pointee identity, cross-thread dereference,
+hidden pointers in host enum/numeric subclasses and recovery after rejection.
+These tests do not measure allocations or prove cancellation/drop behavior.
+

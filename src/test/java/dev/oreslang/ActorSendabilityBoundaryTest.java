@@ -65,4 +65,35 @@ final class ActorSendabilityBoundaryTest {
                 fnc bad(Channel<borrow String> values): void { return; }
                 """, "borrow");
     }
+
+    @Test
+    void sameDomainPointerMovesThroughChannelButSenderCannotReuseIt() {
+        String setup = """
+                define class Box as
+                  pub let int value = 7;
+                end
+                fnc local(): void {
+                  val Channel<Pointer<Box>> values = Channel.new<Pointer<Box>>(1);
+                  const p = rt ref new Box();
+                  writech values, rt take p;
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(setup + "return; }")));
+        rejectActor(setup + "const q = rt take p; return; }", "moved");
+        rejectActor(setup.replace("rt take p", "rt copy p") + "return; }", "rt copy");
+        rejectActor(setup.replace("rt take p", "rt share p") + "return; }", "rt share");
+    }
+
+    @Test
+    void wrappersAndActorResultsCannotErasePointerTransferRequirements() {
+        for (String wrapper : new String[] {
+                "Option<Pointer<Box>>", "Result<int, Pointer<Box>>",
+                "{item: Pointer<Box>}", "Array<Pointer<Box>>"}) {
+            String box = "define class Box as pub let int value = 7; end ";
+            rejectActor(box + "actor fnc bad(" + wrapper + " data): void { return; }", "Sendable");
+        }
+        rejectActor("""
+                define class Box as pub let int value = 7; end
+                actor fnc bad(): Pointer<Box> { return rt ref new Box(); }
+                """, "Sendable");
+    }
 }
