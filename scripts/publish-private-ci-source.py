@@ -77,8 +77,8 @@ def checked_identity(repository, expected_id):
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True
-            or result.get("archived") is True
-            or result.get("disabled") is True):
+            or result.get("archived") is not False
+            or result.get("disabled") is not False):
         raise Denied("repository numeric identity or private visibility changed")
     return result
 
@@ -282,9 +282,9 @@ def publish(repository, source, branch, trusted_root):
     checked_source()
     checked_repo(repository)
     trusted = trusted_root.resolve(strict=True)
-    checked_source = source.resolve(strict=True)
+    resolved_source = source.resolve(strict=True)
     try:
-        checked_source.relative_to(trusted)
+        resolved_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
