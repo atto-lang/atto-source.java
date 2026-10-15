@@ -211,6 +211,9 @@ final class ActorTypedEffectControlTest {
                                 replacementChild.set(next);
                                 assertNotEquals(previous.id(), next.id());
                                 assertTrue(next.ref().generation() > previous.ref().generation());
+                                assertThrows(ActorRuntime.ActorTerminatedException.class,
+                                        () -> previous.send("stale"),
+                                        "old generation must not forward messages to replacement");
                                 assertThrows(SecurityException.class, () ->
                                         actors.restartCurrentChildOneForOne(
                                                 notice, previous, childContext -> (mail, ignored) -> {}));
