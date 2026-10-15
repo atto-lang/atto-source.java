@@ -627,7 +627,10 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.isSealed(),
+                        klass.isFinal(),
+                        klass.permits());
             }
             return declaration;
         }
