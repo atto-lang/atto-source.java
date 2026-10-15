@@ -1947,6 +1947,13 @@ public final class TypeChecker {
                         Type bound = element;
                         if (arm.bindingType() != null) {
                             bound = resolve(arm.bindingType(), generics, self);
+                            // A type annotation cannot strip the readonly
+                            // capability of a selected infer-struct event.
+                            // Apply the same capability check used for
+                            // assignments, parameters and return values.
+                            requireReadonlyCapabilityPreserved(
+                                    element, bound,
+                                    "typed select binding '" + arm.bindingName() + "'");
                             requireAssignable(element, bound,
                                     "typed select binding '" + arm.bindingName() + "'");
                         }

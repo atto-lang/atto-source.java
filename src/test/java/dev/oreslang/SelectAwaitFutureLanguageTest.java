@@ -111,6 +111,58 @@ final class SelectAwaitFutureLanguageTest {
     }
 
     @Test
+    void typedReadAndFutureArmsRequireExplicitArrowBeforeBody() {
+        IllegalArgumentException future = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        async fnc compute(): int { return 1; }
+                        pub routine main(): void {
+                          val Future<int> value = compute();
+                          do select {
+                            when await value: int received { return; }
+                          }
+                          return;
+                        }
+                        """));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                future.getMessage().contains("typed select arm requires '->'"),
+                future::getMessage);
+
+        IllegalArgumentException channel = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                          val Channel<int> inbox = Channel.new<int>(1);
+                          do select {
+                            when readch inbox: int received { return; }
+                          }
+                          return;
+                        }
+                        """));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                channel.getMessage().contains("typed select arm requires '->'"),
+                channel::getMessage);
+    }
+
+    @Test
+    void selectAwaitCannotUseAChannelAsFutureSource() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        pub routine main(): void {
+                          val Channel<int> inbox = Channel.new<int>(1);
+                          do select {
+                            when await inbox: int received -> { return; }
+                          }
+                          return;
+                        }
+                        """));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                failure.getMessage().contains("Future<T>"),
+                failure::getMessage);
+    }
+
+    @Test
     void legacyUnannotatedReadArmStaysSupported() throws Exception {
         String source = """
                 pub routine main(): void {

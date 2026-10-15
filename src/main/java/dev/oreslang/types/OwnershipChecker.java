@@ -584,7 +584,13 @@ public final class OwnershipChecker {
                 } else {
                     element = channelElementType(source.type);
                 }
-                elementTypes.add(arm.bindingType() == null ? element : arm.bindingType());
+                // Ownership must follow the actual event's source type, not
+                // the user's annotation. TypeChecker validates assignability,
+                // but an ownership-only pass must not let a forged/widened
+                // bindingType erase borrow, MutexGuard, or move-only semantics.
+                // Treat the annotation as a naming/typechecking constraint;
+                // never as proof that the source value is copyable.
+                elementTypes.add(element);
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
                     // Blocking/immediate select can conditionally move only the winning
                     // send. Nonblocking select returns before settlement, so its

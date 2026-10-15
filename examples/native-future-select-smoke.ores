@@ -1,0 +1,18 @@
+// Future-select syntax is gated separately from the runtime-only PR #949.
+// Typed read and Future arms require '->' on this language-integration branch.
+async fnc compute(): int { return 4; }
+pub routine main(): void {
+  val Channel<int> pending = Channel.new<int>(1);
+  val Future<int> ready = compute();
+  do select first {
+    when readch pending: int value -> {
+      stdio.stdout.write("channel:");
+      stdio.stdout.write(value);
+    }
+    when await ready: int result -> {
+      stdio.stdout.write("future:");
+      stdio.stdout.write(result);
+    }
+  }
+  return;
+}

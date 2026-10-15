@@ -41,7 +41,7 @@ public final class ChannelRuntime {
     private static final Set<SelectRegistration> ACTIVE = new LinkedHashSet<>();
     /** Global cap on pending selections, independent of per-channel arm limits. */
     private static final int MAX_PENDING_SELECTS = 4_096;
-    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 16_384;
+    static final int MAX_PENDING_SELECT_ARM_REGISTRATIONS = 4_096;
     /** Global retained descriptor count. Only accessed under COORDINATOR. */
     private static int activeArmRegistrations;
     private static long nextTicket;
