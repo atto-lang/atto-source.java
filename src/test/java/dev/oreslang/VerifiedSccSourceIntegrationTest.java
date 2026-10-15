@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.ExportInterfaceCodec;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.compiler.VerifiedSccAdmission;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
@@ -33,8 +34,11 @@ final class VerifiedSccSourceIntegrationTest {
             }
             """;
 
-    private static Map<String, Ast.Program> programs(String a, String b) {
-        return Map.of("a.ores", Parser.parse(a), "b.ores", Parser.parse(b));
+    private static VerifiedSccAdmission.VerifiedScc verify(String a, String b) {
+        var graph = OresCompiler.parseAndVerifySccSources(
+                Map.of("a.ores", a, "b.ores", b), headers(), Map.of());
+        assertEquals(1, graph.components().size());
+        return graph.components().getFirst();
     }
 
     private static Map<String, ExportInterfaceCodec.Header> headers() {
@@ -42,8 +46,7 @@ final class VerifiedSccSourceIntegrationTest {
     }
 
     @Test void parsedMutuallyImportingFilesAreAdmittedAtomically() {
-        var graph = VerifiedSccAdmission.verifySingleScc(
-                programs(A, B), headers(), Map.of());
+        var graph = verify(A, B);
         assertEquals(2, graph.units().size());
         assertEquals(64, graph.interfaceFingerprint().length());
     }
@@ -52,30 +55,26 @@ final class VerifiedSccSourceIntegrationTest {
         String badB = B.replace("right(): int", "right(): String")
                 .replace("return 7;", "return \"wrong\";");
         assertThrows(IllegalArgumentException.class, () ->
-                VerifiedSccAdmission.verifySingleScc(
-                        programs(A, badB), headers(), Map.of()));
+                verify(A, badB));
     }
 
     @Test void parsedWrongImportedArgumentArityIsNotUnknown() {
         String badA = A.replace("right();", "right(5);");
         assertThrows(IllegalArgumentException.class, () ->
-                VerifiedSccAdmission.verifySingleScc(
-                        programs(badA, B), headers(), Map.of()));
+                verify(badA, B));
     }
 
     @Test void parsedInaccessibleProviderFailsAdmission() {
         String privateB = B.replace("pub fnc right", "fnc right");
         assertThrows(IllegalArgumentException.class, () ->
-                VerifiedSccAdmission.verifySingleScc(
-                        programs(A, privateB), headers(), Map.of()));
+                verify(A, privateB));
     }
 
     @Test void parsedUnsupportedImportedNominalTypeFailsClosed() {
         String nominalB = B.replace("right(): int", "right(): Custom")
                 .replace("return 7;", "return 7;");
         assertThrows(IllegalArgumentException.class, () ->
-                VerifiedSccAdmission.verifySingleScc(
-                        programs(A, nominalB), headers(), Map.of()));
+                verify(A, nominalB));
     }
 
     @Test void parsedImportedAliasKeepsTheResolvedProviderSignature() {
@@ -86,8 +85,7 @@ final class VerifiedSccSourceIntegrationTest {
         // Parser-specific named-import alias syntax must be validated by
         // the production parser; do not assume this form is supported.
         assertDoesNotThrow(() -> Parser.parse(aliasedA));
-        var verified = VerifiedSccAdmission.verifySingleScc(
-                programs(aliasedA, B), headers(), Map.of());
+        var verified = verify(aliasedA, B);
         assertEquals(2, verified.units().size());
     }
 }
