@@ -73,6 +73,44 @@ final class ValueMatchSuspensionTest {
     }
 
     @Test
+    void suspendedMatchArmFailureCannotReplayGuardOrCallerCatch() throws Exception {
+        String program = """
+            pub async routine main(): void {
+              val Channel<bool> gates = Channel.new<bool>(0);
+              val writer = nb writech gates, true;
+              try {
+                val int result = match<int> 9 over
+                  on int as n when await (nb readch gates) -> {
+                    val Array<int> empty = new Array<int>();
+                    return empty.get(0);
+                  }
+                  on _ -> { return 4; }
+                end;
+                stdio.stdout.write("UNEXPECTED:");
+              } catch (error) {
+                stdio.stdout.write("caught:");
+              } finally {
+                stdio.stdout.write("finally:");
+              }
+              await writer;
+              stdio.stdout.write("done");
+              return;
+            }
+            """;
+        TypeChecker.check(Parser.parse(program));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                OresLanguage.ID, program, "match-arm-exactly-once.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("caught:finally:done",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void groupedMatchGuardUsesArmArrowNotLambdaSyntax() {
         String guest = """
             fnc choice(bool selected): int {
