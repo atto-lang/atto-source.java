@@ -63,7 +63,7 @@ jobs:
         run: sh scripts/test-native-actor-turn.sh
   native-jni-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       CC: gcc
     steps:
@@ -78,11 +78,18 @@ jobs:
           if [ -n "${JAVA_HOME_21_X64:-}" ]; then
             export JAVA_HOME="$JAVA_HOME_21_X64"
             export PATH="$JAVA_HOME/bin:$PATH"
+            # A run-step environment is NOT retained by later Actions steps.
+            # Keep Maven on the same exact JDK that compiled the JNI class.
+            printf 'JAVA_HOME=%s\n' "$JAVA_HOME" >> "$GITHUB_ENV"
+            printf '%s\n' "$JAVA_HOME/bin" >> "$GITHUB_PATH"
           fi
           java -version
+          javac -version
           sh scripts/test-native-actor-jni.sh
       - name: Real OresScheduler TaskRunner JNI lifecycle test (opt-in)
         run: |
+          java -version
+          javac -version
           mvn -B -q -Dtest=NativeActorTurnSchedulerJniTest \
             -DargLine="-Djava.library.path=$PWD/target/native-jni/lib -Dores.native.actor.turn.experimental=true" \
             test
