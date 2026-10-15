@@ -653,6 +653,52 @@ static void test_source_task_provenance_and_retirement(void) {
     CHECK(ores_turn_vm_destroy(small) == ORES_TURN_OK);
 }
 
+/* A child process inherits raw VM memory and the forking thread's TLS
+ * token. It must not be able to release the copied parent's physical lease,
+ * mutate its lifecycle, or lock/destroy its copied VM mutex.
+ */
+static void test_forked_process_rejects_inherited_vm(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(16);
+    CHECK(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_cleanup_cap *ticket = NULL;
+    ores_turn_lease *lease = NULL;
+    CHECK(ores_turn_register(vm, 140, 1, 1, &actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 1, 1, &source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_claim_user(vm, actor, &lease) == ORES_TURN_OK);
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        ores_turn_lease *second = NULL;
+        ores_cleanup_cap *other_ticket = NULL;
+        if (ores_turn_release(vm, lease) != ORES_TURN_INVALID) _exit(11);
+        if (ores_turn_stop(vm, actor) != ORES_TURN_INVALID) _exit(12);
+        if (ores_turn_claim_user(vm, actor, &second) != ORES_TURN_INVALID)
+            _exit(13);
+        if (second != NULL) _exit(14);
+        if (ores_turn_issue_cleanup(vm, source, &other_ticket)
+                != ORES_TURN_INVALID) _exit(15);
+        if (other_ticket != NULL) _exit(16);
+        if (ores_turn_retire_source_task(vm, source) != ORES_TURN_INVALID)
+            _exit(17);
+        if (ores_turn_vm_destroy(vm) != ORES_TURN_INVALID) _exit(18);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    /* Parent's original VM/lease are unchanged by the forked child. */
+    CHECK(ores_turn_release(vm, lease) == ORES_TURN_OK);
+    CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_cancel_cleanup(vm, ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+}
+
 static void test_foreign_guesses_and_invalid_inputs(void) {
     CHECK(ores_turn_vm_new(0) == NULL);
     CHECK(ores_turn_vm_new(1000001) == NULL);
@@ -701,6 +747,7 @@ int main(void) {
     test_undelivered_terminal_blocks_retirement_until_force();
     test_injected_but_unfinished_cleanup_blocks_retirement();
     test_completion_races_force_revoke();
+    test_forked_process_rejects_inherited_vm();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
