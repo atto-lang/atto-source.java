@@ -28,10 +28,12 @@ public final class Parser {
     }
 
     public static Ast.Program parse(String source) {
+        CheckedI64SourceHeader.isEnabled(source);
         return new Parser(new Lexer(source).scan()).parseProgram();
     }
 
     public static ParseResult parseWithWarnings(String source) {
+        CheckedI64SourceHeader.isEnabled(source);
         Parser parser = new Parser(new Lexer(source).scan());
         Ast.Program program = parser.parseProgram();
         return new ParseResult(program, parser.warnings);
