@@ -211,6 +211,15 @@ public final class OresMain {
             // intentionally use that spelling.
             permissions = RuntimePermissions.fromCapabilities(Set.copyOf(additionalCapabilities));
         } else {
+            // Generic legacy capabilities are explicit grants only in categories
+            // with no scoped Deno-style flag. A scoped --deny-* or --allow-*
+            // always overrides a generic grant of the same category.
+            for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+                if (!touchedPermissions.contains(permission)
+                        && additionalCapabilities.contains(permission.capability())) {
+                    permissionBuilder.allowAll(permission);
+                }
+            }
             permissions = permissionBuilder.build();
 
             // A Deno-style permission flag is the authority for its category.
