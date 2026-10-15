@@ -32,6 +32,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ).hexdigest()
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        # Synthetic, local-only approval. Production main is deliberately empty.
+        self.reviewed_snapshot = f"{D} {self.expected_tree} 123\\n".replace("\\n", "\n")
+        self.snapshot_sha = hashlib.sha1(
+            b"blob " + str(len(self.reviewed_snapshot.encode())).encode("ascii")
+            + bytes([0]) + self.reviewed_snapshot.encode()).hexdigest()
         self.remote_source_commit = D
         self.remote_source_tree = None
         self.route_calls = []
@@ -60,6 +65,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         commit={"sha": A})
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
+        if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
+            raw = self.reviewed_snapshot.encode("utf-8")
+            return {"type": "file", "encoding": "base64",
+                    "size": len(raw), "sha": self.snapshot_sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
         if route == f"repos/{pub.SOURCE_REPOSITORY}/git/commits/" + D:
             return {"sha": self.remote_source_commit,
                     "tree": {"sha": self.expected_tree if self.remote_source_tree is None
