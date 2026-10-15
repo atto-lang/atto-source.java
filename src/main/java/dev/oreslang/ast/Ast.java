@@ -867,7 +867,7 @@ public final class Ast {
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             MatchExpr, TypeTestExpr, PatternTestExpr, CastExpr, SpreadExpr,
-            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, ChannelOpExpr, DynamicSelectExpr,
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, TrapExpr, PropagateExpr, ChannelOpExpr, DynamicSelectExpr,
             ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
@@ -958,6 +958,8 @@ public final class Ast {
     public record AwaitExpr(Expr expression) implements Expr { }
     /** Evaluate one expression into Option<T>; only ordinary guest failures become None. */
     public record TrapExpr(Expr expression) implements Expr { }
+    /** Typed postfix '?' exits the innermost synchronous callable on None/Err. */
+    public record PropagateExpr(Expr expression) implements Expr { }
 
     public record ChannelOpExpr(
             ChannelOperation operation,
