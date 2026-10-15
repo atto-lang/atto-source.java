@@ -66,6 +66,14 @@ public final class ActorUnaryReplySlot<R> {
         return true;
     }
 
+    /** Validate the bound actor incarnation before doing any middleware work. */
+    void requireAdmission(ActorRuntime.ActorId actor, long actorGeneration) {
+        checkIdentity(actor, actorGeneration, requestId);
+        if (state.get() != State.PENDING) {
+            throw new IllegalStateException("actor unary reply ticket already settled");
+        }
+    }
+
     private void checkIdentity(ActorRuntime.ActorId actor, long actorGeneration,
                                UUID responseTo) {
         if (!owner.equals(actor) || generation != actorGeneration
