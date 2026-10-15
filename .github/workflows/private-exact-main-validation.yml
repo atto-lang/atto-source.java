@@ -79,8 +79,8 @@ jobs:
           mvn -B -ntp -Pnative-aot -DskipTests package
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/together.ores
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
-          test "$(timeout 180s ./target/ores-aot examples/native-channel-select-smoke.ores)" = 'first:7:9'
-          test "$(timeout 180s ./target/ores-aot examples/native-future-select-smoke.ores)" = 'future:4'
+          test "$(timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-channel-select-smoke.ores)" = 'first:7:9'
+          test "$(timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-future-select-smoke.ores)" = 'future:4'
       - name: Native hybrid image and compiled guest smoke
         shell: bash
         run: |
@@ -88,8 +88,8 @@ jobs:
           mvn -B -ntp -Pnative-hybrid -DskipTests package
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-core-library.ores
-          test "$(timeout 180s ./target/ores-hybrid examples/native-channel-select-smoke.ores)" = 'first:7:9'
-          test "$(timeout 180s ./target/ores-hybrid examples/native-future-select-smoke.ores)" = 'future:4'
+          test "$(timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-channel-select-smoke.ores)" = 'first:7:9'
+          test "$(timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-future-select-smoke.ores)" = 'future:4'
       - name: Strict polyglot isolate and compiled guest smoke
         shell: bash
         run: |
