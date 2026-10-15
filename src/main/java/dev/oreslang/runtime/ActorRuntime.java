@@ -1846,7 +1846,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || closed.get() || cell.forceRevoked) return false;
-        if (cell.stopped.get() && !cell.authorizedCleanupContinuation(continuation))
+        if (cell.stopped.get() && !cell.retainableCleanupContinuation(continuation))
             return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
@@ -1859,7 +1859,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (cell.finalized || closed.get() || cell.forceRevoked
                         || (cell.stopped.get()
-                            && !cell.authorizedCleanupContinuation(continuation))) return false;
+                            && !cell.retainableCleanupContinuation(continuation))) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
@@ -4589,12 +4589,16 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized (runtimeLifecycleLock) {
             for (ActorCell<?> cell : attempt.cells) {
-                cell.forceKillFenced = false;
-                if (resume
-                        && !cell.stopped.get()
-                        && !cell.finalized()
-                        && cell.hasQueuedWork()) {
-                    resumeCells.add(cell);
+                synchronized (cell.lifecycleLock) {
+                    cell.forceKillFenced = false;
+                    if (resume && !cell.forceRevoked && !cell.finalized
+                            && (!cell.stopped.get() || cell.hasSourceCleanup())
+                            && cell.hasQueuedWorkLocked()) {
+                        // A source cleanup result may have been queued while
+                        // physical revocation was pending. Re-admit the actor
+                        // lane only after the revoker has returned false.
+                        resumeCells.add(cell);
+                    }
                 }
             }
         }
@@ -6370,11 +6374,25 @@ public final class ActorRuntime implements AutoCloseable {
             return 0;
         }
 
-        private boolean authorizedCleanupContinuation(Runnable command) {
-            return !forceKillFenced && !forceRevoked && !closed.get() && !finalized
+        /**
+         * Publication and execution are separate. While a host force-revoker
+         * has the actor fenced, a previously cancelled source task may become
+         * ready (e.g. an awaited cleanup Future settles). Preserve its
+         * scheduler-minted envelope without granting post-fence execution.
+         * If revocation succeeds it is discarded; if denied it runs on the
+         * original actor lane after the fence is cleared.
+         */
+        private boolean retainableCleanupContinuation(Runnable command) {
+            return !forceRevoked && !closed.get() && !finalized
                     && !sourceCleanupTasks.isEmpty()
                     && command instanceof OresScheduler.CleanupTurn turn
-                    && turn.authorizedBy(sourceScheduler);
+                    && turn.ownedBy(sourceScheduler)
+                    && (sourceCancellationPending || turn.authorizedBy(sourceScheduler));
+        }
+
+        private boolean authorizedCleanupContinuation(Runnable command) {
+            return !forceKillFenced && !forceRevoked && !closed.get() && !finalized
+                    && retainableCleanupContinuation(command);
         }
 
         private boolean hasSourceCleanup() {
