@@ -691,6 +691,84 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.retained());
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void cancellationOrShutdownRevokesAlreadyDequeuedHandoffBeforeCallbackStart()
+            throws Exception {
+        // Deterministically stop a carrier between dequeue/ready registration
+        // and notifyRetry(). Without tracking that in-transit ticket, cancel()
+        // can see empty pending/deferred queues and still run the stale wake.
+        for (boolean closing : new boolean[]{false, true}) {
+            ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
+            AtomicInteger invoked = new AtomicInteger();
+            Runnable callback = invoked::incrementAndGet;
+            assertTrue(queue.register(callback, queue.epoch()));
+
+            java.util.concurrent.CountDownLatch dequeued =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch continueCarrier =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<Throwable> carrierFailure =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+
+            // A host-only test seam through reflection, not a guest/runtime
+            // API. This blocks *after* dequeue, before the start gate.
+            java.lang.reflect.Field handoff =
+                    ControlWakeRetryQueue.class.getDeclaredField("retryDispatch");
+            handoff.setAccessible(true);
+            Object original = handoff.get(queue);
+            handoff.set(queue, new ThreadLocal<Object>() {
+                @Override public Object get() {
+                    dequeued.countDown();
+                    try {
+                        if (!continueCarrier.await(3, TimeUnit.SECONDS)) {
+                            throw new AssertionError("handoff gate timeout");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(interrupted);
+                    }
+                    return null;
+                }
+            });
+
+            Thread carrier = new Thread(() -> {
+                try { queue.slotReleased(); }
+                catch (Throwable error) { carrierFailure.set(error); }
+            }, closing ? "closed-ready-carrier" : "cancelled-ready-carrier");
+            carrier.setDaemon(true);
+            carrier.start();
+            try {
+                assertTrue(dequeued.await(3, TimeUnit.SECONDS));
+                assertEquals(0, queue.pending(),
+                        "dequeued callback must no longer be in pending");
+                assertEquals(1, queue.retained());
+                if (closing) queue.close();
+                else queue.cancel(callback);
+                assertEquals(0, queue.retained(),
+                        "revoking an in-transit ticket must refund quota");
+            } finally {
+                continueCarrier.countDown();
+            }
+            carrier.join(3000);
+            assertFalse(carrier.isAlive());
+            assertNull(carrierFailure.get(),
+                    () -> "carrier failed: " + carrierFailure.get());
+            assertEquals(0, invoked.get(),
+                    "a cancelled ready callback must never run");
+            handoff.set(queue, original);
+            if (!closing) {
+                assertTrue(queue.register(callback, queue.epoch()));
+                queue.slotReleased();
+                assertEquals(1, invoked.get(),
+                        "cancel must not permanently poison later admissions");
+            } else {
+                assertFalse(queue.register(callback, queue.epoch()));
+            }
+            assertEquals(0, queue.retained());
+        }
+    }
+
     @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         assertTrue(queue.register(() -> {
