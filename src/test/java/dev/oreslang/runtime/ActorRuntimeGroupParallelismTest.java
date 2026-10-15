@@ -193,6 +193,51 @@ final class ActorRuntimeGroupParallelismTest {
     }
 
     @Test
+    void executorShutdownReclaimsGrantedButNeverExecutedPhysicalTurn() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger guestRuns = new AtomicInteger();
+        ActorRuntime.TurnExecutor host = turn -> {
+            entered.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            turn.run();
+        };
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8, 8), host);
+        try {
+            var group = runtime.createActorGroup(limit(2));
+            var first = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> guestRuns.incrementAndGet()));
+            var second = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    factory -> (message, context) -> guestRuns.incrementAndGet()));
+            first.send(1);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            second.send(1);
+            var field = group.getClass().getDeclaredField("turnGate");
+            field.setAccessible(true);
+            var gate = (ActorGroupTurnGate) field.get(group);
+            assertEquals(2, gate.activeTurns(),
+                    "two granted turns, but one carrier must still be queued");
+            runtime.close();
+            assertEquals(0, gate.activeTurns(),
+                    "shutdownNow must release discarded but GRANTED dispatch tickets");
+            assertEquals(0, gate.queuedTurns());
+            assertEquals(0, guestRuns.get(),
+                    "stopped actors cannot enter guest code after shutdown");
+        } finally {
+            release.countDown();
+            runtime.close();
+        }
+    }
+
+    @Test
     void activeActorCannotBeRetrofittedIntoBoundedGroupAndTransferFailsClosed()
             throws Exception {
         CountDownLatch seen = new CountDownLatch(1);
