@@ -7323,23 +7323,12 @@ public final class TypeChecker {
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
-        if (!genericSpecs.isEmpty()) {
-            if (!genericSpecs.stream().map(Ast.GenericParameter::name).toList().equals(genericNames)) {
-                throw new IllegalArgumentException(label + " has inconsistent generic declarations");
-            }
-            for (Ast.GenericParameter spec : genericSpecs) {
-                if (spec.defaultType() == null
-                        || bindings.containsKey(spec.name())
-                        || inferenceHoles.contains(spec.name())) continue;
-                Type declaredDefault = resolve(spec.defaultType(), unique, callableSelf);
-                Type concreteDefault = substituteGenerics(declaredDefault, bindings);
-                if (containsGenericNamed(concreteDefault, unique)) {
-                    throw new IllegalArgumentException("cannot resolve dependent default for generic '"
-                            + spec.name() + "' in " + label);
-                }
-                bindings.put(spec.name(), concreteDefault);
-            }
-        }
+        GenericCallArguments.applyDefaults(
+                genericNames, genericSpecs, bindings, inferenceHoles,
+                ref -> resolve(ref, unique, callableSelf),
+                this::substituteGenerics,
+                type -> containsGenericNamed(type, unique),
+                label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
         if (!unbound.isEmpty()) {
