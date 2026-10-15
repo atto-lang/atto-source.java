@@ -69,6 +69,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
                         commit={"sha": A})
+        if route == pub.PROTECTED_REVIEWS_ROUTE:
+            return {"required_approving_review_count": 1,
+                    "require_code_owner_reviews": True,
+                    "dismiss_stale_reviews": True,
+                    "bypass_pull_request_allowances": {}}
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
