@@ -165,6 +165,48 @@ final class ActorRaceInstrumentationTest {
     }
 
     @Test
+    void laterWriterStillConflictsWithEarlierConcurrentReader() throws Exception {
+        ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
+        Object owner = new Object();
+        Object publication = new Object();
+        CountDownLatch sawRead = new CountDownLatch(1);
+        CountDownLatch sawFirstWrite = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        // The latches only order test-driver calls. They are deliberately not
+        // supplied to the detector as guest synchronization events. Only the
+        // explicit B->C publication below belongs to the modeled program.
+        Thread a = Thread.ofPlatform().start(() -> {
+            try {
+                probe.read(owner, "field");
+                sawRead.countDown();
+            } catch (Throwable t) { failure.compareAndSet(null, t); }
+        });
+        Thread b = Thread.ofPlatform().start(() -> {
+            try {
+                if (!sawRead.await(3, TimeUnit.SECONDS)) throw new AssertionError("read timeout");
+                probe.write(owner, "field");
+                probe.release(publication);
+                sawFirstWrite.countDown();
+            } catch (Throwable t) { failure.compareAndSet(null, t); }
+        });
+        Thread c = Thread.ofPlatform().start(() -> {
+            try {
+                if (!sawFirstWrite.await(3, TimeUnit.SECONDS)) throw new AssertionError("write timeout");
+                probe.acquire(publication);
+                probe.write(owner, "field");
+            } catch (Throwable t) { failure.compareAndSet(null, t); }
+        });
+        a.join(5000);
+        b.join(5000);
+        c.join(5000);
+        assertFalse(a.isAlive() || b.isAlive() || c.isAlive());
+        if (failure.get() != null) fail(failure.get());
+        assertEquals(3, probe.snapshot().accesses());
+        assertEquals(2, probe.snapshot().memoryRaces(),
+                "the first write must not erase a read concurrent with a later writer");
+    }
+
+    @Test
     void readReadWithoutWriteIsNotARace() throws Exception {
         ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
         Object owner = new Object();
