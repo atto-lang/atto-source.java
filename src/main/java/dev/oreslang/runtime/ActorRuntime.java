@@ -7534,12 +7534,20 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         behavior = created;
                     }
+                    // The readiness decision linearizes against stop under
+                    // the lifecycle monitor, but the actual Future settlement
+                    // invokes readyRefFuture and host subscribers synchronously.
+                    // Publish only after dropping the monitor. This turn still
+                    // owns activeTurns, so cancellation cannot physically
+                    // finalize the actor between decision and publication.
+                    boolean failedReadiness;
                     synchronized (lifecycleLock) {
-                        if (stopped.get() || forceKillFenced) {
-                            ref.readyFuture.failFromRuntime(terminated(ref));
-                        } else {
-                            ref.readyFuture.completeFromRuntime(null);
-                        }
+                        failedReadiness = stopped.get() || forceKillFenced;
+                    }
+                    if (failedReadiness) {
+                        ref.readyFuture.failFromRuntime(terminated(ref));
+                    } else {
+                        ref.readyFuture.completeFromRuntime(null);
                     }
                 }
 
