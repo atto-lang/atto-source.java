@@ -12,8 +12,10 @@ import java.util.Set;
  * Closed-world admission and deterministic signature IDs for nominal enum
  * overloads. This is a compiler policy helper, NOT a runtime multimethod.
  *
- * The Java evaluator still has arity-only tables. Until those tables accept
- * prebound targets, callers must not admit same-name/same-arity declarations.
+ * Direct Java fnc/routine calls may use compiler-proven prebound targets in
+ * the staged executable slice. Unbound dynamic calls and class method vtables
+ * still use arity-only dispatch and must fail closed on same-arity enums.
+ * This helper must never choose a callable from runtime enum values.
  */
 public final class NominalEnumOverloads {
     private NominalEnumOverloads() {}
