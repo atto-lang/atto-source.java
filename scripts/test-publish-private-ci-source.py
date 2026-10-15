@@ -223,7 +223,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             "-c", "user.email=ci@example.invalid",
                             "commit", "-qm", "fixture"],
                            check=True, capture_output=True)
-            files = pub.collect_source(root, root)
+            files = pub.collect_source(root, root, omit_checkout_metadata=True)
             source_commit, actual = self.real_tree_gate(root, root, files)
             expected_commit = subprocess.run(
                 ["git", "-C", str(root), "rev-parse", "HEAD"],
@@ -235,7 +235,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.assertEqual(actual, expected)
 
             (root / "nested" / "data.ores").write_bytes(b"changed\n")
-            dirty = pub.collect_source(root, root)
+            dirty = pub.collect_source(root, root, omit_checkout_metadata=True)
             with self.assertRaisesRegex(pub.Denied, "differs"):
                 self.real_tree_gate(root, root, dirty)
 
@@ -243,7 +243,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             # likewise rejected instead of exporting unrelated private bytes.
             (root / "nested" / "data.ores").write_bytes(b"nested\n")
             (root / "extra-secret.txt").write_text("untracked")
-            dirty = pub.collect_source(root, root)
+            dirty = pub.collect_source(root, root, omit_checkout_metadata=True)
             with self.assertRaisesRegex(pub.Denied, "differs"):
                 self.real_tree_gate(root, root, dirty)
 
@@ -576,6 +576,39 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaises(pub.Denied):
             self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_exact_checkout_skips_only_real_root_git_metadata(self):
+        # Normal Git checkouts contain a .git directory. Without a narrowly
+        # scoped exception the exact-tree proof cannot run on real checkouts.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = root / ".git"
+            metadata.mkdir()
+            (metadata / "config").write_text("do not export\n")
+            (root / "hello.ores").write_text("source\n")
+            with self.assertRaisesRegex(pub.Denied, "unsupported name"):
+                pub.collect_source(root, root)
+            collected = pub.collect_source(root, root, omit_checkout_metadata=True)
+            self.assertEqual([(p, data) for p, data, _ in collected],
+                             [("hello.ores", b"source\n")])
+            self.assertFalse(any(".git" in p for p, _, _ in collected))
+            nested = root / "nested"
+            nested.mkdir()
+            (nested / ".git").mkdir()
+            with self.assertRaisesRegex(pub.Denied, "unsupported name"):
+                pub.collect_source(root, root, omit_checkout_metadata=True)
+
+            (nested / ".git").rmdir()
+            (metadata / "config").unlink()
+            metadata.rmdir()
+            metadata.symlink_to(nested, target_is_directory=True)
+            with self.assertRaisesRegex(pub.Denied, "Git metadata"):
+                pub.collect_source(root, root, omit_checkout_metadata=True)
+
+    def test_subdirectory_cannot_enable_checkout_metadata_exception(self):
+        (self.source / ".git").mkdir()
+        with self.assertRaisesRegex(pub.Denied, "checkout root"):
+            pub.collect_source(self.source, self.root, omit_checkout_metadata=True)
 
     def test_git_metadata_directory_rejected(self):
         (self.source / ".git").mkdir()
