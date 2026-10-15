@@ -773,16 +773,31 @@ public final class OwnershipChecker {
                     }
                     yield new ValueInfo(new Ast.TypeRef("Pointer", List.of(source.type), false), ValueKind.MOVE_ONLY, null);
                 }
-                case "unref", "deref" -> {
-                    // A stable lexical handle anchors the view. Bind rt ref's
-                    // result first instead of borrowing an ephemeral handle.
+                case "deref" -> {
+                    // A named live pointer anchors the borrowed view.
                     VarState pointer = borrowOwner(argument, scope);
                     if (!pointer.type.name().equals("Pointer") || pointer.type.arguments().size() != 1) {
-                        throw error("rt " + runtime.operation() + " requires a named Pointer<T> owner");
+                        throw error("rt deref requires a named Pointer<T> owner");
                     }
                     validateBorrow(pointer, false);
                     yield new ValueInfo(Ast.TypeRef.borrowed(pointer.type.arguments().getFirst(), false),
                             ValueKind.IMM_BORROW, ownershipRoot(pointer));
+                }
+                case "unref" -> {
+                    // Consuming unwrap is a unique-owner move, NOT a borrowed dereference.
+                    // Reuse the ordinary move admission: this rejects active views,
+                    // duplicate unref, moved aliases and a pointer read after unwrap.
+                    if (!(argument instanceof Ast.NameExpr name)) {
+                        throw error("rt unref requires a named Pointer<T> owner");
+                    }
+                    VarState pointer = requireState(scope, name.name());
+                    if (pointer.type.isBorrow() || !pointer.type.name().equals("Pointer")
+                            || pointer.type.arguments().size() != 1) {
+                        throw error("rt unref requires a unique owned Pointer<T>");
+                    }
+                    Ast.TypeRef pointee = pointer.type.arguments().getFirst();
+                    checkExpr(argument, scope, true); // marks the handle moved once
+                    yield new ValueInfo(pointee, kindOfType(pointee), null);
                 }
                 case "borrow" -> {
                     VarState owner = borrowOwner(argument, scope);
