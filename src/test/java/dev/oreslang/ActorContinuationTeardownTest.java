@@ -324,6 +324,11 @@ final class ActorContinuationTeardownTest {
             assertInstanceOf(ActorRuntime.ActorCancelledException.class,
                     timeout.getCause(),
                     "cleanup timeout must preserve the original structured cancellation");
+            var doneFailure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(5, TimeUnit.SECONDS));
+            assertSame(timeout, doneFailure.getCause(),
+                    "get_done must expose the identical incomplete-cleanup outcome");
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> taskFuture.get().get(5, TimeUnit.SECONDS));
             abandoned.get().resolve(9);
