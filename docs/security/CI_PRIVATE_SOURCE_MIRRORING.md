@@ -34,11 +34,15 @@ repository before the first source-bearing write. Only checkout-root `.git`
 metadata may be omitted; nested Git metadata or source symlinks are rejected.
 `GIT_*` environment overrides cannot redirect this provenance check.
 
-**Required independent gate:** neither a checked-in policy nor a successful
-source-commit lookup proves that `main` is branch-protected or that its changes
-received independent code-owner approval. Those governance controls must be
-verified separately before enabling an approved destination; a pending
-allowlist PR never authorizes a transfer.
+**Required independent gate:** the publisher now denies any transfer unless
+GitHub reports source `main` as protected and permits inspection of its branch
+protection rules. It requires code-owner review, stale-review dismissal, at
+least one approval, strict nonempty required CI, administrator enforcement,
+and disabled force pushes/deletions; failure to read these settings is a denial.
+This checks current enforcement settings, not the authenticity of a particular
+reviewer's decision or an exemption outside the reported rules. A pending
+allowlist PR never authorizes a transfer. The security owner must independently
+review the actual protection and approvals before any source export.
 
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
