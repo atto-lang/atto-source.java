@@ -63,6 +63,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** Each parent has a separate bounded CONTROL inbox; no shared guest heap. */
+    private static final int CHILD_FAILURE_CONTROL_SLOTS = 256;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -606,6 +608,29 @@ public final class ActorRuntime implements AutoCloseable {
     public long actorFailureNoticesDropped() {
         requireSupervisorContext("inspect dropped actor failure CONTROL notices");
         return actorFailureNoticesDropped.get();
+    }
+
+    /**
+     * A parent may consume only its own direct children's immutable notices.
+     * The CONTROL inbox is separate from the user mailbox and is never visible
+     * to a sibling, guest transport, or a host caller outside an actor turn.
+     */
+    public Optional<ActorFailureNotice> pollCurrentActorChildFailureNotice() {
+        requireCallerRuntimeAffinity("poll child failure CONTROL inbox");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null) {
+            throw new IllegalStateException("child failure notices require an actor turn");
+        }
+        return Optional.ofNullable(parent.childFailureControlInbox.poll());
+    }
+
+    public long currentActorChildFailureNoticesDropped() {
+        requireCallerRuntimeAffinity("inspect child failure CONTROL overflow");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null) {
+            throw new IllegalStateException("child failure counters require an actor turn");
+        }
+        return parent.childFailureControlDropped.get();
     }
 
     private void publishActorFailureNotice(ActorFailureNotice notice) {
@@ -1383,6 +1408,21 @@ public final class ActorRuntime implements AutoCloseable {
          */
         default Optional<ActorInboxMail<M>> currentMail() {
             return Optional.empty();
+        }
+
+        /**
+         * Read the next immutable failure notice belonging to a direct child.
+         * Callable only on this parent's serialized actor turn. A child Error
+         * value, Throwable or executable callback never crosses this boundary.
+         * Source-language on_raise dispatch is intentionally not enabled yet.
+         */
+        default Optional<ActorFailureNotice> pollChildFailureNotice() {
+            return runtime().pollCurrentActorChildFailureNotice();
+        }
+
+        /** Notices that could not fit in this actor's bounded CONTROL inbox. */
+        default long childFailureNoticesDropped() {
+            return runtime().currentActorChildFailureNoticesDropped();
         }
 
         /**
@@ -6664,6 +6704,10 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
+        /** Parent-owned CONTROL data only, independent of ordinary mailbox slots. */
+        private final ArrayBlockingQueue<ActorFailureNotice> childFailureControlInbox =
+                new ArrayBlockingQueue<>(CHILD_FAILURE_CONTROL_SLOTS);
+        private final AtomicLong childFailureControlDropped = new AtomicLong();
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -7055,6 +7099,14 @@ public final class ActorRuntime implements AutoCloseable {
             // Offer is bounded and cannot invoke guest callbacks. Publication
             // precedes removal from actors and all termination observers.
             if (pendingControlNotice != null) {
+                // Only the structurally owning parent receives this CONTROL
+                // notice; never route by user-supplied ID or ActorRef.
+                // ArrayBlockingQueue.offer is nonblocking and has no guest
+                // callbacks, including while this child lifecycle lock is held.
+                if (parent != null
+                        && !parent.childFailureControlInbox.offer(pendingControlNotice)) {
+                    parent.childFailureControlDropped.incrementAndGet();
+                }
                 publishActorFailureNotice(pendingControlNotice);
                 pendingControlNotice = null;
             }
