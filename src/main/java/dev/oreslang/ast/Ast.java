@@ -40,6 +40,10 @@ public final class Ast {
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
+    /** Declared mailbox role; INFER retains legacy receive-only declarations. */
+    public enum ActorReplyRole { INFER, UNARY, STREAM }
+    /** Transport selection is distinct from actor isolation and mailbox reply role. */
+    public enum ActorTransport { GENERIC, HTTP, TCP, WEBSOCKET }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -297,13 +301,30 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            ActorReplyRole actorReplyRole,
+            ActorTransport actorTransport) implements Decl {
         public ClassDecl {
+            actorReplyRole = java.util.Objects.requireNonNull(actorReplyRole);
+            actorTransport = java.util.Objects.requireNonNull(actorTransport);
+            if (actorKind == ActorKind.NONE && (actorReplyRole != ActorReplyRole.INFER
+                    || actorTransport != ActorTransport.GENERIC)) {
+                throw new IllegalArgumentException("non-actor class cannot declare an actor role or transport");
+            }
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Old AST producers continue to create legacy actor declarations. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract, ActorKind actorKind,
+                         List<String> genericParameters, List<TypeRef> parents,
+                         List<TypeRef> interfaces, List<FieldDecl> fields,
+                         ConstructorDecl constructor, List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters, parents, interfaces,
+                    fields, constructor, methods, ActorReplyRole.INFER, ActorTransport.GENERIC);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
