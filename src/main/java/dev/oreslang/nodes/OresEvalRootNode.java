@@ -3665,7 +3665,11 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
+                        // Map.entry rejects null payloads. Projection and
+                        // record validation handle null/missing values separately,
+                        // so retain the actual field value for both paths.
+                        values.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
+                                field.name(), value));
                         evalSuspendableObjectField(
                                 t,
                                 object,

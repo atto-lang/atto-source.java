@@ -222,4 +222,26 @@ final class MatchSelectArrowProjectionTest {
         assertEquals(Ast.BindingKind.LET, read.bindingKind());
         assertEquals(2, read.destructureBindings().size());
     }
+    @Test
+    void genericDefaultsAndArrowSelectProjectionCoexistAfterMainlineIntegration()
+            throws Exception {
+        String source = """
+                fnc take<A, B=int>(A ignored, Channel<{v: int}> ch): int {
+                  do select {
+                    when readch ch: const {v} -> {
+                      return v;
+                    }
+                  }
+                  return 0;
+                }
+                pub routine main(): void {
+                  val Channel<{v: int}> ch = Channel.new<{v: int}>(1);
+                  writech ch, struct{v: int}{v: 44};
+                  stdio.stdout.write(take<int>(7, ch));
+                  return;
+                }
+                """;
+        assertEquals("44", run(source));
+    }
+
 }
