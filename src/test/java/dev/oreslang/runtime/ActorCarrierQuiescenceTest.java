@@ -215,6 +215,138 @@ final class ActorCarrierQuiescenceTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(20)
+    void terminalCarrierObserversPublishOutsideLifecycleMonitor() throws Exception {
+        CountDownLatch processed = new CountDownLatch(1);
+        CountDownLatch carrierHeld = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch notified = new CountDownLatch(2);
+        AtomicBoolean holdOnce = new AtomicBoolean();
+        AtomicBoolean callbackHeldMonitor = new AtomicBoolean();
+        AtomicBoolean callbackBlockedCompetingMonitor = new AtomicBoolean();
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (processed.getCount() == 0 && holdOnce.compareAndSet(false, true)) {
+                carrierHeld.countDown();
+                awaitTestRelease(release);
+            }
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> processed.countDown());
+            try {
+                actor.send(1);
+                assertTrue(carrierHeld.await(5, TimeUnit.SECONDS));
+                Object monitor = lifecycleMonitor(runtime, actor);
+                OresFuture<Void> beforeStop = runtime.quiesceAcceptedMessages(actor);
+                actor.cancel();
+                // This second observer used to subscribe to finalizedFuture,
+                // whose callbacks execute synchronously inside finalizeStopLocked.
+                OresFuture<Void> afterStop = runtime.quiesceAcceptedMessages(actor);
+                for (OresFuture<Void> observer :
+                        java.util.List.of(beforeStop, afterStop)) {
+                    observer.whenCompleteRuntime((ignored, failure) -> {
+                        if (Thread.holdsLock(monitor)) callbackHeldMonitor.set(true);
+                        CountDownLatch acquired = new CountDownLatch(1);
+                        Thread.ofVirtual().start(() -> {
+                            synchronized (monitor) { acquired.countDown(); }
+                        });
+                        try {
+                            if (!acquired.await(2, TimeUnit.SECONDS)) {
+                                callbackBlockedCompetingMonitor.set(true);
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            callbackBlockedCompetingMonitor.set(true);
+                        } finally {
+                            notified.countDown();
+                        }
+                    });
+                }
+                assertFalse(beforeStop.isDone());
+                assertFalse(afterStop.isDone());
+                release.countDown();
+                beforeStop.get(5, TimeUnit.SECONDS);
+                afterStop.get(5, TimeUnit.SECONDS);
+                assertTrue(notified.await(5, TimeUnit.SECONDS),
+                        "both terminal observers must notify their host subscribers");
+                assertFalse(callbackHeldMonitor.get(),
+                        "a terminal callback ran while lifecycleLock was held");
+                assertFalse(callbackBlockedCompetingMonitor.get(),
+                        "a terminal callback blocked another thread's lifecycle admission");
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
+    void stoppedActorCarrierObserversShareTheBoundedQuota() throws Exception {
+        CountDownLatch processed = new CountDownLatch(1);
+        CountDownLatch carrierHeld = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean holdOnce = new AtomicBoolean();
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (processed.getCount() == 0 && holdOnce.compareAndSet(false, true)) {
+                carrierHeld.countDown();
+                awaitTestRelease(release);
+            }
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> processed.countDown());
+            try {
+                actor.send(1);
+                assertTrue(carrierHeld.await(5, TimeUnit.SECONDS));
+                actor.cancel();
+                var admitted = new java.util.ArrayList<OresFuture<Void>>();
+                for (int i = 0; i < 1_024; i++) {
+                    OresFuture<Void> observer = runtime.quiesceAcceptedMessages(actor);
+                    assertFalse(observer.isDone(), "premature stopped observer " + i);
+                    admitted.add(observer);
+                }
+                OresFuture<Void> overflow = runtime.quiesceAcceptedMessages(actor);
+                var denied = assertThrows(java.util.concurrent.ExecutionException.class,
+                        () -> overflow.get(1, TimeUnit.SECONDS));
+                assertInstanceOf(ActorRuntime.ActorResourceExhaustedException.class,
+                        denied.getCause());
+                release.countDown();
+                for (OresFuture<Void> observer : admitted) {
+                    observer.get(5, TimeUnit.SECONDS);
+                }
+                assertTrue(runtime.quiesceAcceptedMessages(actor).isDone(),
+                        "fully finalized actor must not retain stopped observer quota");
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    private static Object lifecycleMonitor(
+            ActorRuntime runtime, ActorRuntime.ActorRef<?> ref)
+            throws ReflectiveOperationException {
+        // Intentionally inspect the actual monitor rather than a surrogate
+        // helper predicate: a callback running under it can deadlock another
+        // host operation that needs actor lifecycle admission.
+        var registryField = ActorRuntime.class.getDeclaredField("actors");
+        registryField.setAccessible(true);
+        var registry = (java.util.Map<?, ?>) registryField.get(runtime);
+        Object cell = registry.get(ref.id());
+        assertNotNull(cell, "actor must still be registered during its physical turn");
+        var monitorField = cell.getClass().getDeclaredField("lifecycleLock");
+        monitorField.setAccessible(true);
+        return monitorField.get(cell);
+    }
+
     private static void awaitTestRelease(CountDownLatch release) {
         try {
             if (!release.await(5, TimeUnit.SECONDS)) {
