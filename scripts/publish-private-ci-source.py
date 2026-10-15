@@ -689,12 +689,22 @@ def source_tree_sha(files):
         # silently replacing a directory with a file loses snapshot bytes.
         if (not isinstance(relative, str)
                 or not relative
-                or any(part in ("", ".", "..", ".git")
-                       for part in relative.split("/"))
                 or not isinstance(data, bytes)
                 or mode not in ("100644", "100755")):
             raise Denied("source snapshot contains invalid Git tree entry")
         parts = relative.split("/")
+        # Match collect_source(): Git paths cannot contain controls, DEL,
+        # backslashes or invalid UTF-8, even when supplied directly through
+        # a manifest rather than discovered from the filesystem.
+        if any(part in ("", ".", "..", ".git")
+               or "\\" in part
+               or any(ord(char) < 32 or ord(char) == 127 for char in part)
+               for part in parts):
+            raise Denied("source snapshot contains invalid Git tree path")
+        try:
+            relative.encode("utf-8", errors="strict")
+        except UnicodeEncodeError as exc:
+            raise Denied("source snapshot contains invalid UTF-8 Git tree path") from exc
         node = root
         for part in parts[:-1]:
             existing = node.get(part)
