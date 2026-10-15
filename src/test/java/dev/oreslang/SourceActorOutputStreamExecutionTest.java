@@ -64,6 +64,33 @@ final class SourceActorOutputStreamExecutionTest {
     }
 
     @Test
+    void explicitStreamActorRunsThroughExistingGuestScheduler() throws Exception {
+        String program = """
+                define stream actor Worker as
+                  receive(ActorMail<String> mail): void {
+                    self.send("first");
+                    self.send("second");
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("go");
+                  for await const item of worker.outputs {
+                    stdio.stdout.write(item.value);
+                  }
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        assertEquals("firstsecond",
+                run(program, "explicit-stream-actor.ores"));
+    }
+
+    @Test
     void forAwaitConsumesActorOutputsUntilActorFinalization() throws Exception {
         String program = """
                 define actor Worker as
