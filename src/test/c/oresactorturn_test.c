@@ -57,6 +57,9 @@ static void test_one_carrier_stop_and_restart(void) {
     CHECK(ores_turn_release(vm, lease) == ORES_TURN_DENIED);
 
     CHECK(ores_turn_claim_cleanup(vm, ticket, &second) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, second) == ORES_TURN_DENIED);
+    CHECK(ores_turn_note_terminal_injected(vm, second, source) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, second) == ORES_TURN_OK);
     CHECK(ores_turn_claim_cleanup(vm, ticket, &lease) == ORES_TURN_DENIED);
     CHECK(lease == NULL);
     CHECK(ores_turn_retire(vm, first) == ORES_TURN_BUSY);
@@ -104,13 +107,17 @@ static void test_forgery_revocation_and_foreign_vm(void) {
 struct race_args {
     ores_turn_vm *vm;
     ores_cleanup_cap *ticket;
-    ores_turn_status claim, release;
+    ores_source_task_cap *source;
+    ores_turn_status claim, injection, release;
 };
 static void *race_cleanup_claim(void *opaque) {
     struct race_args *a = opaque;
     ores_turn_lease *lease = NULL;
     a->claim = ores_turn_claim_cleanup(a->vm, a->ticket, &lease);
-    if (a->claim == ORES_TURN_OK) a->release = ores_turn_release(a->vm, lease);
+    if (a->claim == ORES_TURN_OK) {
+        a->injection = ores_turn_note_terminal_injected(a->vm, lease, a->source);
+        a->release = ores_turn_release(a->vm, lease);
+    }
     return NULL;
 }
 static void test_one_shot_race(void) {
@@ -123,8 +130,10 @@ static void test_one_shot_race(void) {
     CHECK(ores_turn_register_source_task(vm, actor, 1, 1, &source) == ORES_TURN_OK);
     CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
     CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
-    struct race_args a = {vm, ticket, ORES_TURN_INVALID, ORES_TURN_INVALID};
-    struct race_args b = {vm, ticket, ORES_TURN_INVALID, ORES_TURN_INVALID};
+    struct race_args a = {vm, ticket, source,
+        ORES_TURN_INVALID, ORES_TURN_INVALID, ORES_TURN_INVALID};
+    struct race_args b = {vm, ticket, source,
+        ORES_TURN_INVALID, ORES_TURN_INVALID, ORES_TURN_INVALID};
     pthread_t t1, t2;
     CHECK(pthread_create(&t1, NULL, race_cleanup_claim, &a) == 0);
     CHECK(pthread_create(&t2, NULL, race_cleanup_claim, &b) == 0);
@@ -135,8 +144,14 @@ static void test_one_shot_race(void) {
           || a.claim == ORES_TURN_BUSY);
     CHECK(b.claim == ORES_TURN_OK || b.claim == ORES_TURN_DENIED
           || b.claim == ORES_TURN_BUSY);
-    if (a.claim == ORES_TURN_OK) CHECK(a.release == ORES_TURN_OK);
-    if (b.claim == ORES_TURN_OK) CHECK(b.release == ORES_TURN_OK);
+    if (a.claim == ORES_TURN_OK) {
+        CHECK(a.injection == ORES_TURN_OK);
+        CHECK(a.release == ORES_TURN_OK);
+    }
+    if (b.claim == ORES_TURN_OK) {
+        CHECK(b.injection == ORES_TURN_OK);
+        CHECK(b.release == ORES_TURN_OK);
+    }
     CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
     CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
@@ -430,6 +445,35 @@ static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
 }
 
+/* Consuming a cleanup ticket is not completion. If its physical lease exits
+ * without an injected cancellation signal, source/actor retirement must
+ * remain blocked until the VM explicitly force-aborts that unfinished task.
+ */
+static void test_undelivered_terminal_blocks_retirement_until_force(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(16);
+    CHECK(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_cleanup_cap *ticket = NULL;
+    ores_turn_lease *lease = NULL;
+    CHECK(ores_turn_register(vm, 114, 1, 1, &actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 9, 1, &source)
+          == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_claim_cleanup(vm, ticket, &lease) == ORES_TURN_OK);
+    CHECK(ores_turn_release(vm, lease) == ORES_TURN_OK);
+    CHECK(ores_turn_note_terminal_injected(vm, lease, source)
+          == ORES_TURN_DENIED);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_BUSY);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_BUSY);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_BUSY);
+    CHECK(ores_turn_force_revoke(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+}
+
 static void test_source_task_provenance_and_retirement(void) {
     ores_turn_vm *vm = ores_turn_vm_new(64), *foreign = ores_turn_vm_new(16);
     CHECK(vm && foreign);
@@ -548,6 +592,7 @@ int main(void) {
     test_exited_carrier_cannot_be_impersonated();
     test_source_task_provenance_and_retirement();
     test_terminal_signal_requires_real_lease_and_one_shot_ack();
+    test_undelivered_terminal_blocks_retirement_until_force();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
