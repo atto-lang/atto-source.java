@@ -115,6 +115,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * a cancellation hook registers another waiter on its own Future.
      */
     private final AtomicBoolean cancelRevocationComplete = new AtomicBoolean();
+    /** The terminal waiter drain (including owner release) has one winner. */
+    private final AtomicBoolean terminalNotificationClaimed = new AtomicBoolean();
     private final boolean deferredCancellation;
     private final AtomicReference<CancellationException> cancellationRequest = new AtomicReference<>();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -172,9 +174,9 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     boolean completeDeferredCancellationFromRuntime() {
         CancellationException requested = cancellationRequest.get();
         if (!deferredCancellation || requested == null) return false;
-        boolean result = settle(new Cancelled(requested));
-        if (result) cancelHook.set(null);
-        return result;
+        // The cancelling thread still owns the revoker. Clearing cancelHook
+        // here could skip revocation when cleanup races with hook entry.
+        return settle(new Cancelled(requested));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -506,7 +508,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     return false;
                 }
             }
-            invokeCancelHook();
+            try {
+                invokeCancelHook();
+            } finally {
+                // Cleanup is allowed to settle the Future *inside* this hook.
+                // Its terminal CAS cannot deliver waiters/select readiness
+                // until the entire revocation hook has returned.
+                cancelRevocationComplete.set(true);
+                notifyTerminalIfReady();
+            }
             return true;
         }
         // Revoke the owning operation BEFORE any synchronous subscriber can
@@ -694,26 +704,41 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         // Deferred cancellation makes its terminal claim only AFTER cleanup.
         cancelAdmission = null;
         if (!(published instanceof Cancelled)) cancelHook.set(null);
-        try {
-            if (published instanceof Cancelled) {
-                try {
-                    afterStateClaimed.run();
-                } finally {
-                    cancelRevocationComplete.set(true);
-                }
-            } else {
+        if (published instanceof Cancelled && !deferredCancellation) {
+            // Ordinary cancellation claims terminal state before revoking the
+            // producer. Its notification barrier is released by this winner.
+            try {
                 afterStateClaimed.run();
+            } finally {
+                cancelRevocationComplete.set(true);
             }
+        } else {
+            // For deferred cancellation only the *cancelling thread* can
+            // release the barrier after its hook exits, even if cleanup
+            // completed and claimed terminal state on another thread.
+            afterStateClaimed.run();
+        }
+        notifyTerminalIfReady();
+        return true;
+    }
+
+    private void notifyTerminalIfReady() {
+        Object observed = state.get();
+        if (observed == PENDING
+                || (observed instanceof Cancelled && !cancelRevocationComplete.get())
+                || !terminalNotificationClaimed.compareAndSet(false, true)) {
+            return;
+        }
+        try {
             RuntimeWaiterRegistration<T> waiter;
             while ((waiter = waiters.poll()) != null) {
-                notifyWaiter(waiter, published);
+                notifyWaiter(waiter, observed);
             }
-            return true;
         } finally {
             Runnable drained = onNotificationDrained;
             onNotificationDrained = null;
-            // There is exactly one winning terminal CAS, hence one release.
-            // Keep the callback live until every synchronous waiter returns.
+            // One winning notification drain, even when deferred cancellation
+            // finishes inside its revoker or on a competing completion thread.
             if (drained != null) drained.run();
         }
     }
