@@ -207,9 +207,10 @@ public final class ChannelRuntime {
                 consumerFailure = failure;
                 throw failure;
             } finally {
-                // Committed writes must still be published if the consumer fails.
-                runAfterPreservingFailure(
-                        consumerFailure, () -> runCompletions(completions));
+                // Preserve the consumer's exception as the primary failure,
+                // without abandoning any already-committed writer completion.
+                final Throwable primary = consumerFailure;
+                runAfterPreservingFailure(primary, () -> runCompletions(completions));
             }
             return true;
         }
@@ -742,8 +743,20 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
-            runCompletions(completions);
-            if (!immediateOnly) attachFutureWaiters();
+            Throwable publicationFailure = null;
+            try {
+                runCompletions(completions);
+            } catch (RuntimeException | Error failure) {
+                publicationFailure = failure;
+                throw failure;
+            } finally {
+                // A failure in an unrelated committed completion must not
+                // leave this registered selection without Future wakeups.
+                if (!immediateOnly) {
+                    final Throwable primary = publicationFailure;
+                    runAfterPreservingFailure(primary, this::attachFutureWaiters);
+                }
+            }
         }
 
         private void attachFutureWaiters() {
