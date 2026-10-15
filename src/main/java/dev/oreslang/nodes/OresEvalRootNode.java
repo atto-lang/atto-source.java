@@ -1031,6 +1031,16 @@ public final class OresEvalRootNode extends RootNode {
                     pendingLoopGuardEnv = null;
                     nextStep = null;
                     initialBlockEnv = null;
+                    // A synchronous source actor receive containing a loop
+                    // executes as a cooperative SourceTask even when the
+                    // callable is not declared suspending. Without this gate
+                    // a guest Error can escape through the scheduler Future
+                    // and retain an actor-owned OresObject in the host heap.
+                    // Local source try/catch executes before this boundary.
+                    if (ActorRuntime.inActorExecution()
+                            && failure instanceof GuestThrowSignal) {
+                        throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
+                    }
                     // Preserve control/authority failures even when a future
                     // or resumed continuation wraps the original exception.
                     if (function != null && function.trapped()
