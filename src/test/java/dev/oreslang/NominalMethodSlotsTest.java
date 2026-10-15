@@ -167,28 +167,28 @@ final class NominalMethodSlotsTest {
 
     @Test
     void methodCandidateAndArityBudgetsRejectPathologicalFamilies() {
-        StringBuilder many = new StringBuilder(ENUMS).append("define class Picker as\\n");
+        StringBuilder many = new StringBuilder(ENUMS).append("define class Picker as\n");
         for (int i = 0; i <= NominalEnumOverloads.MAX_SAME_ARITY_CANDIDATES; i++) {
-            many.append("pub choose(Color value): int { return 1; }\\n");
+            many.append("pub choose(Color value): int { return 1; }\n");
         }
-        many.append("end\\n");
-        Ast.Program candidateOverflow = Parser.parse(many.toString().replace("\\\\n", "\\n"));
+        many.append("end\n");
+        Ast.Program candidateOverflow = Parser.parse(many.toString());
         IllegalArgumentException tooMany = assertThrows(IllegalArgumentException.class,
                 () -> NominalMethodSlots.proveLocalSameArityFamilies(
                         candidateOverflow, owner(candidateOverflow)));
         assertTrue(tooMany.getMessage().contains("candidate bound"), tooMany.getMessage());
 
-        StringBuilder large = new StringBuilder(ENUMS).append("define class Picker as\\n");
+        StringBuilder large = new StringBuilder(ENUMS).append("define class Picker as\n");
         for (String enumName : List.of("Color", "Mode")) {
             large.append("pub choose(");
             for (int i = 0; i <= NominalEnumOverloads.MAX_OVERLOAD_ARITY; i++) {
                 if (i > 0) large.append(", ");
                 large.append(enumName).append(" p").append(i);
             }
-            large.append("): int { return 1; }\\n");
+            large.append("): int { return 1; }\n");
         }
-        large.append("end\\n");
-        Ast.Program arityOverflow = Parser.parse(large.toString().replace("\\\\n", "\\n"));
+        large.append("end\n");
+        Ast.Program arityOverflow = Parser.parse(large.toString());
         IllegalArgumentException tooWide = assertThrows(IllegalArgumentException.class,
                 () -> NominalMethodSlots.proveLocalSameArityFamilies(
                         arityOverflow, owner(arityOverflow)));
