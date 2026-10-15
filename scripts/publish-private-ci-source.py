@@ -70,6 +70,12 @@ def checked_repo(repository, expected_id=None):
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
             or result.get("private") is not True
+            # Archived/disabled status is a mandatory explicit false.
+            # Missing fields must fail closed: source metadata was required
+            # to be active by the separate admission gate, and the publisher
+            # must not weaken those requirements during upload.
+            or result.get("archived") is not False
+            or result.get("disabled") is not False
             or type(repo_id) is not int or repo_id <= 0
             or (expected_id is not None and repo_id != expected_id)):
         raise Denied("destination identity or private visibility changed")
