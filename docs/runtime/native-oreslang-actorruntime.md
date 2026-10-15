@@ -2,6 +2,68 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## Terminal-publication fail-closed audit — 2026-10-14 (later hardening)
+
+The *optional* JNI-enabled `OresScheduler.TaskRunner` had a concrete
+one-shot barrier error: `quiescenceNotified` was set **before** the
+native SourceTask settlement/retirement calls had succeeded. If an
+unclosed cleanup ticket, an active physical carrier, or a native
+capability error made retirement fail, the scheduler could subsequently
+publish a normal terminal Future despite the native task still being
+live; the consumed quiescence latch also prevented any retry.
+
+**Hardening committed:**
+
+1. The JNI owner now provides `settleAndRetire(source)`, preserving
+   the one-shot successful settlement witness across a retirement retry.
+   It does **not** call `note_source_settled` twice when settlement
+   already succeeded.
+2. `TaskRunner` keeps native settlement/retirement and completion of
+   the trusted `onQuiescent` callback as distinct acknowledgement
+   barriers. **Normal terminal success/failure publication is blocked**
+   until both have completed. Failed native retirement resets its
+   one-shot quiescence claim and retains the task in the scheduler live
+   set; it does not claim native DONE or run guest code again.
+3. The trusted, package-private `retryNativeQuiescentTasks()` may be
+   invoked **only after** a blocking native cleanup-ticket barrier is
+   resolved. It retries quiescent terminal records, never restarts
+   `Task.resume`, and reports any remaining native failures. An
+   audit counter `nativeRetirementFailures()` is exposed only to
+   trusted code/tests for diagnosing this fail-closed condition.
+4. During scheduler close, a native status failure from one task cannot
+   skip revocation/cancel-notification of other admitted tasks. Native
+   failures are accumulated and surfaced **after** shutdown, not
+   swallowed. Other non-native Java failures retain their original
+   behavior.
+5. The JNI adapter distinguishes a native-status failure from arbitrary
+   guest Java exceptions. Java-native capability failures still throw
+   and do **not** install fallback guest admission or change the
+   production scheduler, which has its native witness disabled.
+
+Added opt-in regressions check pending cleanup preventing Future
+publication, later ticket cancellation plus idempotent retirement,
+other SourceTasks being canceled despite a failed native witness, and
+a blocked `onQuiescent` callback preventing normal terminal result
+publication. The standalone JNI smoke also exercises direct
+ticket-closure settlement retry.
+
+**Verification boundary:** exact GitHub source blobs passed 13/13
+source-structure/invariant checks during this audit. **These are
+static guards, not JVM execution.** The new JNI/JUnit cases and
+full Maven/GraalVM/LLVM compatibility on this revised source remain
+unexecuted because source-organization Actions has not run its job
+steps and the local runtime lacks the full Maven project toolchain.
+Previously reported complete native C and Java21 standalone smoke
+results apply to their then-pinned source hashes; do not extrapolate
+them to this newer Java revision.
+
+Native `ores_turn_force_revoke` remains a revocation checkpoint, not
+instantaneous preemption of an already-running guest carrier or an
+atomic authorization barrier for subsequent effects. The production
+actor cleanup/STOP/DONE integration remains **disabled and unproven**.
+
+
+
 ## Experimental JVM-to-native JNI boundary — 2026-10-14
 
 The source branch now contains a real, *opt-in* JNI bridge to the existing
