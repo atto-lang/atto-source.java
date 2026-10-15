@@ -339,11 +339,7 @@ public final class NativeHttp implements AutoCloseable {
                         if (stopFailure != null) drained.failFromRuntime(stopFailure);
                         synchronized (this) { transportStopped = true; }
                         try {
-                            for (State state : active) state.abort(503);
-                        } catch (RuntimeException cleanupFailure) {
-                            // A cleanup exception also denies successful
-                            // shutdown even if transport.stop itself returned.
-                            drained.failFromRuntime(cleanupFailure);
+                            abortAllActiveOnShutdown();
                         } finally {
                             servers.remove(this);
                             completeDrain();
@@ -415,6 +411,28 @@ public final class NativeHttp implements AutoCloseable {
                 drained.failFromRuntime(unavailable);
             }
         }
+        /**
+         * Exhaustive shutdown cleanup: ConcurrentHashMap's weakly consistent
+         * iterator is unnecessary once admission is sealed. Snapshot all
+         * accepted states and continue aborting after an individual failure.
+         * A failed abort must never let an unrelated active request escape
+         * cleanup or make the shutdown Future appear successful.
+         */
+        private void abortAllActiveOnShutdown() {
+            RuntimeException firstFailure = null;
+            for (State state : List.copyOf(active)) {
+                try {
+                    state.abort(503);
+                } catch (RuntimeException failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+                }
+            }
+            if (firstFailure != null && drained != null) {
+                drained.failFromRuntime(firstFailure);
+            }
+        }
+
         private synchronized void stopAccepting() {
             stopped = true;
             if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
@@ -436,7 +454,7 @@ public final class NativeHttp implements AutoCloseable {
             } finally {
                 synchronized (this) { transportStopped = true; }
                 try {
-                    for (State state : active) state.abort(503);
+                    abortAllActiveOnShutdown();
                 } finally {
                     // The listener must release its bidirectional references
                     // even when stop or an abort fails exceptionally.
