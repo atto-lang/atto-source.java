@@ -22,4 +22,7 @@ bash -n scripts/check-private-ci-destination.sh \
 bash scripts/test-private-ci-destination.sh
 python3 -B scripts/test-publish-private-ci-source.py
 python3 -B tests/test_ci_private_mirror_preflight.py
+# The Surefire gate itself must reject absent, skipped and fabricated
+# coverage even on machines without Java or Maven installed.
+python3 -B scripts/test-verify-native-actor-surefire.py
 echo "ORES_PRIVATE_CI_SECURITY_SUITES_PASS"
