@@ -355,6 +355,94 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void cancellingFromAnotherCarrierRevokesAlreadyDeferredControlWake()
+            throws Exception {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        java.util.concurrent.CountDownLatch deferred =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch resume =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> callbackFailure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger unwanted = new AtomicInteger();
+        Runnable cancelled = unwanted::incrementAndGet;
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            queue.slotReleased(); // Dequeue the next retry, deferring it.
+            deferred.countDown();
+            try {
+                if (!resume.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                    callbackFailure.set(new AssertionError("carrier gate timed out"));
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                callbackFailure.set(interrupted);
+            }
+        }, epoch));
+        assertTrue(queue.register(cancelled, epoch));
+        Thread carrier = new Thread(queue::slotReleased, "control-retry-carrier");
+        carrier.setDaemon(true);
+        carrier.start();
+        try {
+            assertTrue(deferred.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            // This cancellation is from the test thread, not the carrier
+            // holding its nested trampoline. The old ThreadLocal-only
+            // cancellation left the second callback runnable.
+            queue.cancel(cancelled);
+        } finally {
+            resume.countDown();
+        }
+        carrier.join(3000);
+        assertFalse(carrier.isAlive(), "CONTROL carrier failed to finish");
+        assertNull(callbackFailure.get(),
+                () -> "carrier failed: " + callbackFailure.get());
+        assertEquals(0, unwanted.get(),
+                "a cancelled deferred CONTROL wake ran on another carrier");
+        assertEquals(0, queue.pending());
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(10)
+    void closingFromAnotherThreadRevokesDeferredControlWake()
+            throws Exception {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        java.util.concurrent.CountDownLatch deferred =
+                new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch resume =
+                new java.util.concurrent.CountDownLatch(1);
+        AtomicInteger unwanted = new AtomicInteger();
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            queue.slotReleased();
+            deferred.countDown();
+            try {
+                if (!resume.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("carrier gate timed out");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        }, epoch));
+        assertTrue(queue.register(unwanted::incrementAndGet, epoch));
+        Thread carrier = new Thread(queue::slotReleased, "control-close-carrier");
+        carrier.setDaemon(true);
+        carrier.start();
+        try {
+            assertTrue(deferred.await(3, java.util.concurrent.TimeUnit.SECONDS));
+            queue.close();
+        } finally {
+            resume.countDown();
+        }
+        carrier.join(3000);
+        assertFalse(carrier.isAlive(), "CONTROL carrier failed to finish");
+        assertEquals(0, unwanted.get());
+        assertEquals(0, queue.pending());
+        assertFalse(queue.register(unwanted::incrementAndGet, queue.epoch()));
+    }
+
     @Test void nonfatalReentrantFailureCannotLoseSubsequentWake() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         AtomicInteger delivered = new AtomicInteger();
