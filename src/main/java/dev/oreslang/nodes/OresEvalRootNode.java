@@ -8336,8 +8336,9 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")
                     || name.equals("bigint")) return value instanceof Byte || value instanceof Short
                             || value instanceof Integer || value instanceof Long;
-            if (name.equals("float") || name.equals("f32") || name.equals("f64")
-                    || name.equals("decimal")) return value instanceof Float || value instanceof Double;
+            if (name.equals("float") || name.equals("f32") || name.equals("f64"))
+                return value instanceof Float || value instanceof Double;
+            if (name.equals("decimal")) return value instanceof java.math.BigDecimal;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
@@ -8383,6 +8384,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof Boolean) return "bool";
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return "int";
             if (value instanceof Float || value instanceof Double) return "float";
+            if (value instanceof java.math.BigDecimal) return "decimal";
             if (value instanceof Complex) return "complex";
             if (value instanceof HostObjectFacade) return "<host-object>";
             return "<unknown>";
@@ -8439,8 +8441,8 @@ public final class OresEvalRootNode extends RootNode {
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
-                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
+                case "<" -> relational(left, right, '<'); case "<=" -> relational(left, right, 'l');
+                case ">" -> relational(left, right, '>'); case ">=" -> relational(left, right, 'g');
                 case "&" -> integralLong(left) & integralLong(right);
                 case "|" -> integralLong(left) | integralLong(right);
                 case "^" -> integralLong(left) ^ integralLong(right);
@@ -8575,29 +8577,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
-                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(left.toString())
-                            .compareTo(new java.math.BigDecimal(right.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return left.doubleValue() == right.doubleValue();
-                }
+            if (isNonFinite(left) || isNonFinite(right)) return false;
+            // Compare actual binary floating-point values, not rounded decimal
+            // printouts. In particular, a float 0.1 is not exact decimal 0.1.
+            return exactDecimal(left).compareTo(exactDecimal(right)) == 0;
+        }
+
+        private boolean isNonFinite(Number number) {
+            return (number instanceof Float || number instanceof Double)
+                    && !Double.isFinite(number.doubleValue());
+        }
+
+        private java.math.BigDecimal exactDecimal(Number number) {
+            if (number instanceof java.math.BigDecimal value) return value;
+            if (number instanceof java.math.BigInteger value) return new java.math.BigDecimal(value);
+            if (isIntegral(number)) return java.math.BigDecimal.valueOf(number.longValue());
+            if (number instanceof Float || number instanceof Double) {
+                double value = number.doubleValue();
+                if (!Double.isFinite(value)) throw new IllegalArgumentException("non-finite number is not exact decimal");
+                return new java.math.BigDecimal(value);
             }
-            boolean integralLeft = isIntegral(left);
-            boolean integralRight = isIntegral(right);
-            if (integralLeft && integralRight) return left.longValue() == right.longValue();
-            if (integralLeft != integralRight) {
-                // Converting a long above 2^53 to double silently merges
-                // distinct numeric values. Compare exact finite decimal
-                // representations instead, matching static subsumption.
-                Number integer = integralLeft ? left : right;
-                Number floating = integralLeft ? right : left;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
-            }
-            return left.doubleValue() == right.doubleValue();
+            throw new IllegalArgumentException("unsupported numeric representation: " + number.getClass().getName());
         }
 
         private boolean isScalarEqualityCarrier(Object value) {
@@ -8641,6 +8641,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object numeric(Object left, Object right, char op) {
             if (left instanceof Complex || right instanceof Complex) {
+                if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal)
+                    throw new IllegalArgumentException("decimal and binary complex arithmetic requires explicit conversion");
                 Complex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
                     case '+' -> a.add(b); case '-' -> a.sub(b); case '*' -> a.mul(b); case '/' -> a.div(b);
@@ -8648,6 +8650,22 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
+            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal) {
+                if (a instanceof Float || a instanceof Double || b instanceof Float || b instanceof Double)
+                    throw new IllegalArgumentException("decimal and binary float arithmetic requires explicit conversion");
+                java.math.BigDecimal x = exactDecimal(a), y = exactDecimal(b);
+                return switch (op) {
+                    case '+' -> x.add(y);
+                    case '-' -> x.subtract(y);
+                    case '*' -> x.multiply(y);
+                    // Division is deterministic decimal128 (34 digits, half-even).
+                    // Exact add/multiply are not rounded. Custom contexts will be
+                    // introduced through the std/decimal API, not VM globals.
+                    case '/' -> x.divide(y, java.math.MathContext.DECIMAL128);
+                    case '%' -> x.remainder(y);
+                    default -> throw new IllegalArgumentException("bad decimal numeric operator");
+                };
+            }
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
@@ -8675,16 +8693,36 @@ public final class OresEvalRootNode extends RootNode {
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof java.math.BigDecimal decimal) return decimal.negate();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
 
+        private boolean relational(Object left, Object right, char op) {
+            if ((left instanceof Number a && isNonFinite(a) && Double.isNaN(a.doubleValue()))
+                    || (right instanceof Number b && isNonFinite(b) && Double.isNaN(b.doubleValue()))) {
+                return false; // IEEE-754: all relational comparisons with NaN are unordered.
+            }
+            int relation = compare(left, right);
+            return switch (op) {
+                case '<' -> relation < 0;
+                case 'l' -> relation <= 0;
+                case '>' -> relation > 0;
+                case 'g' -> relation >= 0;
+                default -> throw new IllegalArgumentException("invalid relational operator");
+            };
+        }
+
         private int compare(Object left, Object right) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isIntegral(a) && isIntegral(b)) {
-                    return Long.compare(a.longValue(), b.longValue());
+                if (isNonFinite(a) || isNonFinite(b)) {
+                    // Infinity orders above/below all finite numbers. NaN is
+                    // screened out by relational() before getting here.
+                    return Double.compare(a.doubleValue(), b.doubleValue());
                 }
-                return Double.compare(a.doubleValue(), b.doubleValue());
+                // BigDecimal(double) records the exact binary64 value, so this
+                // also preserves all integer comparisons above 2^53.
+                return exactDecimal(a).compareTo(exactDecimal(b));
             }
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
@@ -8773,9 +8811,16 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(value instanceof Number number) || !isIntegral(number)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
-            if (java.util.Set.of("f32","f64","float","decimal").contains(declared.name())) {
-                if (!(value instanceof Number)) throw returnTypeMismatch(callable, declared, value);
+            if (java.util.Set.of("f32","f64","float").contains(declared.name())) {
+                if (!(value instanceof Number) || value instanceof java.math.BigDecimal)
+                    throw returnTypeMismatch(callable, declared, value);
                 return value;
+            }
+            if (declared.name().equals("decimal")) {
+                if (value instanceof java.math.BigDecimal) return value;
+                if (value instanceof Number number && isIntegral(number))
+                    return java.math.BigDecimal.valueOf(number.longValue());
+                throw returnTypeMismatch(callable, declared, value);
             }
             if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
                 if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
