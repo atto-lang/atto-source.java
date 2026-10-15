@@ -479,3 +479,44 @@ A private, source-free Benefactor runner probe completed three steps
 successfully, but the protected-main source-transfer allowlist remains empty.
 No private source objects were mirrored to another organization.
 
+## Bounded missed-epoch direct CONTROL handoffs (2026-10-15)
+
+A supervisor that observes an admission epoch and later finds a physical
+slot has already been released must be retried before unrelated FIFO
+waiters. The retry path bypasses the *ordinary* pending callback budget,
+including when that FIFO is full.
+
+An immediate retry is not free of allocation or lifetime risk: a carrier
+can pause after creating the ticket but before callback-start admission.
+For this reason the host-only `ControlWakeRetryQueue` enforces a second
+**capacity-sized in-transit direct-handoff budget**, independent of the
+ordinary pending/deferred budget. A stale-epoch registration is refused
+when that immediate window is full, rather than retaining an unbounded
+number of callbacks in `aboutToInvoke`. The caller must treat the
+refusal as normal bounded-admission backpressure; it may not assume every
+stale-epoch registration succeeds.
+
+The direct reservation is acquired only after ticket allocation succeeds
+and is released **once** at callback-start admission, or earlier if a
+host-side `cancel()`/`close()` revokes the ticket. The in-transit
+cancellation set is protected by the same monitor as admission. Once the
+callback-start gate is passed, cancellation cannot undo execution; actor
+generation, ownership and at-most-once supervisor checks still apply.
+
+Regression tests in `ControlWakeRetryQueueTest` and
+`ControlWakeRetryStandaloneStress` pause two direct handoffs between
+registration and callback start, verify capacity-2 refusal on a third,
+check both cancellation and shutdown refund the quota, and confirm that
+an unblocked missed-epoch callback still executes with the ordinary
+pending FIFO saturated. Those committed tests have **not** yet executed
+in the source repository's GitHub Actions because the focused jobs are
+failing before any runner steps are allocated.
+
+Separate source-free local Java admission-model stress performed 200
+cancel/shutdown cycles and 1,200,000 parallel attempts with zero
+observed quota leaks or duplicate/missing callbacks. This model does
+**not** compile or execute the exact production class, JUnit, Maven,
+GraalVM Native Image or LLVM guest runtime. Do not infer whole-runtime
+correctness from it. Cross-organization private source mirroring remains
+blocked until an independently reviewed source-owner approval is merged
+into protected `main`.
