@@ -309,6 +309,67 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(swapped[0])
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_regular_file_replacement_between_stat_and_open_is_rejected(self):
+        # A regular-to-regular rename used to evade the previous type check:
+        # the descriptor must match the exact inode seen by os.stat.
+        original = self.source / "hello.ores"
+        alternate = self.root / "replacement.ores"
+        alternate.write_text("different private source")
+        raw_open = pub.os.open
+        swapped = [False]
+
+        def replace_before_open(name, flags, *args, **kwargs):
+            if name == "hello.ores" and kwargs.get("dir_fd") is not None and not swapped[0]:
+                swapped[0] = True
+                alternate.replace(original)
+            return raw_open(name, flags, *args, **kwargs)
+
+        with patch.object(pub.os, "open", side_effect=replace_before_open):
+            with self.assertRaisesRegex(pub.Denied, "source file changed"):
+                self.publish()
+        self.assertTrue(swapped[0])
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_file_mutation_during_snapshot_is_rejected_before_upload(self):
+        # Wrap the opened source reader and mutate the same inode after read;
+        # size or nanosecond timestamps must not silently change.
+        raw_fdopen = pub.os.fdopen
+        source = self.source / "hello.ores"
+        tampered = [False]
+
+        class MutatingReader:
+            def __init__(self, wrapped):
+                self.wrapped = wrapped
+            def __enter__(self):
+                return self
+            def __exit__(self, typ, value, trace):
+                return self.wrapped.__exit__(typ, value, trace)
+            def fileno(self):
+                return self.wrapped.fileno()
+            def read(self, size=-1):
+                data = self.wrapped.read(size)
+                source.write_text("changed while snapshotting with more content")
+                tampered[0] = True
+                return data
+
+        def wrap_source_reader(fd, mode, *args, **kwargs):
+            stream = raw_fdopen(fd, mode, *args, **kwargs)
+            # The approval policy is also opened with fdopen; only the
+            # source test file is intentionally mutated.
+            import os
+            if (Path("/proc/self/fd").is_dir()
+                    and os.readlink("/proc/self/fd/" + str(fd)) == str(source)):
+                return MutatingReader(stream)
+            return stream
+
+        if not Path("/proc/self/fd").is_dir():
+            self.skipTest("requires Linux /proc/self/fd for exact source-fd identification")
+        with patch.object(pub.os, "fdopen", side_effect=wrap_source_reader):
+            with self.assertRaisesRegex(pub.Denied, "changed while snapshotting"):
+                self.publish()
+        self.assertTrue(tampered[0])
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_hardlink_to_outside_file_fails_before_upload(self):
         sensitive = self.root / "outside-secret"
         sensitive.write_text("secret")
