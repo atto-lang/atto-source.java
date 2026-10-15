@@ -401,12 +401,13 @@ struct terminal_identity_args {
     ores_turn_vm *vm;
     ores_turn_lease *lease;
     ores_source_task_cap *source;
-    ores_turn_status injection, effects;
+    ores_turn_status injection, effects, completion;
 };
 static void *wrong_carrier_terminal_probe(void *opaque) {
     struct terminal_identity_args *a = opaque;
     a->injection = ores_turn_note_terminal_injected(a->vm, a->lease, a->source);
     a->effects = ores_turn_check_cleanup_effects(a->vm, a->lease);
+    a->completion = ores_turn_complete_cleanup(a->vm, a->lease, a->source);
     return NULL;
 }
 static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
@@ -425,6 +426,7 @@ static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
     CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_claim_cleanup(vm, ticket, &lease) == ORES_TURN_OK);
     CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
+    CHECK(ores_turn_complete_cleanup(vm, lease, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_note_terminal_injected(vm, lease, foreign_source)
           == ORES_TURN_DENIED);
     struct terminal_identity_args probe = {vm, lease, source,
@@ -435,15 +437,19 @@ static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
     CHECK(pthread_join(thread, NULL) == 0);
     CHECK(probe.injection == ORES_TURN_WRONG_CARRIER);
     CHECK(probe.effects == ORES_TURN_DENIED);
+    CHECK(probe.completion == ORES_TURN_DENIED);
     CHECK(ores_turn_note_terminal_injected(vm, lease, source)
           == ORES_TURN_OK);
     CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_OK);
+    CHECK(ores_turn_complete_cleanup(vm, lease, foreign_source)
+          == ORES_TURN_DENIED);
     CHECK(ores_turn_note_terminal_injected(vm, lease, source)
           == ORES_TURN_DENIED);
     CHECK(pthread_create(&thread, NULL, wrong_carrier_terminal_probe,
                          &probe) == 0);
     CHECK(pthread_join(thread, NULL) == 0);
     CHECK(probe.effects == ORES_TURN_WRONG_CARRIER);
+    CHECK(probe.completion == ORES_TURN_WRONG_CARRIER);
     CHECK(ores_turn_force_revoke(vm, actor) == ORES_TURN_OK);
     CHECK(ores_turn_complete_cleanup(vm, lease, source) == ORES_TURN_DENIED);
     CHECK(ores_turn_check_cleanup_effects(vm, lease) == ORES_TURN_DENIED);
