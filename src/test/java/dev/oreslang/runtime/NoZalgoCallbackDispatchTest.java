@@ -151,4 +151,49 @@ final class NoZalgoCallbackDispatchTest {
             actor.cancel();
         }
     }
+
+    @Test
+    void completionRacingWaiterRegistrationIsDeliveredOnceOnFreshGuestTurn()
+            throws Exception {
+        try (var scheduler = new OresScheduler(2)) {
+            // Alternate already-settled and genuinely pending registration.
+            // Both must preserve the no-Zalgo dispatch boundary.
+            for (int round = 0; round < 64; round++) {
+                final int expected = round;
+                var source = new OresFuture<Integer>();
+                var segments = new AtomicInteger();
+                var currentSegmentRunning = new AtomicBoolean();
+                var firstDispatch = new AtomicLong();
+                OresFuture<Integer> task = scheduler.start(resume -> {
+                    if (segments.getAndIncrement() == 0) {
+                        currentSegmentRunning.set(true);
+                        firstDispatch.set(OresScheduler.currentDispatchId());
+                        try {
+                            return OresScheduler.await(source);
+                        } finally {
+                            currentSegmentRunning.set(false);
+                        }
+                    }
+                    assertFalse(currentSegmentRunning.get(), "guest callback reentered await");
+                    assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId());
+                    assertEquals(expected, resume.value());
+                    return OresScheduler.done(expected);
+                });
+
+                if ((round & 1) != 0) {
+                    long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (source.pendingRuntimeWaiterCount() == 0 && System.nanoTime() < until) {
+                        Thread.onSpinWait();
+                    }
+                    assertEquals(1, source.pendingRuntimeWaiterCount(),
+                            "pending-path await was never registered");
+                }
+                assertTrue(source.completeFromRuntime(expected));
+                assertEquals(expected, task.get(5, TimeUnit.SECONDS));
+                assertEquals(2, segments.get(), "completion caused a duplicate guest resume");
+                assertEquals(0, source.pendingRuntimeWaiterCount(),
+                        "completed await retained a registration");
+            }
+        }
+    }
 }
