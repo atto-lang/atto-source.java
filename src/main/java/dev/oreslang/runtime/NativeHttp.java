@@ -388,6 +388,12 @@ public final class NativeHttp implements AutoCloseable {
             stopAccepting(); transport.stop(0);
             synchronized (this) { transportStopped = true; }
             for (State state : active) state.abort(503);
+            // A concurrent forced context teardown must not falsely complete
+            // a guest shutdown Future whose pooled carrier proof is pending.
+            if (drained != null && !drained.isDone()) {
+                drained.failFromRuntime(new IllegalStateException(
+                        "HTTP runtime closed before pooled actor quiescence"));
+            }
             // Context teardown must not leave reusable workers retaining dead
             // server instances, regardless of whether guest awaited shutdown.
             for (Handler.Worker worker : List.copyOf(pooledWorkers)) {
