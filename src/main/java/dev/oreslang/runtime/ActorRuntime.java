@@ -7424,7 +7424,19 @@ public final class ActorRuntime implements AutoCloseable {
                     // the actor execution domain.
                     for (Runnable publication : readyPublications) {
                         try {
-                            postCarrierPublicationExecutor.execute(publication);
+                            postCarrierPublicationExecutor.execute(() -> {
+                                try {
+                                    publication.run();
+                                } catch (Throwable hostCallbackFailure) {
+                                    // A broken trusted publisher must fail-stop
+                                    // the owner rather than silently strand its
+                                    // reply or kill an unrelated worker.
+                                    fail(hostCallbackFailure);
+                                    if (hostCallbackFailure instanceof VirtualMachineError fatal) throw fatal;
+                                    if (hostCallbackFailure instanceof ThreadDeath fatal) throw fatal;
+                                    if (hostCallbackFailure instanceof LinkageError fatal) throw fatal;
+                                }
+                            });
                         } catch (RejectedExecutionException rejected) {
                             // No caller-runs fallback: fail-stop and revoke
                             // unresolved tickets through the owner-done barrier.
