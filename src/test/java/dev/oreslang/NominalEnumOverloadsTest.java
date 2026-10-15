@@ -134,6 +134,24 @@ final class NominalEnumOverloadsTest {
     }
 
     @Test
+    void repeatedCanonicalEnumDeclarationFailsClosedBeforeOverloadSelection() {
+        // A hand-built/relinked AST cannot reuse a qualified enum owner ID.
+        // The old putIfAbsent behavior accepted identical symbol spellings
+        // and accidentally treated duplicate declarations as one owner.
+        Ast.EnumDecl first = new Ast.EnumDecl("Color",
+                List.of(new Ast.EnumCase("Red", null, 1)));
+        Ast.EnumDecl duplicate = new Ast.EnumDecl("Color",
+                List.of(new Ast.EnumCase("Blue", null, 2)));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(first, duplicate))));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> NominalEnumOverloads.eligibleEnumSymbols(program));
+        assertTrue(error.getMessage().contains("duplicate nominal enum overload declaration"),
+                error.getMessage());
+        assertTrue(error.getMessage().contains("alpha::Color"), error.getMessage());
+    }
+
+    @Test
     void directEnumFncsAdmitOnlyPairwiseDistinctNominalSignatures() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(ENUMS + """
                 fnc go(Color c): int { return 1; }
