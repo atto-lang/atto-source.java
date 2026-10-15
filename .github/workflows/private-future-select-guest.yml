@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: pr950-typed-select-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   language-contract:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -34,6 +38,7 @@ jobs:
         run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,SelectTypedBindingOwnershipTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest' test
   full-maven:
     needs: language-contract
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -60,6 +65,7 @@ jobs:
         run: mvn -B -ntp verify
   compiled-native-future:
     needs: language-contract
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     strategy:
