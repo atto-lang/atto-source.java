@@ -125,6 +125,47 @@ final class QuestionPropagationLanguageTest {
 
     }
 
+    @Test
+    void rejectsSourceTaskPromotionOutsideQuestionOperand() {
+        reject("""
+                async fnc fetch_value(): int {
+                  return 3;
+                }
+                fnc compute(Option<int> source): Option<int> {
+                  val int item = source?;
+                  val int answer = await fetch_value();
+                  return Some(item + answer);
+                }
+                """, "SourceTask continuation");
+        reject("""
+                async fnc fetch_value(): int {
+                  return 3;
+                }
+                fnc helper(): int {
+                  return await fetch_value();
+                }
+                fnc compute(Option<int> source): Option<int> {
+                  val int item = source?;
+                  val int answer = helper();
+                  return Some(item + answer);
+                }
+                """, "SourceTask continuation");
+    }
+
+    @Test
+    void rejectsQuestionInsideDeferredCallbacks() {
+        reject("""
+                fnc compute(Option<int> source): Option<int> {
+                  val Option<int> mapped = source.and_then<int>(|int x| -> {
+                    val Option<int> inner = Some(x);
+                    val int item = inner?;
+                    return Some(item);
+                  });
+                  return mapped;
+                }
+                """, "synchronous local");
+    }
+
     private static void reject(String source, String expected) {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
