@@ -166,7 +166,8 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
                     1, Runnable::run, kernel);
             var attempted = new CountDownLatch(1);
             var unexpected = new AtomicReference<Throwable>();
-            scheduler.start(resume -> OresScheduler.done(314), () -> {
+            OresFuture<Integer> terminal = scheduler.start(
+                    resume -> OresScheduler.done(314), () -> {
                 try {
                     scheduler.close();
                     unexpected.set(new AssertionError(
@@ -182,6 +183,11 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
             });
             require(attempted.await(5, TimeUnit.SECONDS), "callback did not execute");
             if (unexpected.get() != null) throw new AssertionError(unexpected.get());
+            // Reentrant close must have rejected BEFORE setting closed or
+            // interrupting our trusted terminal callback. Normal guest DONE
+            // must be published after that callback actually returns.
+            require(terminal.get(5, TimeUnit.SECONDS) == 314,
+                    "reentrant close incorrectly canceled the normal guest result");
             var closed = new java.util.concurrent.atomic.AtomicBoolean();
             waitFor(deadline(), () -> {
                 try {
