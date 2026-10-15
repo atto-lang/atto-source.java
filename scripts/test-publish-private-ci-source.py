@@ -37,8 +37,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        id=self.repository_ids.pop(0),
-                        private=True, default_branch="main")
+                        id=self.repository_ids.pop(0), archived=False,
+                        disabled=False, private=True, default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
             return {"sha": hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
@@ -201,6 +201,24 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
+
+    def test_archived_disabled_or_missing_status_denied_before_writes(self):
+        for replacement in ({"archived": True}, {"disabled": True},
+                            {"archived": None}, {"disabled": None},
+                            {"archived": "false"}, {"disabled": 0}):
+            with self.subTest(replacement=replacement):
+                def metadata_override(route, method="GET", payload=None):
+                    result = self.fake_api(route, method, payload)
+                    if route == "repos/trusted/ci":
+                        result.update(replacement)
+                    return result
+                self.route_calls.clear()
+                with patch.object(pub, "gh_api", side_effect=metadata_override):
+                    with self.assertRaisesRegex(pub.Denied, "identity or private visibility"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
 
     def test_missing_or_noninteger_destination_id_rejects_before_any_write(self):
         # bool is an int subclass in Python; a GitHub repository ID cannot
