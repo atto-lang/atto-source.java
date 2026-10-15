@@ -87,6 +87,48 @@ final class DenoCliDefaultPermissionsTest {
                 temp.resolve("safe").toString()));
     }
 
+    @Test
+    void missingPermissionFlagsCannotInheritDeveloperIo() throws Exception {
+        Path source = sourceReadingEnvironment();
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                source.toString()
+        }), "an omitted permission policy cannot inherit developer I/O grants");
+    }
+
+    @Test
+    void invalidSingleDenyScopesRejectControlCharactersAndMalformedUtf16() {
+        for (RuntimePermissions.Permission permission : new RuntimePermissions.Permission[]{
+                RuntimePermissions.Permission.ENV,
+                RuntimePermissions.Permission.RUN,
+                RuntimePermissions.Permission.SYS}) {
+            for (String malformed : new String[]{
+                    "SAFE" + (char) 0 + "KEY", "SAFE\nKEY",
+                    String.valueOf((char) 0xd800),
+                    String.valueOf((char) 0xdc00)}) {
+                RuntimePermissions.Builder builder = new RuntimePermissions.Builder()
+                        .allowAll(permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.deny(permission, malformed),
+                        "invalid single denial was accepted for " + permission);
+                assertTrue(builder.build().allows(permission, "SAFE"),
+                        "a rejected single denial must leave the builder unchanged");
+            }
+        }
+    }
+
+    @Test
+    void invalidSingleDenyCliOptionIsAUsageError() throws Exception {
+        Path source = sourceReadingEnvironment();
+        for (String malformed : new String[]{
+                "--deny-env=SAFE" + (char) 0 + "KEY",
+                "--deny-env=SAFE\nKEY",
+                "--deny-env=" + String.valueOf((char) 0xd800)}) {
+            assertEquals(2, OresMain.exitStatusForArgs(new String[]{
+                    "--allow-env=PATH", malformed, source.toString()
+            }), "malformed single-deny CLI argument must reject the invocation");
+        }
+    }
+
     private Path sourceReadingEnvironment() throws Exception {
         Path source = temp.resolve("permission-env.ores");
         Files.writeString(source, """
