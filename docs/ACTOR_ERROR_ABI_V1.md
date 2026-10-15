@@ -128,3 +128,38 @@ CI-verified. No live guest Error crosses actor heaps.
   JUnit or Native Image evidence. No scheduler restart or source on_* dispatch
   is claimed.
 
+
+## Opt-in automatic host supervisor CONTROL dispatch (October 14, 2026)
+
+The Java host runtime now defines `ChildFailureHandler<M>`, extending the
+host `Behavior<M>` contract with
+`onChildFailure(ActorFailureNotice, ActorContext<M>)`. This callback is
+**host-runtime-only**; Oreslang source `on_raise`, `on_throw` and `recover`
+remain gated, as does automatic restart.
+
+After a failing child's code state and actor-exit hook finish, its terminal
+notice is copied into the structurally owning parent's bounded CONTROL inbox.
+The child finalizer then requests a best-effort asynchronous wake from the
+runtime's **existing** actor dispatcher, never invoking a parent callback
+inline. The parent's admitted actor turn prioritizes control notices before
+continuations/user mail and invokes a registered handler on that parent's
+serialized execution lane. Manual inbox polling still works for actors that
+do not implement the optional handler. The callback cannot see a guest Error,
+guest heap pointer or Java cause; only the frozen value-only envelope.
+
+CONTROL admission and retirement are serialized by the parent lifecycle
+monitor. Parent cancellation or retirement forbids new callback admission.
+If a dispatcher rejects the automatic wake, the notice stays queued for
+manual polling and an actor-local rejected-wake counter increases; **automatic
+delivery is not guaranteed under scheduler saturation** until a reserved
+CONTROL admission path exists. Closing a supervisor counts unread notices
+as dropped. A separate host-visible aggregate
+`childFailureControlNoticesDropped()` remains available after parent shutdown;
+the independent host audit queue retains its own loss counter.
+
+Regression tests cover an idle parent receiving CONTROL without a second
+user message, a multi-level raise-to-panic escalation, cancellation preventing
+callbacks into a retired parent, and explicit accounting for notices discarded
+when a non-handling parent stops. All new tests remain **unverified** while
+GitHub Actions cannot execute jobs. Do not merge based solely on source review.
+
