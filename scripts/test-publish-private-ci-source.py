@@ -90,6 +90,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    def test_malformed_nested_git_metadata_is_denied_not_crash(self):
+        bad_routes = (
+            "repos/trusted/ci/git/ref/heads/main",
+            "repos/trusted/ci/git/commits/" + A,
+            "repos/trusted/ci/git/refs",
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test",
+            "repos/trusted/ci/git/commits/" + C,
+        )
+        original = self.fake_api
+        for route in bad_routes:
+            with self.subTest(route=route):
+                self.route_calls.clear()
+                def invalid_shape(request, method="GET", payload=None):
+                    if request == route:
+                        self.route_calls.append((method, request, payload))
+                        response = original(request, method, payload)
+                        member = "tree" if "/git/commits/" in request else "object"
+                        return dict(response, **{member: None})
+                    return original(request, method, payload)
+                with patch.object(pub, "gh_api", side_effect=invalid_shape):
+                    with self.assertRaisesRegex(pub.Denied, "malformed object metadata"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree)
+
     def test_created_branch_confirmation_must_point_to_commit(self):
         original = self.fake_api
         def changed_ref(route, method="GET", payload=None):
