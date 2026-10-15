@@ -427,7 +427,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
         raise Denied("CI branch commit tree differs from published snapshot")
     verified_tree = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
     tree_items = verified_tree.get("tree")
-    if (not isinstance(tree_items, list)
+    if (verified_tree.get("truncated") is not False
+            or not isinstance(tree_items, list)
             or sum(item.get("path") == PREFIX for item in tree_items
                    if isinstance(item, dict)) != 1
             or not any(isinstance(item, dict) and item.get("path") == PREFIX
