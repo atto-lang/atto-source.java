@@ -224,6 +224,39 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeRetryMustNotReportIdleForSuspendedLiveSourceTask() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var started = new CountDownLatch(1);
+                var gate = new OresFuture<Integer>();
+                var executions = new AtomicInteger();
+                OresFuture<Integer> result = scheduler.start(resume -> {
+                    executions.incrementAndGet();
+                    if (resume.initial()) {
+                        started.countDown();
+                        return OresScheduler.<Integer>await(gate);
+                    }
+                    return OresScheduler.done(23);
+                });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                awaitSuspendedTasksForTest(scheduler, 1);
+                var notTerminal = assertThrows(IllegalStateException.class,
+                        scheduler::retryNativeQuiescentTasks);
+                assertTrue(notTerminal.getMessage().contains(
+                        "not terminal and physically quiescent"));
+                assertFalse(result.isDone(),
+                        "retry on a waiting SourceTask must not publish DONE");
+                gate.completeFromRuntime(1);
+                assertEquals(23, result.get(5, TimeUnit.SECONDS));
+                assertEquals(2, executions.get(), "retry never enters guest code");
+                assertEquals(0, scheduler.retryNativeQuiescentTasks());
+                kernel.stop();
+            }
+        }
+    }
+
+    @Test
     void nativeRetryRefusesToReportIdleWhileTrustedQuiescenceIsRunning() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
