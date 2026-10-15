@@ -5,12 +5,12 @@ Status: **draft, unvalidated**; stacked on
 Canonical broader contract:
 [QUESTION_PROPAGATION_AND_REACTIVE_ERRORS_V1](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/feat/elm-functional-contracts-20261015/docs/QUESTION_PROPAGATION_AND_REACTIVE_ERRORS_V1.md).
 
-## V0 implementation
+## V0 synchronous plus bounded async SourceTask implementation
 
 `value?` on `Option<T>` unpacks `Some` or early returns `None` from
-the *nearest synchronous* Option-returning callable. `value?` on
+the *nearest* Option-returning callable admitted by the checker. `value?` on
 `Result<T,E>` unpacks `Ok` or early returns exactly `Err(e)` from the
-nearest synchronous Result-returning callable of the **same E**.
+nearest Result-returning callable of the **same E**.
 
 This is `return` control, not `throw`. `try/catch` does not catch
 `Err`; ordinary `finally` and lexical `defer` still run.
@@ -29,10 +29,15 @@ Use parentheses around adjacent `?` before infix operators:
 - Only scalar/nested scalar sum payloads are admitted. No affine
   payloads, borrowed values, owned channel handles, or borrowed
   actor state in the sum boundary until move/drop laws are proven.
-- No async, `suspends`, actor callable, detached select arm or generator.
-  Full source-task integration for legacy implicit suspension must be
-  audited before promoting this prototype. The current checker does
-  not implement complete transitive suspension/effect verification.
+- Async callable v1 is **restricted to the direct initializer** of a
+  binding, for example `val int x = (await result_future)?;`. A failed
+  sum becomes `SourceFlow.RETURN`, not a thrown exception, and is
+  carried through `finally` and lexical `defer`.
+  Async postfix `?` inside conditions, call arguments, return expressions,
+  nested operators, callbacks and detached continuations is **rejected**
+  pending verified continuation-local early-return lowering.
+- No `suspends`-only, actor callable, detached select arm or generator.
+  Full transitive scheduling/effect verification is still a merge gate.
 - No implicit `throw`, `raise`, `panic`, `await`, `map_err`, or
   typed exception conversion. Use explicit `map_err<E>()` before `?`.
 - General type inference, real tagged enums, Stream/Observable error
@@ -40,18 +45,23 @@ Use parentheses around adjacent `?` before infix operators:
 
 ## Review blocker
 
-The static checker now additionally rejects `?` from an enclosing callable
-when its body can reach a potentially suspending SourceTask path, including
-ordinary source functions whose called functions contain `await`, blocking
-channels, or selects. Callbacks/lambdas are not yet eligible for `?`.
+For **synchronous** callables, the checker rejects `?` when the callable
+body can reach a SourceTask path, including ordinary source functions
+whose callees contain `await`, blocking channels or selects.
+For **async** callables, the direct binding-initializer subset above
+uses a checked `SourceFlow.RETURN` after the await. Callbacks/lambdas
+are not eligible for `?`.
 This detection is conservative and must be checked against runtime scheduling
 before ready/merge; unresolved imported dispatch remains a blocker.
 
-The runtime uses its existing `ReturnSignal` for early sum return,
-so static source-level admission **must prove** the surrounding
-callable uses the non-suspending execution path. Awaitable source
-task paths cannot be assumed to handle a direct ReturnSignal.
-Test implicit suspension through indirect calls and nested lambdas.
+The runtime's synchronous `ReturnSignal` is converted at the
+SourceTask statement boundary into `SourceFlow.RETURN`. The async
+unary evaluator also forwards a pending signal to that same boundary.
+This is not an ordinary `SourceFlow.THROW`; `try/catch` must not
+intercept an `Err` or `None` propagated by `?`.
+Verify both suspended and already-settled Future paths, nested cleanup,
+and exact single terminal delivery. Imported/dynamic call effects and
+callback boundaries remain review blockers.
 Keep draft until this proof, cleanup and ownership tests, JDK 25 Maven
 verification and exact-tree CI are green. No green test claim is made.
 
