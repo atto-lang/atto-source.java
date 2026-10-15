@@ -11,7 +11,7 @@ import java.util.Objects;
  * objects, or unbounded per-failure callback allocations are required.
  *
  * The epoch closes the gap between a failed enqueue and registration: if a
- * permit was released in that interval, registration retries one waiter now.
+ * permit was released in that interval, registration retries that caller now.
  * Runtime callers coalesce to one stable callback per parent actor.
  */
 final class ControlWakeRetryQueue {
