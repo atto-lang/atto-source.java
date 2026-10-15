@@ -83,7 +83,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
                     "required_status_checks": {"strict": True,
-                                               "contexts": ["preflight-regressions"]}}
+                                               "contexts": ["preflight-regressions"]},
+                    "required_conversation_resolution": {"enabled": True}}
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
                     "require_code_owner_reviews": True,
@@ -385,6 +386,28 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(
             [route for method, route, _ in self.route_calls if method == "POST"],
             ["repos/trusted/ci/git/blobs"])
+
+    def test_source_review_threads_must_be_resolved_before_any_export(self):
+        # Required approvals alone do not block unresolved security-review
+        # conversations. Missing, malformed and disabled gates deny all writes.
+        original = self.fake_api
+        for gate in (None, False, {}, {"enabled": False}, {"enabled": "true"}):
+            with self.subTest(gate=gate):
+                self.route_calls.clear()
+                def unprotected_threads(route, method="GET", payload=None):
+                    if route == pub.PROTECTED_RULES_ROUTE:
+                        self.route_calls.append((method, route, payload))
+                        rules = original(route, method, payload)
+                        if gate is None:
+                            rules.pop("required_conversation_resolution", None)
+                        else:
+                            rules["required_conversation_resolution"] = gate
+                        return rules
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=unprotected_threads):
+                    with self.assertRaisesRegex(pub.Denied, "resolved review conversations"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
         failures = (
