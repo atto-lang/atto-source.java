@@ -135,6 +135,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(pub.snapshot_tree_sha(files),
                          "f0f466a883393dd81aefa720031e38c240de338b")
 
+    def test_non_utf8_source_name_rejected_without_digest_or_traceback(self):
+        with self.assertRaisesRegex(pub.Denied, "non-UTF-8"):
+            pub.snapshot_tree_sha([("bad\\udcff", b"safe", "100644")])
+
+    def test_invalid_tree_sha_pin_rejects_without_any_upload(self):
+        for invalid in ("not-a-sha", "A" * 40, 17, "", "0" * 39):
+            with self.subTest(invalid=invalid):
+                self.route_calls.clear()
+                with patch.object(pub, "gh_api", side_effect=self.fake_api):
+                    with self.assertRaisesRegex(pub.Denied, "40 lowercase hex"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, expected_tree=invalid)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
     def test_wrong_reviewed_source_tree_rejects_before_any_upload(self):
         expected = pub.snapshot_tree_sha(pub.collect_source(self.source, self.root))
         changed = ("0" if expected[0] != "0" else "1") + expected[1:]
