@@ -191,6 +191,91 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 self.root, self.expected_tree, bad)
                 self.assertEqual(self.route_calls, [])
 
+    def set_snapshot_policy(self, source):
+        self.reviewed_snapshot = source
+        raw = source.encode("utf-8")
+        self.snapshot_sha = hashlib.sha1(
+            b"blob " + str(len(raw)).encode("ascii") + bytes([0]) + raw
+        ).hexdigest()
+
+    def test_snapshot_manifest_is_independent_of_destination_approval(self):
+        # All other source/destination checks pass, but there is no
+        # immutable commit/tree authorization in protected source main.
+        self.set_snapshot_policy("# no revisions approved\\n".replace("\\n", "\n"))
+        with self.assertRaisesRegex(pub.Denied, "not independently approved"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_mismatched_source_commit_tree_or_repository_id_cannot_be_exported(self):
+        for line in (
+            f"{A} {self.expected_tree} 123\\n",
+            f"{D} {A} 123\\n",
+            f"{D} {self.expected_tree} 124\\n",
+            f"{D} {self.expected_tree} 0\\n",
+            f"{D} {self.expected_tree} 123 # unreviewed\\n",
+        ):
+            with self.subTest(line=line):
+                self.route_calls.clear()
+                self.set_snapshot_policy(line.replace("\\n", "\n"))
+                with self.assertRaises(pub.Denied):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_duplicate_immutable_snapshot_approval_is_rejected(self):
+        line = f"{D} {self.expected_tree} 123\\n".replace("\\n", "\n")
+        self.set_snapshot_policy(line + line)
+        with self.assertRaisesRegex(pub.Denied, "duplicate"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_forged_snapshot_content_and_blob_sha_cannot_authorize(self):
+        self.snapshot_sha = "f" * 40
+        with self.assertRaisesRegex(pub.Denied, "blob SHA"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_snapshot_approval_revoked_mid_transfer_denies_next_write(self):
+        original = self.fake_api
+        def revoke_after_first_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.set_snapshot_policy("# approval revoked\\n".replace("\\n", "\n"))
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "changed during transfer"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual(
+            [route for method, route, _ in self.route_calls if method == "POST"],
+            ["repos/trusted/ci/git/blobs"])
+
+    def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
+        overrides = (
+            {"required_approving_review_count": 0},
+            {"require_code_owner_reviews": False},
+            {"dismiss_stale_reviews": False},
+            {"bypass_pull_request_allowances": {"users": [{"login": "bypass"}]}},
+        )
+        original = self.fake_api
+        for override in overrides:
+            with self.subTest(override=override):
+                self.route_calls.clear()
+                def weak_reviews(route, method="GET", payload=None):
+                    if route == pub.PROTECTED_REVIEWS_ROUTE:
+                        self.route_calls.append((method, route, payload))
+                        good = dict(required_approving_review_count=1,
+                                    require_code_owner_reviews=True,
+                                    dismiss_stale_reviews=True,
+                                    bypass_pull_request_allowances={})
+                        good.update(override)
+                        return good
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=weak_reviews):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_unprotected_source_main_denies_without_source_write(self):
         self.source_protected = [False] * 100
         with self.assertRaisesRegex(pub.Denied, "main branch is not protected"):
