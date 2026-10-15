@@ -105,6 +105,13 @@ final class NativeActorTurnSchedulerJniTest {
         }
     }
 
+    private static int liveTaskCountForTest(OresScheduler scheduler)
+            throws ReflectiveOperationException {
+        var field = OresScheduler.class.getDeclaredField("tasks");
+        field.setAccessible(true);
+        return ((java.util.Set<?>) field.get(scheduler)).size();
+    }
+
     @Test
     void nativeTerminalPublicationWaitsForTrustedQuiescenceCallback() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
@@ -129,10 +136,14 @@ final class NativeActorTurnSchedulerJniTest {
                     assertTrue(entered.await(5, TimeUnit.SECONDS));
                     assertFalse(result.isDone(),
                             "terminal Future published before trusted quiescence finished");
+                    assertEquals(1, liveTaskCountForTest(scheduler),
+                            "native task left live set before trusted cleanup callback");
                 } finally {
                     release.countDown();
                 }
                 assertEquals(123, result.get(5, TimeUnit.SECONDS));
+                assertEquals(0, liveTaskCountForTest(scheduler),
+                        "native task stayed live after terminal callback");
                 kernel.stop();
             }
         }
