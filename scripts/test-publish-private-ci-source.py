@@ -696,6 +696,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_security_owner_admin_role_is_accepted(self):
+        self.codeowner_permission = "admin"
+        self.publish()
+        self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_github_owner_admission_endpoints_must_be_available(self):
+        original = self.fake_api
+        for endpoint in (pub.CODEOWNERS_ERRORS_ROUTE,
+                         pub.CODEOWNER_PERMISSION_ROUTE):
+            with self.subTest(endpoint=endpoint):
+                self.route_calls.clear()
+                def missing_admission(request, method="GET", payload=None):
+                    if request == endpoint:
+                        raise pub.Denied("required GitHub owner metadata unavailable")
+                    return original(request, method, payload)
+                with patch.object(pub, "gh_api", side_effect=missing_admission):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("unauthorized source read")):
+                        with self.assertRaisesRegex(pub.Denied, "owner metadata unavailable"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                        self.root, self.expected_tree, D)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_security_codeowner_requires_live_write_permission(self):
         cases = [
             ("read", "ORESoftware", "User"),
