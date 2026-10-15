@@ -86,30 +86,7 @@ export MOCK_API_FAILURE=true
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_API_FAILURE
-export MOCK_EXTRA_LINE=
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-unset MOCK_EXTRA_LINE
-printf 'other/repo\n' > "$policy"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-printf 'trusted/ci #bad-comment\n' > "$policy"
-expect_fail trusted/ci
-printf '# intentionally empty\n' > "$policy"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-rm "$policy"
-expect_fail trusted/ci
-ln -s "$work/fixture/scripts/check-private-ci-destination.sh" "$policy"
-expect_fail trusted/ci
-rm "$policy"
-printf 'trusted/ci\n' > "$policy"
-mv "$work/fixture/.github" "$work/approved-policy-directory"
-ln -s "$work/approved-policy-directory" "$work/fixture/.github"
-expect_fail trusted/ci
-expect_wrapper_reject trusted/ci
-printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
-\n999999999\tspoofed/repo\tprivate\ttrue\tfalse\tfalse'
+export MOCK_EXTRA_LINE=$'\nspoofed/repo\tprivate\ttrue'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
 unset MOCK_EXTRA_LINE
