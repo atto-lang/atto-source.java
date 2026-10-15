@@ -9216,7 +9216,29 @@ public final class OresEvalRootNode extends RootNode {
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
-        private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
+        private Complex div(Complex o) {
+            // Avoid squaring the denominator's components: the naive formula
+            // overflows for 1e308+1e308i and underflows for 1e-300+1e-300i.
+            // Normalize both operands for finite, nonzero inputs to keep the
+            // intermediate products in range. Keep the IEEE special-value path
+            // explicit until complex infinity/NaN semantics are standardized.
+            double numeratorScale = Math.max(Math.abs(real), Math.abs(imaginary));
+            double divisorScale = Math.max(Math.abs(o.real), Math.abs(o.imaginary));
+            if (numeratorScale > 0.0 && divisorScale > 0.0
+                    && Double.isFinite(numeratorScale) && Double.isFinite(divisorScale)) {
+                double a = real / numeratorScale;
+                double b = imaginary / numeratorScale;
+                double c = o.real / divisorScale;
+                double d = o.imaginary / divisorScale;
+                double denominator = c * c + d * d;
+                double ratio = numeratorScale / divisorScale;
+                return new Complex(((a * c + b * d) / denominator) * ratio,
+                        ((b * c - a * d) / denominator) * ratio);
+            }
+            double denominator = o.real * o.real + o.imaginary * o.imaginary;
+            return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
+                    (imaginary * o.real - real * o.imaginary) / denominator);
+        }
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
