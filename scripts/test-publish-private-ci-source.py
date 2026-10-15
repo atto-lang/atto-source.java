@@ -127,9 +127,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # Golden SHA independently computed by git init/add/write-tree on a
         # synthetic fixture containing a/, ab/, an executable and a file.
         files = [
-            ("a/file.txt", b"inside\\n", "100644"),
-            ("ab/another", b"hi\\0abc\\n", "100644"),
-            ("run.sh", b"#!/bin/sh\\necho hey\\n", "100755"),
+            ("a/file.txt", b"inside\n", "100644"),
+            ("ab/another", b"hi\0abc\n", "100644"),
+            ("run.sh", b"#!/bin/sh\necho hey\n", "100755"),
             ("git", b"same prefix as directory", "100644"),
         ]
         self.assertEqual(pub.snapshot_tree_sha(files),
