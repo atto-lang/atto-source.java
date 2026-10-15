@@ -468,7 +468,8 @@ public final class Parser {
         CallableStructural structural = normalizeCallableStructural(annotations, modifiers.structural);
         annotations = structural.annotations();
         String name = consumeCallableName("expected callable name");
-        List<String> generics = parseGenericParameters();
+        List<Ast.GenericParameter> specs = parseGenericParameterSpecs();
+        List<String> generics = specs.stream().map(Ast.GenericParameter::name).toList();
 
         if (match(EQUAL)) {
             consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
@@ -480,7 +481,7 @@ public final class Parser {
                     : parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind,
-                    generics, params, returnType, annotations, body);
+                    generics, params, returnType, annotations, body, specs);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -490,7 +491,7 @@ public final class Parser {
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.suspends, modifiers.generator, structural.enabled(), modifiers.nonLexical, modifiers.trapped, actorKind, generics, params,
-                returnType, annotations, body);
+                returnType, annotations, body, specs);
     }
 
     private Ast.ClassDecl parseClass(
@@ -1325,6 +1326,22 @@ public final class Parser {
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
         return a.name().equals(b.name()) && a.arguments().equals(b.arguments()) && a.inferArguments() == b.inferArguments();
+    }
+
+    private List<Ast.GenericParameter> parseGenericParameterSpecs() {
+        if (!match(LT)) return List.of();
+        List<Ast.GenericParameter> specs = new ArrayList<>();
+        java.util.Set<String> declared = new java.util.HashSet<>();
+        do {
+            String name = consume(IDENT, "expected generic parameter name").lexeme();
+            if (name.equals("_") || !declared.add(name)) {
+                throw error(previous(), "invalid or duplicate generic parameter '" + name + "'");
+            }
+            Ast.TypeRef defaultType = match(EQUAL) ? parseTypeRef() : null;
+            specs.add(new Ast.GenericParameter(name, defaultType));
+        } while (match(COMMA));
+        consume(GT, "expected '>' after generic parameters");
+        return List.copyOf(specs);
     }
 
     private List<String> parseGenericParameters() {
@@ -3240,8 +3257,21 @@ public final class Parser {
     private List<Ast.TypeRef> parseCallTypeArguments() {
         consume(LT, "expected '<' before call type arguments");
         List<Ast.TypeRef> arguments = new ArrayList<>();
+        boolean seenNamed = false;
         if (!check(GT)) {
-            do arguments.add(parseTypeRef()); while (match(COMMA));
+            do {
+                if (check(IDENT) && checkNext(EQUAL)) {
+                    String name = advance().lexeme();
+                    consume(EQUAL, "expected '=' after named generic argument");
+                    arguments.add(Ast.TypeRef.namedParameter(name, parseTypeRef()));
+                    seenNamed = true;
+                } else {
+                    if (seenNamed) {
+                        throw error(peek(), "positional generic arguments must precede named arguments");
+                    }
+                    arguments.add(parseTypeRef());
+                }
+            } while (match(COMMA));
         }
         consume(GT, "expected '>' after call type arguments");
         return List.copyOf(arguments);
@@ -3260,7 +3290,10 @@ public final class Parser {
                 depth--;
                 if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
                 if (depth < 0) return false;
-            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON || type == EOF) {
+            } else if (type == SEMICOLON || type == QUESTION || type == COLON || type == EOF
+                    || (type == EQUAL && (depth == 0 || i == 0
+                            || tokens.get(i - 1).type() != IDENT))) {
+                // '=' is allowed only after a generic parameter name inside <...>.
                 return false;
             }
         }
