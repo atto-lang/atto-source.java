@@ -5,6 +5,7 @@ import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.CheckedI64SourceHeader;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.ActorRuntime;
@@ -70,7 +71,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         var source = request.getSource();
         String text = source.getCharacters().toString();
         // Exact opt-in per source unit. Default arithmetic retains legacy semantics.
-        boolean experimentalCheckedI64 = OresCompiler.checkedI64SourceOptIn(text);
+        boolean experimentalCheckedI64 = CheckedI64SourceHeader.isEnabled(text);
         Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         if (experimentalCheckedI64) verifyExperimentalCheckedI64Subset(program);
         String codeUnitId = source.getPath();
