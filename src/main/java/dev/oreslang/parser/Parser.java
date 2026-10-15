@@ -2946,7 +2946,7 @@ public final class Parser {
         }
 
         if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
-        if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralPattern(parseBinary64Literal(previous(), false));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralPattern(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -3541,13 +3541,36 @@ public final class Parser {
         }
     }
 
+    // Binary64 literals are separate from future exact-decimal literals. Reject malformed
+    // digit separators and overflow-to-Infinity instead of normalizing invalid source.
+    // IEEE-754 subnormal and underflow-to-zero rounding remain permitted.
+    private static final java.util.regex.Pattern BINARY64_LITERAL =
+            java.util.regex.Pattern.compile(
+                    "[0-9]+(?:_[0-9]+)*(?:[.][0-9]+(?:_[0-9]+)*)?(?:[eE][+-]?[0-9]+(?:_[0-9]+)*)?");
+
+    private double parseBinary64Literal(Token token, boolean imaginary) {
+        String raw = token.lexeme();
+        String digits = imaginary ? raw.substring(0, raw.length() - 1) : raw;
+        if (!BINARY64_LITERAL.matcher(digits).matches()) {
+            throw error(token, "malformed floating-point literal: " + raw);
+        }
+        try {
+            double value = Double.parseDouble(digits.replace("_", ""));
+            if (!Double.isFinite(value)) {
+                throw error(token, "floating-point literal overflows binary64: " + raw);
+            }
+            return value;
+        } catch (NumberFormatException invalid) {
+            throw error(token, "invalid floating-point literal: " + raw);
+        }
+    }
+
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
-        if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralExpr(parseBinary64Literal(previous(), false));
         if (match(IMAG)) {
-            String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
-            return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
+            return new Ast.LiteralExpr(new Ast.Imaginary(parseBinary64Literal(previous(), true)));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
