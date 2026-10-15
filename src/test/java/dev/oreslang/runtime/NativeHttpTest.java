@@ -16,6 +16,29 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void dispatchLeasePreventsPrematureRequestRetirement() {
+        // Exercise the same predicate used by State.release(), including
+        // an abort that closes the socket while actor initialization or a
+        // mailbox send still owns the dispatch admission lease.
+        for (boolean transportClosed : new boolean[] { false, true }) {
+            for (boolean dispatching : new boolean[] { false, true }) {
+                for (boolean actorPending : new boolean[] { false, true }) {
+                    assertEquals(transportClosed && !dispatching && !actorPending,
+                            NativeHttp.canRetireRequest(
+                                    transportClosed, dispatching, actorPending),
+                            "closed=" + transportClosed + ", dispatching=" + dispatching
+                                    + ", actorPending=" + actorPending);
+                }
+            }
+        }
+        assertFalse(NativeHttp.canRetireRequest(true, true, false),
+                "socket close during pooled worker selection cannot retire admission");
+        assertFalse(NativeHttp.canRetireRequest(true, false, true),
+                "unpooled actor initialization must finalize before retirement");
+        assertTrue(NativeHttp.canRetireRequest(true, false, false),
+                "a closed transport with no dispatch or actor lease can retire");
+    }
+
     @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
         var order = new java.util.ArrayList<String>();
         var closeFailure = new IllegalStateException("socket close failed");
