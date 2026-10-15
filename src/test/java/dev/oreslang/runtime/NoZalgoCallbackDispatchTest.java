@@ -26,6 +26,8 @@ final class NoZalgoCallbackDispatchTest {
             AtomicBoolean insideRegistrar = new AtomicBoolean();
             AtomicLong firstDispatch = new AtomicLong();
             AtomicReference<Thread> registrarCarrier = new AtomicReference<>();
+            AtomicBoolean callbackDoneInsideRegistrar = new AtomicBoolean();
+            AtomicInteger segmentsSeenInsideRegistrar = new AtomicInteger(-1);
 
             OresFuture<Integer> result = scheduler.start(resume -> {
                 if (segments.getAndIncrement() == 0) {
@@ -35,13 +37,18 @@ final class NoZalgoCallbackDispatchTest {
                         insideRegistrar.set(true);
                         try {
                             callback.resolve(41);
-                            assertTrue(callback.isDone());
-                            assertEquals(1, segments.get(),
-                                    "synchronous settlement must not recurse into guest code");
+                            // Registrar exceptions after resolve() are intentionally
+                            // swallowed by the callback adapter. Capture evidence here
+                            // and assert it *after* fromCallback has returned.
+                            callbackDoneInsideRegistrar.set(callback.isDone());
+                            segmentsSeenInsideRegistrar.set(segments.get());
                         } finally {
                             insideRegistrar.set(false);
                         }
                     });
+                    assertTrue(callbackDoneInsideRegistrar.get());
+                    assertEquals(1, segmentsSeenInsideRegistrar.get(),
+                            "synchronous foreign settlement recursively entered guest code");
                     assertEquals(41, settled.get(0, TimeUnit.MILLISECONDS));
                     return OresScheduler.await(settled);
                 }
@@ -60,6 +67,37 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void alreadyCompletedHostCompletionStageCannotResumeGuestInline()
+            throws Exception {
+        try (var scheduler = new OresScheduler(2)) {
+            AtomicInteger segments = new AtomicInteger();
+            AtomicLong registeringDispatch = new AtomicLong();
+            AtomicBoolean registering = new AtomicBoolean();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (segments.getAndIncrement() == 0) {
+                    registering.set(true);
+                    registeringDispatch.set(OresScheduler.currentDispatchId());
+                    try {
+                        var host = java.util.concurrent.CompletableFuture.completedFuture(73);
+                        OresFuture<Integer> awaited = OresFuture.from(host);
+                        assertEquals(1, segments.get(),
+                                "host whenComplete must not invoke guest continuation inline");
+                        return OresScheduler.await(awaited);
+                    } finally {
+                        registering.set(false);
+                    }
+                }
+                assertFalse(registering.get());
+                assertEquals(73, resume.value());
+                assertNotEquals(registeringDispatch.get(), OresScheduler.currentDispatchId());
+                return OresScheduler.done(74);
+            });
+            assertEquals(74, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, segments.get());
+        }
+    }
+
+    @Test
     void completionFromForeignThreadDuringCurrentSegmentCannotEnterGuestInline()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
@@ -68,6 +106,7 @@ final class NoZalgoCallbackDispatchTest {
             var producerFinished = new CountDownLatch(1);
             var insideFirstSegment = new AtomicBoolean();
             var producer = new AtomicReference<Thread>();
+            var producerFailure = new AtomicReference<Throwable>();
             var segments = new AtomicInteger();
             var firstDispatch = new AtomicLong();
 
@@ -98,12 +137,15 @@ final class NoZalgoCallbackDispatchTest {
                 try {
                     producer.set(Thread.currentThread());
                     assertTrue(source.completeFromRuntime(9));
+                } catch (Throwable failure) {
+                    producerFailure.compareAndSet(null, failure);
                 } finally {
                     producerFinished.countDown();
                 }
             });
             foreign.join(5_000);
             assertFalse(foreign.isAlive());
+            assertNull(producerFailure.get(), () -> String.valueOf(producerFailure.get()));
             assertEquals(10, result.get(5, TimeUnit.SECONDS));
             assertEquals(2, segments.get());
         }
@@ -148,6 +190,60 @@ final class NoZalgoCallbackDispatchTest {
                     "settled callback was lost instead of enqueued");
             assertNull(callbackFailure.get(), () -> String.valueOf(callbackFailure.get()));
             assertEquals(1, callbacks.get(), "guest callback must run exactly once");
+            actor.cancel();
+        }
+    }
+
+    @Test
+    void settledFutureRegisteredDuringBlockedReceiveCannotRunGuestOnAnotherCarrier()
+            throws Exception {
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch releaseReceive = new CountDownLatch(1);
+        CountDownLatch callbackRan = new CountDownLatch(1);
+        AtomicBoolean receiving = new AtomicBoolean();
+        AtomicInteger callbacks = new AtomicInteger();
+        AtomicReference<Throwable> violation = new AtomicReference<>();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(4, 4, 1, 128))) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                receiving.set(true);
+                try {
+                    var target = runtime.captureCurrentContinuationTarget();
+                    runtime.enqueueOnCompletion(OresFuture.completed(17), target, (value, failure) -> {
+                        try {
+                            assertFalse(receiving.get(),
+                                    "asynchronous guest callback overtook active receive");
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                            assertNull(failure);
+                            assertEquals(17, value);
+                            callbacks.incrementAndGet();
+                        } catch (Throwable problem) {
+                            violation.compareAndSet(null, problem);
+                        } finally {
+                            callbackRan.countDown();
+                        }
+                    });
+                    registered.countDown();
+                    assertTrue(releaseReceive.await(5, TimeUnit.SECONDS));
+                    assertEquals(0, callbacks.get(),
+                            "callback executed before synchronous receive finished");
+                } finally {
+                    receiving.set(false);
+                }
+            });
+            try {
+                actor.ready().get(5, TimeUnit.SECONDS);
+                actor.send("register");
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+                assertEquals(0, callbacks.get(), "settled callback ran inline on registration");
+                assertEquals(1L, callbackRan.getCount(),
+                        "callback bypassed the active actor physical lease");
+            } finally {
+                releaseReceive.countDown();
+            }
+            assertTrue(callbackRan.await(5, TimeUnit.SECONDS), "deferred callback was lost");
+            assertNull(violation.get(), () -> String.valueOf(violation.get()));
+            assertEquals(1, callbacks.get());
             actor.cancel();
         }
     }
