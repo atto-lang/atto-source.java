@@ -5350,7 +5350,14 @@ public final class TypeChecker {
         if (subject instanceof SelfType selfType) {
             return structuralPatternMayMatch(selfType.bound(), targetShape);
         }
-        if (subject instanceof Record) return assignable(subject, targetShape);
+        if (subject instanceof Record sourceRecord) {
+            // Pattern admission is a read-only shape test, not permission to
+            // mutate a matched value. Inferred readonly records must remain
+            // eligible; binder capability checks below preserve readonly.
+            // Exhaustiveness uses runtimeRecordShapeCovered, not this
+            // permissive may-match predicate.
+            return assignable(sourceRecord, new Record(targetShape.members(), true));
+        }
         if (subject instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
