@@ -13,11 +13,15 @@ final class ExperimentalHirV1ExporterTest {
     // Test-only bypass of typechecking: the HIR adapter must also reject
     // malformed ASTs at its own serialization boundary.
     private static String fromParserAstWithoutTypeChecking(String source, boolean checked) {
+        return fromAstWithoutTypeChecking(Parser.parse(source), checked);
+    }
+
+    private static String fromAstWithoutTypeChecking(Ast.Program program, boolean checked) {
         try {
             var method = ExperimentalHirV1Exporter.class.getDeclaredMethod(
                     "fromVerifiedAst", Ast.Program.class, boolean.class);
             method.setAccessible(true);
-            return (String) method.invoke(null, Parser.parse(source), checked);
+            return (String) method.invoke(null, program, checked);
         } catch (InvocationTargetException exception) {
             if (exception.getCause() instanceof RuntimeException failure) throw failure;
             throw new AssertionError(exception.getCause());
@@ -26,10 +30,10 @@ final class ExperimentalHirV1ExporterTest {
         }
     }
 
-    private static String balancedOverflowTree(int depth) {
-        if (depth == 0) return "9223372036854775807";
-        String child = balancedOverflowTree(depth - 1);
-        return "(" + child + " * " + child + ")";
+    private static Ast.Expr balancedOverflowTree(int depth) {
+        if (depth == 0) return new Ast.LiteralExpr(Long.MAX_VALUE);
+        return new Ast.BinaryExpr("*",
+                balancedOverflowTree(depth - 1), balancedOverflowTree(depth - 1));
     }
 
     @Test
@@ -66,10 +70,17 @@ final class ExperimentalHirV1ExporterTest {
 
     @Test
     void directHirBoundaryEnforcesNodeLimitBeforeArithmeticProof() {
-        String source = "pub fnc main(): int { return " + balancedOverflowTree(11) + "; }";
+        // Construct the AST directly so no parser token limits can mask
+        // the independent HIR serializer's own 2048-node contract.
+        var main = new Ast.FunctionDecl(
+                "main", Ast.Visibility.PUBLIC, false,
+                java.util.List.of(), java.util.List.of(), Ast.TypeRef.simple("int"),
+                java.util.List.of(), java.util.List.of(new Ast.ReturnStmt(balancedOverflowTree(11))));
+        var oversizedAst = new Ast.Program(java.util.List.of(
+                new Ast.ModuleDecl(Parser.ROOT_MODULE, java.util.List.of(main))));
         for (boolean checked : new boolean[] {false, true}) {
             IllegalArgumentException oversized = assertThrows(IllegalArgumentException.class,
-                    () -> fromParserAstWithoutTypeChecking(source, checked));
+                    () -> fromAstWithoutTypeChecking(oversizedAst, checked));
             assertTrue(oversized.getMessage().contains("expression depth/size"),
                     oversized.getMessage());
         }
