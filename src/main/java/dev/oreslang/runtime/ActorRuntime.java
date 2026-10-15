@@ -1740,7 +1740,8 @@ public final class ActorRuntime implements AutoCloseable {
         // Registration and STOP are serialized even for ordinary tasks:
         // cancellation cleanup cannot spawn fresh user work past the seal.
         synchronized (cell.lifecycleLock) {
-            if (cell.stopped.get() || cell.finalized || closed.get()) {
+            if (cell.stopped.get() || cell.forceRevoked
+                    || cell.finalized || closed.get()) {
                 throw terminated(cell.ref);
             }
             OresFuture<T> future = cell.sourceScheduler().start(task);
@@ -1813,7 +1814,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
-        if (cell == null || closed.get()) return false;
+        if (cell == null || closed.get() || cell.forceRevoked) return false;
         if (cell.stopped.get() && !cell.authorizedCleanupContinuation(continuation))
             return false;
         if (!cell.reserveContinuationSlot()) {
@@ -1825,7 +1826,7 @@ public final class ActorRuntime implements AutoCloseable {
         boolean admitted = false;
         try {
             synchronized (cell.lifecycleLock) {
-                if (cell.finalized || closed.get()
+                if (cell.finalized || closed.get() || cell.forceRevoked
                         || (cell.stopped.get()
                             && !cell.authorizedCleanupContinuation(continuation))) return false;
                 if (!cell.continuationMailbox.tryWrite(
@@ -3866,7 +3867,8 @@ public final class ActorRuntime implements AutoCloseable {
                     synchronized (parent.lifecycleLock) {
                         if (parent.stopped.get()
                                 || parent.finalized
-                                || parent.forceKillFenced) {
+                                || parent.forceKillFenced
+                                || parent.forceRevoked) {
                             throw new CancellationException(
                                     "cannot spawn a child from a stopping or force-fenced actor "
                                             + parent.ref.id());
@@ -4513,9 +4515,9 @@ public final class ActorRuntime implements AutoCloseable {
             for (int i = 0; i < pending.size(); i++) {
                 ActorCell<?> cell = pending.get(i);
                 if (!seen.add(cell.ref.id())) continue;
-                if (cell.forceKillFenced) {
+                if (cell.forceKillFenced || cell.forceRevoked) {
                     throw new IllegalStateException(
-                            "force cancellation is already in progress for actor "
+                            "force cancellation is already in progress or confirmed for actor "
                                     + cell.ref.id());
                 }
                 cells.add(cell);
@@ -4611,7 +4613,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell == null || cell.stopped.get() || cell.forceRevoked) throw terminated(ref);
         if (!cell.reserveMailboxSlot()) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -4685,7 +4687,7 @@ public final class ActorRuntime implements AutoCloseable {
                     sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
                 synchronized (cell.lifecycleLock) {
-                    if (cell.stopped.get()) {
+                    if (cell.stopped.get() || cell.forceRevoked) {
                         throw terminated(ref);
                     }
                     if (cell.forceKillFenced) {
@@ -6378,7 +6380,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requestEnd(Runnable cleanup) {
             synchronized (lifecycleLock) {
-                if (finalized) return;
+                if (finalized || forceRevoked) return;
                 if (endRequested) {
                     if (cleanup != null && cleanup != finalCleanup) {
                         throw new IllegalStateException(
