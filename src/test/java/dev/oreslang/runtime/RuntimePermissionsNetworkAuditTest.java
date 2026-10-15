@@ -105,6 +105,28 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void numericIpv4AliasesNeverBypassScopedDenyUsingBroadGrant() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
+        for (String alias : new String[]{
+                "127.1:443", "127.0.1:443", "2130706433:443",
+                "0127.0.0.1:443", "127.00.0.1:443", "127.0.0.256:443",
+                "127.0.0:443", "1.2.3.4.5:443"
+        }) {
+            assertFalse(policy.allows(RuntimePermissions.Permission.NET, alias),
+                    "ambiguous IPv4 alias unexpectedly allowed: " + alias);
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.NET, alias));
+        }
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "127.0.0.2:443"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "8.8.8.8:53"));
+    }
+
+    @Test
     void malformedEndpointsDoNotUseBroadAllow() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
