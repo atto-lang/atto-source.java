@@ -153,6 +153,60 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void settledFutureRegisteredDuringBlockedReceiveCannotRunGuestOnAnotherCarrier()
+            throws Exception {
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch releaseReceive = new CountDownLatch(1);
+        CountDownLatch callbackRan = new CountDownLatch(1);
+        AtomicBoolean receiving = new AtomicBoolean();
+        AtomicInteger callbacks = new AtomicInteger();
+        AtomicReference<Throwable> violation = new AtomicReference<>();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(4, 4, 1, 128))) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                receiving.set(true);
+                try {
+                    var target = runtime.captureCurrentContinuationTarget();
+                    runtime.enqueueOnCompletion(OresFuture.completed(17), target, (value, failure) -> {
+                        try {
+                            assertFalse(receiving.get(),
+                                    "asynchronous guest callback overtook active receive");
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease());
+                            assertNull(failure);
+                            assertEquals(17, value);
+                            callbacks.incrementAndGet();
+                        } catch (Throwable problem) {
+                            violation.compareAndSet(null, problem);
+                        } finally {
+                            callbackRan.countDown();
+                        }
+                    });
+                    registered.countDown();
+                    assertTrue(releaseReceive.await(5, TimeUnit.SECONDS));
+                    assertEquals(0, callbacks.get(),
+                            "callback executed before synchronous receive finished");
+                } finally {
+                    receiving.set(false);
+                }
+            });
+            try {
+                actor.ready().get(5, TimeUnit.SECONDS);
+                actor.send("register");
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+                assertEquals(0, callbacks.get(), "settled callback ran inline on registration");
+                assertEquals(1L, callbackRan.getCount(),
+                        "callback bypassed the active actor physical lease");
+            } finally {
+                releaseReceive.countDown();
+            }
+            assertTrue(callbackRan.await(5, TimeUnit.SECONDS), "deferred callback was lost");
+            assertNull(violation.get(), () -> String.valueOf(violation.get()));
+            assertEquals(1, callbacks.get());
+            actor.cancel();
+        }
+    }
+
+    @Test
     void completionRacingWaiterRegistrationIsDeliveredOnceOnFreshGuestTurn()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
