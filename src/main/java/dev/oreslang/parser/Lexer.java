@@ -215,6 +215,7 @@ public final class Lexer {
             while (isDigit(peek()) || peek() == '_') advance();
         }
         if (peek() == 'i') { advance(); add(IMAG); }
+        else if (peek() == 'd' && !isIdentPart(peekNext())) { advance(); add(DECIMAL); }
         else add(floating ? FLOAT : INT);
     }
 
