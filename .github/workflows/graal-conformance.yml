@@ -13,17 +13,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - name: Schema validator
         run: python3 -m pip install --break-system-packages 'jsonschema>=4.20,<5'
       - name: Verify conformance runner failure handling
         run: |
           python3 contracts/v1/test_runner.py -v
           python3 contracts/v1/semantics/test_runner.py -v
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
-      - uses: graalvm/setup-graalvm@v1
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
         with:
           version: '25.3'
           java-version: '25'
@@ -54,7 +56,7 @@ jobs:
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorTraceContractIntegrationTest test
           python3 contracts/v1/semantics/traces/validate.py target/actor-trace-graal.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: graal-conformance-report
