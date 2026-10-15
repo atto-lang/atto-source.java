@@ -3467,13 +3467,31 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after arr literal");
             return new Ast.ListExpr(items);
         }
-        if (match(NLEX)) {
-            if (check(PIPE)) return parsePipeLambda(true);
-            if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
-            throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        if (check(NLEX) || check(ASYNC) || check(SUSPENDS)) {
+            boolean nonLexical = false;
+            boolean async = false;
+            boolean suspends = false;
+            while (check(NLEX) || check(ASYNC) || check(SUSPENDS)) {
+                if (match(NLEX)) {
+                    if (nonLexical) throw error(previous(), "duplicate nlex lambda modifier");
+                    nonLexical = true;
+                } else if (match(ASYNC)) {
+                    if (async) throw error(previous(), "duplicate async lambda modifier");
+                    async = true;
+                } else if (match(SUSPENDS)) {
+                    if (suspends) throw error(previous(), "duplicate suspends lambda modifier");
+                    suspends = true;
+                }
+            }
+            if (async && suspends) {
+                throw error(previous(), "lambda cannot be both async and suspends");
+            }
+            if (check(PIPE)) return parsePipeLambda(nonLexical, async, suspends);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(nonLexical, async, suspends);
+            throw error(peek(), "nlex, async and suspends in expression position must prefix a lambda");
         }
-        if (check(PIPE)) return parsePipeLambda(false);
-        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
+        if (check(PIPE)) return parsePipeLambda(false, false, false);
+        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, false, false);
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
@@ -3542,15 +3560,15 @@ public final class Parser {
         return new Ast.ObjectExpr(fields, kind, declaredFields);
     }
 
-    private Ast.LambdaExpr parseLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parseLambda(boolean nonLexical, boolean async, boolean suspends) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, async, suspends);
     }
 
-    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean async, boolean suspends) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -3568,18 +3586,19 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, async, suspends);
     }
 
-    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical,
+                                           boolean async, boolean suspends) {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
         // expression bodies rather than being confused with a lambda block.
         if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, async, suspends);
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, async, suspends);
     }
 
     private boolean looksLikeLambda() {
