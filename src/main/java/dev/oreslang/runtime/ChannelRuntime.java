@@ -198,14 +198,19 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
+            Throwable consumerFailure = null;
             try {
-                // FIFO: the older buffered message must reach its consumer
-                // before a newly unblocked writer's completion is published.
+                // FIFO: deliver the older buffered message before publishing
+                // newly admitted writers. The consumer's failure remains the
+                // primary error if a later internal completion also fails.
                 consumer.accept(value);
+            } catch (RuntimeException | Error failure) {
+                consumerFailure = failure;
+                throw failure;
             } finally {
-                // Even if the consumer throws, admitted writers must not
-                // remain stranded and their select credits must be refunded.
-                runCompletions(completions);
+                // A failed mailbox consumer cannot strand committed writers.
+                runAfterPreservingFailure(
+                        consumerFailure, () -> runCompletions(completions));
             }
             return true;
         }
@@ -707,8 +712,20 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
-            runCompletions(completions);
-            if (!immediateOnly) attachFutureWaiters();
+            Throwable publicationFailure = null;
+            try {
+                runCompletions(completions);
+            } catch (RuntimeException | Error failure) {
+                publicationFailure = failure;
+                throw failure;
+            } finally {
+                // A failure publishing another committed selection must not
+                // leave this selection registered without Future wakeups.
+                if (!immediateOnly) {
+                    runAfterPreservingFailure(
+                            publicationFailure, this::attachFutureWaiters);
+                }
+            }
         }
 
         /**
@@ -1231,6 +1248,23 @@ public final class ChannelRuntime {
             }
         });
         return result;
+    }
+
+    /**
+     * Execute required cleanup/follow-up despite a previous failure. Preserve
+     * the original exception as primary rather than masking it with a later
+     * listener, cleanup, or notification failure.
+     */
+    private static void runAfterPreservingFailure(
+            Throwable primaryFailure, Runnable requiredAction) {
+        try {
+            requiredAction.run();
+        } catch (RuntimeException | Error laterFailure) {
+            if (primaryFailure == null) throw laterFailure;
+            if (primaryFailure != laterFailure) {
+                primaryFailure.addSuppressed(laterFailure);
+            }
+        }
     }
 
     /**
