@@ -6,6 +6,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A request-correlated one-shot reply slot for the future compiled unary
@@ -23,6 +24,7 @@ public final class ActorUnaryReplySlot<R> {
     private final long generation;
     private final UUID requestId;
     private final AtomicReference<State> state = new AtomicReference<>(State.PENDING);
+    private final AtomicBoolean dispatchClaimed = new AtomicBoolean();
     private final CompletableFuture<R> result = new CompletableFuture<>();
 
     ActorUnaryReplySlot(ActorRuntime.ActorId owner, long generation, UUID requestId) {
@@ -66,11 +68,21 @@ public final class ActorUnaryReplySlot<R> {
         return true;
     }
 
-    /** Validate the bound actor incarnation before doing any middleware work. */
-    void requireAdmission(ActorRuntime.ActorId actor, long actorGeneration) {
+    /**
+     * Claim dispatch exactly once, BEFORE any middleware/actor work. A check
+     * of PENDING without a claim allows two concurrent callers to run the
+     * whole middleware chain and race only at terminal reply publication.
+     */
+    void claimDispatch(ActorRuntime.ActorId actor, long actorGeneration) {
         checkIdentity(actor, actorGeneration, requestId);
         if (state.get() != State.PENDING) {
             throw new IllegalStateException("actor unary reply ticket already settled");
+        }
+        if (!dispatchClaimed.compareAndSet(false, true)) {
+            throw new IllegalStateException("actor unary request has already been dispatched");
+        }
+        if (state.get() != State.PENDING) {
+            throw new IllegalStateException("actor unary reply ticket was cancelled before dispatch");
         }
     }
 
