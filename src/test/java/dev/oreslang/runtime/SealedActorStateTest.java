@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class SealedActorStateTest {
     @Test void synchronousStateIsPrivateToActorAndScopedToCriticalCallback() throws Exception {
         var state = new AtomicReference<SealedActorState>();
+        var ownerId = new AtomicReference<ActorRuntime.ActorId>();
         var stale = new AtomicReference<SealedActorState.Access>();
         var failure = new AtomicReference<Throwable>();
         var completed = new CountDownLatch(1);
@@ -18,6 +19,7 @@ final class SealedActorStateTest {
             var worker = runtime.<Integer>spawnShared(() -> (mail, ctx) -> {
                 try {
                     if (state.get() == null) {
+                        ownerId.set(ctx.self().id());
                         state.set(new SealedActorState(ctx.self().id(),
                                 Map.of("count", "int", "enabled", "bool", "name", "string"),
                                 Map.of("count", 0L, "enabled", true, "name", "counter")));
@@ -83,9 +85,11 @@ final class SealedActorStateTest {
                                     s.write("name", "x".repeat(64 * 1024 + 1));
                                     return null;
                                 }));
-                        current.retireFromRuntime(ctx.self().id());
-                        assertThrows(IllegalStateException.class,
-                                () -> current.critical(s -> s.read("count")));
+                        // Knowing the correct owner ID inside a live actor
+                        // does not authorize preemptive state retirement.
+                        assertThrows(SecurityException.class,
+                                () -> current.retireFromRuntime(ctx.self().id()));
+                        assertEquals(12L, current.critical(s -> s.read("count")));
                         completed.countDown();
                     }
                 } catch (Throwable x) {
@@ -97,7 +101,12 @@ final class SealedActorStateTest {
             worker.send(0);
             assertTrue(completed.await(15, TimeUnit.SECONDS));
             if (failure.get() != null) fail(failure.get());
-            assertThrows(IllegalStateException.class, () -> state.get().critical(s -> s.read("count")));
+            // An external thread can know the actor identity but cannot
+            // forge the runtime's quiescence-only state-wipe authority.
+            assertThrows(SecurityException.class,
+                    () -> state.get().retireFromRuntime(ownerId.get()));
+            assertThrows(SecurityException.class,
+                    () -> state.get().critical(s -> s.read("count")));
         }
     }
 }
