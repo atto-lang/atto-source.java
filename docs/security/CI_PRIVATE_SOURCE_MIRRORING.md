@@ -21,6 +21,15 @@ must stay synchronized (the publisher's offline regression suite checks this).
 Do not insert an ID into a bare-slug allowlist line; it violates the policy
 parser. An ID hardcoded in software is not itself permission to export.
 
+The Bash preflight is a separate, testable CLI convenience. The privileged
+Python publisher **does not execute** that script from a candidate checkout:
+it checks the policy through no-follow directory descriptors and verifies the
+pinned destination ID using authenticated GitHub API reads. Calling a Bash
+script from a PR-controlled checkout before checking protected-main policy
+would provide an unauthorized command-execution path. Operators must launch
+the publisher itself from independently reviewed/trusted tooling, not from
+the PR's working tree.
+
 The publisher must also compare the local approval file byte-for-byte with
 the authenticated Contents API response for the pinned source repository's
 `main` branch, including size, encoding, and Git blob identity. That comparison
