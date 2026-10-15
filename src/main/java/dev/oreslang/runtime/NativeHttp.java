@@ -167,12 +167,19 @@ public final class NativeHttp implements AutoCloseable {
                             worker.requests.add(state);
                             state.server.pooledWorkers.add(worker);
                             worker.served.add(state.server);
-                            exchange.checkOwner();
-                            state.readyNanos = state.spawnNanos;
-                            worker.actor.send(exchange.moveTo(worker.actor));
-                            if (worker.actor.done().isDone()) {
-                                state.server.pooledWorkers.remove(worker);
-                                worker.served.remove(state.server);
+                            try {
+                                exchange.checkOwner();
+                                state.readyNanos = state.spawnNanos;
+                                worker.actor.send(exchange.moveTo(worker.actor));
+                            } finally {
+                                // A previously retired worker can be selected
+                                // just as a timeout revokes the exchange.
+                                // Check even when move/send throws, or the
+                                // server retains the dead generation forever.
+                                if (worker.actor.done().isDone()) {
+                                    state.server.pooledWorkers.remove(worker);
+                                    worker.served.remove(state.server);
+                                }
                             }
                         }
                     } catch (RuntimeException failure) {
