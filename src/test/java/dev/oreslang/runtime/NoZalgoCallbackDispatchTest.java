@@ -98,6 +98,59 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void throwingForeignCompletionStageRegistrationBecomesFailedFuture() throws Exception {
+        java.util.concurrent.CompletableFuture<Integer> broken =
+                new java.util.concurrent.CompletableFuture<>() {
+                    @Override
+                    public java.util.concurrent.CompletableFuture<Integer> whenComplete(
+                            java.util.function.BiConsumer<? super Integer, ? super Throwable> action) {
+                        throw new IllegalStateException("foreign listener rejected");
+                    }
+                };
+        OresFuture<Integer> normalized = assertDoesNotThrow(() -> OresFuture.from(broken));
+        var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> normalized.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals("foreign listener rejected", failure.getCause().getMessage());
+        assertEquals(0, normalized.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void synchronousHostStageCompletionWinsOverLaterRegistrationThrow() throws Exception {
+        java.util.concurrent.CompletableFuture<Integer> oddStage =
+                new java.util.concurrent.CompletableFuture<>() {
+                    @Override
+                    public java.util.concurrent.CompletableFuture<Integer> whenComplete(
+                            java.util.function.BiConsumer<? super Integer, ? super Throwable> action) {
+                        action.accept(33, null);
+                        throw new IllegalStateException("late host registration exception");
+                    }
+                };
+        OresFuture<Integer> normalized = assertDoesNotThrow(() -> OresFuture.from(oddStage));
+        assertEquals(33, normalized.get(5, TimeUnit.SECONDS),
+                "a later registrar failure cannot overwrite an already-settled Future");
+        assertEquals(0, normalized.pendingRuntimeWaiterCount());
+
+        // The synchronous host delivery is still not a guest dispatch. Await
+        // must return through a new scheduler turn, even for this odd stage.
+        try (var scheduler = new OresScheduler(1)) {
+            AtomicInteger segments = new AtomicInteger();
+            AtomicLong firstDispatch = new AtomicLong();
+            OresFuture<Integer> guest = scheduler.start(resume -> {
+                if (segments.getAndIncrement() == 0) {
+                    firstDispatch.set(OresScheduler.currentDispatchId());
+                    return OresScheduler.await(normalized);
+                }
+                assertNotEquals(firstDispatch.get(), OresScheduler.currentDispatchId());
+                assertEquals(33, resume.value());
+                return OresScheduler.done(34);
+            });
+            assertEquals(34, guest.get(5, TimeUnit.SECONDS));
+            assertEquals(2, segments.get());
+        }
+    }
+
+    @Test
     void completionFromForeignThreadDuringCurrentSegmentCannotEnterGuestInline()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
