@@ -149,6 +149,81 @@ final class ActorMiddlewareValuePipelineTest {
     }
 
     @Test
+    void responseHeaderReplacementIsCaseInsensitiveWithoutDuplicateKeys() {
+        var before = ActorMiddlewareValuePipeline.ResponseDraft.defaults()
+                .withHeader("Content-Type", "text/plain");
+        var after = before.withHeader("content-type", "application/json")
+                .withHeader("CONTENT-TYPE", "application/problem+json");
+        assertEquals(1, after.headers().size());
+        assertEquals("application/problem+json", after.headers().get("content-type"));
+        assertEquals("text/plain", before.headers().get("content-type"));
+        assertThrows(SecurityException.class,
+                () -> before.withHeader("Content-Length", "32"));
+        assertThrows(IllegalArgumentException.class,
+                () -> before.withHeader("Bad Header", "x"));
+    }
+
+    @Test
+    void supervisorAroundCannotForgeTypedReplyWithoutCallingActor() {
+        var called = new AtomicInteger();
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(
+                        key("auth"), S,
+                        (input, response, next) ->
+                                CompletableFuture.completedFuture(
+                                        new ActorMiddlewareValuePipeline.Reply<>(991)),
+                        false)),
+                List.of(), Set.of(), input -> {
+                    called.incrementAndGet();
+                    return CompletableFuture.completedFuture(1);
+                });
+        var thrown = assertThrows(CompletionException.class,
+                () -> pipeline.invoke(req("x"), () -> false).toCompletableFuture().join());
+        assertTrue(thrown.getCause() instanceof SecurityException);
+        assertEquals(0, called.get());
+    }
+
+    @Test
+    void supervisorAroundMayForwardOnlyExactChildReplyOrReject() {
+        var successful = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(
+                        key("auth"), S,
+                        (input, response, next) -> next.proceed(input, response),
+                        false)),
+                List.of(), Set.of(),
+                input -> CompletableFuture.completedFuture(42));
+        var reply = (ActorMiddlewareValuePipeline.Reply<Integer>)
+                successful.invoke(req("x"), () -> false).toCompletableFuture().join();
+        assertEquals(42, reply.value());
+
+        var forged = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(
+                        key("auth"), S,
+                        (input, response, next) -> next.proceed(input, response)
+                                .thenApply(ignored -> new ActorMiddlewareValuePipeline.Reply<>(999)),
+                        false)),
+                List.of(), Set.of(),
+                input -> CompletableFuture.completedFuture(42));
+        var thrown = assertThrows(CompletionException.class,
+                () -> forged.invoke(req("x"), () -> false).toCompletableFuture().join());
+        assertTrue(thrown.getCause() instanceof SecurityException,
+                thrown.toString());
+
+        var denied = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(
+                        key("auth"), S,
+                        (input, response, next) -> CompletableFuture.completedFuture(
+                                new ActorMiddlewareValuePipeline.Reject<>(403, "denied")),
+                        false)),
+                List.of(), Set.of(), input -> {
+                    fail("rejected by supervisor");
+                    return null;
+                });
+        assertEquals(403, ((ActorMiddlewareValuePipeline.Reject<Integer>)
+                denied.invoke(req("x"), () -> false).toCompletableFuture().join()).status());
+    }
+
+    @Test
     void supervisorMayRejectButCannotManufactureAnActorReply() {
         var reject = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("auth"), S,
