@@ -270,7 +270,7 @@ public final class NativeIo {
         if (port < 1 || port > 65535) {
             throw new IllegalArgumentException("network.connect port must be 1..65535");
         }
-        String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        String endpoint = RuntimePermissions.networkEndpoint(host, port);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
         Socket socket = new Socket();
         try {
