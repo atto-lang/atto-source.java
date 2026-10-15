@@ -2178,10 +2178,17 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorHandle<M> {
         private final ActorRef<M> ref;
         private final ActorId ownerActorId;
+        /** Original effective sandbox policy, not a caller-supplied replacement. */
+        private final IsolatePolicy admittedPolicy;
 
         private ActorHandle(ActorRef<M> ref, ActorId ownerActorId) {
             this.ref = Objects.requireNonNull(ref, "ref");
             this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
+            ActorCell<?> admitted = actors.get(ref.id());
+            if (admitted == null) {
+                throw new IllegalStateException("child actor not registered at handle creation");
+            }
+            this.admittedPolicy = admitted.policy;
         }
 
         public ActorRef<M> ref() { return ref; }
@@ -3784,6 +3791,62 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind.SHARED,
                 defaultSpawnPolicy(),
                 behaviorFactory);
+    }
+
+    /**
+     * Host-runtime one-for-one restart, available exclusively while the
+     * structurally owning actor handles that exact terminal child notice.
+     * Never reuse the failed actor's ActorId, generation, or capabilities.
+     */
+    public <M> ActorHandle<M> restartCurrentChildOneForOne(
+            ActorFailureNotice notice,
+            ActorHandle<M> retiredChild,
+            BehaviorFactory<M> replacementFactory) {
+        requireCallerRuntimeAffinity("one-for-one child restart");
+        Objects.requireNonNull(notice, "notice");
+        Objects.requireNonNull(retiredChild, "retiredChild");
+        Objects.requireNonNull(replacementFactory, "replacementFactory");
+        ActorCell<?> supervisor = currentActor.get();
+        if (supervisor == null
+                || supervisor.activeChildFailureNotice != notice
+                || supervisor.activeChildRestartConsumed
+                || retiredChild.ownerActorId == null
+                || !retiredChild.ownerActorId.equals(supervisor.ref.id())
+                || !notice.actorId().equals(retiredChild.id())
+                || !supervisor.ref.id().equals(notice.supervisorId())) {
+            throw new SecurityException(
+                    "one-for-one restart requires the active, unconsumed direct-child CONTROL notice");
+        }
+        if (actors.containsKey(retiredChild.id())
+                || !retiredChild.ref.doneFuture.isDone()) {
+            throw new IllegalStateException("child must finish physical teardown before restart");
+        }
+
+        // This budget applies to this built-in restart operation, not to
+        // arbitrary source-level spawning. The parent owns the state on
+        // its serialized actor carrier; no cross-thread mutable ledger.
+        long now = System.nanoTime();
+        while (!supervisor.childRestartTimes.isEmpty()
+                && now - supervisor.childRestartTimes.peekFirst()
+                        >= TimeUnit.MINUTES.toNanos(1)) {
+            supervisor.childRestartTimes.removeFirst();
+        }
+        if (supervisor.childRestartTimes.size() >= 3) {
+            throw new IllegalStateException(
+                    "one-for-one supervisor restart intensity exceeded: 3 per minute");
+        }
+
+        // Consume before attempting allocation/spawn: failing factories must
+        // not allow replaying this notice to create multiple replacements.
+        supervisor.activeChildRestartConsumed = true;
+        supervisor.childRestartTimes.addLast(now);
+        ActorHandle<M> replacement = spawnChild(
+                retiredChild.kind(), retiredChild.admittedPolicy, replacementFactory);
+        if (replacement.id().equals(retiredChild.id())
+                || replacement.ref.generation() <= retiredChild.ref.generation()) {
+            throw new IllegalStateException("replacement actor generation was not advanced");
+        }
+        return replacement;
     }
 
     public <M> ActorHandle<M> spawnChildUntrusted(
@@ -6768,6 +6831,10 @@ public final class ActorRuntime implements AutoCloseable {
                 childFailureControlInbox = new AtomicReference<>();
         private final AtomicLong childFailureControlDropped = new AtomicLong();
         private final AtomicLong childFailureWakeRejected = new AtomicLong();
+        /** Admission is allowed only within a serialized parent callback. */
+        private ActorFailureNotice activeChildFailureNotice;
+        private boolean activeChildRestartConsumed;
+        private final ArrayDeque<Long> childRestartTimes = new ArrayDeque<>();
         /** One outstanding retry registration per parent; no per-failure tasks. */
         private final AtomicBoolean childFailureRetryRegistered = new AtomicBoolean();
         private final Runnable childFailureRetry = () -> {
@@ -7739,7 +7806,14 @@ public final class ActorRuntime implements AutoCloseable {
                             @SuppressWarnings("unchecked")
                             ChildFailureHandler<M> typedHandler =
                                     (ChildFailureHandler<M>) handler;
-                            typedHandler.onChildFailure(notice, context);
+                            activeChildFailureNotice = notice;
+                            activeChildRestartConsumed = false;
+                            try {
+                                typedHandler.onChildFailure(notice, context);
+                            } finally {
+                                activeChildFailureNotice = null;
+                                activeChildRestartConsumed = false;
+                            }
                             if (isPrivateKind(kind) && !trustedFactory) {
                                 validatePrivateBehaviorState(ref.id(), behavior);
                             }
