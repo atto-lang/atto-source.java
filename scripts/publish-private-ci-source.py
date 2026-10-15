@@ -220,8 +220,10 @@ def collect_source(root, trusted_root):
                     try:
                         opened_dir = os.fstat(child_fd)
                         if (not stat.S_ISDIR(opened_dir.st_mode)
-                                or (metadata.st_dev, metadata.st_ino)
-                                != (opened_dir.st_dev, opened_dir.st_ino)):
+                                or (metadata.st_dev, metadata.st_ino,
+                                    metadata.st_mtime_ns, metadata.st_ctime_ns)
+                                != (opened_dir.st_dev, opened_dir.st_ino,
+                                    opened_dir.st_mtime_ns, opened_dir.st_ctime_ns)):
                             raise Denied("source directory changed during traversal")
                         walk(child_fd, rel + "/", depth + 1)
                     finally:
@@ -236,8 +238,12 @@ def collect_source(root, trusted_root):
                     with stream:
                         opened_file = os.fstat(stream.fileno())
                         if (not stat.S_ISREG(opened_file.st_mode)
-                                or (metadata.st_dev, metadata.st_ino)
-                                != (opened_file.st_dev, opened_file.st_ino)):
+                                or (metadata.st_dev, metadata.st_ino,
+                                    metadata.st_size, metadata.st_mtime_ns,
+                                    metadata.st_ctime_ns, metadata.st_mode)
+                                != (opened_file.st_dev, opened_file.st_ino,
+                                    opened_file.st_size, opened_file.st_mtime_ns,
+                                    opened_file.st_ctime_ns, opened_file.st_mode)):
                             raise Denied("source file changed during traversal")
                         # A hardlink may refer to outside-checkout bytes.
                         if opened_file.st_nlink != 1:
@@ -257,7 +263,7 @@ def collect_source(root, trusted_root):
                     total += len(data)
                     if total > MAX_BYTES or len(entries) >= MAX_FILES:
                         raise Denied("source mirror exceeds bounded capacity")
-                    mode = "100755" if metadata.st_mode & stat.S_IXUSR else "100644"
+                    mode = "100755" if opened_file.st_mode & stat.S_IXUSR else "100644"
                     entries.append((rel, data, mode))
                 else:
                     raise Denied("source contains symlink or special file")
