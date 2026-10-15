@@ -940,6 +940,161 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Ordinary class construction is synchronous. Reject suspension anywhere
+     * in an eager initializer expression, including nested call operands,
+     * collection elements and branches. A stored lambda is not executed
+     * during construction; directly invoking a lambda initializer remains
+     * rejected until its body has a verified non-suspending effect bound.
+     */
+    private boolean fieldInitializerMaySuspend(Ast.Expr expr) {
+        if (expr instanceof Ast.AwaitExpr
+                || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr
+                || expr instanceof Ast.AssignExpr) return true;
+        if (expr instanceof Ast.RuntimeCallExpr) {
+            // All runtime intrinsics carry semantics beyond an ordinary
+            // scalar expression. In particular rt fail may unwind after
+            // earlier fields have acquired resources, rt take can move
+            // storage, and borrow/share/copy need an initializer-specific
+            // lifetime or ownership proof. Such proofs and failure cleanup
+            // are not established here, so do not infer safety from the
+            // operands alone. This also rejects new intrinsics by default.
+            return true;
+        }
+        if (expr instanceof Ast.BinaryExpr op) {
+            // Division/remainder can fail (notably integer remainder by
+            // zero) even when both operands were evaluated without effects.
+            // Failure cleanup of a partially built instance is not proven.
+            // Keep them outside eager initialization until that proof exists.
+            if (op.operator().equals("/") || op.operator().equals("%")) return true;
+            return fieldInitializerMaySuspend(op.left()) || fieldInitializerMaySuspend(op.right());
+        }
+        if (expr instanceof Ast.UnaryExpr op) return fieldInitializerMaySuspend(op.operand());
+        if (expr instanceof Ast.ConditionalExpr op) {
+            return fieldInitializerMaySuspend(op.condition())
+                    || fieldInitializerMaySuspend(op.whenTrue())
+                    || fieldInitializerMaySuspend(op.whenFalse());
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            // Constructor-safe calls must resolve to a statically known,
+            // synchronous zero-argument function whose *entire* body is one
+            // return of a primitive scalar expression. No user callbacks,
+            // mutations, dynamic dispatch, suspension or partial-self escape.
+            return !isConstructorSafeScalarCall(call);
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            // Nested construction is itself a transitive initialization
+            // effect. Until class-constructor effect summaries exist, permit
+            // only zero-argument ctorless objects with literal-only fields:
+            // no methods execute, no owned resources are acquired, and no
+            // partially initialized child can escape into user callbacks.
+            if (created.type().name().equals("Array") && created.arguments().isEmpty()
+                    && findClass("Array") == null)
+                return false; // built-in zero-arg allocator, never a shadowing guest class
+            if (!created.arguments().isEmpty() || !created.type().arguments().isEmpty())
+                return true;
+            Ast.ClassDecl nested = findClass(created.type().name());
+            if (nested == null || nested.constructor() != null || !nested.parents().isEmpty()
+                    || nested.actorKind() != Ast.ActorKind.NONE) return true;
+            return nested.fields().stream().anyMatch(field ->
+                    !(field.initializer() instanceof Ast.LiteralExpr));
+        }
+        if (expr instanceof Ast.MemberExpr member)
+            return fieldInitializerMaySuspend(member.receiver());
+        if (expr instanceof Ast.IndexExpr) {
+            // Even pure operands do not establish a safe indexing operation.
+            // Bounds failure (and any future index dispatch) may unwind after
+            // earlier fields have acquired resources. Partial-construction
+            // failure cleanup is not proven, so reject indexing by default.
+            return true;
+        }
+        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value());
+        if (expr instanceof Ast.CastExpr) {
+            // Checked casts can fail independently of their source expression;
+            // permitting one could unwind a partially constructed instance.
+            return true;
+        }
+        if (expr instanceof Ast.SpreadExpr spread) return fieldInitializerMaySuspend(spread.expression());
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(this::fieldInitializerMaySuspend);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream().anyMatch(field ->
+                    fieldInitializerMaySuspend(field.value()));
+        // These are the only effect-free leaf expressions. In particular a
+        // lambda is stored, not invoked, and the initializer environment has
+        // no self or reference-valued constructor arguments to capture.
+        // New expression AST variants are unsafe until reviewed explicitly.
+        return !(expr instanceof Ast.LiteralExpr
+                || expr instanceof Ast.NameExpr
+                || expr instanceof Ast.LambdaExpr);
+    }
+
+    /**
+     * Narrow constructor-effect proof: a known zero-argument function may
+     * initialize a scalar only when its complete body is a single primitive
+     * return expression. This is independent of the function's name or
+     * visibility; it never assumes that a routine is pure by default.
+     */
+    private boolean isConstructorSafeScalarCall(Ast.CallExpr call) {
+        if (!call.arguments().isEmpty() || call.typeArgumentsPresent()) return false;
+        List<Ast.Stmt> body = null;
+        Ast.TypeRef returnType = null;
+        if (call.callee() instanceof Ast.NameExpr name) {
+            Ast.FunctionDecl fn = findFunction(name.name(), 0);
+            // A literal-looking body is not enough if the callable's
+            // invocation contract is trapped or actor-dispatched. Keep the
+            // initializer proof restricted to ordinary synchronous callables.
+            if (fn == null || fn.trapped() || fn.actorKind() != Ast.ActorKind.NONE
+                    || fn.async() || fn.suspends() || fn.generator()
+                    || !fn.parameters().isEmpty() || !fn.genericParameters().isEmpty()) return false;
+            body = fn.body();
+            returnType = fn.returnType();
+        } else if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name) {
+            Ast.ClassDecl owner = findClass(name.name());
+            if (owner == null) return false;
+            Ast.MethodDecl candidate = null;
+            for (Ast.MethodDecl method : owner.methods()) {
+                if (!method.isStatic() || !method.name().equals(member.member())
+                        || !method.parameters().isEmpty()) continue;
+                if (candidate != null) return false;
+                candidate = method;
+            }
+            if (candidate == null || candidate.isAbstract()
+                    || candidate.async() || candidate.suspends()
+                    || !candidate.genericParameters().isEmpty()) return false;
+            body = candidate.body();
+            returnType = candidate.returnType();
+        } else {
+            return false;
+        }
+        if (returnType == null || returnType.isBorrow()
+                || !returnType.arguments().isEmpty()
+                || !(returnType.name().equals("int") || returnType.name().equals("bool")
+                        || returnType.name().equals("float")
+                        || returnType.name().equals("string")
+                        || returnType.name().equals("String"))) return false;
+        return body.size() == 1 && body.getFirst() instanceof Ast.ReturnStmt returned
+                && constructorSafeScalarExpression(returned.value());
+    }
+
+    private boolean constructorSafeScalarExpression(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary)
+            return (unary.operator().equals("-") || unary.operator().equals("+"))
+                    && constructorSafeScalarExpression(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary)
+            return (binary.operator().equals("+") || binary.operator().equals("-")
+                        || binary.operator().equals("*"))
+                    && constructorSafeScalarExpression(binary.left())
+                    && constructorSafeScalarExpression(binary.right());
+        return false;
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -997,7 +1152,45 @@ public final class TypeChecker {
         // child to declare an explicit local override/hide for that slot.
         effectiveCallableTargets(klass, new LinkedHashSet<>());
 
+        // Declaration-site initialization may read constructor arguments in
+        // the declaring class. Unlike constructor-body assignment, the
+        // initialized final slot becomes immutable before any body executes.
+        // This scope is local to klass; inherited initializers are validated
+        // against their own declaring class and cannot capture child params.
+        Ast.ConstructorDecl constructor = klass.constructor();
+        Env fieldInitializerEnv = new Env(null);
+        if (constructor != null) {
+            // The field-initializer ownership checker does not yet prove
+            // moves, borrows or alias lifetime across the constructor boundary.
+            // Admit only independent scalar argument values here. In
+            // particular, never expose the implicit `arguments` tuple:
+            // it can contain an unchecked reference-valued constructor arg.
+            for (Ast.Param param : constructor.parameters()) {
+                Ast.TypeRef paramRef = param.type();
+                String paramName = paramRef.name();
+                boolean scalar = !paramRef.isBorrow()
+                        && paramRef.arguments().isEmpty()
+                        && !param.structural()
+                        && (paramName.equals("int") || paramName.equals("bool")
+                                || paramName.equals("float") || paramName.equals("string"));
+                if (scalar) {
+                    Type parameterType = resolveParam(param, classGenerics, self);
+                    fieldInitializerEnv.define(
+                            param.name(), parameterType,
+                            param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+            }
+        }
+
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() == Ast.ActorKind.NONE
+                    && field.initializer() != null
+                    && fieldInitializerMaySuspend(field.initializer())) {
+                throw new IllegalArgumentException("class field initializer '"
+                        + klass.name() + "." + field.name()
+                        + "' cannot await, select, call, or suspend during object construction "
+                        + "without a proven transitive effect bound");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -1009,7 +1202,7 @@ public final class TypeChecker {
                 currentClassOwner = klass;
                 lexicalClassOrigin = klass;
                 try {
-                    Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                    Type actual = typeOf(field.initializer(), fieldInitializerEnv, classGenerics, self);
                     requireReadonlyCapabilityPreserved(
                             actual,
                             fieldType,
@@ -1026,7 +1219,6 @@ public final class TypeChecker {
             }
         }
 
-        Ast.ConstructorDecl constructor = klass.constructor();
         if (constructor != null) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -1596,8 +1788,8 @@ public final class TypeChecker {
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (inDiscardingSelectArm) {
                 warnings.add(ret.value() == null
-                        ? "W-SELECT-RETURN: return; exits only the selected do-select arm; prefer normal fallthrough"
-                        : "W-SELECT-RETURN: return value in do select exits only the selected arm; the value is discarded");
+                        ? "W-SELECT-RETURN: legacy do nb select return; exits only the detached arm"
+                        : "W-SELECT-RETURN: legacy do nb select return value is arm-local and discarded");
             }
             if (currentGenerator) {
                 if (ret.value() != null) {
@@ -1751,9 +1943,9 @@ public final class TypeChecker {
                                 arm.bindingKind());
                     }
                 }
-                if (selected.explicitDo()) {
-                    // Every do-select return is arm-local, including blocking do select.
-                    // A returned value is evaluated, discarded, and warned about.
+                if (selected.explicitDo() && selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    // Legacy detached do-nb-select arms cannot return from an
+                    // already-continued enclosing callable.
                     checkIsolatedArmBlock(arm.body(), armEnv, generics,
                             Unknown.INSTANCE, self, true);
                 } else if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
@@ -1925,6 +2117,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
+            List<Type> dynamicFixedSlots = List.of();
             String where;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
@@ -1940,7 +2133,22 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                else if (receiver instanceof Tuple tuple) {
+                    // Constant reads preserve individual slot types, so
+                    // writes must retain the same invariant.
+                    Long constant = constantTupleIndex(indexed.index());
+                    if (tuple.elements().isEmpty() || (constant != null
+                            && (constant < 0 || constant >= tuple.elements().size()))) {
+                        throw new IllegalArgumentException("fixed collection index outside arity "
+                                + tuple.elements().size());
+                    }
+                    if (constant != null) {
+                        targetType = tuple.elements().get(constant.intValue());
+                    } else {
+                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                        dynamicFixedSlots = tuple.elements();
+                    }
+                }
                 else throw new IllegalArgumentException(
                         "indexed assignment requires an array/list or tuple; structs have a closed static field set");
                 where = "index";
@@ -1948,6 +2156,10 @@ public final class TypeChecker {
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
+            for (Type slot : dynamicFixedSlots) {
+                requireReadonlyCapabilityPreserved(value, slot, "dynamic fixed collection slot assignment");
+                requireAssignable(value, slot, "dynamic fixed collection slot assignment");
+            }
             if (assignment.target() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr owner) {
                 env.markInitialized(owner.name(), member.member());
@@ -3430,6 +3642,72 @@ public final class TypeChecker {
                 case IMMEDIATE -> new Named("Option", List.of(element));
             };
         }
+        if (expr instanceof Ast.MatchExpr valueMatch) {
+            Type subject = deref(typeOf(valueMatch.subject(), env, generics, self));
+            Type declaredResult = valueMatch.resultType() == null ? null
+                    : resolve(valueMatch.resultType(), generics, self);
+            if (declaredResult == Primitive.VOID || declaredResult == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "value match result parameter must be a known, non-void value type");
+            }
+            if (declaredResult instanceof Borrow) {
+                // Inferred value matches already reject branch-local loan escape.
+                // An explicit type must not circumvent that check by erasing &T.
+                throw new IllegalArgumentException(
+                        "value match cannot produce an explicit borrowed result until loan escape is proven");
+            }
+            Type result = declaredResult;
+            List<Ast.MatchArm> proofArms = new ArrayList<>();
+            Map<Env.Binding, Set<String>> before = env.initializationSnapshot();
+            try {
+                for (Ast.MatchValueArm arm : valueMatch.arms()) {
+                    env.restoreInitialization(before);
+                    Env armEnv = new Env(env);
+                    checkPattern(arm.pattern(), subject, armEnv, generics, self);
+                    if (arm.guard() != null) {
+                        requireAssignable(
+                                typeOfCondition(arm.guard(), armEnv, generics, self),
+                                Primitive.BOOL,
+                                "value match guard");
+                    }
+                    Type actual = declaredResult == null
+                            ? typeOf(arm.value(), armEnv, generics, self)
+                            : typeOfAgainstExpected(arm.value(), declaredResult, armEnv, generics, self);
+                    if (actual == Primitive.VOID || actual == Unknown.INSTANCE) {
+                        throw new IllegalArgumentException(
+                                "value match arms must return a statically known non-void value");
+                    }
+                    if (declaredResult != null) {
+                        // An explicit result type constrains each arm, but
+                        // cannot erase readonly/ownership capabilities.
+                        requireReadonlyCapabilityPreserved(actual, declaredResult, "value match arm");
+                        requireAssignable(actual, declaredResult, "value match arm");
+                    } else if (result == null) {
+                        result = actual;
+                    } else {
+                        // Preserve the existing invariant inference contract
+                        // when no result parameter was supplied.
+                        requireReadonlyCapabilityPreserved(actual, result, "value match arm");
+                        requireAssignable(actual, result, "value match arm");
+                        requireAssignable(result, actual, "value match arm");
+                    }
+                    proofArms.add(new Ast.MatchArm(
+                            arm.pattern(), arm.guard(),
+                            List.of(new Ast.ReturnStmt(arm.value()))));
+                }
+                // Reuse the canonical finite-domain reachability and
+                // exhaustive-pattern checker. These arm returns are checked
+                // against MatchExpr's result, not the enclosing function.
+                checkMatch(
+                        new Ast.MatchStmt(valueMatch.subject(), true, proofArms),
+                        subject, env, generics, result, self);
+                return result;
+            } finally {
+                // Only the selected arm executes at runtime. Type-checking
+                // all branches cannot establish outer definite-init facts.
+                env.restoreInitialization(before);
+            }
+        }
         if (expr instanceof Ast.DynamicSelectExpr selected) {
             // Dynamic select accepts a SelectSet directly or a runtime
             // list/map of SelectCase values. The exact case element type may
@@ -4867,6 +5145,20 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.TypePattern typed) {
             requireRuntimeReifiableType(typed.type(), "type pattern");
+            requireKnownRuntimePatternTarget(typed.type(), new LinkedHashSet<>());
+            if (typed.type().isComplement()) {
+                Type excluded = deref(resolve(typed.type().complementedType(), generics, self));
+                if (runtimeValueTypeCovered(subject, excluded, 0)) {
+                    throw new IllegalArgumentException(
+                            "unreachable negative type pattern: " + subject + " is contained in " + excluded);
+                }
+                if (typed.binding() != null) {
+                    // A negative test does not prove a concrete positive
+                    // nominal type; retain the subject's static capabilities.
+                    bindings.define(typed.binding(), subject, Ast.BindingKind.VAL);
+                }
+                return;
+            }
             Type target = deref(resolve(typed.type(), generics, self));
             if (!typesMayOverlap(subject, target)) {
                 throw new IllegalArgumentException("unreachable type pattern: " + subject + " cannot be " + target);
@@ -5036,6 +5328,42 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Keep static literal subsumption consistent with valueEquals in the
+     * evaluator. In particular, do not collapse large integral literals to
+     * double: 2^53+1 is not equal to the rounded float 2^53.
+     */
+    private boolean literalPatternRuntimeEquals(Object left, Object right) {
+        if (left instanceof Number a && right instanceof Number b) {
+            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
+                try {
+                    return new java.math.BigDecimal(a.toString())
+                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
+                } catch (NumberFormatException ignored) {
+                    return a.doubleValue() == b.doubleValue();
+                }
+            }
+            boolean integralA = isRuntimeIntegralNumber(a);
+            boolean integralB = isRuntimeIntegralNumber(b);
+            if (integralA && integralB) return a.longValue() == b.longValue();
+            if (integralA != integralB) {
+                Number integer = integralA ? a : b;
+                Number floating = integralA ? b : a;
+                if (!Double.isFinite(floating.doubleValue())) return false;
+                return java.math.BigDecimal.valueOf(integer.longValue())
+                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            }
+            return a.doubleValue() == b.doubleValue();
+        }
+        return java.util.Objects.equals(left, right);
+    }
+
+    private boolean isRuntimeIntegralNumber(Number value) {
+        return value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long;
+    }
+
     private boolean patternSubsumes(
             Ast.Pattern earlier,
             Ast.Pattern later,
@@ -5046,7 +5374,10 @@ public final class TypeChecker {
         if (later instanceof Ast.WildcardPattern || later instanceof Ast.BindingPattern) return false;
 
         if (earlier instanceof Ast.LiteralPattern a && later instanceof Ast.LiteralPattern b) {
-            return java.util.Objects.equals(a.value(), b.value());
+            // Runtime patterns use numeric value equality, not Java boxed
+            // identity: 1 and 1.0 match the same input. A second literal
+            // representing the same runtime value is unreachable.
+            return literalPatternRuntimeEquals(a.value(), b.value());
         }
 
         if (earlier instanceof Ast.TypePattern a && later instanceof Ast.TypePattern b) {
@@ -5112,7 +5443,9 @@ public final class TypeChecker {
         if (left instanceof Ast.WildcardPattern || right instanceof Ast.WildcardPattern
                 || left instanceof Ast.BindingPattern || right instanceof Ast.BindingPattern) return false;
         if (left instanceof Ast.LiteralPattern a && right instanceof Ast.LiteralPattern b) {
-            return !java.util.Objects.equals(a.value(), b.value());
+            // Do not certify 1 and 1.0 as disjoint: runtime equality
+            // intentionally permits equal values across numeric types.
+            return !literalPatternRuntimeEquals(a.value(), b.value());
         }
         if (left instanceof Ast.ConstructorPattern a && right instanceof Ast.ConstructorPattern b) {
             if (!a.constructor().equals(b.constructor())) {
@@ -5188,6 +5521,19 @@ public final class TypeChecker {
         if (depth >= 32) return false;
         for (Ast.Pattern pattern : patterns) {
             if (patternCoversType(pattern, subject, generics, self)) return true;
+        }
+        // Every runtime value either satisfies a reifiable type predicate or
+        // its exact complement. The caller filtered guarded arms already.
+        // Matching TypeRef identities here avoids unsound subtype guesses.
+        for (Ast.Pattern a : patterns) {
+            if (!(a instanceof Ast.TypePattern positive) || positive.type().isComplement()) continue;
+            for (Ast.Pattern b : patterns) {
+                if (b instanceof Ast.TypePattern negative
+                        && negative.type().isComplement()
+                        && negative.type().complementedType().equals(positive.type())) {
+                    return true;
+                }
+            }
         }
 
         if (subject instanceof Union union) {
@@ -5415,8 +5761,56 @@ public final class TypeChecker {
         return a.equals(b);
     }
 
+    /**
+     * Exhaustiveness may use T and !T as a logical partition only if T has
+     * a concrete runtime predicate. Unknown nominal names and unreified
+     * aliases cannot silently become a predicate that always returns false.
+     */
+    private void requireKnownRuntimePatternTarget(Ast.TypeRef ref, Set<String> aliases) {
+        if (ref.isComplement()) {
+            requireKnownRuntimePatternTarget(ref.complementedType(), aliases);
+            return;
+        }
+        if (ref.isUnion()) {
+            for (Ast.TypeRef member : ref.arguments()) {
+                requireKnownRuntimePatternTarget(member, aliases);
+            }
+            return;
+        }
+        String name = ref.name();
+        if (Set.of(
+                "int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "uint", "bigint",
+                "float", "f32", "f64", "decimal", "bool", "Bool", "string", "String",
+                "Symbol", "complex", "complex64", "complex128",
+                "Option", "Result", "Array", "List", "Generator", "Iterator",
+                "AsyncGenerator", "AsyncIterator", "IteratorResult").contains(name)
+                || findClass(name) != null || findInterface(name) != null) {
+            return;
+        }
+        Ast.TypeAliasDecl alias = findTypeAlias(name);
+        if (alias != null && alias.genericParameters().isEmpty()) {
+            if (!aliases.add(name)) {
+                throw new IllegalArgumentException("cyclic type alias in runtime pattern '" + name + "'");
+            }
+            try {
+                requireRuntimeReifiableType(alias.target(), "type pattern alias");
+                requireKnownRuntimePatternTarget(alias.target(), aliases);
+            } finally {
+                aliases.remove(name);
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "type pattern '" + name + "' has no known runtime identity; "
+                        + "declare/import a reifiable nominal type or use a supported scalar");
+    }
+
     private void requireRuntimeReifiableType(Ast.TypeRef ref, String operator) {
         if (ref == null) throw new IllegalArgumentException(operator + " requires a runtime-reifiable type");
+        if (ref.isComplement()) {
+            requireRuntimeReifiableType(ref.complementedType(), operator);
+            return;
+        }
         if (ref.isUnion()) {
             for (Ast.TypeRef option : ref.arguments()) requireRuntimeReifiableType(option, operator);
             return;

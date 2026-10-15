@@ -271,6 +271,19 @@ public final class TreeShaker {
                 }
                 return expression;
             }
+            if (expression instanceof Ast.MatchExpr matched) {
+                Ast.Expr subject = substitute(matched.subject(), substitutions, shadowed);
+                List<Ast.MatchValueArm> arms = new ArrayList<>();
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    LinkedHashSet<String> armLocals = new LinkedHashSet<>(shadowed);
+                    addPatternLocalNames(arm.pattern(), armLocals);
+                    arms.add(new Ast.MatchValueArm(
+                            arm.pattern(),
+                            substitute(arm.guard(), substitutions, armLocals),
+                            substitute(arm.value(), substitutions, armLocals)));
+                }
+                return new Ast.MatchExpr(subject, arms, matched.resultType());
+            }
             if (expression instanceof Ast.TypeTestExpr test) {
                 return new Ast.TypeTestExpr(
                         substitute(test.value(), substitutions, shadowed),
@@ -726,7 +739,7 @@ public final class TreeShaker {
                             rewriteExpression(arm.guard(), module, armLocals),
                             rewriteStatements(arm.body(), module, armLocals)));
                 }
-                return List.of(new Ast.MatchStmt(subject, matched.ordered(), arms));
+                return List.of(new Ast.MatchStmt(subject, matched.ordered(), arms, matched.procedural()));
             }
             if (statement instanceof Ast.SwitchStmt switched) {
                 Ast.Expr subject = rewriteExpression(switched.subject(), module, locals);
@@ -828,6 +841,19 @@ public final class TreeShaker {
             if (constant != UNKNOWN) return new Ast.LiteralExpr(constant);
 
             if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) return expression;
+            if (expression instanceof Ast.MatchExpr matched) {
+                Ast.Expr subject = rewriteExpression(matched.subject(), module, locals);
+                List<Ast.MatchValueArm> arms = new ArrayList<>();
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> armLocals = new LinkedHashMap<>(locals);
+                    addPatternLocals(arm.pattern(), armLocals);
+                    arms.add(new Ast.MatchValueArm(
+                            arm.pattern(),
+                            rewriteExpression(arm.guard(), module, armLocals),
+                            rewriteExpression(arm.value(), module, armLocals)));
+                }
+                return new Ast.MatchExpr(subject, arms, matched.resultType());
+            }
             if (expression instanceof Ast.TypeTestExpr test) {
                 return new Ast.TypeTestExpr(
                         rewriteExpression(test.value(), module, locals),
@@ -1280,6 +1306,18 @@ public final class TreeShaker {
                     }
                 }
                 scanExpression(module, member.receiver(), locals);
+                return;
+            }
+            if (expression instanceof Ast.MatchExpr matched) {
+                scanExpression(module, matched.subject(), locals);
+                if (matched.resultType() != null) scanType(matched.resultType());
+                for (Ast.MatchValueArm arm : matched.arms()) {
+                    LinkedHashSet<String> armLocals = new LinkedHashSet<>(locals);
+                    addPatternLocalNames(arm.pattern(), armLocals);
+                    scanPatternTypes(arm.pattern());
+                    scanExpression(module, arm.guard(), armLocals);
+                    scanExpression(module, arm.value(), armLocals);
+                }
                 return;
             }
             if (expression instanceof Ast.TypeTestExpr test) {
