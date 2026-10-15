@@ -104,6 +104,10 @@ public final class TypeChecker {
     private Type questionPropagationReturn;
     private boolean checkingTrapOperand;
     private boolean questionSeenInCallable;
+    // Async ? v1 is admitted only as the complete initializer of a binding.
+    // The SourceTask evaluator then converts its early result into SourceFlow
+    // before entering any arbitrary condition/match expression callbacks.
+    private boolean asyncQuestionBindingInitializer;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -675,11 +679,11 @@ public final class TypeChecker {
         Type previousQuestionReturn = questionPropagationReturn;
         boolean previousQuestionSeen = questionSeenInCallable;
         questionSeenInCallable = false;
-        questionPropagationReturn = fn.async() || fn.suspends() || fn.generator()
+        questionPropagationReturn = fn.suspends() || fn.generator()
                 || fn.actorKind() != Ast.ActorKind.NONE ? null : returns;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
-            if (questionSeenInCallable && questionSourceTaskRisk(fn.body())) {
+            if (!fn.async() && questionSeenInCallable && questionSourceTaskRisk(fn.body())) {
                 throw new IllegalArgumentException(
                         "postfix ? requires proven synchronous execution; "
                         + "the enclosing callable can execute on a SourceTask continuation");
@@ -1477,11 +1481,11 @@ public final class TypeChecker {
             Type previousQuestionReturn = questionPropagationReturn;
             boolean previousQuestionSeen = questionSeenInCallable;
             questionSeenInCallable = false;
-            questionPropagationReturn = method.async() || method.suspends()
+            questionPropagationReturn = method.suspends()
                     || currentActorKind != Ast.ActorKind.NONE ? null : returns;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
-                if (questionSeenInCallable && questionSourceTaskRisk(method.body())) {
+                if (!method.async() && questionSeenInCallable && questionSourceTaskRisk(method.body())) {
                     throw new IllegalArgumentException(
                             "postfix ? requires proven synchronous execution; "
                             + "the enclosing method can execute on a SourceTask continuation");
@@ -1724,9 +1728,16 @@ public final class TypeChecker {
                 permittedPartialStructInitializer = explicitInitializer;
             }
             Type actual;
+            boolean previousAsyncQuestionBinding = asyncQuestionBindingInitializer;
+            // A direct postfix ? is the only async expression shape whose
+            // early-return callback reaches SourceFlow without another
+            // statement-specific continuation or catch boundary.
+            asyncQuestionBindingInitializer = binding.initializer() instanceof Ast.UnaryExpr unary
+                    && unary.operator().equals("?");
             try {
                 actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
             } finally {
+                asyncQuestionBindingInitializer = previousAsyncQuestionBinding;
                 permittedPartialStructInitializer = previousPartial;
             }
             if (actual instanceof Record record && record.readOnly() && binding.mutableReferent()) {
@@ -2270,19 +2281,37 @@ public final class TypeChecker {
             return new Named("Option", List.of(inner));
         }
         if (expr instanceof Ast.UnaryExpr unary) {
-            Type operand = typeOf(unary.operand(), env, generics, self);
+            boolean outerAsyncQuestionBinding = asyncQuestionBindingInitializer;
+            // An inner ? inside the operand of an outer ? is not a direct
+            // initializer, even when the outer expression is admitted.
+            if (currentAsyncCallable && unary.operator().equals("?")) {
+                asyncQuestionBindingInitializer = false;
+            }
+            Type operand;
+            try {
+                operand = typeOf(unary.operand(), env, generics, self);
+            } finally {
+                asyncQuestionBindingInitializer = outerAsyncQuestionBinding;
+            }
             if (unary.operator().equals("?")) {
-                if (questionOperandHasExplicitSuspension(unary.operand())) {
+                if (!currentAsyncCallable
+                        && questionOperandHasExplicitSuspension(unary.operand())) {
                     throw new IllegalArgumentException(
                             "postfix ? cannot enclose await, select, or channel suspension "
-                            + "until continuation-local early return is implemented");
+                            + "in a synchronous callable");
                 }
-                if (questionPropagationReturn == null || currentMaySuspend
-                        || currentGenerator || currentAsyncCallable
-                        || inDiscardingSelectArm || checkingTrapOperand) {
+                if (questionPropagationReturn == null
+                        || currentMaySuspend && !currentAsyncCallable
+                        || currentGenerator || inDiscardingSelectArm
+                        || checkingTrapOperand) {
                     throw new IllegalArgumentException(
-                            "postfix ? requires a synchronous local Result/Option callable; "
-                            + "not admitted in async, suspending, detached, trap, or actor contexts yet");
+                            "postfix ? requires a local Result/Option return boundary; "
+                            + "not admitted in suspends-only, detached, trap, or actor contexts");
+                }
+                if (currentAsyncCallable && !outerAsyncQuestionBinding) {
+                    throw new IllegalArgumentException(
+                            "postfix ? in async callable requires a direct binding initializer "
+                            + "(val T name = (await future)?); other placements are not lowered yet");
                 }
                 if (!(operand instanceof Named sum) || !(questionPropagationReturn instanceof Named destination)) {
                     throw new IllegalArgumentException(
