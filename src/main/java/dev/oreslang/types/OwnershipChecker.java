@@ -837,6 +837,14 @@ public final class OwnershipChecker {
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         state.borrowLease = value.borrowLease;
+        // A readonly structural type is not proof of a closed source pack:
+        // only immutable, unannotated literal-origin records carry that fact.
+        // Mirrors TypeChecker's origin rule for standalone ownership passes.
+        state.closedRecordPack = binding.declaredType() == null
+                && binding.initializer() instanceof Ast.ObjectExpr object
+                && object.recordLiteral()
+                && !binding.mutableReferent()
+                && binding.kind() != Ast.BindingKind.LET;
         scope.define(binding.name(), state);
     }
 
@@ -1375,6 +1383,12 @@ public final class OwnershipChecker {
                     throw error("cannot spread non-Copy elements from a borrowed tuple; "
                             + "pass owned values explicitly");
                 }
+                // This check is intentionally before the builtin and indirect
+                // callable fallback paths, which may never reach checkArguments.
+                if (type.isReadonlyRecordType()
+                        && !isClosedRecordPack(spread.expression(), scope)) {
+                    throw error("record spread requires immutable, literal-origin closed pack provenance");
+                }
             }
         }
         if (isBooleanIntrinsicCall(call, scope)) {
@@ -1864,6 +1878,16 @@ public final class OwnershipChecker {
     // Argument-root comparison alone does not protect f(&mut q, q.method()).
     private record CallArgumentLoan(VarState root, boolean mutable) { }
 
+    private boolean isClosedRecordPack(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.ObjectExpr object) return object.recordLiteral();
+        if (expression instanceof Ast.NameExpr name) {
+            VarState binding = scope.lookup(name.name());
+            return binding != null && binding.closedRecordPack
+                    && !binding.rebindable && !binding.mutable;
+        }
+        return false;
+    }
+
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
         int parameterIndex = 0;
         List<Ast.Param> sourceParameters = params;
@@ -1925,6 +1949,10 @@ public final class OwnershipChecker {
                         spreadType = referent;
                     }
                     if (spreadType.isReadonlyRecordType()) {
+                        if (!isClosedRecordPack(spread.expression(), scope)) {
+                            throw error(callable + " record spread requires immutable, literal-origin "
+                                    + "closed pack provenance; readonly structural shape is insufficient");
+                        }
                         Map<String, Ast.TypeRef> fields = spreadType.recordMembers();
                         if (fields.isEmpty()) {
                             throw error(callable + " record spread requires a nonempty closed pack");
@@ -2422,9 +2450,13 @@ public final class OwnershipChecker {
                 closure.define(capture.name, new VarState(source.type, source.mutable, source.rebindable, source.kind, Origin.CAPTURE));
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 if (!deferredCleanup) move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE);
+                captured.closedRecordPack = source.closedRecordPack && !source.rebindable;
+                closure.define(capture.name, captured);
             } else {
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE);
+                captured.closedRecordPack = source.closedRecordPack && !source.rebindable;
+                closure.define(capture.name, captured);
             }
         }
 
@@ -3527,14 +3559,15 @@ public final class OwnershipChecker {
                 continue;
             }
 
-            continuation.define(
-                    capture.name,
-                    new VarState(
-                            source.type,
-                            capture.write && source.mutable,
-                            capture.write && source.rebindable,
-                            source.kind,
-                            Origin.CAPTURE));
+            VarState captured = new VarState(
+                    source.type,
+                    capture.write && source.mutable,
+                    capture.write && source.rebindable,
+                    source.kind,
+                    Origin.CAPTURE);
+            captured.closedRecordPack = !capture.write
+                    && !source.rebindable && source.closedRecordPack;
+            continuation.define(capture.name, captured);
         }
         return continuation;
     }
@@ -3843,6 +3876,8 @@ public final class OwnershipChecker {
         /** Synthetic aggregate aliases, currently used by the implicit arguments tuple. */
         private List<VarState> aggregateSources = List.of();
         private String debugName = "<value>";
+        /** Verified immutable source-literal provenance, not just a readonly type. */
+        private boolean closedRecordPack;
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
             this(type, mutable, mutable, kind, origin);
