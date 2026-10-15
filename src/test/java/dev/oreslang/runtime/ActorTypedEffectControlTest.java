@@ -491,6 +491,8 @@ final class ActorTypedEffectControlTest {
             assertNull(consumed.get(),
                     "cancelled actor must not manually consume supervisor CONTROL");
             assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1L, actors.childFailureControlNoticesDropped(),
+                    "cancelled parent must account for its unconsumed CONTROL notice");
             // The host audit notice is independent of the cancelled parent's inbox.
             assertEquals(child.get().id(),
                     actors.pollActorFailureNotice().orElseThrow().actorId());
