@@ -28,6 +28,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
+        self.repository_ids = [71001] * 100
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -36,6 +37,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.route_calls.append((method, route, payload))
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
+                        id=self.repository_ids.pop(0),
                         private=True, default_branch="main")
         if route == "repos/trusted/ci/git/blobs":
             raw = base64.b64decode(payload["content"])
@@ -103,6 +105,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
+
+    def test_missing_or_noninteger_destination_id_rejects_before_any_write(self):
+        # bool is an int subclass in Python; a GitHub repository ID cannot
+        # be a bool, missing, zero, negative or an unparsed string.
+        for invalid in (None, True, False, "71001", 0, -1):
+            with self.subTest(invalid=invalid):
+                self.repository_ids = [invalid]
+                self.route_calls.clear()
+                with self.assertRaisesRegex(pub.Denied, "identity"):
+                    self.publish()
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
+    def test_same_slug_recreated_under_different_repo_id_aborts_transfer(self):
+        # First lookup is the pre-upload binding; after one uploaded blob
+        # GitHub reports a distinct private repository under the same slug.
+        self.repository_ids = [71001, 71001, 71002]
+        with self.assertRaisesRegex(pub.Denied, "identity"):
+            self.publish()
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+        self.assertFalse(any(route.endswith("/git/refs")
+                             for _, route, _ in self.route_calls))
 
     def test_mid_transfer_policy_revocation_aborts_without_new_branch(self):
         original = self.fake_api
