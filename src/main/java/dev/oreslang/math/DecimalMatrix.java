@@ -92,6 +92,9 @@ public final class DecimalMatrix {
         if (output == left || output == right) {
             throw new IllegalArgumentException("output must not alias inputs");
         }
+        // Stage results until every destination cell passes resource checks.
+        // Failure must not publish a partially updated caller-owned matrix.
+        BigDecimal[] staged = new BigDecimal[output.cells.length];
         for (int row = 0; row < left.rows; row++) {
             for (int column = 0; column < right.columns; column++) {
                 BigDecimal sum = BigDecimal.ZERO;
@@ -101,9 +104,10 @@ public final class DecimalMatrix {
                 }
                 BigDecimal rounded = sum.round(context);
                 validateDecimal(rounded);
-                output.cells[output.index(row, column)] = rounded;
+                staged[output.index(row, column)] = rounded;
             }
         }
+        System.arraycopy(staged, 0, output.cells, 0, staged.length);
     }
 
     private int index(int row, int column) {
