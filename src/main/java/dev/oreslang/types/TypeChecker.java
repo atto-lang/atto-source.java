@@ -100,6 +100,9 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    // Scoped to the nearest callable, never a parent callback/actor turn.
+    private Type questionPropagationReturn;
+    private boolean checkingTrapOperand;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -668,6 +671,9 @@ public final class TypeChecker {
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
         currentMaySuspend = fn.async() || fn.suspends();
+        Type previousQuestionReturn = questionPropagationReturn;
+        questionPropagationReturn = fn.async() || fn.suspends() || fn.generator()
+                || fn.actorKind() != Ast.ActorKind.NONE ? null : returns;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -675,6 +681,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
+            questionPropagationReturn = previousQuestionReturn;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -1458,6 +1465,9 @@ public final class TypeChecker {
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
             currentMaySuspend = method.async() || method.suspends();
+            Type previousQuestionReturn = questionPropagationReturn;
+            questionPropagationReturn = method.async() || method.suspends()
+                    || currentActorKind != Ast.ActorKind.NONE ? null : returns;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -1465,6 +1475,7 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                questionPropagationReturn = previousQuestionReturn;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -2228,7 +2239,14 @@ public final class TypeChecker {
                     : narrowed;
         }
         if (expr instanceof Ast.TrapExpr trapped) {
-            Type inner = typeOf(trapped.expression(), env, generics, self);
+            boolean previousTrap = checkingTrapOperand;
+            checkingTrapOperand = true;
+            Type inner;
+            try {
+                inner = typeOf(trapped.expression(), env, generics, self);
+            } finally {
+                checkingTrapOperand = previousTrap;
+            }
             if (inner instanceof Borrow)
                 throw new IllegalArgumentException(
                         "trap cannot wrap a borrowed value without a proven Option loan lifetime");
@@ -2236,6 +2254,34 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            if (unary.operator().equals("?")) {
+                if (questionPropagationReturn == null || currentMaySuspend
+                        || currentGenerator || currentAsyncCallable
+                        || inDiscardingSelectArm || checkingTrapOperand) {
+                    throw new IllegalArgumentException(
+                            "postfix ? requires a synchronous local Result/Option callable; "
+                            + "not admitted in async, suspending, detached, trap, or actor contexts yet");
+                }
+                if (!(operand instanceof Named sum) || !(questionPropagationReturn instanceof Named destination)
+                        || (sum.name().equals("Option") && destination.name().equals("Option")
+                            && sum.arguments().size() == 1 && destination.arguments().size() == 1)
+                        == false && (sum.name().equals("Result") && destination.name().equals("Result")
+                            && sum.arguments().size() == 2 && destination.arguments().size() == 2) == false) {
+                    throw new IllegalArgumentException(
+                            "postfix ? requires matching Result<T,E> or Option<T> "
+                            + "and an enclosing callable returning the same sum kind");
+                }
+                if (!scalarSumCompositionType(sum) || !scalarSumCompositionType(destination)) {
+                    throw new IllegalArgumentException(
+                            "postfix ? v0 requires scalar, non-borrowed Option/Result payloads");
+                }
+                if (sum.name().equals("Result") && !sum.arguments().get(1).equals(destination.arguments().get(1))) {
+                    throw new IllegalArgumentException(
+                            "postfix ? Result error type must exactly match the enclosing Result; "
+                            + "use map_err<E>() to convert explicitly");
+                }
+                return sum.arguments().getFirst();
+            }
             if (unary.operator().equals("&")) {
                 // Reborrow an existing loan; borrowing the wrapper must not
                 // create Borrow<Borrow<T>> or erase the source lifetime.
@@ -3855,6 +3901,8 @@ public final class TypeChecker {
             // constructor's one-time fixed-field initialization privilege.
             currentConstructorOwner = null;
             Type result;
+            Type previousQuestionReturn = questionPropagationReturn;
+            questionPropagationReturn = null; // Uncontextualized lambda may not return from parent.
             try {
                 if (lambda.expressionBody() != null) {
                     result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
@@ -3869,6 +3917,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                questionPropagationReturn = previousQuestionReturn;
             }
             return new Function(parameters, result);
         }
@@ -4546,6 +4595,16 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        Type previousQuestionReturn = questionPropagationReturn;
+        questionPropagationReturn = currentMaySuspend ? null : expected.result();
+        try {
+            validateLambdaAgainstExpectedScoped(lambda, expected, parent, generics, self);
+        } finally {
+            questionPropagationReturn = previousQuestionReturn;
+        }
+    }
+
+    private void validateLambdaAgainstExpectedScoped(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
