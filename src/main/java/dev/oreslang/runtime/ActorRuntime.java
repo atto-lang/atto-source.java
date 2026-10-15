@@ -2249,6 +2249,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorGroup implements AutoCloseable {
         private final ActorGroupId id;
         private final ActorId creator;
+        private final ActorGroupPlacementPolicy placementPolicy;
         private final int memberLimit;
         private final int eventTopicLimit;
         private final Set<ActorId> members = ConcurrentHashMap.newKeySet();
@@ -2271,9 +2272,11 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorGroup(
                 ActorGroupId id,
                 ActorId creator,
-                IsolatePolicy creatorPolicy) {
+                IsolatePolicy creatorPolicy,
+                ActorGroupPlacementPolicy placementPolicy) {
             this.id = Objects.requireNonNull(id, "id");
             this.creator = creator;
+            this.placementPolicy = Objects.requireNonNull(placementPolicy, "placementPolicy");
             Objects.requireNonNull(creatorPolicy, "creatorPolicy");
             this.memberLimit = Math.max(
                     1,
@@ -2290,6 +2293,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public ActorGroupId id() { return id; }
+
+        /** Host-validated placement policy; no additional scheduler or actor capability. */
+        public ActorGroupPlacementPolicy placementPolicy() {
+            requireObserver("inspect ActorGroup placement");
+            return placementPolicy;
+        }
 
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
@@ -3437,8 +3446,18 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public ActorGroup createActorGroup() {
+        return createActorGroup(ActorGroupPlacementPolicy.unrestricted());
+    }
+
+    /**
+     * Host-side atomic placement admission: unsupported constraints must fail
+     * before any group id, membership or quota slot can be published.
+     */
+    public ActorGroup createActorGroup(ActorGroupPlacementPolicy placementPolicy) {
         requireCallerRuntimeAffinity("create an ActorGroup");
         requireNotActorGroupMailman("create an ActorGroup");
+        Objects.requireNonNull(placementPolicy, "placementPolicy");
+        placementPolicy.requireSupported();
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         ActorId creator = currentActorId().orElse(null);
@@ -3488,7 +3507,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 while (true) {
                     ActorGroupId id = ActorGroupId.create();
-                    ActorGroup group = new ActorGroup(id, creator, creatorPolicy);
+                    ActorGroup group = new ActorGroup(id, creator, creatorPolicy, placementPolicy);
                     if (actorGroups.putIfAbsent(id, group) == null) {
                         if (joined != null) {
                             joined.add(id);
