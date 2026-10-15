@@ -1744,12 +1744,11 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 SourceFlowCont continuation) {
             if (index >= statements.size()) {
-                finishBlock(
-                        task,
-                        env,
-                        defers,
-                        SourceFlow.normal(),
-                        continuation);
+                // runBlock owns defer execution and mutex-guard release.
+                // This statement walker reports a flow exactly once; calling
+                // finishBlock here and then again in runBlock's continuation
+                // would attempt block cleanup twice.
+                continuation.accept(task, SourceFlow.normal());
                 return;
             }
 
@@ -1765,36 +1764,16 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     executeStatement(stmt, env, defers, false);
                 } catch (ReturnSignal returned) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.returning(returned.value),
-                            continuation);
+                    continuation.accept(task, SourceFlow.returning(returned.value));
                     return;
                 } catch (BreakSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.breaking(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.breaking());
                     return;
                 } catch (ContinueSignal ignored) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.continuing(),
-                            continuation);
+                    continuation.accept(task, SourceFlow.continuing());
                     return;
                 } catch (RuntimeException | Error failure) {
-                    finishBlock(
-                            task,
-                            env,
-                            defers,
-                            SourceFlow.throwing(failure),
-                            continuation);
+                    continuation.accept(task, SourceFlow.throwing(failure));
                     return;
                 }
                 // A later source statement or completion callback is not part
@@ -1820,12 +1799,7 @@ public final class OresEvalRootNode extends RootNode {
                                     index + 1,
                                     continuation);
                         } else {
-                            finishBlock(
-                                    task,
-                                    env,
-                                    defers,
-                                    flow,
-                                    continuation);
+                            continuation.accept(task, flow);
                         }
                     });
         }
