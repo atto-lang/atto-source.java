@@ -29,7 +29,8 @@ struct ores_source_task_cap {
     struct ores_source_task_cap *next;
     struct ores_actor_cap *actor;
     uint64_t task_id, generation;
-    bool retired, ticket_issued, ticket_closed, terminal_injected;
+    bool retired, ticket_issued, ticket_closed, ticket_claimed;
+    bool terminal_injected, terminal_aborted;
 };
 struct ores_cleanup_cap {
     struct ores_cleanup_cap *next;
@@ -295,7 +296,10 @@ ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
     ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
         if (source->actor->active || (source->ticket_issued
-                                         && !source->ticket_closed))
+                                         && !source->ticket_closed)
+                || (source->ticket_claimed
+                    && !source->terminal_injected
+                    && !source->terminal_aborted))
             status = ORES_TURN_BUSY;
         else {
             source->retired = true;
@@ -351,6 +355,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                     (*out)->source = ticket->source;
                     ticket->consumed = true;
                     ticket->source->ticket_closed = true;
+                    ticket->source->ticket_claimed = true;
                     a->pending_tickets--;
                 }
             }
@@ -436,6 +441,15 @@ ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm, ores_actor_cap *actor)
         else {
             actor->stopped = true;
             actor->revoked = true;
+            /* A consumed cleanup ticket without actual terminal injection
+             * remains a retirement barrier until explicit force-abort.
+             * Force does NOT preempt an outstanding physical carrier lease.
+             */
+            for (ores_source_task_cap *s = vm->sources; s; s = s->next) {
+                if (s->actor == actor && s->ticket_claimed
+                        && !s->terminal_injected)
+                    s->terminal_aborted = true;
+            }
             for (ores_cleanup_cap *t = vm->tickets; t; t = t->next) {
                 if (t->actor == actor && !t->consumed && !t->cancelled) {
                     t->cancelled = true;
