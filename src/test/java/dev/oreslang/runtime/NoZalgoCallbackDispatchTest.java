@@ -60,6 +60,37 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void alreadyCompletedHostCompletionStageCannotResumeGuestInline()
+            throws Exception {
+        try (var scheduler = new OresScheduler(2)) {
+            AtomicInteger segments = new AtomicInteger();
+            AtomicLong registeringDispatch = new AtomicLong();
+            AtomicBoolean registering = new AtomicBoolean();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                if (segments.getAndIncrement() == 0) {
+                    registering.set(true);
+                    registeringDispatch.set(OresScheduler.currentDispatchId());
+                    try {
+                        var host = java.util.concurrent.CompletableFuture.completedFuture(73);
+                        OresFuture<Integer> awaited = OresFuture.from(host);
+                        assertEquals(1, segments.get(),
+                                "host whenComplete must not invoke guest continuation inline");
+                        return OresScheduler.await(awaited);
+                    } finally {
+                        registering.set(false);
+                    }
+                }
+                assertFalse(registering.get());
+                assertEquals(73, resume.value());
+                assertNotEquals(registeringDispatch.get(), OresScheduler.currentDispatchId());
+                return OresScheduler.done(74);
+            });
+            assertEquals(74, result.get(5, TimeUnit.SECONDS));
+            assertEquals(2, segments.get());
+        }
+    }
+
+    @Test
     void completionFromForeignThreadDuringCurrentSegmentCannotEnterGuestInline()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
