@@ -3825,6 +3825,18 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("child must finish physical teardown before restart");
         }
 
+        // Cancellation may win while the parent is executing an admitted
+        // ChildFailureHandler callback. Fail before consuming this notice or
+        // spending restart intensity. spawnInternal() still performs the
+        // authoritative locked admission check against a later cancellation.
+        synchronized (supervisor.lifecycleLock) {
+            if (supervisor.stopped.get() || supervisor.finalized
+                    || supervisor.forceKillFenced || closed.get()) {
+                throw new CancellationException(
+                        "cannot restart child from a stopping supervisor");
+            }
+        }
+
         // This budget applies to this built-in restart operation, not to
         // arbitrary source-level spawning. The parent owns the state on
         // its serialized actor carrier; no cross-thread mutable ledger.
