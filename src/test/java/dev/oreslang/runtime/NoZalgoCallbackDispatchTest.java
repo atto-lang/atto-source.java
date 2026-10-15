@@ -110,6 +110,57 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void postStopContinuationRegistrationDoesNotCancelUnownedFuture()
+            throws Exception {
+        AtomicReference<ActorRuntime.ContinuationTarget> target = new AtomicReference<>();
+        AtomicReference<Throwable> receiveFailure = new AtomicReference<>();
+        AtomicInteger guestCallbacks = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    target.set(runtime.captureCurrentContinuationTarget());
+                    entered.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("receive release timed out");
+                    }
+                } catch (Throwable problem) {
+                    receiveFailure.compareAndSet(null, problem);
+                }
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("hold");
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertTrue(actor.cancel(), "actor must be marked stopped");
+                // The actor still occupies its receive turn, so its ActorCell
+                // has not finalized. The target is valid but no longer admits
+                // any new operation. A producer not yet owned by this actor
+                // must remain independently settleable.
+                var independent = new OresFuture<Integer>();
+                runtime.enqueueOnCompletion(independent, target.get(),
+                        (value, failure) -> guestCallbacks.incrementAndGet());
+                assertFalse(independent.isDone(),
+                        "rejected post-stop registration cancelled external Future");
+                assertEquals(0, independent.pendingRuntimeWaiterCount(),
+                        "rejected registration leaked a Future waiter");
+                assertTrue(independent.completeFromRuntime(17),
+                        "rejected registration must not consume producer authority");
+                assertEquals(17, independent.get(0, TimeUnit.MILLISECONDS));
+                assertEquals(0, guestCallbacks.get(),
+                        "stopped actor accepted a new guest continuation");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertNull(receiveFailure.get(),
+                    () -> String.valueOf(receiveFailure.get()));
+            assertEquals(0, guestCallbacks.get());
+        }
+    }
+
+    @Test
     void continuationTargetCannotBeTransferredIntoAnotherRuntime()
             throws Exception {
         AtomicReference<Throwable> observedFailure = new AtomicReference<>();
