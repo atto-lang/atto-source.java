@@ -198,14 +198,19 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
+            Throwable consumerFailure = null;
             try {
                 // Deliver the older buffered value before notifying producers
                 // whose writes were admitted into the newly freed capacity.
                 consumer.accept(value);
+            } catch (RuntimeException | Error failure) {
+                consumerFailure = failure;
+                throw failure;
             } finally {
-                // A throwing mailbox consumer must not strand already-committed
-                // writes, cancellation cleanup, or released waiter credits.
-                runCompletions(completions);
+                // Preserve the consumer's exception as the primary failure,
+                // without abandoning any already-committed writer completion.
+                final Throwable primary = consumerFailure;
+                runAfterPreservingFailure(primary, () -> runCompletions(completions));
             }
             return true;
         }
@@ -700,8 +705,20 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
-            runCompletions(completions);
-            if (!immediateOnly) attachFutureWaiters();
+            Throwable publicationFailure = null;
+            try {
+                runCompletions(completions);
+            } catch (RuntimeException | Error failure) {
+                publicationFailure = failure;
+                throw failure;
+            } finally {
+                // A failure in an unrelated committed completion must not
+                // leave this registered selection without Future wakeups.
+                if (!immediateOnly) {
+                    final Throwable primary = publicationFailure;
+                    runAfterPreservingFailure(primary, this::attachFutureWaiters);
+                }
+            }
         }
 
         private void attachFutureWaiters() {
@@ -1233,7 +1250,42 @@ public final class ChannelRuntime {
         return result;
     }
 
+    /**
+     * All completions were committed while holding COORDINATOR, so one
+     * failing notification must never strand a later committed notification.
+     * Preserve the first failure and attach later failures in execution order.
+     */
     private static void runCompletions(List<Runnable> completions) {
-        for (Runnable completion : completions) completion.run();
+        Throwable firstFailure = null;
+        for (Runnable completion : completions) {
+            try {
+                completion.run();
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) {
+                    firstFailure = failure;
+                } else if (firstFailure != failure) {
+                    firstFailure.addSuppressed(failure);
+                }
+            }
+        }
+        if (firstFailure instanceof RuntimeException runtimeFailure) {
+            throw runtimeFailure;
+        }
+        if (firstFailure instanceof Error errorFailure) {
+            throw errorFailure;
+        }
+    }
+
+    /**
+     * Always attempt required cleanup/future attachment in a finally block,
+     * while retaining an already-thrown failure as the primary exception.
+     */
+    private static void runAfterPreservingFailure(Throwable primary, Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException | Error failure) {
+            if (primary == null) throw failure;
+            if (primary != failure) primary.addSuppressed(failure);
+        }
     }
 }
