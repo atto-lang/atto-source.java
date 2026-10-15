@@ -366,7 +366,27 @@ public final class Parser {
                 rejectDiscardedDeclarationAnnotations(annotations, "type aliases");
                 return parseTypeAlias(modifiers.visibility);
             }
-            throw error(previous(), "expected class, interface, trait, or type after 'define'");
+            if (match(ENUM)) {
+                validateNoModifiers(modifiers, "enums");
+                rejectCallableStructuralAnnotation(annotations, "enums");
+                rejectDiscardedDeclarationAnnotations(annotations, "enums");
+                return parseTaggedEnum();
+            }
+            if (match(MATCH)) {
+                consume(PATTERN, "expected 'pattern' after 'define match'");
+                validateNoModifiers(modifiers, "match patterns");
+                rejectCallableStructuralAnnotation(annotations, "match patterns");
+                rejectDiscardedDeclarationAnnotations(annotations, "match patterns");
+                return parseNamedPattern();
+            }
+            if (match(PATTERN)) {
+                validateNoModifiers(modifiers, "patterns");
+                rejectCallableStructuralAnnotation(annotations, "patterns");
+                rejectDiscardedDeclarationAnnotations(annotations, "patterns");
+                return parseNamedPattern();
+            }
+            throw error(previous(),
+                    "expected class, interface, trait, type, enum, or match pattern after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
