@@ -6382,6 +6382,16 @@ public final class ActorRuntime implements AutoCloseable {
                     && !forceKillFenced && !forceRevoked && !closed.get();
         }
 
+        /**
+         * A temporary force-revocation fence suspends cleanup admission, not
+         * ownership of the in-flight lexical unwind. Do not retire actor
+         * state/get_done merely because a host revoker is pending. If the
+         * revoker denies the attempt, the same source task must resume.
+         */
+        private boolean hasUnretiredSourceCleanup() {
+            return !sourceCleanupTasks.isEmpty() && !forceRevoked && !closed.get();
+        }
+
         private OresScheduler sourceScheduler() {
             synchronized (lifecycleLock) {
                 if (sourceScheduler != null) return sourceScheduler;
@@ -6479,7 +6489,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()
                     || sourceCancellationPending
-                    || hasSourceCleanup()) return;
+                    || hasUnretiredSourceCleanup()) return;
             finalized = true;
             continuationMailbox.close(ref.terminationCause.get());
             OresScheduler scheduler = sourceScheduler;
@@ -7073,6 +7083,18 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (finalized || !stopped.get() || forceRevoked
                         || sourceCleanupTasks.isEmpty()) return;
+                if (forceKillFenced) {
+                    // A host revoker is still deciding whether the physical
+                    // domain can be killed. It is unsafe to expire lexical
+                    // cleanup while the scheduler is deliberately fenced:
+                    // a denied revocation must preserve the existing unwind.
+                    // Retry after one grace period; at most one timer exists
+                    // per expiry attempt, and terminal/finalized actors exit.
+                    CompletableFuture.delayedExecutor(
+                            ACTOR_CLEANUP_GRACE_MILLIS, TimeUnit.MILLISECONDS)
+                            .execute(this::expireSourceCleanup);
+                    return;
+                }
                 // Structured cancellation normally already supplies a
                 // cancellation cause. A deadline must not be hidden behind
                 // it: report incomplete cleanup through get_done()/CONTROL,
