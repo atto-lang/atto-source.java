@@ -56,14 +56,20 @@ the instance**, and emits a stackless `GuestActorEffectSignal` holding only
 `RAISE` or `PANIC`. Neither `trap` nor explicit source `catch` may
 consume the signal, even through a wrapped host exception. On terminal actor
 failure, the runtime publishes an immutable `ActorFailureNotice` to a bounded
-nonblocking **host/supervisor-only CONTROL queue**, after releasing actor
-lifecycle locks. The notice contains actor identity, structured-parent identity
+nonblocking **host/supervisor-only CONTROL queue** and a bounded, actor-owned
+direct-parent CONTROL inbox. Both offers run after cleanup and the actor-exit
+hook, before termination observers are released. Only bounded nonblocking
+queue offers run while the finalization monitor is held. The notice contains
+actor identity and structured-parent identity
 (if present), effect kind and frozen actor-supervision ABI code 1009; its
 diagnostic is a fixed protocol string, never guest or host exception text.
 A full queue increments a dropped counter instead of blocking an actor.
 
-The initial notification queue is **host-observable**, not yet an automatic
-parent-actor `on_raise`/`recover` invocation. Scheduler-domain delivery,
+The host notification queue remains **host-observable**. Parent actors can
+independently poll their own direct-child CONTROL inbox during an actor turn;
+this is **not** automatic `on_raise`/`recover` dispatch. Parent inboxes are
+lazily allocated on first child failure (256 entries maximum), independent
+of ordinary mailbox capacity; overflow has an actor-owned dropped counter. Scheduler-domain delivery,
 structured recovery hooks, native guest LLVM lowering and end-to-end guest
 actor tests are separate merge blockers. Tests have been added to exercise
 real host actor turns and queue publication, but their execution is not yet
@@ -75,17 +81,20 @@ CI-verified. No live guest Error crosses actor heaps.
   hierarchy. `ThrowStmt` now has **a restricted local lowering**:
   `try { throw new GuestError(...); } catch (e) { ... }` passes
   Error-only type checking and gives `e` the original Oreslang guest object,
-  never a host Java `Throwable`. This is allowed **only** inside a
-  non-actor lexical `try`; async/suspending callables, detached callbacks,
-  borrowed errors and uncaught throws are rejected. `trap` does not consume
+  never a host Java `Throwable`. Outside actors this is allowed **only** inside a
+  lexical `try`. Synchronous actor startup and receive handlers can catch
+  locally, or escalate an unhandled throw to payload-free `raise` at their
+  source boundary. Async/suspending callables, detached callbacks, and
+  borrowed errors remain rejected. `trap` does not consume
   this internal typed guest signal. Host exceptions keep their existing
   explicit-catch policy; cancellation and panic remain uncatchable.
 - All statement visitors (ownership, borrow validation, capability admission,
   return/finally cleanup and incremental tree shaking/dependency scanning)
   now traverse the `throw` operand. `finally` may not throw.
-- `raise`, `panic` and `recover` **remain disabled** until CONTROL
-  publication, actor-local escalation and supervisor testing exist. The
-  limited lexical throw slice is not a promise of complete exception semantics.
+- Synchronous Java actor `raise`/`panic` and actor `throw`-to-`raise`
+  are now present on the draft branch. `recover`, source actor
+  `on_throw`/`on_raise`, automatic dispatch, restart policies and suspended
+  unwind are **not implemented**. These are not yet full exception semantics.
   `NativeGuestErrorRootTest` and `TypedExceptionalEffectAdmissionTest`
   cover the new slice, but **the added tests have not executed in CI**.
 - The LLVM compiler supports only a source subset, and `src/core` is not an
