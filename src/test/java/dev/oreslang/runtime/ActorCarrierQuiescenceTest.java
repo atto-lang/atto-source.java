@@ -235,6 +235,34 @@ final class ActorCarrierQuiescenceTest {
     }
 
     @Test
+    @Timeout(45)
+    void thousandAcceptedMessageAndPhysicalCarrierCyclesPerActorKind() throws Exception {
+        // Source-level NativeHttpTest exercises actor/isoactor under GraalVM;
+        // this host test independently exercises the corresponding trusted
+        // SHARED/PRIVATE scheduler carriers and the quiescence API 1,000
+        // times each on the actual ActorRuntime, not a state-machine model.
+        var sharedDelivered = new java.util.concurrent.atomic.AtomicInteger();
+        var privateDelivered = new java.util.concurrent.atomic.AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> shared = runtime.spawnSharedTrusted(
+                    context -> (message, actorContext) -> sharedDelivered.incrementAndGet());
+            ActorRuntime.ActorRef<Integer> isolated = runtime.spawnPrivateTrusted(
+                    context -> (message, actorContext) -> privateDelivered.incrementAndGet());
+
+            for (int i = 1; i <= 1_000; ++i) {
+                shared.send(i);
+                isolated.send(i);
+                runtime.quiesceAcceptedMessages(shared).get(5, TimeUnit.SECONDS);
+                runtime.quiesceAcceptedMessages(isolated).get(5, TimeUnit.SECONDS);
+                assertEquals(i, sharedDelivered.get(),
+                        "shared actor quiescence preceded accepted mail processing");
+                assertEquals(i, privateDelivered.get(),
+                        "isolated actor quiescence preceded accepted mail processing");
+            }
+        }
+    }
+
+    @Test
     void foreignRuntimeCannotClaimQuiescenceOfAnotherActor() throws Exception {
         try (ActorRuntime owner = new ActorRuntime();
              ActorRuntime foreign = new ActorRuntime()) {
