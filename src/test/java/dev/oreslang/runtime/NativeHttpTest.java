@@ -76,6 +76,20 @@ class NativeHttpTest {
         }
     }
 
+    @Test void noActorDispatchOrTransferAfterRuntimeOrListenerClose() {
+        assertTrue(NativeHttp.mayBeginDispatch(false, false));
+        for (boolean runtimeClosed : new boolean[] {false, true}) {
+            for (boolean listenerStopping : new boolean[] {false, true}) {
+                assertEquals(!runtimeClosed && !listenerStopping,
+                        NativeHttp.mayBeginDispatch(runtimeClosed, listenerStopping),
+                        "runtimeClosed=" + runtimeClosed
+                                + ", listenerStopping=" + listenerStopping);
+            }
+        }
+        assertFalse(NativeHttp.mayBeginDispatch(true, false));
+        assertFalse(NativeHttp.mayBeginDispatch(false, true));
+    }
+
     @Test void dispatchLeasePreventsPrematureRequestRetirement() {
         // Exercise the same predicate used by State.release(), including
         // an abort that closes the socket while actor initialization or a
