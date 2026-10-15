@@ -251,4 +251,73 @@ final class ActorUnaryPostExitPublicationTest {
         }
     }
 
+    @Test
+    void externalReplySubscriberCanWaitForLaterActorTurnWithoutDeadlockingCarrier() throws Exception {
+        var completed = new CountDownLatch(1);
+        var secondTurn = new CountDownLatch(1);
+        var failure = new AtomicReference<Throwable>();
+        var bridge = new ActorUnaryReplyBridge<>(
+                new ActorMiddlewareValuePipeline<Integer>(
+                        List.of(), List.of(), Set.of(),
+                        req -> CompletableFuture.completedFuture(31)));
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                if (message == 2) {
+                    secondTurn.countDown();
+                    return;
+                }
+                var ticket = new ActorUnaryReplySlot<
+                        ActorMiddlewareValuePipeline.Reply<Integer>>(
+                        context.self().id(), context.self().generation(), UUID.randomUUID());
+                bridge.dispatchActorOwnedPostExit(context, ticket, request(), () -> false)
+                        .whenComplete((reply, error) -> {
+                            try {
+                                assertNull(error);
+                                assertEquals(31, reply.value());
+                                assertFalse(ActorRuntime.inActorExecution());
+                                assertFalse(ActorRuntime.isActorCarrierThread());
+                                // Deliberately block this external subscriber on
+                                // the very same actor's next mailbox turn.
+                                context.self().send(2);
+                                assertTrue(secondTurn.await(3, TimeUnit.SECONDS),
+                                        "external subscriber must not hold the actor scheduling lease");
+                            } catch (Throwable thrown) {
+                                failure.set(thrown);
+                            } finally {
+                                completed.countDown();
+                            }
+                        });
+            });
+            actor.send(1);
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(failure.get(), () -> String.valueOf(failure.get()));
+            assertTrue(actor.isAlive());
+        }
+    }
+
+    @Test
+    void postExitCallbackCannotExecuteOnActorDispatcherCarrier() throws Exception {
+        var completed = new CountDownLatch(1);
+        var error = new AtomicReference<Throwable>();
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) ->
+                    runtime.publishAfterCurrentActorCarrierExit(() -> {
+                        try {
+                            assertFalse(ActorRuntime.inActorExecution());
+                            assertFalse(ActorRuntime.isActorCarrierThread());
+                            assertFalse(runtime.currentThreadOwnsActorExecutionLease());
+                            assertTrue(Thread.currentThread().getName()
+                                    .startsWith("ores-external-reply-publisher-"));
+                        } catch (Throwable thrown) {
+                            error.set(thrown);
+                        } finally {
+                            completed.countDown();
+                        }
+                    }));
+            actor.send(1);
+            assertTrue(completed.await(3, TimeUnit.SECONDS));
+            assertNull(error.get(), () -> String.valueOf(error.get()));
+        }
+    }
+
 }
