@@ -112,8 +112,18 @@ final class ActorGroupTurnGate implements AutoCloseable {
         try {
             ticket.submitToDispatcher.accept(ticket);
         } catch (RuntimeException | Error failure) {
-            // A rejected downstream dispatcher cannot strand the group permit.
-            ticket.release();
+            // A broken dispatcher is not a transient scheduling delay. Close
+            // admission and cancel the entire bounded waiting queue FIRST.
+            // Otherwise ticket.release() recursively hands each waiter to the
+            // same rejected executor and eventually overflows the Java stack.
+            // Remaining active turns retain their leases until full unwind.
+            try {
+                close();
+            } catch (RuntimeException | Error cleanupFailure) {
+                if (cleanupFailure != failure) failure.addSuppressed(cleanupFailure);
+            } finally {
+                ticket.release();
+            }
             throw failure;
         }
     }
