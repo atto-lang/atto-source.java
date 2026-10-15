@@ -66,6 +66,13 @@ made for this branch.
 
 ## Review blocker
 
+The checker also mirrors the evaluator's conservative import rule:
+any imported member dispatch in a source unit can make a synchronous
+`?` frame ineligible until the runtime's precise effect/scheduler
+classification is available. This is deliberately stricter than examining
+only imported *value* names; qualified and type-related import forms must
+not bypass the SourceTask admission guard.
+
 For **synchronous** callables, the checker rejects `?` when the callable
 body can reach a SourceTask path, including ordinary source functions
 whose callees contain `await`, blocking channels or selects.
