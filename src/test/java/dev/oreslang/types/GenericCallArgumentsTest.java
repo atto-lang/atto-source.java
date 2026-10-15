@@ -231,4 +231,26 @@ final class GenericCallArgumentsTest {
             assertEveryPermutation(names, shuffled, index + 1, count);
         }
     }
+    @Test
+    void nullGenericBindingsFailWithLanguageDiagnosticBeforeDefaultPublication() {
+        List<String> slots = List.of("A", "B");
+        List<Ast.GenericParameter> specs = List.of(
+                new Ast.GenericParameter("A", null),
+                new Ast.GenericParameter("B", type("int")));
+        java.util.Map<String, Ast.TypeRef> bindings = new java.util.LinkedHashMap<>();
+        bindings.put("A", null);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> GenericCallArguments.applyDefaults(
+                        slots, specs, bindings, java.util.Set.of(),
+                        ref -> ref, GenericCallArgumentsTest::substitute,
+                        ref -> GenericCallArguments.containsUnresolvedAstGeneric(
+                                ref, java.util.Set.copyOf(slots)),
+                        "null-binding fixture"));
+        assertTrue(error.getMessage().contains("null generic binding"), error.getMessage());
+        assertEquals(1, bindings.size(), "failed default admission must be atomic");
+        assertTrue(bindings.containsKey("A"));
+        assertNull(bindings.get("A"));
+        assertFalse(bindings.containsKey("B"));
+    }
+
 }

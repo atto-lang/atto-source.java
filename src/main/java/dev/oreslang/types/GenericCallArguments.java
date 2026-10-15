@@ -119,6 +119,16 @@ final class GenericCallArguments {
         // Atomicity matters for callers that retain the original binding map:
         // a late unresolved dependency cannot publish earlier partial defaults.
         Map<String, T> staged = new LinkedHashMap<>(bindings);
+        // Source inference should never publish null bindings, but generated
+        // ASTs and independent ownership admission can supply malformed
+        // maps. Reject those before Map.copyOf(staged) leaks a host NPE.
+        // The original bindings are not modified on this failure path.
+        for (Map.Entry<String, T> entry : staged.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) {
+                throw new IllegalArgumentException(
+                        "null generic binding is forbidden in " + label);
+            }
+        }
         for (Ast.GenericParameter spec : specs) {
             if (spec.defaultType() == null
                     || staged.containsKey(spec.name())
