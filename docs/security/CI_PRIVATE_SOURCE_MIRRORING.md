@@ -377,3 +377,29 @@ source branch revision.
 The source and carrier branch protections and protected-main approval files
 remain independent prerequisites. No source export, private CI branch
 creation or protected-branch bypass is authorized by these tests.
+
+
+### Adversarial manifest isolation — source-free verification (2026-10-15)
+
+The publisher's `source_tree_sha` helper now rejects ambiguous file/directory
+collisions in **both** input orders, duplicate file paths, invalid traversal
+components and invalid Git file modes. A previous direct-call sequence could
+replace a nested directory with a file silently, or raise `AttributeError`
+instead of a deterministic `Denied`. Ordinary on-disk directory traversal
+already forbids this impossible filesystem state, but the hash helper must not
+silently accept a malformed programmatically supplied manifest.
+
+A focused isolated test of the extracted hashing function checked eight
+invalid manifests, a known canonical Git-tree hash, and 30 randomized valid
+trees against independent local `git write-tree`.
+
+[Benefactor private Actions run #38807447374](https://github.com/benefactor-cc/backend.rs/actions/runs/38807447374)
+**passed**, executing four job steps. Its synthetic-only manifest contract
+rejected eight ambiguous paths and completed 30 randomized Git fixtures.
+The same run also repeated the 554-file JSON-bounded Git API test, using nine
+tree batches and two blob uploads (11 Git-object POSTs) with exact tree SHA
+`5fbd663e02b096ca8288cab3bb71ac1634edc76a`.
+The test did **not** transport private compiler code or execute the complete
+private exporter test suite. The PR now contains 132 Python test methods
+that still require an authorized trusted runner. No private source transfer
+is authorized by this synthetic evidence.
