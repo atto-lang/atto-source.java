@@ -46,18 +46,26 @@ public final class VersionedActorCell {
         return new Snapshot(this, current);
     }
 
+    private static Commit observed(Commit outcome) {
+        if (ActorRaceInstrumentation.enabled()) {
+            ActorRaceInstrumentation.runtime().observeCheckedCommit(
+                    outcome == Commit.CONFLICT);
+        }
+        return outcome;
+    }
+
     /** Exactly one atomic commit, never a blind retry of guest computations. */
     public Commit tryCommit(Snapshot captured, long replacement) {
         Objects.requireNonNull(captured, "captured actor snapshot");
-        if (captured.origin != this) return Commit.FOREIGN;
+        if (captured.origin != this) return observed(Commit.FOREIGN);
         for (;;) {
             State current = state.get();
-            if (current.retired()) return Commit.RETIRED;
-            if (current.version() != captured.version) return Commit.CONFLICT;
-            if (current.version() == Long.MAX_VALUE) return Commit.EXHAUSTED;
+            if (current.retired()) return observed(Commit.RETIRED);
+            if (current.version() != captured.version) return observed(Commit.CONFLICT);
+            if (current.version() == Long.MAX_VALUE) return observed(Commit.EXHAUSTED);
             if (state.compareAndSet(current,
                     new State(current.version() + 1, replacement, false))) {
-                return Commit.COMMITTED;
+                return observed(Commit.COMMITTED);
             }
         }
     }
