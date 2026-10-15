@@ -1051,6 +1051,82 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": self.expected_tree}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    def test_bulk_plan_is_bounded_and_binary_never_inlined(self):
+        files = [(f"src/file-{i:03}.ores", b"x" * 8192, "100644")
+                 for i in range(70)]
+        files[35] = ("src/file-035.ores", b"\\xff\\x00", "100644")
+        batches = pub.prepare_source_tree_batches(files)
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(sum(map(len, batches)), 70)
+        self.assertEqual(batches[0][0][3], "x" * 8192)
+        self.assertIsNone([row for batch in batches for row in batch
+                           if row[0] == "src/file-035.ores"][0][3])
+        self.assertTrue(all(len(batch) <= pub.TREE_BATCH_MAX_ENTRIES
+                            for batch in batches))
+        self.assertTrue(all(
+            sum((len(data) if text is not None else 40) + len(rel.encode("utf-8")) + 128
+                for rel, data, _, text in batch) <= pub.TREE_BATCH_MAX_BYTES
+            for batch in batches if len(batch) > 1))
+
+    def test_many_file_snapshot_batches_reauthorize_and_match_pinned_tree(self):
+        for i in range(50):
+            (self.source / f"many-{i:03}.ores").write_text("pub fnc f(): int { return 42; }")
+        self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
+        files = pub.collect_source(self.source, self.root)
+        planned = pub.prepare_source_tree_batches(files)
+        self.assertGreater(len(planned), 1)
+        self.api_core_remaining = 16 * max(1, len(planned) - 1) + 128
+        partial = []
+        original = self.fake_api
+
+        def bulk_api(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/trees" and method == "POST"
+                    and payload.get("base_tree") != B):
+                self.route_calls.append((method, route, payload))
+                partial.append(payload)
+                return {"sha": self.expected_tree if len(partial) == len(planned)
+                        else f"{len(partial):040x}"}
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=bulk_api):
+            sha, count = pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                     self.root, self.expected_tree, D)
+        self.assertEqual((sha, count), (C, 51))
+        self.assertEqual(len(partial), len(planned))
+        self.assertNotIn("base_tree", partial[0])
+        self.assertEqual(partial[1]["base_tree"], f"{1:040x}")
+        self.assertTrue(all("content" in item and "sha" not in item
+                            for request in partial for item in request["tree"]))
+        self.assertFalse(any(route.endswith("/git/blobs")
+                             for method, route, _ in self.route_calls if method == "POST"))
+
+    def test_bulk_snapshot_policy_revocation_blocks_next_tree_write(self):
+        for i in range(70):
+            (self.source / f"many-{i:03}.ores").write_text("safe")
+        self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.set_reviewed_snapshot()
+        original = self.fake_api
+        first_tree = []
+
+        def revoke_after_first_tree(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/trees" and method == "POST"
+                    and payload.get("base_tree") != B):
+                self.route_calls.append((method, route, payload))
+                first_tree.append(payload)
+                if len(first_tree) == 1:
+                    self.reviewed_snapshot = "# approval revoked\\n"
+                return {"sha": f"{len(first_tree):040x}"}
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_tree):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual(len(first_tree), 1)
+        self.assertFalse(any(route.endswith("/git/refs")
+                             for method, route, _ in self.route_calls if method == "POST"))
+
     def test_git_tree_sha_matches_known_git_write_tree_result(self):
         # Verified independently with git init, git add, git write-tree
         # (main.ores contains hello\n; nested/file.ores contains world\n
