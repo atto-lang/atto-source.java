@@ -94,7 +94,18 @@ final class ActorGroupTurnGate implements AutoCloseable {
                 cancelled.add(ticket);
             }
         }
-        for (Ticket ticket : cancelled) ticket.onCancelled.run();
+        Throwable callbackFailure = null;
+        for (Ticket ticket : cancelled) {
+            try {
+                ticket.onCancelled.run();
+            } catch (RuntimeException | Error failure) {
+                // One broken observer cannot strand other cancelled turns.
+                if (callbackFailure == null) callbackFailure = failure;
+                else callbackFailure.addSuppressed(failure);
+            }
+        }
+        if (callbackFailure instanceof Error fatal) throw fatal;
+        if (callbackFailure instanceof RuntimeException failure) throw failure;
     }
 
     private void dispatch(Ticket ticket) {
