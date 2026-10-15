@@ -25,7 +25,10 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 between(text, "\npermissions:", "\nconcurrency:"),
                 "the workflow token must be read-only");
         assertEquals(1, countLines(text, "permissions:"),
-                "job-level permissions cannot override the reviewed token scope");
+                "there must be only one global permissions block");
+        assertFalse(java.util.regex.Pattern.compile("(?m)^[ \\t]+permissions[ \\t]*:")
+                .matcher(text).find(),
+                "job-level permissions may not override the read-only token");
         assertFalse(text.contains("|| 'ubuntu-24.04'"),
                 "private tests must not silently fall back to hosted jobs");
 
