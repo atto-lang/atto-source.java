@@ -134,11 +134,11 @@ final class ActorMiddlewareValuePipelineTest {
         var changed = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, S,
                         input -> CompletableFuture.completedFuture(
-                                new ActorMiddlewareValuePipeline.Continue<>(input))),
+                                new ActorMiddlewareValuePipeline.Continue<>(input)), false),
                         ActorMiddlewareValuePipeline.Stage.<Integer>value(key("rewrite"), S,
                                 input -> CompletableFuture.completedFuture(
                                         new ActorMiddlewareValuePipeline.Continue<>(
-                                                input.withMessage(input.message()))))),
+                                                input.withMessage(input.message()))), false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, A,
                         input -> {
                             count.incrementAndGet();
