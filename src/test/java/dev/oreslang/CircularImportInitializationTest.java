@@ -82,6 +82,45 @@ final class CircularImportInitializationTest {
     }
 
     @Test
+    void unusedNamedImportStillInitializesLinkedSource() throws Exception {
+        Path main = tempDir.resolve("entry.ores");
+        Path imported = tempDir.resolve("dependency.ores");
+
+        Files.writeString(main, """
+                import fnc unused from "./dependency.ores";
+
+                pub routine main(): void {
+                  stdio.stdout.write("main");
+                  return;
+                }
+                """);
+        Files.writeString(imported, """
+                pub fnc unused(): void {
+                  return;
+                }
+
+                fnc init(): void {
+                  stdio.stdout.write("dependency-init|");
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream error = new ByteArrayOutputStream();
+        IncrementalCompiler.BuildResult build = LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                output,
+                error);
+
+        // The import name is lexically unused in entry.ores, but the import
+        // edge still orders and executes the linked dependency's init hook.
+        assertEquals("dependency-init|main", output.toString(StandardCharsets.UTF_8));
+        assertEquals(2, build.initializationGroups().size());
+    }
+
+    @Test
     void initHookHasAClosedLifecycleSignature() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc init(): void { return; }
