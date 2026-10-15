@@ -393,6 +393,52 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void suspendedInlineRecordFieldsEvaluateOnceBeforeAbiReordering() throws Exception {
+        String code = """
+                fnc encode(int a, int b): int { return a * 100 + b; }
+                async fnc get_b(): int {
+                    stdio.stdout.write("B");
+                    return 23;
+                }
+                async fnc get_a(): int {
+                    stdio.stdout.write("A");
+                    return 19;
+                }
+                async fnc forwarded(): int {
+                    return encode(...(b: await get_b(), a: await get_a()));
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+        assertEquals("BA1923", checkedExecution(code));
+    }
+
+    @Test
+    void suspendedPositionalArgumentsEvaluateOnceInLexicalOrder() throws Exception {
+        String code = """
+                fnc encode(int a, int b): int { return a * 100 + b; }
+                async fnc get_a(): int {
+                    stdio.stdout.write("A");
+                    return 19;
+                }
+                async fnc get_b(): int {
+                    stdio.stdout.write("B");
+                    return 23;
+                }
+                async fnc forwarded(): int {
+                    return encode(await get_a(), await get_b());
+                }
+                pub routine main(): void {
+                    stdio.stdout.write(await forwarded());
+                    return;
+                }
+                """;
+        assertEquals("AB1923", checkedExecution(code));
+    }
+
+    @Test
     void mutableLocalCannotForgePermanentClosedRecordPackProvenance() {
         String code = """
                 fnc add(int a, int b): int { return a + b; }

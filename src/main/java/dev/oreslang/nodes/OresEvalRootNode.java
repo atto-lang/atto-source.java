@@ -3646,13 +3646,17 @@ public final class OresEvalRootNode extends RootNode {
                     continuation.accept(t, null, failure);
                     return;
                 }
+                // Catch only local expansion. Once recursion reaches the
+                // terminal continuation, downstream exceptions must not be
+                // reclassified as another completion of the same call.
                 try {
                     appendDirectArgument(argument, value, values, slots);
-                    evalSuspendableDirectArgumentAt(
-                            t, arguments, env, values, slots, index + 1, continuation);
-                } catch (RuntimeException | Error error) {
-                    continuation.accept(t, null, error);
+                } catch (RuntimeException | Error expansionFailure) {
+                    continuation.accept(t, null, expansionFailure);
+                    return;
                 }
+                evalSuspendableDirectArgumentAt(
+                        t, arguments, env, values, slots, index + 1, continuation);
             });
         }
 
@@ -3694,6 +3698,9 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, List.of(), failure);
                             return;
                         }
+                        // Separate expansion failures from recursive delivery:
+                        // a thrown downstream continuation is not a new
+                        // argument failure and must never be delivered twice.
                         try {
                             if (argument instanceof Ast.SpreadExpr) {
                                 // A spread aggregate is evaluated exactly
@@ -3703,11 +3710,12 @@ public final class OresEvalRootNode extends RootNode {
                             } else {
                                 values.add(value);
                             }
-                            evalSuspendableArgumentAt(
-                                    t, expressions, env, values, index + 1, continuation);
                         } catch (RuntimeException | Error expansionFailure) {
                             continuation.accept(t, List.of(), expansionFailure);
+                            return;
                         }
+                        evalSuspendableArgumentAt(
+                                t, expressions, env, values, index + 1, continuation);
                     });
         }
 
