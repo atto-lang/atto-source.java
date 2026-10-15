@@ -113,6 +113,36 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void failingTrustedQuiescenceCallbackIsObservableButNeverReplayed() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var calls = new AtomicInteger();
+                OresFuture<Integer> result = scheduler.start(
+                        resume -> OresScheduler.done(99),
+                        () -> {
+                            calls.incrementAndGet();
+                            throw new IllegalStateException("trusted cleanup failed");
+                        });
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (scheduler.nativeQuiescenceFailures() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(5);
+                assertEquals(1, scheduler.nativeQuiescenceFailures());
+                assertFalse(result.isDone(),
+                        "successful guest step is not DONE after cleanup failure");
+                var retry = assertThrows(IllegalStateException.class,
+                        scheduler::retryNativeQuiescentTasks);
+                assertTrue(retry.getMessage().contains("manual recovery"));
+                assertEquals(1, calls.get(),
+                        "retry must not invoke a non-idempotent trusted callback twice");
+                assertEquals(1, liveTaskCountForTest(scheduler),
+                        "unresolved callback failure must remain visible to VM supervisor");
+                kernel.stop();
+            }
+        }
+    }
+
+    @Test
     void nativeActorWitnessRejectsMultiplePhysicalSchedulerLanes() {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(16)) {
             assertThrows(IllegalArgumentException.class,
