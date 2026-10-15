@@ -237,6 +237,70 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void automaticSupervisionEscalatesFromChildRaiseToParentPanic()
+            throws Exception {
+        CountDownLatch rootNotified = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> parentHandle =
+                new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorHandle<String>> grandchildHandle =
+                new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorFailureNotice> observed =
+                new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> root = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override
+                        public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> middle = actors.spawnChildShared(
+                                    middleContext -> new ActorRuntime.ChildFailureHandler<String>() {
+                                        @Override
+                                        public void onMessage(
+                                                String m, ActorRuntime.ActorContext<String> inner) {
+                                            ActorRuntime.ActorHandle<String> leaf =
+                                                    actors.spawnChildShared(
+                                                            leafContext -> (mail, ignored) -> {
+                                                                throw GuestActorEffectSignal.raise();
+                                                            });
+                                            grandchildHandle.set(leaf);
+                                            leaf.send("fail");
+                                        }
+
+                                        @Override
+                                        public void onChildFailure(
+                                                ActorRuntime.ActorFailureNotice notice,
+                                                ActorRuntime.ActorContext<String> inner) {
+                                            assertEquals(GuestActorEffectSignal.Kind.RAISE,
+                                                    notice.effect());
+                                            throw GuestActorEffectSignal.panic();
+                                        }
+                                    });
+                            parentHandle.set(middle);
+                            middle.send("spawn leaf");
+                        }
+
+                        @Override
+                        public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            observed.set(notice);
+                            rootNotified.countDown();
+                        }
+                    });
+            root.send("spawn middle");
+            assertTrue(rootNotified.await(3, TimeUnit.SECONDS),
+                    "root must receive automatic notification from failed middle actor");
+            assertEquals(GuestActorEffectSignal.Kind.PANIC, observed.get().effect());
+            assertEquals(root.id(), observed.get().supervisorId());
+            assertEquals(parentHandle.get().id(), observed.get().actorId());
+            assertTrue(parentHandle.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertTrue(grandchildHandle.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, actors.actorFailureNoticesDropped());
+            root.stop();
+            assertTrue(root.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void parentCancellationPreventsAutomaticSupervisorResurrection()
             throws Exception {
         CountDownLatch childEntered = new CountDownLatch(1);
