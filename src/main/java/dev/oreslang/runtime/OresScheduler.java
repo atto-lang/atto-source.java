@@ -131,6 +131,9 @@ public final class OresScheduler implements AutoCloseable {
     private final Executor executor;
     private final ExecutorService ownedExecutor;
     private final TurnExecutor turnExecutor;
+    /** Optional trusted-JVM JNI witness; never enabled for ordinary actors. */
+    private final NativeActorTurnKernel nativeTurnKernel;
+    private final AtomicLong nativeSourceIds = new AtomicLong();
     private final Set<TaskRunner<?>> tasks = ConcurrentHashMap.newKeySet();
     /** Linearizes new task admission with scheduler shutdown. */
     private final Object taskAdmissionLock = new Object();
@@ -153,6 +156,14 @@ public final class OresScheduler implements AutoCloseable {
             int parallelism,
             int queueCapacity,
             TurnExecutor turnExecutor) {
+        this(parallelism, queueCapacity, turnExecutor, null);
+    }
+
+    private OresScheduler(
+            int parallelism,
+            int queueCapacity,
+            TurnExecutor turnExecutor,
+            NativeActorTurnKernel nativeTurnKernel) {
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
         }
@@ -163,6 +174,7 @@ public final class OresScheduler implements AutoCloseable {
         this.name = "ores-user-scheduler-" + NEXT_ID.incrementAndGet();
         this.parallelism = parallelism;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.nativeTurnKernel = nativeTurnKernel;
 
         AtomicInteger carrierId = new AtomicInteger();
         ThreadFactory factory = task -> Thread.ofPlatform()
@@ -195,6 +207,16 @@ public final class OresScheduler implements AutoCloseable {
             Executor executor,
             ExecutorService ownedExecutor,
             TurnExecutor turnExecutor) {
+        this(name, parallelism, executor, ownedExecutor, turnExecutor, null);
+    }
+
+    private OresScheduler(
+            String name,
+            int parallelism,
+            Executor executor,
+            ExecutorService ownedExecutor,
+            TurnExecutor turnExecutor,
+            NativeActorTurnKernel nativeTurnKernel) {
         this.name = Objects.requireNonNull(name, "name");
         if (parallelism <= 0) {
             throw new IllegalArgumentException("scheduler parallelism must be positive");
@@ -203,6 +225,7 @@ public final class OresScheduler implements AutoCloseable {
         this.executor = Objects.requireNonNull(executor, "executor");
         this.ownedExecutor = ownedExecutor;
         this.turnExecutor = Objects.requireNonNull(turnExecutor, "turnExecutor");
+        this.nativeTurnKernel = nativeTurnKernel;
     }
 
     /**
@@ -250,6 +273,19 @@ public final class OresScheduler implements AutoCloseable {
                 parallelism,
                 DEFAULT_QUEUE_CAPACITY,
                 turnExecutor);
+    }
+
+    /**
+     * Experimental opt-in verification only. Creates a managed scheduler with
+     * a native actor-turn witness; no ActorRuntime production path uses it.
+     * Each TaskRunner owns its own native SourceTask for its logical lifetime.
+     */
+    static OresScheduler managedWithNativeTurnWitness(
+            int parallelism,
+            TurnExecutor turnExecutor,
+            NativeActorTurnKernel witness) {
+        return new OresScheduler(parallelism, DEFAULT_QUEUE_CAPACITY,
+                turnExecutor, Objects.requireNonNull(witness, "witness"));
     }
 
     /** True only on private carriers owned by user-created OresSchedulers. */
