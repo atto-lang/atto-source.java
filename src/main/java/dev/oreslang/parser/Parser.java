@@ -1294,7 +1294,18 @@ public final class Parser {
         if (check(PIPE)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            Ast.CallbackDelivery delivery = Ast.CallbackDelivery.UNSPECIFIED;
+            if (match(AT)) {
+                String annotation = consume(IDENT, "expected @callback in declared pipe parameter").lexeme();
+                if (!annotation.equals("callback")) {
+                    throw error(previous(), "declared pipe parameters support only @callback(mode)");
+                }
+                delivery = parseCallbackDelivery();
+            }
             boolean structural = matchContextualKeyword("structural");
+            if (structural && delivery != Ast.CallbackDelivery.UNSPECIFIED) {
+                throw error(previous(), "@callback parameters cannot be structural");
+            }
 
             // Migration spelling for named-argument-friendly declarations:
             // |value: Type| is accepted, while oreslang-format emits |Type value|.
@@ -1303,7 +1314,7 @@ public final class Parser {
                 consume(COLON, "expected ':' after compatibility parameter name");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(new Ast.Param(type, name, false, mutable, delivery));
                 continue;
             }
 
@@ -1313,7 +1324,7 @@ public final class Parser {
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(type, name, structural, mutable, delivery));
         } while (match(COMMA));
         return List.copyOf(params);
     }
@@ -1352,6 +1363,18 @@ public final class Parser {
         return names;
     }
 
+    private Ast.CallbackDelivery parseCallbackDelivery() {
+        consume(LPAREN, "@callback requires a delivery mode: inline, deferred or maybe_inline");
+        String mode = consume(IDENT, "expected callback delivery mode").lexeme();
+        consume(RPAREN, "expected ')' after callback delivery mode");
+        return switch (mode) {
+            case "inline" -> Ast.CallbackDelivery.INLINE;
+            case "deferred" -> Ast.CallbackDelivery.DEFERRED;
+            case "maybe_inline" -> Ast.CallbackDelivery.MAYBE_INLINE;
+            default -> throw error(previous(), "unknown callback delivery mode '" + mode + "'");
+        };
+    }
+
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
         return parseParametersUntil(terminator, java.util.Set.of());
     }
@@ -1360,7 +1383,26 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
-            boolean structural = matchContextualKeyword("structural");
+            Ast.CallbackDelivery delivery = Ast.CallbackDelivery.UNSPECIFIED;
+            boolean annotatedStructural = false;
+            while (match(AT)) {
+                String annotation = consume(IDENT, "expected parameter annotation").lexeme();
+                if (annotation.equals("Structural")) {
+                    if (annotatedStructural) throw error(previous(), "duplicate @Structural");
+                    annotatedStructural = true;
+                } else if (annotation.equals("callback")) {
+                    if (delivery != Ast.CallbackDelivery.UNSPECIFIED) {
+                        throw error(previous(), "duplicate @callback delivery annotation");
+                    }
+                    delivery = parseCallbackDelivery();
+                } else {
+                    throw error(previous(), "only @Structural or @callback(mode) are allowed on parameters");
+                }
+            }
+            boolean structural = annotatedStructural || matchContextualKeyword("structural");
+            if (delivery != Ast.CallbackDelivery.UNSPECIFIED && structural) {
+                throw error(previous(), "@callback parameters cannot be structural");
+            }
 
             // Canonical type-first structural spelling: structural Foo y
             if (structural) {
@@ -1400,13 +1442,6 @@ public final class Parser {
                 continue;
             }
 
-            // Existing type-first compatibility spelling: @Structural Foo y
-            if (match(AT)) {
-                String annotation = consume(IDENT, "expected parameter annotation").lexeme();
-                if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
-                structural = true;
-            }
-
             // Temporary compatibility spelling: name: Type. Canonical source
             // remains Type name so ':' stays available for named call arguments.
             if (!structural && check(IDENT) && checkNext(COLON)) {
@@ -1414,7 +1449,7 @@ public final class Parser {
                 consume(COLON, "expected ':' after compatibility parameter name");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
-                params.add(new Ast.Param(type, name, false, mutable));
+                params.add(new Ast.Param(type, name, false, mutable, delivery));
                 continue;
             }
 
@@ -1424,7 +1459,7 @@ public final class Parser {
             if (structural && mutable) {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
-            params.add(new Ast.Param(type, name, structural, mutable));
+            params.add(new Ast.Param(type, name, structural, mutable, delivery));
         } while (match(COMMA));
         return params;
     }
@@ -1454,7 +1489,8 @@ public final class Parser {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable(),
+                    param.callbackDelivery()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
