@@ -1757,9 +1757,17 @@ public final class ActorRuntime implements AutoCloseable {
         // AtomicBoolean per registration without strengthening that guarantee.
         // Completion threads may only enqueue: the guest continuation itself
         // must run under this actor's serialized physical execution lease.
-        future.whenCompleteRuntime(
-                (value, failure) ->
-                        target.enqueue(() -> continuation.accept(value, failure)));
+        future.whenCompleteRuntime((value, failure) -> {
+            try {
+                target.enqueue(() -> continuation.accept(value, failure));
+            } catch (RuntimeException | Error admissionFailure) {
+                // OresFuture deliberately isolates runtime waiter exceptions,
+                // so simply throwing here would silently lose a continuation.
+                // A broken internal control-mailbox invariant is actor-fatal.
+                // Do not run the guest callback on this producer thread.
+                cell.fail(admissionFailure);
+            }
+        });
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
