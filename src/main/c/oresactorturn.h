@@ -16,6 +16,7 @@ extern "C" {
  */
 typedef struct ores_turn_vm ores_turn_vm;
 typedef struct ores_actor_cap ores_actor_cap;
+typedef struct ores_source_task_cap ores_source_task_cap;
 typedef struct ores_cleanup_cap ores_cleanup_cap;
 typedef struct ores_turn_lease ores_turn_lease;
 
@@ -48,11 +49,22 @@ ores_turn_status ores_turn_register(ores_turn_vm *vm,
                                    ores_actor_cap **out_actor);
 
 /* These APIs are callable ONLY by the trusted scheduler / VM adapter.
- * A raw Oreslang caller cannot issue a capability or claim a native carrier.
+ * A guest cannot register/forge a SourceTask or issue a cleanup capability.
+ * The caller MUST register an actual scheduler-owned SourceTask when it is
+ * created, not a guest-supplied task ID. Task generation must be monotonic.
+ * A SourceTask cannot be retired before its cleanup ticket settles and the
+ * actor's physical lease exits. An actor cannot retire with live SourceTasks.
  */
+ores_turn_status ores_turn_register_source_task(ores_turn_vm *vm,
+                                               ores_actor_cap *actor,
+                                               uint64_t task_id,
+                                               uint64_t task_generation,
+                                               ores_source_task_cap **out_source);
 ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
-                                         ores_actor_cap *actor,
+                                         ores_source_task_cap *source,
                                          ores_cleanup_cap **out_ticket);
+ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
+                                             ores_source_task_cap *source);
 ores_turn_status ores_turn_claim_user(ores_turn_vm *vm,
                                      ores_actor_cap *actor,
                                      ores_turn_lease **out_lease);
