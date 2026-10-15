@@ -21,6 +21,38 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test
+    @org.junit.jupiter.api.Timeout(5)
+    void reentrantStaleEpochRegistrationsAreBoundedAndRefusalsAreObservable() {
+        final int capacity = 4;
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(capacity);
+        AtomicInteger admitted = new AtomicInteger();
+        AtomicInteger refused = new AtomicInteger();
+        AtomicInteger delivered = new AtomicInteger();
+        long staleEpoch = queue.epoch();
+        assertTrue(queue.register(() -> {
+            // This release makes staleEpoch obsolete. A malicious or buggy
+            // host callback could otherwise enqueue arbitrary work without
+            // consuming any of the normal pending queue's four permits.
+            queue.slotReleased();
+            for (int i = 0; i < 100; ++i) {
+                if (queue.register(delivered::incrementAndGet, staleEpoch)) {
+                    admitted.incrementAndGet();
+                } else {
+                    refused.incrementAndGet();
+                }
+            }
+        }, staleEpoch));
+        queue.slotReleased();
+        assertEquals(capacity, admitted.get(),
+                "deferred stale-epoch callbacks cannot exceed retry capacity");
+        assertEquals(96, refused.get());
+        assertEquals(capacity, delivered.get(),
+                "every accepted deferred callback must be delivered once");
+        assertEquals(0, queue.pending());
+        assertEquals(0, queue.callbacksFailed());
+    }
+
     @Test void missedReleaseRetriesTheNewSupervisorRatherThanAnOlderWaiter() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(3);
         StringBuilder order = new StringBuilder();
