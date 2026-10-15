@@ -1072,7 +1072,11 @@ public final class TypeChecker {
             // A scalar constructor parameter can shadow a class namespace,
             // and an imported class has not been proven local to this frame.
             if (scalarInitializerArgs.lookup(name.name()) != null
-                    || importedValues.contains(name.name())) return false;
+                    || importedValues.contains(name.name())
+                    || modules.containsKey(name.name())) return false;
+            // Runtime NameExpr resolves module namespaces before class
+            // namespaces. A same-named module can dispatch arbitrary code
+            // even when the class static method body passes the scalar proof.
             Ast.ClassDecl owner = findClass(name.name());
             if (owner == null) return false;
             Ast.MethodDecl candidate = null;
