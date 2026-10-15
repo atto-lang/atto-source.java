@@ -302,6 +302,34 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void lateCompletionCannotResurrectAnActorAfterCancellation() throws Exception {
+        OresFuture<Integer> pending = new OresFuture<>();
+        CountDownLatch registered = new CountDownLatch(1);
+        AtomicInteger guestCallbacks = new AtomicInteger();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                var target = runtime.captureCurrentContinuationTarget();
+                runtime.enqueueOnCompletion(pending, target, (value, failure) -> {
+                    guestCallbacks.incrementAndGet();
+                });
+                registered.countDown();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS),
+                    "callback was not registered inside the actor");
+            actor.cancel();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(pending.isDone(), "actor teardown must revoke owned Futures");
+            assertFalse(pending.completeFromRuntime(99),
+                    "a late host completion must not revive an actor-owned Future");
+            assertEquals(0, guestCallbacks.get(),
+                    "a retired actor generation executed a stale guest continuation");
+            assertFalse(runtime.currentThreadOwnsActorExecutionLease());
+        }
+    }
+
+    @Test
     void completionRacingWaiterRegistrationIsDeliveredOnceOnFreshGuestTurn()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
