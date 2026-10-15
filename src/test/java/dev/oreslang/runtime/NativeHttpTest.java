@@ -236,7 +236,7 @@ class NativeHttpTest {
                 pub async routine main(): void {
                   // A short deadline deliberately races non-pooled actor
                   // spawn/ready, exchange transfer and native carrier entry.
-                  val server = http.listen("127.0.0.1", 0, 1, 1024, 10);
+                  val server = http.listen("127.0.0.1", 0, 1, 1024, 100);
                   stdio.println(server.port);
                   val request = await server.accept();
                   val completion = request.completion;
