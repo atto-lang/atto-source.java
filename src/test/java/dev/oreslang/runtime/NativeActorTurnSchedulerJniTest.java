@@ -7,6 +7,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,6 +18,56 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @EnabledIfSystemProperty(named = "ores.native.actor.turn.experimental", matches = "true")
 final class NativeActorTurnSchedulerJniTest {
+    /**
+     * Test-only inspection of the trusted TaskRunner identity. No production
+     * API exposes native SourceTask handles to guest code.
+     */
+    private static NativeActorTurnKernel.SourceTask currentNativeSourceForTest()
+            throws ReflectiveOperationException {
+        Object domain = OresScheduler.currentTaskDomain();
+        assertNotNull(domain, "must be inside the actual TaskRunner");
+        var field = domain.getClass().getDeclaredField("nativeSource");
+        field.setAccessible(true);
+        return (NativeActorTurnKernel.SourceTask) field.get(domain);
+    }
+
+    @Test
+    void pendingCleanupTicketBlocksFutureUntilTrustedTerminalRetry() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var gate = new OresFuture<Integer>();
+                var started = new CountDownLatch(1);
+                var source = new AtomicReference<NativeActorTurnKernel.SourceTask>();
+                var steps = new AtomicInteger();
+                OresFuture<Integer> result = scheduler.start(resume -> {
+                    if (steps.getAndIncrement() == 0) {
+                        source.set(currentNativeSourceForTest());
+                        started.countDown();
+                        return OresScheduler.<Integer>await(gate);
+                    }
+                    return OresScheduler.done(91);
+                });
+                assertTrue(started.await(5, TimeUnit.SECONDS));
+                // The pending ticket prevents native source settlement AFTER
+                // guest turn completion and physical carrier release.
+                var ticket = kernel.issueCleanup(source.get());
+                gate.completeFromRuntime(1);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                while (scheduler.nativeRetirementFailures() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(5);
+                assertEquals(1, scheduler.nativeRetirementFailures());
+                assertFalse(result.isDone(), "terminal publication outran native retirement");
+                kernel.cancelCleanup(ticket);
+                assertEquals(1, scheduler.retryNativeQuiescentTasks());
+                assertEquals(91, result.get(5, TimeUnit.SECONDS));
+                assertEquals(0, scheduler.retryNativeQuiescentTasks());
+                assertEquals(2, steps.get(), "retirement retry must not resume guest code");
+                kernel.stop();
+            }
+        }
+    }
+
     @Test
     void actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
