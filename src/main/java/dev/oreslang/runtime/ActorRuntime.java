@@ -7308,7 +7308,14 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         ticket = gate.submit(
                                 granted -> dispatchScheduledTurn(dispatchTicket, granted),
-                                this::cancelQueuedScheduleOnShutdown);
+                                () -> {
+                                    cancelQueuedScheduleOnShutdown();
+                                    // The gate may close independently due to
+                                    // a downstream carrier failure. Clearing
+                                    // scheduled alone would leave a live actor
+                                    // whose queued mail can never execute.
+                                    if (!stopped.get()) stop();
+                                });
                         pendingTurnGateTicket = ticket;
                         if (ticket.isSettled()) pendingTurnGateTicket = null;
                     }
@@ -7361,7 +7368,11 @@ public final class ActorRuntime implements AutoCloseable {
                         scheduled.set(false);
                     }
                 }
-                if (lease == null) stop();
+                // A promoted queued turn has no caller waiting inside
+                // schedule(); stop it here as well as the immediate-admission
+                // case, otherwise the actor remains alive without runnable
+                // work after the gate closes.
+                stop();
                 // Let ActorGroupTurnGate close all queued admissions and
                 // reclaim this grant. Releasing it here would promote the
                 // next waiter recursively into the same broken dispatcher.
