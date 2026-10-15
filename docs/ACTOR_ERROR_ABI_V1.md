@@ -185,3 +185,36 @@ handler must then run on the parent's serialized actor execution lease.
 Tests have **not** been executed successfully on this branch while GitHub
 Actions jobs fail before reporting steps.
 
+## Bounded reserved CONTROL scheduling (October 14, 2026)
+
+Supervisor CONTROL dispatch now has a separate, finite admission budget:
+`min(64, maxActors)` tasks per carrier pool. In lane/CPU affinity modes
+`ActorAffinityDispatcher.executeControlOnLane` uses independent CONTROL
+permits and dispatches on the supervisor's **existing** lane. With affinity
+disabled, `ReservedActorDispatcher.executeControl` applies the same rule
+over the existing pooled workers. Physical executor queue capacity is
+increased by the exact reserve so ordinary submissions cannot occupy that
+reserved headroom; no additional threads, per-actor executors or global
+guest callbacks are created.
+
+CONTROL rescheduling after a parent turn retains the same reserved admission
+path; a saturated CONTROL reserve can borrow unused normal admission before
+a wake is reported rejected. The actor's per-actor scheduling ticket still
+prevents duplicate carrier admission. All permits are released at run start,
+rejection or shutdown, including a host executor throwing unexpectedly.
+A failed CONTROL wake does **not** terminate the supervisor or discard
+the already-admitted immutable notice; loss/rejection counters remain visible.
+
+**Scope of guarantee:** an ordinary workload at its configured admission
+limit cannot, by itself, exhaust the reserved CONTROL permit budget.
+This is *not* an unbounded-delivery guarantee: if both budgets are exhausted
+or workers stop making progress, a wake can still be rejected and manual
+polling / later actor activity may be needed. A policy for sustained
+CONTROL exhaustion, restart generation fencing, and source-level
+`on_raise`/recovery remain outstanding.
+
+`ReservedControlDispatcherTest` deterministically covers both affinity
+modes, separate normal/CONTROL permits, saturated admission, unexpected
+physical submission rejection, and shutdown cleanup. These tests have not
+been confirmed passing on an executable exact-head CI runner.
+
