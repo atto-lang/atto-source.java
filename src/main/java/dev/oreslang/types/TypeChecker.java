@@ -5918,10 +5918,10 @@ public final class TypeChecker {
             case "map" -> new Function(
                     List.of(new Function(List.of(element), Unknown.INSTANCE)),
                     unknownFuture);
-            case "compose", "flatMap" -> new Function(
+            case "compose", "flatMap", "flat_map", "and_then" -> new Function(
                     List.of(new Function(List.of(element), unknownFuture)),
                     unknownFuture);
-            case "onSuccess" -> new Function(
+            case "onSuccess", "on_success" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
             default -> null;
