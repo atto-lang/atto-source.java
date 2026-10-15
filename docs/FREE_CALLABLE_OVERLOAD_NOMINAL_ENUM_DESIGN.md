@@ -1,10 +1,14 @@
 # Free `fnc` / `routine` overloads and nominal enum dispatch (pre-1.0)
 
 Status: **name+arity exists in Java and the LLVM native free-function subset**.
-The **nominal enum/primitive same-arity extension in this document is a
-proposed contract, not implemented language behavior**. Do not use the examples
-below as evidence of compiler acceptance. General sealed cross-file module
-linking is also pending verification.
+The **same-arity extension permits only distinct eligible nominal enum
+identities**; primitive-type differences are not overload discriminators.
+The canonical specification is
+[NOMINAL_ENUM_OVERLOAD_CONTRACT.md](NOMINAL_ENUM_OVERLOAD_CONTRACT.md).
+Its selection rule supersedes older primitive-rank proposals. This staged
+feature is not generally executable; class vtables, imports and LLVM native
+guest code still require parity. Do not use illustrative examples as evidence
+of compiler acceptance.
 
 ## Current closed-world rule
 
@@ -30,12 +34,15 @@ named module needs its own stable qualified identity.
 - The `main` ABI entrypoint may not be overloaded where a native exported
   symbol contract reserves it; guest entrypoints must be closed-world.
 
-## Proposed optional second discriminator: cheap nominal tags
+## Normative future extension: disjoint nominal enum IDs
 
-Allow **same-arity** free-callable overloads only when their parameter lists
-can be distinguished by an exact primitive type tag or a **named enum's
-declaration identity**. Never compare the structure of structs, traits,
-interfaces, records, generic arguments, or enum members to select an overload.
+Allow **same-arity** free-callable overloads only when each declaration pair
+differs at a corresponding parameter position by two distinct, eligible
+**named enum declaration IDs**. Other parameter positions must have the same
+canonical admitted type ID. Primitive type differences (including numeric
+widening) cannot admit a same-arity pair. Never compare the structure of
+structs, traits, interfaces, records, generic arguments or enum members to
+select an overload.
 
 Proposed example (enum syntax illustrative; not accepted by today's Java
 declaration frontend):
@@ -68,9 +75,10 @@ by a particular enum member is pattern matching, not a function type key.
    Distinct enums are distinct even when their values are identical.
    A type alias for an enum keeps the **same** ID.
 2. Evaluate each same-name+arity declaration pair: require at least one
-   position where **both** parameter types have known, concrete, mutually
-   exclusive primitive/enum tags. Otherwise reject the family at declaration
-   or link time with an ambiguous-signature diagnostic. In particular,
+   position where **both** parameter types are distinct eligible nominal enum
+   declaration identities. All other positions must have identical canonical
+   admitted identities. Otherwise reject the family at declaration or link
+   time with an ambiguous-signature diagnostic. In particular,
    `f(Any)` vs `f(EnumA)`, `f<T>(T)` vs `f(EnumA)`,
    and `f(EnumA, Any)` vs `f(Any, EnumB)` are rejected, because arguments
    may satisfy both signatures. Never rank by specificity or fallback.
@@ -104,13 +112,17 @@ by a particular enum member is pattern matching, not a function type key.
 - Unit checks for enum identity reuse, alias equivalence, equal enum values,
   same short name in different modules, collision resistance, and visibility.
 - Positive native, Java JIT, Graal AOT and hybrid guest programs for
-  primitive/enum exact-tag dispatch; negative tests for overlapping generic,
+  distinct nominal-enum exact-ID dispatch; negative tests for primitive-only,
+  mixed-primitive, overlapping generic,
   `Any`, structural, union, numeric-literal, and ambiguous imported families.
 - Proof that ownership and effects are checked only against the chosen
   overload, and evaluation order remains lexical with named arguments.
 - Stable AOT symbols and export/import manifests; binary/linker ABI
   compatibility and stale-cache invalidation tests.
-- Existing class-method selectors remain unchanged until an independent
-  explicit language decision. No dynamic enum-value dispatch.
+- Class-method selectors remain arity-only until the same nominal-ID proof
+  and exact-signature vtable dispatch are implemented and verified. The
+  canonical language decision already includes instance and static methods;
+  staged implementation does not imply an exception. No dynamic enum-value
+  dispatch.
 
 No performance or compilation parity claims are made for this future feature.
