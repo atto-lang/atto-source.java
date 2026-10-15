@@ -10,7 +10,7 @@ public final class CheckedI64SourceHeader {
      * sources remain unchanged. Only lexical line-comment tokens are directives.
      */
     public static boolean isEnabled(String text) {
-        final String prefix = "// oreslang:checked-i64";
+        final String prefix = "oreslang:checked-i64";
         final String directive = "// oreslang:checked-i64-v1";
         final boolean enabled = text.startsWith(directive + "\n");
         // A checked marker following source tokens or a closed block comment
@@ -39,11 +39,20 @@ public final class CheckedI64SourceHeader {
                 // Only an actual line-comment token is a directive.
                 // Matching entire lines also matched markers inside block
                 // comments, incorrectly rejecting valid unmarked source.
-                if (text.startsWith(prefix, i) && (!enabled || i != 0)) {
+                int end = text.indexOf('\n', i);
+                int stop = end < 0 ? text.length() : end;
+                // Match malformed spacing directly after the actual //
+                // token without scanning quoted text or block comments.
+                int marker = i + 2;
+                while (marker < stop && (text.charAt(marker) == ' '
+                        || text.charAt(marker) == '\t'
+                        || text.charAt(marker) == '\r'
+                        || text.charAt(marker) == '\u000B'
+                        || text.charAt(marker) == '\f')) ++marker;
+                if (text.startsWith(prefix, marker) && (!enabled || i != 0)) {
                     throw new IllegalArgumentException(
                         "checked-i64-v1: malformed, duplicated, displaced or unsupported directive");
                 }
-                int end = text.indexOf('\n', i);
                 i = end < 0 ? text.length() : end + 1;
                 continue;
             }
