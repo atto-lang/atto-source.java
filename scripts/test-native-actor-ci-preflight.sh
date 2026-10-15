@@ -15,7 +15,7 @@ git init -q "$fixture"
 printf 'ignored-compiler-overlay\n' > "$fixture/.gitignore"
 git -C "$fixture" config user.name "Native CI Fixture"
 git -C "$fixture" config user.email "ci-fixture@example.invalid"
-git -C "$fixture" add scripts
+git -C "$fixture" add scripts .gitignore
 git -C "$fixture" -c commit.gpgsign=false commit -qm "pin trusted fixture tree"
 sha="$(git -C "$fixture" rev-parse HEAD)"
 tree="$(git -C "$fixture" rev-parse 'HEAD^{tree}')"
