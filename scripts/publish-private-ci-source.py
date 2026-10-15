@@ -464,6 +464,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # A PR branch can contain an allowlist entry without security approval.
     # Require the exact policy Git blob to exist on protected source main.
     require_protected_main_policy(approved_policy)
+    reviewed_snapshot_sha = require_reviewed_source_snapshot(
+        expected_source_commit, expected_source_tree, approved_destination_id)
     verify_source_commit(expected_source_commit, expected_source_tree)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
@@ -486,6 +488,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         require_protected_main_policy(approved_policy)
+        require_reviewed_source_snapshot(expected_source_commit, expected_source_tree,
+                                         approved_destination_id, reviewed_snapshot_sha)
         verify_source_commit(expected_source_commit, expected_source_tree)
         checked_repo(repository, expected_id=approved_destination_id)
 
