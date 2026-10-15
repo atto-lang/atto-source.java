@@ -92,8 +92,17 @@ CC=gcc sh scripts/test-native-actor-scheduler-jni.sh
 
 # A zero-step Actions failure or a successful shell syntax check does not
 # satisfy this gate. Maven must execute the actual TaskRunner/JNI JUnit class.
-mvn -B -ntp -Dtest=NativeActorTurnSchedulerJniTest \
+mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
+  -Dtest=NativeActorTurnSchedulerJniTest \
   "-DargLine=-Djava.library.path=$PWD/target/native-jni/lib -Dores.native.actor.turn.experimental=true" \
+  test
+
+# Execute the actual compiled Oreslang source-policy conformance fixture and
+# the current Java bootstrap's cancellation, STOP, on-end cleanup and DONE
+# baselines. These are migration reference tests, NOT proof that the native C
+# VM already owns guest scheduling or LLVM parity.
+mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
+  -Dtest=NativeActorRuntimePolicyTest,ActorEndCleanupTest,ActorAsyncFinalizationBarrierTest,ActorReadinessLifecycleTest,ActorStructuredCancellationTest,ActorStopMailboxRaceTest \
   test
 
 echo "ORES_NATIVE_ACTOR_EXACT_TREE_CI_PASS commit=$actual_commit tree=$actual_tree"
