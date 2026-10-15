@@ -7483,6 +7483,16 @@ public final class ActorRuntime implements AutoCloseable {
                                                     "source middleware may replace only immutable scalar payloads "
                                                             + "until checked actor-owned aggregate transfers are available");
                                         }
+                                        // The queued original already owns its memory
+                                        // reservation. Until middleware can acquire a
+                                        // distinct actor-owned loan, replacement must
+                                        // fit within the original reserved budget.
+                                        long originalBytes = estimateFrozenBytes(sourceMail.value());
+                                        long replacementBytes = estimateFrozenBytes(prepared.value());
+                                        if (replacementBytes > originalBytes) {
+                                            throw new IllegalStateException(
+                                                    "source middleware replacement would exceed original mailbox reservation");
+                                        }
                                         long runtimeRemaining = Math.max(
                                                 0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
                                         if (kind == ActorKind.SHARED) {
