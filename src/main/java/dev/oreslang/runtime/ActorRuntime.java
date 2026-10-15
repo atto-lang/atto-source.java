@@ -4842,6 +4842,13 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
         }
+        // A managed Pointer<T> is an actor-local ownership capability, not
+        // Sendable data. Fail at preflight, including inside nested containers,
+        // before mailbox memory reservation/copy or shared transport admission.
+        if (value instanceof OresPointer) {
+            throw new IllegalArgumentException(
+                    "Pointer<T> cannot cross actor boundaries or be frozen; transfer owned data explicitly");
+        }
         if (value instanceof ActorRuntime.ActorHandle<?>
                 || value instanceof ActorRuntime.ActorControlHandle
                 || value instanceof ActorRuntime.ContinuationTarget) {
