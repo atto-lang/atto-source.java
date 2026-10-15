@@ -141,7 +141,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # Python publisher. Their immutable destination pins must stay equal.
         script = MODULE.with_name("check-private-ci-destination.sh").read_text()
         listed = re.findall(
-            r"^  ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\\) expected_id=([0-9]+) ;;$",
+            r"^  ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)[)] expected_id=([0-9]+) ;;$",
             script, flags=re.MULTILINE)
         self.assertEqual({name: int(repo_id) for name, repo_id in listed},
                          pub.PINNED_DESTINATION_IDS)
