@@ -8580,7 +8580,8 @@ public final class OresEvalRootNode extends RootNode {
             // IEEE equality: NaN is unequal to everything, but infinities compare by sign.
             if (Double.isNaN(left.doubleValue()) || Double.isNaN(right.doubleValue())) return false;
             if (isNonFinite(left) || isNonFinite(right))
-                return left.doubleValue() == right.doubleValue();
+                return isNonFinite(left) && isNonFinite(right)
+                        && left.doubleValue() == right.doubleValue();
             // Compare actual binary floating-point values, not rounded decimal
             // printouts. In particular, a float 0.1 is not exact decimal 0.1.
             return exactDecimal(left).compareTo(exactDecimal(right)) == 0;
@@ -8718,11 +8719,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private int compare(Object left, Object right) {
             if (left instanceof Number a && right instanceof Number b) {
-                if (isNonFinite(a) || isNonFinite(b)) {
-                    // Infinity orders above/below all finite numbers. NaN is
-                    // screened out by relational() before getting here.
+                if (isNonFinite(a) && isNonFinite(b))
                     return Double.compare(a.doubleValue(), b.doubleValue());
-                }
+                // Never coerce an enormous finite BigDecimal to Infinity.
+                if (isNonFinite(a)) return a.doubleValue() > 0 ? 1 : -1;
+                if (isNonFinite(b)) return b.doubleValue() > 0 ? -1 : 1;
                 // BigDecimal(double) records the exact binary64 value, so this
                 // also preserves all integer comparisons above 2^53.
                 return exactDecimal(a).compareTo(exactDecimal(b));
