@@ -33,8 +33,10 @@ public final class SealedActorState {
                             Map<String, Object> defaults) {
         this.owner = Objects.requireNonNull(owner, "actor identity");
         this.schema = new LinkedHashMap<>(Objects.requireNonNull(schema, "schema"));
-        if (this.schema.isEmpty() || this.schema.size() > MAX_FIELDS) {
-            throw new IllegalArgumentException("actor state requires 1..256 typed fields");
+        // An explicit `state { }` has a sealed zero-key schema. It is not
+        // an open map: no unlisted key may ever be added.
+        if (this.schema.size() > MAX_FIELDS) {
+            throw new IllegalArgumentException("actor state supports 0..256 typed fields");
         }
         this.values = new LinkedHashMap<>();
         for (var item : this.schema.entrySet()) {
