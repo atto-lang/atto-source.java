@@ -29,9 +29,9 @@ Actions runs continue to fail before running any job steps.
 visibility or identity change *between* a check and its following POST,
 nor remove already-uploaded private Git blobs. The checked-in repository
 allowlist must still be approved on protected `main` before any
-cross-organization private transfer. Source snapshots are bounded directories,
-not automatically verified exact-root Git trees; an independent full-source
-Git tree hash check is mandatory before using them as exact-tree CI evidence.
+cross-organization private transfer. The production publisher CLI now enforces the independently reviewed full
+source-tree SHA; library-level snapshot operations without that pin are for
+isolated testing only and must not be reported as exact-tree CI evidence.
 
 ## Destination approval
 
@@ -55,7 +55,8 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --expected-tree-sha REVIEWED_40_HEX_GIT_TREE_SHA
 ```
 
 The checked-in policy file must explicitly list the destination. The
@@ -70,6 +71,18 @@ in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
+
+The supported CLI additionally **requires an independently reviewed
+full Git tree SHA** from the selected source commit. Before uploading any
+Git blobs, it computes the complete canonical Git tree hash from the
+directory snapshot (including nested directories and executable modes)
+and rejects a mismatch. It also rejects a destination isolated subtree
+SHA that differs from that same reviewed source tree; the final destination
+root commit may differ because it also contains destination workflows.
+This refuses the misleading claim that an unverified directory snapshot
+is an exact-tree CI execution. The reviewed tree input must be established
+independently of the source directory being tested; do not derive the
+"expected" hash from that directory during an actual verification.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
