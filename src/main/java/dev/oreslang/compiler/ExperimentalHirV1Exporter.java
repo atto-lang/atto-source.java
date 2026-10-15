@@ -29,6 +29,9 @@ public final class ExperimentalHirV1Exporter {
             List.of("bool.v1", "checked-i64.v1", "control-flow.v1", "functions.v1");
 
     public static String fromSource(String source) {
+        if (source == null || source.getBytes(StandardCharsets.UTF_8).length > 1_048_576) {
+            throw unsupported("source absent or exceeds 1 MiB");
+        }
         // Run the actual compiler front-end, including ownership admission.
         return fromVerifiedAst(OresCompiler.parseAndTypeCheck(source));
     }
