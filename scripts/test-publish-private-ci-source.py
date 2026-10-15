@@ -50,7 +50,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test", "object": {"sha": A}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -92,6 +93,35 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(tree_writes[1]["tree"], [
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
+
+    def test_ref_response_cannot_claim_a_different_commit(self):
+        original = self.fake_api
+        def wrong_sha(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/refs" and method == "POST":
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"sha": C}}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_sha):
+            with self.assertRaisesRegex(pub.Denied, "exact requested isolated CI commit"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+
+    def test_post_write_visibility_flip_cannot_be_reported_as_success(self):
+        # Six metadata reads: initial pinned repository lookup, then one
+        # immediately before each of the five GitHub object/ref writes.
+        self.visibility = ["private"] * 6 + ["public"]
+        with self.assertRaisesRegex(pub.Denied, "private visibility changed"):
+            self.publish()
+        self.assertTrue(any(route.endswith("/git/refs")
+                            for method, route, _ in self.route_calls
+                            if method == "POST"))
+
+    def test_post_write_same_slug_new_id_cannot_be_reported_as_success(self):
+        self.repository_ids = [71001] * 6 + [71002]
+        with self.assertRaisesRegex(pub.Denied, "identity"):
+            self.publish()
+        self.assertTrue(any(route.endswith("/git/refs")
+                            for method, route, _ in self.route_calls
+                            if method == "POST"))
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
