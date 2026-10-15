@@ -108,3 +108,23 @@ CI-verified. No live guest Error crosses actor heaps.
   until executable guest inheritance + Error-only throw/raise/panic + transport
   and supervisor tests pass on both backends.
 
+
+## Further failure-boundary audit — October 14, 2026
+
+- A synchronous actor `receive` containing `loop` can execute in a
+  heap-owned cooperative `SourceTask`, rather than returning directly through
+  the synchronous actor boundary. Its `resume` exception path now converts
+  any uncaught `GuestThrowSignal` into a shared, payload-free `raise` CONTROL
+  signal before a host Future may retain the guest Error object.
+- Local Oreslang `try/catch` still consumes the original guest Error before
+  the task boundary. Linked-source tests cover cooperative-loop escalation,
+  local catch, and the absence of a `GuestThrowSignal` in the resulting host
+  Throwable cause/suppressed graph.
+- Cleanup suppression now redacts direct **or wrapped** `GuestThrowSignal`
+  values before adding them as suppressed diagnostics to a host Throwable.
+  Scanning is identity-bounded to 64 nodes; oversized graphs fail closed.
+  A targeted JVM test checks direct, nested and suppressed guest signals.
+- **Unverified:** These changes are committed but have no passing exact-head
+  JUnit or Native Image evidence. No scheduler restart or source on_* dispatch
+  is claimed.
+
