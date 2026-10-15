@@ -224,6 +224,40 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void actorCancellationRevokesPendingCompletionAndDropsLateProducer()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
+        AtomicInteger guestCallbacks = new AtomicInteger();
+        CountDownLatch registered = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                var source = new OresFuture<Integer>();
+                var target = runtime.captureCurrentContinuationTarget();
+                runtime.enqueueOnCompletion(source, target, (value, failure) ->
+                        guestCallbacks.incrementAndGet());
+                pending.set(source);
+                registered.countDown();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS),
+                    "receive did not register its pending actor-owned Future");
+            assertTrue(actor.cancel(), "actor must accept structured cancellation");
+
+            OresFuture<Integer> source = pending.get();
+            assertNotNull(source);
+            assertTrue(source.isCancelled(),
+                    "actor shutdown must cancel and revoke its pending Future");
+            assertFalse(source.completeFromRuntime(77),
+                    "late producer must not resurrect cancelled actor work");
+            assertEquals(0, source.pendingRuntimeWaiterCount(),
+                    "cancelled operation must not retain its actor waiter");
+            assertEquals(0, guestCallbacks.get(),
+                    "guest continuations must not execute after actor termination");
+        }
+    }
+
+    @Test
     void completionRacingWaiterRegistrationIsDeliveredOnceOnFreshGuestTurn()
             throws Exception {
         try (var scheduler = new OresScheduler(2)) {
