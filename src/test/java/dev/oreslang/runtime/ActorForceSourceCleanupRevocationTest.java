@@ -11,14 +11,18 @@ import org.junit.jupiter.api.Timeout;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Force revocation is deliberately not lexical cancellation. Once the host
- * confirms physical revocation, no guest finally/defer is allowed to resume.
- * A failed revoker, conversely, must preserve the existing structured cleanup.
+ * Force revocation is deliberately not lexical cancellation.
+ *
+ * <p>These are lifecycle unit tests with a simulated host revoker. The fake
+ * success acknowledgement verifies actor bookkeeping on a QUIESCENT scheduler
+ * lane; it cannot prove that arbitrary live guest execution was physically
+ * stopped. That guarantee requires a real isolated VM/process revoker in
+ * backend integration tests. A failed revoker must preserve structured cleanup.
  */
 @Timeout(20)
 final class ActorForceSourceCleanupRevocationTest {
     @Test
-    void successfulForceRevocationClosesParkedCleanupWithoutRunningMoreGuestCode()
+    void simulatedSuccessfulRevocationClosesParkedCleanupWithoutReenteringGuest()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
@@ -71,6 +75,8 @@ final class ActorForceSourceCleanupRevocationTest {
             }
             assertEquals(1, cleanupProducer.pendingRuntimeWaiterCount());
 
+            // No guest carrier is active: this is deliberately only a mock
+            // of an isolation manager acknowledging the revoked domain.
             runtime.setForceCancellationTreeHook(request -> {
                 assertEquals(actor.id(), request.rootActorId());
                 assertEquals(1, request.targets().size());
@@ -156,13 +162,15 @@ final class ActorForceSourceCleanupRevocationTest {
         }
     }
     @Test
-    void confirmedRevocationCannotExecuteAlreadyRegisteredFinalCleanup()
+    void deniedRevocationDuringActiveTurnPreservesRegisteredFinalCleanup()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
                 new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
             CountDownLatch cleanupRegistered = new CountDownLatch(1);
             CountDownLatch releaseCarrier = new CountDownLatch(1);
+            CountDownLatch revokerEntered = new CountDownLatch(1);
+            CountDownLatch releaseRevoker = new CountDownLatch(1);
             AtomicInteger finalCleanup = new AtomicInteger();
 
             var actor = runtime.<String>spawnSharedTrusted(
@@ -179,18 +187,51 @@ final class ActorForceSourceCleanupRevocationTest {
                     });
             actor.send("end");
             assertTrue(cleanupRegistered.await(5, TimeUnit.SECONDS));
-            runtime.setForceCancellationTreeHook(request -> true);
+
+            // A live JVM carrier has NOT been physically revoked. An honest
+            // host isolation hook cannot acknowledge successful revocation
+            // here. While the attempt is fenced, the guest is still in its
+            // prior turn, so the previously registered cleanup stays pending.
+            runtime.setForceCancellationTreeHook(request -> {
+                revokerEntered.countDown();
+                try {
+                    assertTrue(releaseRevoker.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return false;
+            });
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+            Thread canceller = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.forceCancel();
+                    observed.set(new AssertionError(
+                            "revoker returned false but kill was accepted"));
+                } catch (IllegalStateException expected) {
+                    // A denied force revocation must be side-effect free.
+                } catch (Throwable unexpected) {
+                    observed.set(unexpected);
+                }
+            });
             try {
-                assertTrue(actor.forceCancel());
+                assertTrue(revokerEntered.await(5, TimeUnit.SECONDS));
+                assertEquals(0, finalCleanup.get());
+                assertFalse(actor.awaitTermination(50, TimeUnit.MILLISECONDS));
+                releaseRevoker.countDown();
+                canceller.join(5_000);
+                assertFalse(canceller.isAlive(), "denied revocation must return");
+                if (observed.get() != null) throw new AssertionError(observed.get());
             } finally {
+                releaseRevoker.countDown();
                 releaseCarrier.countDown();
             }
+
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
-            assertEquals(0, finalCleanup.get(),
-                    "force-revoked actor must not re-enter guest final cleanup");
-            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
-                    actor.failure().orElseThrow());
+            assertEquals(1, finalCleanup.get(),
+                    "ordinary actor final cleanup must survive a denied revocation");
+            assertTrue(actor.failure().isEmpty(),
+                    "denied force kill must not replace graceful self.end");
         }
     }
-
 }
