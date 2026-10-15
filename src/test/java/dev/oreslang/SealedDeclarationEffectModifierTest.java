@@ -38,7 +38,7 @@ final class SealedDeclarationEffectModifierTest {
 
     @Test
     void ordinaryVisibilityOnlyDeclarationsRejectSuspension() {
-        rejects("define suspends type Value as int");
+        rejects("define suspends type Value = int;");
         rejects("define suspends interface Shape as end");
     }
 }
