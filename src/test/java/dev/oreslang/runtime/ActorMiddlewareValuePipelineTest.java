@@ -56,6 +56,30 @@ final class ActorMiddlewareValuePipelineTest {
     }
 
     @Test
+    void unaryResponseDraftCanSetSafeStatusAndContentTypeWithoutWriting() {
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(),
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("created"), A,
+                        (input, res) -> CompletableFuture.completedFuture(
+                                new ActorMiddlewareValuePipeline.Reply<>(73,
+                                        res.withStatus(201)
+                                            .withHeader("Content-Type", "application/json"))),
+                        false)),
+                Set.of(), input -> { fail("value middleware already answered"); return null; });
+        var reply = (ActorMiddlewareValuePipeline.Reply<Integer>)
+                pipeline.invoke(req("create"), () -> false).toCompletableFuture().join();
+        assertEquals(73, reply.value());
+        assertEquals(201, reply.response().status());
+        assertEquals("application/json", reply.response().headers().get("content-type"));
+        assertThrows(IllegalArgumentException.class,
+                () -> reply.response().withStatus(204));
+        assertThrows(SecurityException.class,
+                () -> reply.response().withHeader("Content-Length", "999"));
+        assertThrows(IllegalArgumentException.class,
+                () -> reply.response().withHeader("X-Custom", "ok\r\nInjected: yes"));
+    }
+
+    @Test
     void supervisorMayRejectButCannotManufactureAnActorReply() {
         var reject = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("auth"), S,
