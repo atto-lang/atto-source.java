@@ -249,4 +249,8 @@ public final class ActorRaceInstrumentation {
         return new Snapshot(accesses, races, actorChecks, overlaps,
                 checkedCommitAttempts, rejectedStaleCommits);
     }
+
+    /** Current retained probe metadata, not a completeness or safety signal. */
+    public synchronized long trackedLocationCount() { return locations; }
+    public synchronized long trackedAccessEpochCount() { return trackedAccessEpochs; }
 }
