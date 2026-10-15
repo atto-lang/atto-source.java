@@ -2465,7 +2465,15 @@ public final class TypeChecker {
                         typeOf(call.arguments().getFirst(), env, generics, self),
                         Primitive.INT,
                         "Channel.new capacity");
-                Type element = resolve(call.typeArguments().getFirst(), generics, self);
+                Ast.TypeRef channelArgument = call.typeArguments().getFirst();
+                if (channelArgument.isNamedParameter()
+                        || (channelArgument.name().equals("_")
+                                && channelArgument.arguments().isEmpty()
+                                && !channelArgument.inferArguments())) {
+                    throw new IllegalArgumentException(
+                            "Channel.new<T> requires one positional concrete payload type");
+                }
+                Type element = resolve(channelArgument, generics, self);
                 validateChannelPayloadType(element, "Channel.new");
                 return new Named("Channel", List.of(element));
             }
@@ -2856,31 +2864,24 @@ public final class TypeChecker {
                         Function fn = (Function) bindReceiverSelf(rawFunction, receiverValueType);
 
                         String label = "structural method " + member.member();
-                        Set<String> canonicalGenerics = new LinkedHashSet<>();
-                        for (int i = 0; i < genericArity; i++) {
-                            canonicalGenerics.add("$callable" + i);
-                        }
-
-                        Map<String, Type> bindings = new HashMap<>();
-                        Set<String> fixedBindings = new HashSet<>();
-                        if (call.typeArgumentsPresent() && !call.typeArguments().isEmpty()) {
-                            if (call.typeArguments().size() != genericArity) {
-                                throw new IllegalArgumentException(
-                                        label + " expects " + genericArity
-                                                + " explicit type argument(s), got "
-                                                + call.typeArguments().size());
-                            }
-                            for (int i = 0; i < genericArity; i++) {
-                                String genericName = "$callable" + i;
-                                bindings.put(
-                                        genericName,
-                                        resolve(call.typeArguments().get(i), generics, self));
-                                fixedBindings.add(genericName);
-                            }
-                        } else if (call.typeArgumentsPresent() && genericArity == 0) {
+                        List<String> canonicalNames =
+                                GenericCallArguments.canonicalStructuralNames(genericArity);
+                        Set<String> canonicalGenerics = new LinkedHashSet<>(canonicalNames);
+                        // Structural callable contracts retain only alpha-normalized
+                        // generic slots, not their original source names. Never
+                        // interpret caller-provided named arguments as these slots.
+                        if (call.typeArguments().stream().anyMatch(Ast.TypeRef::isNamedParameter)) {
                             throw new IllegalArgumentException(
-                                    label + " is not generic and cannot be called with <>");
+                                    label + " cannot use named generic arguments because structural "
+                                            + "method contracts do not preserve source parameter names");
                         }
+                        if (call.typeArgumentsPresent() && genericArity == 0) {
+                            throw new IllegalArgumentException(
+                                    label + " is not generic and cannot be called with <...> or <>");
+                        }
+                        Map<String, Type> bindings = explicitGenericBindings(
+                                canonicalNames, call.typeArguments(), generics, self, label);
+                        Set<String> fixedBindings = new HashSet<>(bindings.keySet());
 
                         List<Type> actuals = new ArrayList<>(structuralArguments.size());
                         for (int i = 0; i < structuralArguments.size(); i++) {
@@ -2899,6 +2900,10 @@ public final class TypeChecker {
 
                         Set<String> unbound = new HashSet<>(canonicalGenerics);
                         unbound.removeAll(bindings.keySet());
+                        if (!unbound.isEmpty()) {
+                            throw new IllegalArgumentException("cannot infer generic parameter(s) "
+                                    + unbound.stream().sorted().toList() + " for " + label);
+                        }
                         for (int i = 0; i < structuralArguments.size(); i++) {
                             Type expected = substituteGenerics(fn.parameters().get(i), bindings);
                             if (containsGenericNamed(expected, unbound)) {
@@ -7137,16 +7142,13 @@ public final class TypeChecker {
             Set<String> callerGenerics,
             Type callerSelf,
             String label) {
-        if (typeArguments.isEmpty()) return Map.of();
-        if (typeArguments.size() != genericNames.size()) {
-            throw new IllegalArgumentException(label + " expects " + genericNames.size()
-                    + " explicit type argument(s), got " + typeArguments.size());
+        GenericCallArguments.Bound bound =
+                GenericCallArguments.bind(genericNames, typeArguments, label);
+        Map<String, Type> resolved = new HashMap<>();
+        for (Map.Entry<String, Ast.TypeRef> entry : bound.explicitTypes().entrySet()) {
+            resolved.put(entry.getKey(), resolve(entry.getValue(), callerGenerics, callerSelf));
         }
-        Map<String, Type> bindings = new HashMap<>();
-        for (int i = 0; i < genericNames.size(); i++) {
-            bindings.put(genericNames.get(i), resolve(typeArguments.get(i), callerGenerics, callerSelf));
-        }
-        return bindings;
+        return resolved;
     }
 
     private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
@@ -7227,6 +7229,11 @@ public final class TypeChecker {
         }
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
+        if (!unbound.isEmpty()) {
+            throw new IllegalArgumentException("cannot infer generic parameter(s) "
+                    + unbound.stream().sorted().toList() + " for " + label
+                    + "; specify them explicitly or make them inferable from value arguments");
+        }
 
         for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
@@ -7676,6 +7683,11 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (ref.isNamedParameter()) {
+            throw new IllegalArgumentException(
+                    "named generic type arguments in type position are not supported yet; "
+                            + "use positional type arguments");
+        }
         if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isComplement()) return Types.notOf(resolve(ref.complementedType(), generics, self, allowNullMarker));
         if (ref.isBoolLiteral()) return new Types.BoolLiteral(ref.boolLiteralValue());
@@ -7711,7 +7723,13 @@ public final class TypeChecker {
             }
             return new Record(members, ref.isReadonlyRecordType());
         }
-        if (generics.contains(ref.name())) return new Generic(ref.name());
+        if (generics.contains(ref.name())) {
+            if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException(
+                        "generic type variable '" + ref.name() + "' cannot be parameterized");
+            }
+            return new Generic(ref.name());
+        }
         Type scopedType = currentTypeScope == null ? null : currentTypeScope.lookupInferredType(ref.name());
         if (scopedType != null) {
             if (!ref.arguments().isEmpty() || ref.inferArguments()) {
@@ -7756,6 +7774,17 @@ public final class TypeChecker {
             } finally {
                 resolvingAliases.remove(alias);
             }
+        }
+
+        // Primitive and scalar built-in types do not accept higher-kinded
+        // application. Previously e.g. int<string> silently resolved to int.
+        if (Set.of("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "int", "uint", "bigint", "f32", "f64", "float", "decimal",
+                "complex64", "complex128", "complex", "string", "String",
+                "void").contains(ref.name())
+                && (ref.inferArguments() || !ref.arguments().isEmpty())) {
+            throw new IllegalArgumentException(
+                    "non-generic built-in type '" + ref.name() + "' cannot accept type arguments");
         }
 
         return switch (ref.name()) {
