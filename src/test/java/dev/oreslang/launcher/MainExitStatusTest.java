@@ -55,6 +55,43 @@ final class MainExitStatusTest {
                 "a missing main must never produce a successful process status");
     }
 
+    @Test void malformedDenoPermissionListsAreUsageErrors() {
+        for (String category : new String[]{
+                "read", "write", "net", "env", "run", "sys", "ffi", "import"
+        }) {
+            for (String action : new String[]{"allow", "deny"}) {
+                for (String scopes : new String[]{",", "alpha,", ",alpha", "alpha, ,beta"}) {
+                    String flag = "--" + action + "-" + category + "=" + scopes;
+                    assertEquals(2, OresMain.exitStatusForArgs(new String[]{flag}), flag);
+                }
+            }
+        }
+        assertEquals(2, OresMain.exitStatusForArgs(new String[]{"-not-an-option"}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[]{"-R="}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[]{"-W="}));
+    }
+
+    @Test void defaultCliGuestIoIsDeniedAndPermissionAliasesWork() throws Exception {
+        Path source = temp.resolve("cli-permissions.ores");
+        Files.writeString(source, """
+                pub routine main(): void {
+                    val path = env.get("PATH");
+                    return;
+                }
+                """);
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{source.toString()}));
+        assertEquals(0, OresMain.exitStatusForArgs(new String[]{
+                "--allow-env=PATH", source.toString()
+        }));
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                "--allow-env", "--deny-env=PATH", source.toString()
+        }));
+        Files.writeString(source, "pub routine main(): void { return; }");
+        for (String flag : new String[]{"-A", "-R", "-W", "-R=.", "-W=."}) {
+            assertEquals(0, OresMain.exitStatusForArgs(new String[]{flag, source.toString()}), flag);
+        }
+    }
+
     @Test void integerMainReturnsZero() throws Exception {
         assertEquals(0, exit("pub routine main(): int { return 0; }"));
     }
