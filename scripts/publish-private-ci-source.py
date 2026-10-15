@@ -215,7 +215,10 @@ def collect_source(root, trusted_root):
                 if stat.S_ISDIR(metadata.st_mode):
                     child_fd = os.open(name, directory_flags, dir_fd=directory_fd)
                     try:
-                        if not stat.S_ISDIR(os.fstat(child_fd).st_mode):
+                        opened_dir = os.fstat(child_fd)
+                        if (not stat.S_ISDIR(opened_dir.st_mode)
+                                or (metadata.st_dev, metadata.st_ino)
+                                != (opened_dir.st_dev, opened_dir.st_ino)):
                             raise Denied("source directory changed during traversal")
                         walk(child_fd, rel + "/", depth + 1)
                     finally:
@@ -228,15 +231,22 @@ def collect_source(root, trusted_root):
                         os.close(file_fd)
                         raise
                     with stream:
-                        metadata = os.fstat(stream.fileno())
-                        if not stat.S_ISREG(metadata.st_mode):
-                            raise Denied("source file changed type during traversal")
+                        opened_file = os.fstat(stream.fileno())
+                        if (not stat.S_ISREG(opened_file.st_mode)
+                                or (metadata.st_dev, metadata.st_ino)
+                                != (opened_file.st_dev, opened_file.st_ino)):
+                            raise Denied("source file changed during traversal")
                         # A hardlink may refer to outside-checkout bytes.
-                        if metadata.st_nlink != 1:
+                        if opened_file.st_nlink != 1:
                             raise Denied("hardlinked source files are not allowed")
-                        if metadata.st_size > MAX_SINGLE:
+                        if opened_file.st_size > MAX_SINGLE:
                             raise Denied("file exceeds source mirror limit")
                         data = stream.read(MAX_SINGLE + 1)
+                        after_read = os.fstat(stream.fileno())
+                        if (opened_file.st_size, opened_file.st_mtime_ns, opened_file.st_ctime_ns,
+                                opened_file.st_mode) != (after_read.st_size, after_read.st_mtime_ns,
+                                after_read.st_ctime_ns, after_read.st_mode):
+                            raise Denied("source file changed while snapshotting")
                     if len(data) > MAX_SINGLE:
                         raise Denied("file exceeds source mirror limit")
                     total += len(data)
