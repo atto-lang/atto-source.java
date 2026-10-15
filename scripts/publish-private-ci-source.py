@@ -564,6 +564,15 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("private carrier main ref is not a verified commit")
         if expected_sha is not None and current_sha != expected_sha:
             raise Denied("private carrier main changed during source transfer")
+        # The carrier main tree supplies CI workflows executed with the
+        # carrier's own token. Never inherit workflows from an unprotected
+        # branch that could change without an independently reviewed PR.
+        carrier_main = gh_api(f"repos/{repository}/branches/main")
+        if (carrier_main.get("name") != "main"
+                or carrier_main.get("protected") is not True
+                or not isinstance(carrier_main.get("commit"), dict)
+                or valid_sha(carrier_main["commit"].get("sha")) != current_sha):
+            raise Denied("private carrier main is not protected and pinned")
         return current_sha
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
