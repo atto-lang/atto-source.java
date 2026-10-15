@@ -237,6 +237,54 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void parentCancellationPreventsAutomaticSupervisorResurrection()
+            throws Exception {
+        CountDownLatch childEntered = new CountDownLatch(1);
+        CountDownLatch releaseChild = new CountDownLatch(1);
+        CountDownLatch childSpawned = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger delivered =
+                new java.util.concurrent.atomic.AtomicInteger();
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override
+                        public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        childEntered.countDown();
+                                        if (!releaseChild.await(3, TimeUnit.SECONDS)) {
+                                            throw new IllegalStateException("test latch expired");
+                                        }
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.set(next);
+                            next.send("fail");
+                            childSpawned.countDown();
+                        }
+
+                        @Override
+                        public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            delivered.incrementAndGet();
+                        }
+                    });
+            parent.send("spawn");
+            try {
+                assertTrue(childSpawned.await(3, TimeUnit.SECONDS));
+                assertTrue(childEntered.await(3, TimeUnit.SECONDS));
+                assertTrue(parent.cancel(), "structured parent cancellation must win");
+            } finally {
+                releaseChild.countDown();
+            }
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(0, delivered.get(),
+                    "cancellation must not dispatch callbacks to retired supervisors");
+            assertTrue(child.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void parentConsumesOnlyItsOwnChildControlNoticeOnItsActorTurn() throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
         CountDownLatch parentInspected = new CountDownLatch(1);
