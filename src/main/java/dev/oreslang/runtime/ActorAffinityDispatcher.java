@@ -96,9 +96,14 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         closed.set(true);
         var abandoned = new ArrayList<Runnable>();
         for (var lane : lanes) for (var pending : lane.shutdownNow()) {
-            QueuedTurn task = (QueuedTurn) pending;
-            task.releaseSlot();
-            abandoned.add(task.command);
+            if (pending instanceof QueuedTurn task) {
+                task.releaseSlot();
+                abandoned.add(task.command);
+            } else {
+                // A host-supplied lane may return a foreign pending task.
+                // Never fail shutdown or execute that task as a side effect.
+                abandoned.add(pending);
+            }
         }
         return List.copyOf(abandoned);
     }
