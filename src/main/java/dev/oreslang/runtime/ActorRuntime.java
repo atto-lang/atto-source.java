@@ -6777,9 +6777,14 @@ public final class ActorRuntime implements AutoCloseable {
          * A rejected wake leaves the immutable notice available for polling.
          */
         private void wakeChildFailureHandler() {
-            if (!(behavior instanceof ChildFailureHandler<?>)
-                    || stopped.get() || closed.get()
-                    || !childFailureWakeQueued.compareAndSet(false, true)) return;
+            // The behavior is published on the parent carrier; inspect it
+            // under that parent's lifecycle monitor for visibility and to
+            // linearize scheduling eligibility with cancellation/retirement.
+            synchronized (lifecycleLock) {
+                if (!(behavior instanceof ChildFailureHandler<?>)
+                        || stopped.get() || finalized || closed.get()
+                        || !childFailureWakeQueued.compareAndSet(false, true)) return;
+            }
             try {
                 dispatcherFor(kind).execute(() -> {
                     childFailureWakeQueued.set(false);
