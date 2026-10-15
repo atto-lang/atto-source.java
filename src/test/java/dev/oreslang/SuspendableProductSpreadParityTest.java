@@ -382,6 +382,21 @@ final class SuspendableProductSpreadParityTest {
     }
 
     @Test
+    void standaloneOwnershipRejectsDuplicateClosedProductFields() {
+        String code = """
+                fnc add(int a, int b): int { return a + b; }
+                pub routine main(): void {
+                    stdio.stdout.write(add(...(a: 1, a: 2)));
+                    return;
+                }
+                """;
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> OwnershipChecker.check(Parser.parse(code)));
+        assertTrue(failure.getMessage().contains("duplicate"),
+                failure.getMessage());
+    }
+
+    @Test
     void standaloneOwnershipPreservesImmutableLiteralPack() {
         String code = """
                 fnc add(int a, int b): int { return a + b; }
