@@ -87,6 +87,41 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
         }
     }
 
+
+    @Test
+    void checkedArithmeticCoversSubtractionAndCrossFunctionPropagation() throws Exception {
+        assertEquals(43, exit(HEADER + """
+            pub fnc subtract(int left, int right): int { return left - right; }
+            pub fnc main(): int { return subtract(44, 1); }
+            """));
+        assertEquals(43, exit(HEADER + """
+            pub fnc multiply(int left, int right): int { return left * right; }
+            pub fnc main(): int { return multiply(43, 1); }
+            """));
+        String[] bad = {
+            HEADER + """
+                pub fnc overflow(int value): int { return value * 2; }
+                pub fnc main(): int { return overflow(9223372036854775807); }
+                """,
+            HEADER + """
+                pub fnc overflow(int value): int { return value + 1; }
+                pub fnc main(): int { return overflow(9223372036854775807); }
+                """
+        };
+        for (String source : bad) {
+            RuntimeException failure = assertThrows(RuntimeException.class,
+                    () -> exit(source), source);
+            boolean expected = false;
+            for (Throwable error = failure; error != null; error = error.getCause()) {
+                if (String.valueOf(error.getMessage()).contains("ORES_I64_OVERFLOW")) {
+                    expected = true;
+                    break;
+                }
+            }
+            assertTrue(expected, "checked operations across calls must trap instead of wrap");
+        }
+    }
+
     @Test
     void unmarkedPotentialOverflowStillFailsHIRAdmission() {
         String legacy = scale(1);
