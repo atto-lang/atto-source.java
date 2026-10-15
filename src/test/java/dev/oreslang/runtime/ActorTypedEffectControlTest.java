@@ -237,6 +237,75 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void failedReplacementFactoryNeverReplaysOriginalChildNotice()
+            throws Exception {
+        CountDownLatch restartIssued = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> oldChild =
+                new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorHandle<String>> replacement =
+                new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger callbacks =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> child = actors.spawnChildShared(
+                                    ignored -> (mail, unused) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            oldChild.set(child);
+                            child.send("fail");
+                        }
+
+                        @Override public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            callbacks.incrementAndGet();
+                            try {
+                                assertEquals(oldChild.get().id(), notice.actorId());
+                                ActorRuntime.ActorHandle<String> newChild =
+                                        actors.restartCurrentChildOneForOne(
+                                                notice, oldChild.get(), ignored -> {
+                                                    // The replacement fails during actor
+                                                    // initialization on its own carrier.
+                                                    throw new IllegalStateException(
+                                                            "deliberately failing replacement factory");
+                                                });
+                                replacement.set(newChild);
+                                assertNotEquals(oldChild.get().id(), newChild.id());
+                                assertThrows(SecurityException.class, () ->
+                                        actors.restartCurrentChildOneForOne(
+                                                notice, oldChild.get(),
+                                                ignored -> (mail, unused) -> {}),
+                                        "the consumed CONTROL notice cannot issue two restarts");
+                            } catch (Throwable failure) {
+                                callbackFailure.set(failure);
+                            } finally {
+                                restartIssued.countDown();
+                            }
+                        }
+                    });
+            parent.send("start");
+            assertTrue(restartIssued.await(3, TimeUnit.SECONDS),
+                    "supervisor must issue the replacement within an actor turn");
+            assertNull(callbackFailure.get(),
+                    () -> "replacement replay proof failed: " + callbackFailure.get());
+            ActorRuntime.ActorHandle<String> fresh = replacement.get();
+            assertNotNull(fresh);
+            assertTrue(fresh.ref().awaitTermination(3, TimeUnit.SECONDS),
+                    "rejected replacement factory must terminate its own actor");
+            assertTrue(oldChild.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(1, callbacks.get(),
+                    "ordinary host factory failure must not forge a second guest CONTROL notice");
+            assertTrue(parent.isAlive(), "replacement failure must not kill supervisor");
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void cancellationDuringSupervisorCallbackRejectsOneForOneRestart()
             throws Exception {
         CountDownLatch callbackEntered = new CountDownLatch(1);
