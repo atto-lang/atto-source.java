@@ -59,6 +59,7 @@ public final class ActorMailboxMiddlewareBridge implements ActorRuntime.ActorCod
                 delegate.prepareActorMail(actorTypeName, state, mail, context),
                 "wrapped source executor returned null mailbox");
         requireOriginalIdentity(mail, current);
+        requireSafeIntermediatePayload(mail, current);
         for (Stage stage : stages) {
             current = Objects.requireNonNull(
                     stage.apply(current, context),
@@ -66,6 +67,7 @@ public final class ActorMailboxMiddlewareBridge implements ActorRuntime.ActorCod
             // Reject forged sender, recipient or sequence *before* the next
             // trusted stage is invoked, preventing internal chain confusion.
             requireOriginalIdentity(mail, current);
+            requireSafeIntermediatePayload(mail, current);
         }
         return current;
     }
@@ -83,6 +85,26 @@ public final class ActorMailboxMiddlewareBridge implements ActorRuntime.ActorCod
                 || original.sequence() != prepared.sequence()) {
             throw new SecurityException(
                     "actor middleware stage attempted to change mailbox identity");
+        }
+    }
+
+    /**
+     * Bridge stages see intermediate values before the outer runtime can
+     * revalidate the final envelope. Restrict this host-side composition
+     * helper to bounded string sanitization: no mutable aggregate, actor ID,
+     * type substitution or larger temporary string is passed to a later stage.
+     * Direct compiler-owned prepareActorMail continues to support the wider
+     * bounded immutable-scalar contract with a final ActorRuntime check.
+     */
+    private static void requireSafeIntermediatePayload(
+            ActorRuntime.ActorInboxMail<Object> original,
+            ActorRuntime.ActorInboxMail<Object> current) {
+        if (original.value() == current.value()) return;
+        if (!(original.value() instanceof String before)
+                || !(current.value() instanceof String after)
+                || after.length() > before.length()) {
+            throw new SecurityException(
+                    "composed actor middleware supports only bounded string sanitization");
         }
     }
 
