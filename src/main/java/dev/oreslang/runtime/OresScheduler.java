@@ -1127,13 +1127,13 @@ public final class OresScheduler implements AutoCloseable {
                 try {
                     onQuiescent.run();
                 } finally {
-                    try {
-                        deadlineQuiescenceRetired.set(true);
-                        releaseDeadlineSlotIfRetired();
-                    } finally {
-                        nativeQuiescenceCallbackFinished.set(true);
-                    }
+                    deadlineQuiescenceRetired.set(true);
+                    releaseDeadlineSlotIfRetired();
                 }
+                // Do not attest trusted callback success from a finally:
+                // an exception in onQuiescent/deadline retirement must NOT
+                // make the normal terminal Future externally visible.
+                nativeQuiescenceCallbackFinished.set(true);
             }
         }
 
