@@ -64,4 +64,19 @@ final class SccAstShapeGuardTest {
         for(int i=0;i<260;i++)nested = new Ast.UnaryExpr("-",nested);
         refused(nested);
     }
+    @Test void entireSccSharesOneAstBudgetEvenWhenEachUnitFitsIndividually() {
+        var expressions = new ArrayList<Ast.Expr>();
+        for (int i = 0; i < 60000; i++) {
+            expressions.add(new Ast.NameExpr("n" + i));
+        }
+        var oneUnit = program(new Ast.ListExpr(expressions));
+        assertDoesNotThrow(() -> SccAstShapeGuard.requireImmutable(oneUnit));
+        assertThrows(IllegalArgumentException.class, () ->
+                SccVerificationInputs.snapshot(
+                        Map.of("a.ores", oneUnit, "b.ores", oneUnit),
+                        Map.of("a.ores", ENV, "b.ores", ENV),
+                        Map.of()),
+                "a graph-level AST budget must not reset for every source unit");
+    }
+
 }
