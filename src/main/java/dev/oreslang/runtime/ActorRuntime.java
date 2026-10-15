@@ -6696,6 +6696,10 @@ public final class ActorRuntime implements AutoCloseable {
         // Future runtime listeners execute synchronously on the completing thread.
         // Child finalization can also nest parent and child lifecycle monitors.
         private List<OresFuture<Void>> finalizedCarrierNotifications;
+        // Set under lifecycleLock at physical finalization. The terminal
+        // Futures must be settled by the outermost caller, after all actor
+        // and ancestor lifecycle monitors have been released.
+        private boolean terminalFuturePublicationPending;
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -7105,40 +7109,53 @@ public final class ActorRuntime implements AutoCloseable {
             }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
+            // Publishing these Futures from inside the monitor invokes
+            // arbitrary runtime subscribers synchronously. Defer as one
+            // terminal notification batch; the post-lock publisher also walks
+            // the parent chain when child finalization completed an ancestor.
+            terminalFuturePublicationPending = true;
             lifecycleLock.notifyAll();
         }
 
         /**
-         * Called only AFTER leaving the outermost finalization caller's
-         * lifecycle monitor. A child may have finalized its parent while
-         * holding the child's monitor, so flush the entire ancestor chain.
-         * Never run arbitrary Future host callbacks inside either monitor.
+         * Publish terminal observers and lifecycle Futures only AFTER exiting
+         * the outermost actor lifecycle monitor. A child can finalize its
+         * parent while holding its own monitor; walk that ancestor chain after
+         * the child's monitor has been dropped as well.
+         *
+         * Claim the terminal batch under the monitor before sending any
+         * callbacks. Competing teardown threads may call this concurrently,
+         * but at most one claims each actor's terminal publications.
          */
         private void publishFinalizedCarrierNotifications() {
             for (ActorCell<?> cell = this; cell != null; cell = cell.parent) {
                 List<OresFuture<Void>> ready;
+                boolean publishTerminal;
                 synchronized (cell.lifecycleLock) {
                     ready = cell.finalizedCarrierNotifications;
                     cell.finalizedCarrierNotifications = null;
+                    publishTerminal = cell.terminalFuturePublicationPending;
+                    cell.terminalFuturePublicationPending = false;
                 }
                 if (ready != null) {
                     for (OresFuture<Void> waiter : ready) {
                         waiter.completeFromRuntime(null);
                     }
                 }
+                if (!publishTerminal) continue;
+                Throwable terminal = cell.ref.terminationCause.get();
+                if (!cell.ref.readyFuture.isDone()) {
+                    // An initializer failure is authoritative; synthesize a
+                    // terminated error only for stop-before-ready without cause.
+                    cell.ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(
+                                            cell.ref.id(), cell.kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) cell.ref.doneFuture.completeFromRuntime(null);
+                else cell.ref.doneFuture.failFromRuntime(terminal);
+                cell.finalizedFuture.completeFromRuntime(null);
             }
         }
 
