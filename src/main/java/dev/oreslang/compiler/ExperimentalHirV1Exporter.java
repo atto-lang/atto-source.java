@@ -33,7 +33,7 @@ public final class ExperimentalHirV1Exporter {
         return fromVerifiedAst(OresCompiler.parseAndTypeCheck(source));
     }
 
-    public static String fromVerifiedAst(Ast.Program program) {
+    private static String fromVerifiedAst(Ast.Program program) {
         if (program.namespace() != null || !program.imports().isEmpty()) {
             throw unsupported("namespaces/imports");
         }
