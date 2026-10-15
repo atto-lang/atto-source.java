@@ -297,7 +297,18 @@ public record IsolatePolicy(
                 || className.startsWith("java.rmi.")
                 || className.startsWith("javax.xml.")
                 || className.startsWith("org.xml.sax.")
-                || className.equals("java.awt.Desktop")
+                // AWT/Swing and Java desktop service classes expose raw
+                // screen capture, input injection, clipboard, print, audio
+                // device, and file-picker authority outside Ores permission
+                // scopes. Deny whole packages rather than individual types.
+                || className.startsWith("java.awt.")
+                || className.startsWith("javax.swing.")
+                || className.startsWith("javax.print.")
+                || className.startsWith("javax.sound.")
+                // Timer constructors create unmanaged host threads without
+                // going through the actor scheduler or THREAD_CREATE checks.
+                || className.equals("java.util.Timer")
+                || className.equals("java.util.TimerTask")
                 || className.equals("java.util.ResourceBundle")) {
             throw new SecurityException(
                     "direct Java host I/O is blocked from class-level interop; "
