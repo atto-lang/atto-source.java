@@ -6948,7 +6948,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (schedule(false)) return;
                 if (!childFailureRetryRegistered.compareAndSet(false, true)) return;
                 boolean enrolled = dispatcher instanceof ActorAffinityDispatcher lanes
-                        ? lanes.registerControlRetry(childFailureRetry, epoch)
+                        ? lanes.registerControlRetry(dispatchLane, childFailureRetry, epoch)
                         : dispatcher instanceof ReservedActorDispatcher reserved
                                 && reserved.registerControlRetry(childFailureRetry, epoch);
                 if (!enrolled) {
