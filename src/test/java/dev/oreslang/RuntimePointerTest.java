@@ -25,7 +25,7 @@ final class RuntimePointerTest {
     }
 
     @Test void namedAndFreshTargetsHaveCheckedRoundTrips() {
-        for (String access : new String[] {"unref", "deref"}) {
+        for (String access : new String[] {"deref"}) {
             check("const Pointer<Box> p = rt ref new Box(); const Box view = rt " + access + " p; stdio.println(view.value);");
             check("val Box box = new Box(); const Pointer<Box> p = rt ref(box); const Box view = rt " + access + "(p); stdio.println(view.value);");
             check("const p = rt ref struct{value: int}{value: 7}; const view = rt " + access + " p; stdio.println(view.value);");
@@ -39,7 +39,7 @@ final class RuntimePointerTest {
                     pub %s main(): void {
                       const Pointer<Box> p = rt ref new Box();
                       process.gc();
-                      const Box first = rt unref p;
+                      const Box first = rt deref p;
                       const Box second = rt deref(p);
                       stdio.stdout.write(first.value + second.value);
                       const q = rt ref struct{value: int}{value: 11};
@@ -64,6 +64,39 @@ final class RuntimePointerTest {
         reject("const p = new Pointer<Box>();", "rt ref");
     }
 
+    @Test void unrefTransfersOwnershipAndTombstonesPointer() {
+        check("const p = rt ref new Box(); const Box owned = rt unref p; stdio.println(owned.value);");
+        check("const p = rt ref new Box(); block { const Box view = rt deref p; } const Box owned = rt unref p;");
+        reject("const p = rt ref new Box(); const Box owned = rt unref p; const again = rt deref p;", "moved");
+        reject("const p = rt ref new Box(); const Box first = rt unref p; const Box second = rt unref p;", "moved");
+        reject("const p = rt ref new Box(); const Box view = rt deref p; const Box owned = rt unref p;", "borrow");
+        reject("const p = rt ref new Box(); const copy = rt copy p; const Box owned = rt unref p;", "rt copy");
+        reject("const p = rt ref new Box(); const shared = rt share p; const Box owned = rt unref p;", "rt share");
+
+        Object target = new Object();
+        dev.oreslang.runtime.OresPointer pointer = new dev.oreslang.runtime.OresPointer(target);
+        assertSame(target, pointer.target());
+        assertSame(target, pointer.unref());
+        assertThrows(IllegalStateException.class, pointer::target);
+        assertThrows(IllegalStateException.class, pointer::unref);
+    }
+
+    @Test void unrefGuestExecutionReturnsOwnedPointee() throws Exception {
+        String program = BOX + """
+                pub routine main(): void {
+                  const p = rt ref new Box();
+                  const Box owned = rt unref p;
+                  stdio.stdout.write(owned.value);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval("ores", program);
+        }
+        assertEquals("7", out.toString(StandardCharsets.UTF_8));
+    }
+
     @Test void pointerOperationsRequireCorrectArityAndType() {
         for (String access : new String[] {"ref", "unref", "deref"}) {
             reject("const p = rt " + access + "();", "argument");
@@ -75,14 +108,14 @@ final class RuntimePointerTest {
     }
 
     @Test void viewsCannotMutateOrManufactureOwnership() {
-        for (String op : new String[] {"unref", "deref"}) {
+        for (String op : new String[] {"deref"}) {
             String setup = "const p = rt ref new Box(); val Box view = rt " + op + " p; ";
             reject(setup + "view.value = 9;", "borrow");
             reject(setup + "const owned = rt take view;", "borrow");
             reject(setup + "const moved = rt take p;", "borrow");
             reject(setup + "block { const alias = view; } const moved = rt take p;", "borrow");
         }
-        check("const p = rt ref new Box(); block { const Box view = rt unref p; } const moved = rt take p;");
+        check("const p = rt ref new Box(); block { const Box view = rt deref p; } const moved = rt take p;");
         reject("const p = rt ref new Box(); const copied = rt copy p;", "rt copy");
         reject("const p = rt ref new Box(); const shared = rt share p;", "rt share");
     }
@@ -91,28 +124,28 @@ final class RuntimePointerTest {
         var e = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + """
                 fnc bad(): borrow Box {
                   const p = rt ref new Box();
-                  return rt unref p;
+                  return rt deref p;
                 }
                 """)));
         assertTrue(e.getMessage().contains("borrow"), e.getMessage());
-        reject("const p = rt ref new Box(); const view = rt unref p; const f = || -> { stdio.println(view.value); return; };", "borrow");
-        reject("const p = rt ref new Box(); const view = rt unref p; rt cooperate;", "borrow");
+        reject("const p = rt ref new Box(); const view = rt deref p; const f = || -> { stdio.println(view.value); return; };", "borrow");
+        reject("const p = rt ref new Box(); const view = rt deref p; rt cooperate;", "borrow");
     }
 
     @Test void nestedViewsCannotLeakMutableChildren() {
-        reject("const p = rt ref struct{child: Box}{child: new Box()}; const view = rt unref p; val child = view.child; child.value = 9;", "borrow");
-        reject("const p = rt ref struct{child: Box}{child: new Box()}; const view = rt unref p; const child = rt ref view.child;", "projected");
+        reject("const p = rt ref struct{child: Box}{child: new Box()}; const view = rt deref p; val child = view.child; child.value = 9;", "borrow");
+        reject("const p = rt ref struct{child: Box}{child: new Box()}; const view = rt deref p; const child = rt ref view.child;", "projected");
     }
 
     @Test void castsAndAnnotationsCannotEraseBorrowProvenance() {
-        reject("const p = rt ref new Box(); const view = rt unref p; val Box alias = view as Box; alias.value = 9;", "borrow");
-        reject("const p = rt ref new Box(); const view = rt unref p; const Box alias = view as Box; const q = rt ref alias;", "borrow");
-        reject("const p = rt ref struct{child: Box}{child: new Box()}; const view = rt unref p; val {child} = view; child.value = 9;", "borrow");
+        reject("const p = rt ref new Box(); const view = rt deref p; val Box alias = view as Box; alias.value = 9;", "borrow");
+        reject("const p = rt ref new Box(); const view = rt deref p; const Box alias = view as Box; const q = rt ref alias;", "borrow");
+        reject("const p = rt ref struct{child: Box}{child: new Box()}; const view = rt deref p; val {child} = view; child.value = 9;", "borrow");
         var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + """
                 fnc mutate(Box mut box): void { box.value = 9; return; }
                 fnc bad(): void {
                   const p = rt ref new Box();
-                  const view = rt unref p;
+                  const view = rt deref p;
                   mutate(view as Box);
                   return;
                 }
@@ -125,12 +158,12 @@ final class RuntimePointerTest {
                 fnc read(borrow Box view): int { return view.value; }
                 fnc ok(): void {
                   const p = rt ref new Box();
-                  const int n = read(rt unref p);
+                  const int n = read(rt deref p);
                   const moved = rt take p;
                   return;
                 }
                 """)));
-        for (String access : new String[] {"unref", "deref"}) {
+        for (String access : new String[] {"deref"}) {
             var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + """
                     fnc read(borrow Box view, Pointer<Box> moved): void { return; }
                     fnc bad(): void {
@@ -145,8 +178,8 @@ final class RuntimePointerTest {
 
     @Test void collectionReadsAndAliasesCannotMintOwningPointers() {
         reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes.get(0);", "projected");
-        reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt unref p; val child = view.get(0); child.value = 9;", "borrow");
-        reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt unref p; val child = view[0]; child.value = 9;", "borrow");
+        reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt deref p; val child = view.get(0); child.value = 9;", "borrow");
+        reject("val Array<Box> boxes = new Array<Box>(); boxes.add(new Box()); const p = rt ref boxes; const view = rt deref p; val child = view[0]; child.value = 9;", "borrow");
     }
 
     @Test void pointerTypeCannotBeRedefinedOrTransported() {
@@ -166,11 +199,11 @@ final class RuntimePointerTest {
     }
 
     @Test void expressionsCannotHidePointerViewLifetimes() {
-        reject("const p = rt ref new Box(); const view = rt unref p; const hidden = true ? (view as Box) : (view as Box); const moved = rt take p;", "borrow");
-        reject("const p = rt ref new Box(); const hidden = true ? (rt unref p) : (rt deref p); const moved = rt take p;", "borrow");
-        reject("const p = rt ref new Box(); const hidden = (rt unref p) as? Box; const moved = rt take p;", "borrow");
-        reject("const p = rt ref new Box(); const hidden = true ? ((rt unref p) as Box) : ((rt deref p) as Box);", "borrow");
-        check("const p = rt ref new Box(); const n = true ? (rt unref p).value : (rt deref p).value; const moved = rt take p;");
+        reject("const p = rt ref new Box(); const view = rt deref p; const hidden = true ? (view as Box) : (view as Box); const moved = rt take p;", "borrow");
+        reject("const p = rt ref new Box(); const hidden = true ? (rt deref p) : (rt deref p); const moved = rt take p;", "borrow");
+        reject("const p = rt ref new Box(); const hidden = (rt deref p) as? Box; const moved = rt take p;", "borrow");
+        reject("const p = rt ref new Box(); const hidden = true ? ((rt deref p) as Box) : ((rt deref p) as Box);", "borrow");
+        check("const p = rt ref new Box(); const n = true ? (rt deref p).value : (rt deref p).value; const moved = rt take p;");
     }
 
     @Test void structuralCallsRetainTemporaryPointerViews() {
@@ -184,7 +217,7 @@ final class RuntimePointerTest {
         var error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(prefix + """
                 fnc bad(): void {
                   const p = rt ref new Box();
-                  read((rt unref p) as Box, rt take p);
+                  read((rt deref p) as Box, rt take p);
                   return;
                 }
                 """)));
@@ -192,7 +225,7 @@ final class RuntimePointerTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(prefix + """
                 fnc ok(): void {
                   const p = rt ref new Box();
-                  const n = inspect((rt unref p) as Box);
+                  const n = inspect((rt deref p) as Box);
                   const moved = rt take p;
                   return;
                 }
@@ -200,8 +233,8 @@ final class RuntimePointerTest {
     }
 
     @Test void firstClassCallRetainsTemporaryPointerViews() {
-        reject("const Fnc<Box, Pointer<Box>, void> f = |Box view, Pointer<Box> moved| -> { return; }; const p = rt ref new Box(); f((rt unref p) as Box, rt take p);", "borrow");
-        check("const Fnc<Box, void> f = |Box view| -> { return; }; const p = rt ref new Box(); f((rt unref p) as Box); const moved = rt take p;");
+        reject("const Fnc<Box, Pointer<Box>, void> f = |Box view, Pointer<Box> moved| -> { return; }; const p = rt ref new Box(); f((rt deref p) as Box, rt take p);", "borrow");
+        check("const Fnc<Box, void> f = |Box view| -> { return; }; const p = rt ref new Box(); f((rt deref p) as Box); const moved = rt take p;");
     }
 
     @Test void symbolicPointerAndBorrowSyntaxIsRejected() {
