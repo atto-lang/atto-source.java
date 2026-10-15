@@ -66,6 +66,17 @@ ores_turn_status ores_turn_register_source_task(ores_turn_vm *vm,
 ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
                                          ores_source_task_cap *source,
                                          ores_cleanup_cap **out_ticket);
+/* A suspended SourceTask may have NO active carrier and is not finished.
+ * Only the trusted VM scheduler's terminal/quiescence callback can attest
+ * logical SourceTask settlement. This one-shot transition must precede
+ * retirement and only succeeds after any issued cleanup ticket has closed,
+ * all claimed terminal cleanup has completed or been force-aborted, and
+ * all physical actor turns have exited.
+ * Never derive this from Future.isDone(), an empty actor mailbox, or an
+ * idle native carrier alone. Guest code must never call these APIs.
+ */
+ores_turn_status ores_turn_note_source_settled(ores_turn_vm *vm,
+                                               ores_source_task_cap *source);
 ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
                                              ores_source_task_cap *source);
 ores_turn_status ores_turn_claim_user(ores_turn_vm *vm,
