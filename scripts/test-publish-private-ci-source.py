@@ -1402,9 +1402,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 elif choice == 1:
                     raw = (("🚀" * rng.randrange(1, 4000)).encode("utf-8"))
                 elif choice == 2:
-                    raw = (("\\\\\"" * rng.randrange(1, 12_000)).encode("utf-8"))
+                    raw = (chr(92) + chr(34)).encode("utf-8") * rng.randrange(1, 12_000)
                 elif choice == 3:
-                    raw = b"binary\\x00\\xff" + bytes([rng.randrange(256)])
+                    raw = bytes([0, 255, rng.randrange(256)])
                 elif choice == 4:
                     raw = b"x" * rng.randrange(130_000, 138_000)
                 else:
@@ -1422,11 +1422,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     entry = {"path": rel, "mode": mode, "type": "blob"}
                     if as_text is not None:
                         self.assertEqual(as_text.encode("utf-8"), data)
-                        self.assertNotIn(b"\\x00", data)
+                        self.assertNotIn(bytes([0]), data)
                         entry["content"] = as_text
                     else:
                         entry["sha"] = hashlib.sha1(
-                            b"blob " + str(len(data)).encode("ascii") + b"\\x00" + data
+                            b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
                         ).hexdigest()
                     elements.append(entry)
                 payload = {"tree": elements, "base_tree": "a" * 40}
