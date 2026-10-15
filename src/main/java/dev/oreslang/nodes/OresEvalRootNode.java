@@ -512,6 +512,18 @@ public final class OresEvalRootNode extends RootNode {
         public ActorRuntime.ActorOwnedGuestState initializeActor(
                 String actorTypeName,
                 ActorRuntime.ActorContext<Object> actorContext) {
+            try {
+                return initializeActorOwned(actorTypeName, actorContext);
+            } catch (GuestThrowSignal unhandled) {
+                // The guest Error value is actor-owned. Convert before the
+                // compiler's startup callback crosses into ActorRuntime.
+                throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
+            }
+        }
+
+        private ActorRuntime.ActorOwnedGuestState initializeActorOwned(
+                String actorTypeName,
+                ActorRuntime.ActorContext<Object> actorContext) {
             Objects.requireNonNull(actorContext, "actorContext");
             SharedCodeImageStore.CodeImage image =
                     actorContext.codeImage().orElseThrow(
@@ -590,6 +602,21 @@ public final class OresEvalRootNode extends RootNode {
 
         @Override
         public void receiveActor(
+                String actorTypeName,
+                ActorRuntime.ActorOwnedGuestState rawState,
+                ActorRuntime.ActorInboxMail<Object> mail,
+                ActorRuntime.ActorContext<Object> actorContext) {
+            try {
+                receiveActorOwned(actorTypeName, rawState, mail, actorContext);
+            } catch (GuestThrowSignal unhandled) {
+                // Local try/catch sees the original guest value. Only an
+                // uncaught value reaches this actor-turn exit, where its host
+                // representation must contain no guest reference.
+                throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
+            }
+        }
+
+        private void receiveActorOwned(
                 String actorTypeName,
                 ActorRuntime.ActorOwnedGuestState rawState,
                 ActorRuntime.ActorInboxMail<Object> mail,
@@ -5039,10 +5066,9 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "guest throw requires a runtime Error-derived value");
                 }
-                if (ActorRuntime.currentActorKind() != null) {
-                    throw new SecurityException(
-                            "guest throw cannot cross an actor isolation boundary");
-                }
+                // The value remains inside this actor's lexical activation.
+                // Any unhandled throw is converted at initializeActor() or
+                // receiveActor() before ActorRuntime can retain a host cause.
                 throw new GuestThrowSignal(error);
             }
             if (stmt instanceof Ast.BindingStmt binding) {
