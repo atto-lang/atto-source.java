@@ -51,16 +51,23 @@ public final class OresEvalRootNode extends RootNode {
 
     private final Ast.Program program;
     private final String codeUnitId;
+    private final boolean experimentalCheckedI64;
     private volatile Evaluator evaluator;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
-        this(language, program, "<anonymous>");
+        this(language, program, "<anonymous>", false);
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, false);
+    }
+
+    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId,
+                            boolean experimentalCheckedI64) {
         super(language);
         this.program = program;
         this.codeUnitId = codeUnitId;
+        this.experimentalCheckedI64 = experimentalCheckedI64;
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -117,7 +124,7 @@ public final class OresEvalRootNode extends RootNode {
         if (current != null) return current;
         synchronized (this) {
             current = evaluator;
-            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId);
+            if (current == null) evaluator = current = new Evaluator(program, context, codeUnitId, experimentalCheckedI64);
             return current;
         }
     }
@@ -131,6 +138,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final boolean experimentalCheckedI64;
         /** Exact immutable image published by link(); shared by all source actors. */
         private volatile SharedCodeImageStore.CodeImage linkedCodeImage;
         private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
@@ -199,10 +207,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(Ast.Program program, OresContext context, String codeUnitId,
+                          boolean experimentalCheckedI64) {
             this.program = program;
             this.context = context;
             this.codeUnitId = normalizeUnitId(codeUnitId);
+            this.experimentalCheckedI64 = experimentalCheckedI64;
             indexImports();
             indexDeclarations();
             indexCallableSlots();
