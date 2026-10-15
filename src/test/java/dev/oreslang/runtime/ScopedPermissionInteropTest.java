@@ -89,6 +89,31 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void desktopDeviceAndTimerClassesCannotEscapeActorPermissionBoundary() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.THREAD_CREATE);
+        // JAVA_INTEROP + even THREAD_CREATE must not authorize unscoped
+        // screen/input capture, clipboard, print/audio device operations
+        // or construction of unmanaged java.util.Timer worker threads.
+        for (String className : new String[]{
+                "java.awt.Robot", "java.awt.Toolkit",
+                "java.awt.datatransfer.Clipboard", "javax.swing.JFileChooser",
+                "javax.print.PrintServiceLookup",
+                "javax.sound.sampled.AudioSystem",
+                "javax.sound.midi.MidiSystem",
+                "java.util.Timer", "java.util.TimerTask"
+        }) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(className)),
+                    "desktop/device/thread-capable host class admitted: " + className);
+            assertTrue(denied.getMessage().contains("direct Java host I/O"),
+                    "class must fail before HostAccess construction: " + className);
+        }
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
