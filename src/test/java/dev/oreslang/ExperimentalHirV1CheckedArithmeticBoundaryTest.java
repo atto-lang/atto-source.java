@@ -80,11 +80,18 @@ final class ExperimentalHirV1CheckedArithmeticBoundaryTest {
                     () -> ExperimentalHirV1Exporter.fromSource(prefixed + potentialOverflow),
                     "Non-exact opt-in must not advertise checked-i64 guest execution");
         }
-        // A directive on line two is a comment, not a silent language-wide switch.
-        assertEquals(43, run("\n" + OPT_IN + """
+        // A displaced directive is an error, never silent fallback to
+        // wrapping arithmetic after the guest explicitly requested checks.
+        RuntimeException rejected = assertThrows(RuntimeException.class,
+                () -> run("\n" + OPT_IN + """
                 pub fnc main(): int {
                   return 9223372036854775807 + 1 < 0 ? 43 : 1;
                 }
                 """));
+        boolean classified = false;
+        for (Throwable cursor = rejected; cursor != null; cursor = cursor.getCause()) {
+            classified |= String.valueOf(cursor.getMessage()).contains("checked-i64-v1");
+        }
+        assertTrue(classified, "Displaced checked directive must fail closed");
     }
 }
