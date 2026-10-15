@@ -69,25 +69,27 @@ final class PrivateCiRunnerWorkflowSecurityTest {
             count++;
             String gate = lineContaining(body, "    if: ");
             assertNotNull(gate, () -> path + " job " + job + " is missing a pre-checkout admission gate");
-            assertTrue(gate.contains("github.repository == '" + REPO + "'"),
-                    () -> path + " job " + job + " accepts another repository");
-            assertTrue(gate.contains("github.event.repository.private == true"),
-                    () -> path + " job " + job + " does not require private visibility");
-            assertTrue(gate.contains("github.ref == 'refs/heads/" + expectedBranch + "'"),
-                    () -> path + " job " + job + " accepts an unintended branch");
-            assertTrue(gate.contains(APPROVED),
-                    () -> path + " job " + job + " accepts an unreviewed SHA");
-            assertTrue(gate.contains("vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != ''"),
-                    () -> path + " job " + job + " accepts an empty approved SHA");
-            assertTrue(gate.contains(ENABLED + " != 'true'"),
-                    () -> path + " job " + job + " does not guard opt-in");
+            // Match the complete expression; a guard mentioned in a comment
+            // or in an 'always() || guard' expression is NOT admission control.
+            String exactGate = "if: ${{ github.repository == '" + REPO
+                    + "' && github.event.repository.private == true && github.ref == 'refs/heads/"
+                    + expectedBranch
+                    + "' && (" + ENABLED
+                    + " != 'true' || (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && "
+                    + APPROVED + ")) }}";
+            assertEquals(exactGate, gate.trim(),
+                    () -> path + " job " + job + " changed its reviewed admission expression");
             String runner = lineContaining(body, "    runs-on: ");
             assertNotNull(runner, () -> path + " job " + job + " must choose runner explicitly");
-            assertTrue(runner.contains(ENABLED), () -> path + " job " + job + " lost opt-in");
-            assertTrue(runner.contains(RUNNER_LABEL),
-                    () -> path + " job " + job + " lost dedicated private runner label");
-            assertTrue(runner.contains("ubuntu-24.04"),
-                    () -> path + " job " + job + " lost hosted fallback");
+            String exactRunner = "runs-on: ${{ " + ENABLED
+                    + " == 'true' && fromJSON('[\"self-hosted\",\"linux\",\"x64\",\""
+                    + RUNNER_LABEL + "\"]') || 'ubuntu-24.04' }}";
+            assertEquals(exactRunner, runner.trim(),
+                    () -> path + " job " + job + " changed its reviewed runner selector");
+            assertTrue(body.contains("uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"),
+                    () -> path + " job " + job + " changed the reviewed checkout action pin");
+            assertTrue(body.contains("uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173"),
+                    () -> path + " job " + job + " changed the reviewed GraalVM setup pin");
             assertTrue(body.contains("persist-credentials: false"),
                     () -> path + " job " + job + " retains checkout credentials");
             assertTrue(body.contains("test \"$(git rev-parse HEAD)\" = \"$GITHUB_SHA\""),
