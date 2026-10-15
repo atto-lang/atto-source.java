@@ -3,6 +3,7 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -85,6 +86,10 @@ public final class ExperimentalHirV1Exporter {
                     || ret.value() == null) {
                 throw unsupported("function body must have exactly one return");
             }
+            // Existing GraalVM integer operations wrap on overflow. Export as
+            // checked-i64 only when interval analysis proves wrap impossible
+            // for EVERY possible i64 parameter value.
+            proveI64Safe(ret.value(), 0);
             emitted.add(object("name", function.name(), "params", params,
                     "result_type", type(function.returnType()),
                     "body", expression(ret.value(), 0, new int[]{0})));
@@ -149,6 +154,65 @@ public final class ExperimentalHirV1Exporter {
             return object("kind", "call", "function", name.name(), "args", args);
         }
         throw unsupported("expression outside experimental typed HIR subset");
+    }
+
+    private static final BigInteger I64_MIN = BigInteger.valueOf(Long.MIN_VALUE);
+    private static final BigInteger I64_MAX = BigInteger.valueOf(Long.MAX_VALUE);
+    private record Range(BigInteger lo, BigInteger hi) {
+        private static Range unknown() { return new Range(I64_MIN, I64_MAX); }
+        private static Range literal(long value) {
+            BigInteger n = BigInteger.valueOf(value);
+            return new Range(n, n);
+        }
+    }
+
+    /** Conservative universal proof; NO source-parameter values are assumed. */
+    private static Range proveI64Safe(Ast.Expr expr, int depth) {
+        if (depth > 48) throw unsupported("arithmetic proof depth");
+        if (expr instanceof Ast.LiteralExpr literal) {
+            if (literal.value() instanceof Number n) return Range.literal(n.longValue());
+            return Range.unknown();
+        }
+        if (expr instanceof Ast.NameExpr) return Range.unknown();
+        if (expr instanceof Ast.CallExpr call) {
+            for (Ast.Expr arg : call.arguments()) proveI64Safe(arg, depth + 1);
+            // Every callee is proved separately for its FULL i64 domain.
+            return Range.unknown();
+        }
+        if (!(expr instanceof Ast.BinaryExpr op)) {
+            throw unsupported("expression has no checked-i64 proof");
+        }
+        Range a = proveI64Safe(op.left(), depth + 1);
+        Range b = proveI64Safe(op.right(), depth + 1);
+        BigInteger low, high;
+        switch (op.operator()) {
+            case "+" -> {
+                low = a.lo().add(b.lo());
+                high = a.hi().add(b.hi());
+            }
+            case "-" -> {
+                low = a.lo().subtract(b.hi());
+                high = a.hi().subtract(b.lo());
+            }
+            case "*" -> {
+                BigInteger[] values = {
+                    a.lo().multiply(b.lo()), a.lo().multiply(b.hi()),
+                    a.hi().multiply(b.lo()), a.hi().multiply(b.hi())
+                };
+                low = values[0];
+                high = values[0];
+                for (BigInteger v : values) {
+                    low = low.min(v);
+                    high = high.max(v);
+                }
+            }
+            case "<", "==" -> { return Range.unknown(); }
+            default -> throw unsupported("operator has no checked-i64 proof");
+        }
+        if (low.compareTo(I64_MIN) < 0 || high.compareTo(I64_MAX) > 0) {
+            throw unsupported("possible signed i64 overflow; checked guest arithmetic is not implemented");
+        }
+        return new Range(low, high);
     }
 
     private static void collectCalls(Ast.Expr expr,
