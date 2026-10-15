@@ -1300,6 +1300,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public interface ActorOwnedGuestState {
         ActorId ownerActorId();
+
+        /**
+         * Host-only memory identity shared with guest access probes. Source
+         * actors may wrap their mutable object in a validated ownership record.
+         * This never grants a guest a capability to another actor's memory.
+         */
+        default Object raceMemoryIdentity() { return this; }
     }
 
     /**
@@ -6987,7 +6994,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (ActorRaceInstrumentation.enabled()) {
                 ActorRaceInstrumentation monitor = ActorRaceInstrumentation.runtime();
                 monitor.retireActor(this);
-                if (codeActorState != null) monitor.retireMemoryDomain(codeActorState);
+                if (codeActorState != null) {
+                    monitor.retireMemoryDomain(codeActorState.raceMemoryIdentity());
+                }
             }
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
