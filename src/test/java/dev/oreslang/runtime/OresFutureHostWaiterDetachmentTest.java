@@ -73,6 +73,45 @@ final class OresFutureHostWaiterDetachmentTest {
     }
 
     @Test
+    void cancelledCompletionStageBridgeReleasesObserverButDoesNotCancelProducer()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        java.util.concurrent.CompletableFuture<Integer> observer =
+                producer.asCompletionStage().toCompletableFuture();
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        assertTrue(observer.cancel(false));
+        assertTrue(observer.isCancelled());
+        assertEquals(0, producer.pendingRuntimeWaiterCount(),
+                "canceling the bridge must unlink its producer listener");
+        assertFalse(producer.isDone(),
+                "a host observation bridge must not own producer cancellation");
+        assertTrue(producer.completeFromRuntime(31));
+        assertEquals(31, producer.get(5, TimeUnit.SECONDS));
+        assertTrue(observer.isCancelled());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void completedOrFailedBridgeNeverRetainsProducerListeners() throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        java.util.concurrent.CompletableFuture<Integer> observer =
+                producer.asCompletionStage().toCompletableFuture();
+        assertTrue(producer.completeFromRuntime(29));
+        assertEquals(29, observer.get(5, TimeUnit.SECONDS));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+
+        OresFuture<Integer> rejected = OresFuture.failed(
+                new IllegalArgumentException("invalid"));
+        java.util.concurrent.CompletableFuture<Integer> failedObserver =
+                rejected.asCompletionStage().toCompletableFuture();
+        java.util.concurrent.ExecutionException failure = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> failedObserver.get(5, TimeUnit.SECONDS));
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        assertEquals(0, rejected.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     @Timeout(20)
     void racingHostTimeoutAndProducerSettlementLeaveNoRetainedWaiters()
             throws Exception {
