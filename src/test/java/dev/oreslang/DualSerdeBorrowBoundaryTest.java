@@ -99,6 +99,23 @@ final class DualSerdeBorrowBoundaryTest {
     }
 
     @Test
+    void qualifiedRuntimeHandlesAreRejectedAsActorData() {
+        for (String type : new String[] {
+                "RuntimeBox.TcpConnection",
+                "RuntimeBox.Future<int>",
+                "RuntimeBox.Channel<int>",
+                "RuntimeBox.ActorRef<int>",
+                "RuntimeBox.ActorGroup",
+                "RuntimeBox.ProxyActor",
+                "Option<RuntimeBox.ActorRef<int>>"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "actor fnc bad(" + type + " value): void { return; }")), type);
+        }
+    }
+
+    @Test
     void moduleQualifiedCodecCannotBeReceivedAsSupervisorActorData() {
         for (String type : new String[]{
                 "CodecBox.NetworkCodec<int>",
