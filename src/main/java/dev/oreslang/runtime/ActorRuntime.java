@@ -2806,7 +2806,29 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // Withdraw queued turns without parking a physical carrier.
             // Callbacks can finalize actors; never invoke them under authorityLock.
-            if (turnGate != null) turnGate.close();
+            // Failure must not short-circuit membership revocation, worker
+            // cancellation, event-bus cleanup or removal of this group.
+            Throwable gateCloseFailure = null;
+            if (turnGate != null) {
+                try {
+                    turnGate.close();
+                } catch (RuntimeException | Error failure) {
+                    gateCloseFailure = failure;
+                }
+            }
+            // Reconcile any cancelled waiting ticket whose observer failed
+            // before it cleared the actor's scheduled bit. Never withdraw a
+            // GRANTED turn here: that carrier still owns its physical lease.
+            for (ActorRef<?> worker : owned) {
+                ActorCell<?> cell = actors.get(worker.id());
+                if (cell == null) continue;
+                try {
+                    cell.reconcileCancelledGateTicketOnClose();
+                } catch (RuntimeException | Error failure) {
+                    if (gateCloseFailure == null) gateCloseFailure = failure;
+                    else if (gateCloseFailure != failure) gateCloseFailure.addSuppressed(failure);
+                }
+            }
             // Revoke every membership before asynchronous worker cleanup. A
             // room close frees membership quota without stopping unrelated
             // members or tearing down their other room subscriptions.
@@ -2870,6 +2892,13 @@ public final class ActorRuntime implements AutoCloseable {
                 } finally {
                     actorGroups.remove(id, this);
                 }
+            }
+            if (gateCloseFailure != null) {
+                if (cancellationFailure != null && gateCloseFailure != cancellationFailure) {
+                    gateCloseFailure.addSuppressed(cancellationFailure);
+                }
+                if (gateCloseFailure instanceof Error fatal) throw fatal;
+                if (gateCloseFailure instanceof RuntimeException failure) throw failure;
             }
             if (cancellationFailure != null) throw cancellationFailure;
         }
@@ -7093,6 +7122,14 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.wait(millis);
                 }
             }
+        }
+
+        /** Only a cancelled WAITING group ticket can be reconciled on close. */
+        private void reconcileCancelledGateTicketOnClose() {
+            ActorGroupTurnGate.Ticket ticket = pendingTurnGateTicket;
+            if (ticket == null || !ticket.isCancelled()) return;
+            cancelQueuedScheduleOnShutdown();
+            if (pendingTurnGateTicket == ticket) pendingTurnGateTicket = null;
         }
 
         private void cancelQueuedScheduleOnShutdown() {
