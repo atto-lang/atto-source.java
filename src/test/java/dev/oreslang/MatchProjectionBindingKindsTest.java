@@ -439,4 +439,48 @@ final class MatchProjectionBindingKindsTest {
                 failure.getMessage());
     }
 
+    @Test
+    void objectRestUnionCannotHideMoveOnlyCapturedFields() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checks("""
+                    fnc invalid(
+                        {first: int, payload: List<int>} | {first: int, payload: List<string>} input
+                    ): void {
+                      const {first, ...remaining} = input;
+                      return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("non-Copy object-rest projection"),
+                failure.getMessage());
+    }
+
+    @Test
+    void copyOnlyObjectRestUnionPreservesStaticReadonlySnapshots() {
+        assertDoesNotThrow(() -> checks("""
+            fnc valid({first: int, a: int} | {first: int, b: int} input): void {
+              const {first, ...remaining} = input;
+              return;
+            }
+            """));
+    }
+
+    @Test
+    void selectedUnionObjectRestCannotHideMoveOnlyFields() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checks("""
+                    fnc invalid(Channel<
+                        {first: int, payload: List<int>} | {first: int, payload: List<string>}
+                    > ch): void {
+                      do select {
+                        when readch ch: const {first, ...remaining} -> {
+                          stdio.println(first);
+                        }
+                      }
+                      return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("non-Copy select read projection"),
+                failure.getMessage());
+    }
+
 }

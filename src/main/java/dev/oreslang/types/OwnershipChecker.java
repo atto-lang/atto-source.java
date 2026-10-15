@@ -382,14 +382,14 @@ public final class OwnershipChecker {
                         destructure, source.type, i, binding.name());
                 Ast.TypeRef bindingType = binding.declaredType() != null
                         ? binding.declaredType() : inferred;
-                if (binding.rest() && destructure.kind() == Ast.DestructureKind.OBJECT
-                        && inferred.isReadonlyRecordType()) {
-                    // The runtime builds a shallow readonly record snapshot.
-                    // Non-Copy nested fields would remain aliases of mutable or
-                    // move-only guest state without a move-from-field / loan
-                    // lowering. Match the selected-channel fail-closed rule.
-                    if (inferred.recordMembers().values().stream()
-                            .anyMatch(memberType -> !isCopyType(memberType))) {
+                if (binding.rest() && destructure.kind() == Ast.DestructureKind.OBJECT) {
+                    // Each alternative of a union also creates a shallow
+                    // readonly snapshot. Checking only isReadonlyRecordType()
+                    // would skip move-only fields hidden in a record union.
+                    if (!isReadonlyObjectRestShape(inferred)) {
+                        throw error("object-rest projection requires a statically known readonly record shape");
+                    }
+                    if (!isCopyOnlyObjectRestShape(inferred)) {
                         throw error("non-Copy object-rest projection requires "
                                 + "explicit owned-field transfer/loan lowering");
                     }
@@ -398,6 +398,8 @@ public final class OwnershipChecker {
                     }
                     if (bindingType.isRecordType() && !bindingType.isReadonlyRecordType()) {
                         bindingType = Ast.TypeRef.readonlyRecordType(bindingType.recordMembers());
+                    } else if (!isReadonlyObjectRestShape(bindingType)) {
+                        throw error("object-rest binding cannot erase readonly record capabilities");
                     }
                 }
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
@@ -668,13 +670,15 @@ public final class OwnershipChecker {
                                     ? binding.declaredType() : sourceField;
                             boolean readonlyObjectRest = binding.rest()
                                     && arm.destructureKind() == Ast.DestructureKind.OBJECT
-                                    && sourceField.isReadonlyRecordType();
+                                    && isReadonlyObjectRestShape(sourceField);
                             if (readonlyObjectRest) {
                                 if (binding.mutableReferent()) {
                                     throw error("object-rest snapshot cannot grant mutable referent access");
                                 }
                                 if (projected.isRecordType() && !projected.isReadonlyRecordType()) {
                                     projected = Ast.TypeRef.readonlyRecordType(projected.recordMembers());
+                                } else if (!isReadonlyObjectRestShape(projected)) {
+                                    throw error("object-rest binding cannot erase readonly record capabilities");
                                 }
                             }
                             // A winning channel read transfers one aggregate.
@@ -688,8 +692,8 @@ public final class OwnershipChecker {
                             // value is Copy; nested/move-only fields still need
                             // explicit ownership transfer lowering.
                             boolean safeRestSnapshot = readonlyObjectRest
-                                    && projected.isReadonlyRecordType()
-                                    && sourceField.recordMembers().values().stream().allMatch(this::isCopyType);
+                                    && isReadonlyObjectRestShape(projected)
+                                    && isCopyOnlyObjectRestShape(sourceField);
                             if (!safeRestSnapshot
                                     && (kindOfType(sourceField) != ValueKind.COPY
                                         || kindOfType(projected) != ValueKind.COPY)) {
@@ -3602,6 +3606,25 @@ public final class OwnershipChecker {
             }
             return objectMemberBindingType(concrete, name);
         }
+    }
+
+    private boolean isReadonlyObjectRestShape(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isUnion()) {
+            return !type.arguments().isEmpty()
+                    && type.arguments().stream().allMatch(this::isReadonlyObjectRestShape);
+        }
+        return type.isReadonlyRecordType();
+    }
+
+    private boolean isCopyOnlyObjectRestShape(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isUnion()) {
+            return !type.arguments().isEmpty()
+                    && type.arguments().stream().allMatch(this::isCopyOnlyObjectRestShape);
+        }
+        return type.isReadonlyRecordType()
+                && type.recordMembers().values().stream().allMatch(this::isCopyType);
     }
 
     private Ast.TypeRef objectRestBindingType(Ast.TypeRef source, List<Ast.DestructureBinding> bindings) {
