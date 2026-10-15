@@ -562,8 +562,8 @@ public final class NativeHttp implements AutoCloseable {
             // pools bound worker count separately and release closed exchanges;
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
-                if (!transportClosed || dispatchInProgress
-                        || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                if (!canRetireRequest(transportClosed, dispatchInProgress,
+                        poolWorker == null && actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
@@ -782,6 +782,18 @@ public final class NativeHttp implements AutoCloseable {
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
             return result;
         }
+    }
+
+    /**
+     * The ownership linearization rule shared by pooled and fresh dispatch:
+     * I/O close alone cannot retire admission while a worker is being chosen
+     * or a newly spawned non-pooled actor has not physically finalized.
+     */
+    static boolean canRetireRequest(
+            boolean transportClosed,
+            boolean dispatchInProgress,
+            boolean pendingFreshActorFinalization) {
+        return transportClosed && !dispatchInProgress && !pendingFreshActorFinalization;
     }
 
     /**
