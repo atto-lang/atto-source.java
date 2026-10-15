@@ -101,7 +101,7 @@ final class QuestionPropagationLanguageTest {
                 async fnc wrong(Option<int> v): Option<int> {
                   return v?;
                 }
-                """, "synchronous local");
+                """, "direct binding initializer");
         reject("""
                 fnc wrong(Option<int> v): Option<int> {
                   return trap v?;
@@ -164,6 +164,63 @@ final class QuestionPropagationLanguageTest {
                   return mapped;
                 }
                 """, "synchronous local");
+    }
+
+    @Test
+    void awaitedResultQuestionReturnsThroughAsyncSourceFlowAndFinally() throws Exception {
+        String program = """
+                async fnc read_good(): Result<int, String> {
+                  return Ok(7);
+                }
+
+                async fnc read_bad(): Result<int, String> {
+                  return Err("network");
+                }
+
+                async fnc success(): Result<int, String> {
+                  val int item = (await read_good())?;
+                  return Ok(item + 2);
+                }
+
+                async fnc failure(): Result<int, String> {
+                  try {
+                    val int item = (await read_bad())?;
+                    stdio.stdout.write("UNEXPECTED-NEXT:");
+                    return Ok(item);
+                  } catch (error) {
+                    stdio.stdout.write("UNEXPECTED-CATCH:");
+                    return Err("caught");
+                  } finally {
+                    stdio.stdout.write("cleanup:");
+                  }
+                }
+
+                pub fnc main(): void {
+                  val Result<int, String> first = await success();
+                  stdio.stdout.write(first.unwrap());
+                  stdio.stdout.write(":");
+                  val Result<int, String> second = await failure();
+                  stdio.stdout.write(second.is_err());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("9:cleanup:true", run(program));
+    }
+
+    @Test
+    void asyncQuestionOnlyAcceptsDirectBindingInitializer() {
+        reject("""
+                async fnc invalid(Option<int> input): Option<int> {
+                  return Some(input? + 1);
+                }
+                """, "direct binding initializer");
+        reject("""
+                async fnc invalid(Option<int> input): Option<int> {
+                  val int x = input? + 1;
+                  return Some(x);
+                }
+                """, "expected ':'");
     }
 
     private static void reject(String source, String expected) {
