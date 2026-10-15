@@ -92,6 +92,44 @@ final class RuntimePointerTest {
         assertThrows(IllegalStateException.class, pointer::unref);
     }
 
+    @Test void unrefCannotMasqueradeAsBorrowedCallArgument() {
+        String prefix = BOX + """
+                fnc read(borrow Box value): int { return value.value; }
+                fnc edit(borrow mut Box value): void { value.value = 9; return; }
+                """;
+        // Consuming unwrap returns owned Box. It is not a pointer-rooted loan.
+        for (String call : new String[] {"read(rt unref p)", "edit(rt unref p)"}) {
+            var failure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(prefix + """
+                    fnc bad(): void {
+                      const p = rt ref new Box();
+                      %s;
+                      return;
+                    }
+                    """.formatted(call))));
+            assertTrue(failure.getMessage().contains("cannot borrow consuming rt unref"),
+                    failure.getMessage());
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(prefix + """
+                fnc ok(): void {
+                  const p = rt ref new Box();
+                  const int before = read(rt deref p);
+                  const Box owned = rt unref p;
+                  const int after = read(rt borrow owned);
+                  return;
+                }
+                """)));
+        // Passing the dereference as an immutable borrow must never mint a mutable one.
+        var mutableFailure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(prefix + """
+                fnc bad(): void {
+                  const p = rt ref new Box();
+                  edit(rt deref p);
+                  return;
+                }
+                """)));
+        assertTrue(mutableFailure.getMessage().contains("read-only borrow"),
+                mutableFailure.getMessage());
+    }
+
     @Test void unrefGuestExecutionReturnsOwnedPointee() throws Exception {
         String program = BOX + """
                 pub routine main(): void {
