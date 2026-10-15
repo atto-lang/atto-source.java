@@ -11,6 +11,16 @@ default**. No cross-repository mirroring is authorized until maintainers and
 security reviewers explicitly add an exact `owner/repo` destination through a
 reviewed, protected-branch change.
 
+For a future approved destination, the checked-in allowlist is **necessary
+but not sufficient**. The Bash preflight and Python publisher both require
+the same independently reviewed immutable numeric GitHub destination ID;
+the publisher additionally verifies the private source repository ID. Both
+must reject renamed/recreated destinations, archived or disabled repositories,
+and incomplete API identity metadata. The pins are code-owner-reviewed and
+must stay synchronized (the publisher's offline regression suite checks this).
+Do not insert an ID into a bare-slug allowlist line; it violates the policy
+parser. An ID hardcoded in software is not itself permission to export.
+
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
 Run the checked transfer from trusted, reviewed source, not an untrusted PR

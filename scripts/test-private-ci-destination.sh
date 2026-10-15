@@ -8,6 +8,8 @@ cp "$original_script_dir/check-private-ci-destination.sh" "$work/fixture/scripts
 cp "$original_script_dir/run-in-private-ci-destination.sh" "$work/fixture/scripts/"
 cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
+# Only the disposable test copy accepts a synthetic pinned destination.
+sed -i 's@chapter-publishing-test/zed-pkg-integration-e2e@trusted/ci@g; s@1344442382@123456789@g' "$script_dir/check-private-ci-destination.sh"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
 printf '# Approved for this isolated test only\ntrusted/ci\n' > "$policy"
 cat > "$work/gh" <<'MOCK'
@@ -20,7 +22,10 @@ if [[ " $* " == *" --method POST "* || "${2:-}" == *"/git/"* ]]; then
 fi
 [[ "${3:-}" == --jq ]] || exit 2
 [[ "${MOCK_API_FAILURE:-false}" != true ]] || exit 4
-printf '%s\t%s\t%s%s\n' "${MOCK_NAME:-trusted/ci}" "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" "${MOCK_EXTRA_LINE:-}"
+printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' \
+  "${MOCK_ID:-123456789}" "${MOCK_NAME:-trusted/ci}" \
+  "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" \
+  "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -43,6 +48,22 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
+for id in 987654321 null false invalid; do
+  export MOCK_ID="$id"
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+done
+unset MOCK_ID
+for field in MOCK_ARCHIVED MOCK_DISABLED; do
+  export "$field"=true
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset "$field"
+  export "$field"=null
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset "$field"
+done
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
   expect_fail trusted/ci
