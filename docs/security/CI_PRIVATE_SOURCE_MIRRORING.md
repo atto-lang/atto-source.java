@@ -39,10 +39,28 @@ publisher now requires a live private and active source repository whose
 numeric GitHub ID is `1400792274` and requires the source branch
 `main` to report `protected=true` before reading source bytes.
 It rechecks this source identity and branch protection before every Git
-object write. A missing or unprotected branch denies publication. This
-is a necessary fail-closed check, **not** proof that branch rules enforce
-independent reviews or required exact-tree tests: see issues #904 and #962.
-Approval must remain disabled until those independent rules are verified.
+object write. A missing or unprotected branch denies publication. It also
+requires GitHub's protected-branch and required-review endpoints to report
+administrator enforcement, strict nonempty required CI checks, at least one
+approving reviewer, code-owner reviews enabled, stale approvals dismissed,
+and no review bypass allowlist. Missing permissions or unsupported
+private-branch rules fail closed. A passing API read is not a substitute for issue #904's independent
+synthetic-PR demonstration that direct pushes and unreviewed merges are blocked.
+Do not turn the repository public to gain protection features.
+
+The publisher itself must run from an **unmodified Git checkout of the same
+protected source-main commit** reported by GitHub. It checks the actual Git
+repository root, `HEAD`, and tracked code/policy paths before reading private
+snapshot files. An untrusted compiler PR checkout cannot run an altered
+publisher or grant itself approval. Prepare the exact compiler PR snapshot as
+a separate, bounded directory **inside the trusted main checkout** (for example
+using a reviewed `git archive` of the independently authenticated commit).
+The source files are still hashed and compared to the remote immutable commit
+tree before any destination write. The publisher rejects source-main revision
+changes during publication. A source PR alone is never an approval.
+
+Approval must remain disabled until these safeguards and the protections in
+issues #904 and #962 have been independently verified.
 
 The protected-main **destination** policy must explicitly approve the exact
 private repository name and numeric ID. Separately,
@@ -54,6 +72,13 @@ checks this tuple before reading any source, validates its Git blob against
 the served bytes, and rechecks the approved tuple and unchanged policy SHA
 before each write. A missing, unmerged, altered, or revoked tuple denies
 publication; authorization cannot come from the working PR branch.
+
+The source-snapshot ledger starts **empty**. To grant one approved run,
+maintainers must separately review and merge one exact
+`<commitSHA> <rootTreeSHA> <numericDestinationID>` entry on protected source
+main. This applies even after the destination allowlist has been approved.
+Keep the exact source PR head immutable through verification; any new commit
+requires a new reviewed ledger entry and a new destination tree gate.
 
 The publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility

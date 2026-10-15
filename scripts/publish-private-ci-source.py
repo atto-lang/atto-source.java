@@ -33,7 +33,6 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
-SOURCE_PROTECTION_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 PROTECTED_POLICY_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
     ".github/private-ci-approved-repositories.txt?ref=main"
@@ -44,6 +43,7 @@ REVIEWED_SNAPSHOTS_ROUTE = (
 )
 SOURCE_SNAPSHOT_ENTRY = re.compile(r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$")
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
+PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
 
 
@@ -186,32 +186,6 @@ def checked_policy_fingerprint(root, repository):
     return hashlib.sha256(contents).digest(), approved_id, git_blob_sha
 
 
-def require_strict_merge_rules(rules):
-    """Reject branches with absent required CI/admin/ref-update protections."""
-    if not isinstance(rules, dict):
-        raise Denied("source protection detail unavailable")
-    status = rules.get("required_status_checks")
-    if not isinstance(status, dict) or status.get("strict") is not True:
-        raise Denied("source branch lacks strict required CI checks")
-    contexts = status.get("contexts", [])
-    checks = status.get("checks", [])
-    if (not isinstance(contexts, list) or not isinstance(checks, list)
-            or not (contexts or checks)
-            or any(not isinstance(v, str) or not v.strip() for v in contexts)
-            or any(not isinstance(v, dict)
-                   or not isinstance(v.get("context"), str)
-                   or not v["context"].strip() for v in checks)):
-        raise Denied("source branch has no valid required CI checks")
-    admins = rules.get("enforce_admins")
-    if not isinstance(admins, dict) or admins.get("enabled") is not True:
-        raise Denied("source branch does not enforce administrator protection")
-    for key in ("allow_force_pushes", "allow_deletions"):
-        item = rules.get(key)
-        if item is not None and (not isinstance(item, dict)
-                                 or item.get("enabled") is not False):
-            raise Denied("source branch permits unsafe ref changes")
-
-
 def require_protected_main_policy(approved_policy):
     """Require a known private source and protected main, not just its blob.
 
@@ -233,8 +207,31 @@ def require_protected_main_policy(approved_policy):
             or branch.get("protected") is not True
             or not isinstance(branch.get("commit"), dict)):
         raise Denied("source main branch is not protected")
-    valid_sha(branch["commit"].get("sha"))
-    require_strict_merge_rules(gh_api(SOURCE_PROTECTION_ROUTE))
+    protected_main_sha = valid_sha(branch["commit"].get("sha"))
+    rules = gh_api(PROTECTED_RULES_ROUTE)
+    if (not isinstance(rules.get("enforce_admins"), dict)
+            or rules["enforce_admins"].get("enabled") is not True):
+        raise Denied("protected main must enforce rules for administrators")
+    required_checks = rules.get("required_status_checks")
+    if (not isinstance(required_checks, dict)
+            or required_checks.get("strict") is not True
+            or not isinstance(required_checks.get("contexts"), list)
+            or not required_checks["contexts"]
+            or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
+        raise Denied("protected main must require strict source CI checks")
+    # Missing or permissive ref-update policies cannot establish immutable
+    # protected-main provenance. Require explicit false, not absent metadata.
+    for rule in ("allow_force_pushes", "allow_deletions"):
+        control = rules.get(rule)
+        if not isinstance(control, dict) or control.get("enabled") is not False:
+            raise Denied("protected main allows unsafe ref updates or policy is unknown")
+    # An unresolved security review thread must be able to block the policy
+    # change before the private publisher trusts it. Do not infer this from
+    # required approving reviews: GitHub exposes the gate separately.
+    conversation_gate = rules.get("required_conversation_resolution")
+    if (not isinstance(conversation_gate, dict)
+            or conversation_gate.get("enabled") is not True):
+        raise Denied("protected main must require resolved review conversations")
     reviews = gh_api(PROTECTED_REVIEWS_ROUTE)
     count = reviews.get("required_approving_review_count")
     if (type(count) is not int or count < 1
@@ -251,6 +248,48 @@ def require_protected_main_policy(approved_policy):
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):
         raise Denied("destination policy is not approved on protected source main")
+    return protected_main_sha
+
+def require_trusted_publisher_checkout(root, reviewed_main_sha):
+    """Enforce execution from the independently authenticated source main commit.
+
+    A developer's PR checkout cannot self-authorize its publisher or policy.
+    The untrusted test snapshot must be staged separately under this trusted
+    checkout and its complete bytes checked against the reviewed Git tree.
+    """
+    valid_sha(reviewed_main_sha)
+    base = Path(root).resolve(strict=True)
+    def git(*args):
+        try:
+            response = subprocess.run(["git", "-C", str(base), *args],
+                                      capture_output=True, text=True,
+                                      timeout=12, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Denied("trusted source checkout Git proof unavailable") from exc
+        if response.returncode != 0:
+            raise Denied("trusted source checkout Git proof failed")
+        return response.stdout.strip()
+    if git("rev-parse", "--show-toplevel") != str(base):
+        raise Denied("publisher is not running from trusted source repository root")
+    if git("rev-parse", "HEAD") != reviewed_main_sha:
+        raise Denied("publisher is not executing reviewed protected-main commit")
+    protected_paths = (
+        "scripts/publish-private-ci-source.py",
+        "scripts/run-in-private-ci-destination.sh",
+        "scripts/check-private-ci-destination.sh",
+        ".github/private-ci-approved-repositories.txt",
+        ".github/private-ci-approved-source-snapshots.txt",
+    )
+    for rel in protected_paths:
+        # A tracked, unmodified file is required. Untracked replacement and
+        # staged/unstaged edits both fail before opening any private source.
+        tracked = git("ls-files", "--error-unmatch", "--", rel)
+        if tracked != rel:
+            raise Denied("reviewed publisher code or policy is not Git-tracked")
+    if git("status", "--porcelain", "--untracked-files=no", "--", *protected_paths):
+        raise Denied("reviewed publisher code or source policy was modified")
+    return reviewed_main_sha
+
 
 def verify_source_commit(expected_source_commit, expected_source_tree):
     """Bind the exact private source repository commit to its Git tree.
@@ -494,16 +533,21 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
-    # Approval comes before reading potentially sensitive source files.
-    approved_destination_id = require_preflight(repository, trusted_root)
+    # This function previously ran the checkout-local Bash preflight BEFORE
+    # authenticating the checkout. A modified PR checkout could execute an
+    # attacker-controlled guard even though source export would later deny.
+    # Read policy strictly as data and authenticate the protected source first.
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
-    # Policy is protected by review; live metadata cannot substitute for that
-    # approved identity, even if a name has been deleted and recreated.
-    if approved_policy[1] != approved_destination_id:
-        raise Denied("destination numeric ID differs from reviewed approval policy")
     # A PR branch can contain an allowlist entry without security approval.
     # Require the exact policy Git blob to exist on protected source main.
-    require_protected_main_policy(approved_policy)
+    reviewed_main_sha = require_protected_main_policy(approved_policy)
+    require_trusted_publisher_checkout(trusted_root, reviewed_main_sha)
+    # Only a pinned, clean protected-main checkout may execute its own guard.
+    # All failures above occur before launching any checkout-local code,
+    # inspecting private source files, or writing destination Git objects.
+    approved_destination_id = require_preflight(repository, trusted_root)
+    if approved_policy[1] != approved_destination_id:
+        raise Denied("destination numeric ID differs from reviewed approval policy")
     reviewed_snapshot_sha = require_reviewed_source_snapshot(
         expected_source_commit, expected_source_tree, approved_destination_id)
     verify_source_commit(expected_source_commit, expected_source_tree)
@@ -513,25 +557,38 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         checked_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
+    base = checked_repo(repository, expected_id=approved_destination_id)
+    # Never inherit a caller-selected or unreviewed carrier branch: inherited
+    # workflow definitions execute with the destination repository's token.
+    if base.get("default_branch") != "main":
+        raise Denied("private carrier default branch is not trusted main")
+    def require_pinned_carrier_main(expected_sha=None):
+        ref = gh_api(f"repos/{repository}/git/ref/heads/main")
+        current_sha = nested_sha(ref, "object")
+        if (ref.get("ref") != "refs/heads/main"
+                or ref["object"].get("type") != "commit"):
+            raise Denied("private carrier main ref is not a verified commit")
+        if expected_sha is not None and current_sha != expected_sha:
+            raise Denied("private carrier main changed during source transfer")
+        return current_sha
+    base_sha = require_pinned_carrier_main()
+    base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
+    base_tree = nested_sha(base_commit, "tree")
     files = collect_source(source, trusted_root)
     if source_tree_sha(files) != expected_source_tree:
         raise Denied("source snapshot Git tree differs from pinned expected SHA")
-    base = checked_repo(repository, expected_id=approved_destination_id)
-    default = base.get("default_branch")
-    if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
-        raise Denied("destination default branch is invalid")
-    base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = nested_sha(base_ref, "object")
-    base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
-    base_tree = nested_sha(base_commit, "tree")
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        require_protected_main_policy(approved_policy)
+        if require_protected_main_policy(approved_policy) != reviewed_main_sha:
+            raise Denied("reviewed protected source main changed during transfer")
         require_reviewed_source_snapshot(expected_source_commit, expected_source_tree,
                                          approved_destination_id, reviewed_snapshot_sha)
         verify_source_commit(expected_source_commit, expected_source_tree)
-        checked_repo(repository, expected_id=approved_destination_id)
+        current = checked_repo(repository, expected_id=approved_destination_id)
+        if current.get("default_branch") != "main":
+            raise Denied("private carrier default branch changed during transfer")
+        require_pinned_carrier_main(base_sha)
 
     elements = []
     for rel, data, mode in files:

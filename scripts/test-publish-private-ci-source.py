@@ -5,6 +5,7 @@ import base64
 import hashlib
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -42,9 +43,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_private = [True] * 100
         self.source_visibility = ["private"] * 100
         self.source_protected = [True] * 100
-        self.protection_rules = {
-            "required_status_checks": {"strict": True, "contexts": ["ci/test"]},
+        self.source_main_shas = [A] * 100
+        self.branch_rules = {
             "enforce_admins": {"enabled": True},
+            "required_status_checks": {
+                "strict": True, "contexts": ["preflight-regressions"]},
+            "required_conversation_resolution": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False},
         }
@@ -52,9 +56,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
         self.disabled = [False] * 100
+        self.carrier_main_shas = [A] * 100
+        self.carrier_ref_names = ["refs/heads/main"] * 100
+        self.carrier_ref_types = ["commit"] * 100
+        self.carrier_default_branches = ["main"] * 100
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
-        self.preflight.start()
+        self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        self.real_publisher_checkout = pub.require_trusted_publisher_checkout
+        self.publisher_checkout = patch.object(pub, "require_trusted_publisher_checkout",
+                                               return_value=A)
+        self.publisher_checkout.start()
+        self.addCleanup(self.publisher_checkout.stop)
 
     def set_reviewed_snapshot(self, commit=D, tree=None, destination_id=123):
         if tree is None:
@@ -74,14 +87,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         disabled=False, default_branch="main")
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
-                        commit={"sha": A})
+                        commit={"sha": self.source_main_shas.pop(0)})
+        if route == pub.PROTECTED_RULES_ROUTE:
+            return self.branch_rules
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
                     "require_code_owner_reviews": True,
                     "dismiss_stale_reviews": True,
                     "bypass_pull_request_allowances": {}}
-        if route == pub.SOURCE_PROTECTION_ROUTE:
-            return self.protection_rules
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
@@ -95,7 +108,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                              else self.remote_source_tree}}
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
-                        private=True, default_branch="main",
+                        private=True, default_branch=self.carrier_default_branches.pop(0),
                         id=self.repository_ids.pop(0),
                         archived=self.archived.pop(0),
                         disabled=self.disabled.pop(0))
@@ -106,8 +119,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else self.expected_tree}
+        if route == "repos/trusted/ci/git/ref/heads/main":
+            return {"ref": self.carrier_ref_names.pop(0),
+                    "object": {"sha": self.carrier_main_shas.pop(0),
+                               "type": self.carrier_ref_types.pop(0)}}
         mapping = {
-            "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
             "repos/trusted/ci/git/commits/"+C: {"tree": {"sha": E}},
@@ -127,6 +143,161 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_carrier_default_branch_must_be_trusted_main_before_source_read(self):
+        self.carrier_default_branches = ["unreviewed-feature"] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source was read too early")):
+            with self.assertRaisesRegex(pub.Denied, "not trusted main"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_ref_must_be_an_exact_commit_before_source_read(self):
+        for name, ref_type, sha in (
+            ("refs/tags/main", "commit", A),
+            ("refs/heads/feature", "commit", A),
+            ("refs/heads/main", "tag", A),
+            ("refs/heads/main", "blob", A),
+        ):
+            with self.subTest(name=name, ref_type=ref_type):
+                self.route_calls.clear()
+                self.carrier_main_shas = [sha] * 100
+                self.carrier_ref_names = [name] * 100
+                self.carrier_ref_types = [ref_type] * 100
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source was read too early")):
+                    with self.assertRaisesRegex(pub.Denied, "not a verified commit"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_moving_during_transfer_prevents_next_write(self):
+        for flip_after in (2, 5):
+            with self.subTest(flip_after=flip_after):
+                self.route_calls.clear()
+                self.carrier_main_shas = [A] * flip_after + [E] * 100
+                with self.assertRaisesRegex(pub.Denied, "main changed during source transfer"):
+                    self.publish()
+                writes = [r for method, r, _ in self.route_calls if method == "POST"]
+                if flip_after == 2:
+                    self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+                else:
+                    self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
+    def test_carrier_default_branch_switch_during_transfer_prevents_ref(self):
+        self.carrier_default_branches = ["main"] * 3 + ["evil"] * 100
+        with self.assertRaisesRegex(pub.Denied, "default branch changed"):
+            self.publish()
+        self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
+                             for method, route, _ in self.route_calls))
+
+    def test_real_git_checkout_admission_denies_unreviewed_or_tampered_code(self):
+        # No private repo files are needed: initialize a synthetic Git repository
+        # and exercise the REAL checkout admission helper, not the mock.
+        with tempfile.TemporaryDirectory() as location:
+            root = Path(location).resolve()
+            def git(*args):
+                return subprocess.run(["git", "-C", str(root), *args],
+                                      capture_output=True, text=True,
+                                      check=True).stdout.strip()
+            git("init", "-q")
+            git("config", "user.name", "CI Synthetic Fixture")
+            git("config", "user.email", "ci@example.invalid")
+            protected = (
+                "scripts/publish-private-ci-source.py",
+                "scripts/run-in-private-ci-destination.sh",
+                "scripts/check-private-ci-destination.sh",
+                ".github/private-ci-approved-repositories.txt",
+                ".github/private-ci-approved-source-snapshots.txt",
+            )
+            for rel in protected:
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# synthetic trusted file only\\n".replace("\\n", "\n"))
+            git("add", ".")
+            git("commit", "-qm", "Source-free synthetic publisher fixture")
+            commit = git("rev-parse", "HEAD")
+            self.assertEqual(
+                self.real_publisher_checkout(root, commit), commit)
+            with self.assertRaisesRegex(pub.Denied, "not executing reviewed"):
+                self.real_publisher_checkout(root, "0" * 40)
+            script = root / protected[0]
+            script.write_text("unreviewed mutation")
+            with self.assertRaisesRegex(pub.Denied, "modified"):
+                self.real_publisher_checkout(root, commit)
+            git("add", protected[0])
+            with self.assertRaisesRegex(pub.Denied, "modified"):
+                self.real_publisher_checkout(root, commit)
+            git("reset", "--hard", "HEAD")
+            (root / protected[-1]).unlink()
+            with self.assertRaises(pub.Denied):
+                self.real_publisher_checkout(root, commit)
+            git("reset", "--hard", "HEAD")
+            self.assertEqual(self.real_publisher_checkout(root, commit), commit)
+
+    def test_reviewed_local_publisher_checkout_must_precede_source_read(self):
+        with patch.object(pub, "require_trusted_publisher_checkout",
+                          side_effect=pub.Denied("untrusted local checkout")):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read before checkout check")):
+                with self.assertRaisesRegex(pub.Denied, "untrusted local checkout"):
+                    self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_untrusted_checkout_cannot_execute_checkout_local_preflight(self):
+        # Source-side code must be pinned before a Bash guard from that same
+        # checkout may execute. Simulate a modified PR worktree: the trusted
+        # checkout verifier refuses it and the preflight must not be entered.
+        with patch.object(pub, "require_trusted_publisher_checkout",
+                          side_effect=pub.Denied("untrusted publisher")):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read before trust")):
+                with self.assertRaisesRegex(pub.Denied, "untrusted publisher"):
+                    self.publish()
+        self.assertFalse(self.preflight_patch_entry.called)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_force_push_and_deletion_are_explicitly_disabled(self):
+        import copy
+        for rule in ("allow_force_pushes", "allow_deletions"):
+            for value in (None, {"enabled": True}, {"enabled": None}, True):
+                with self.subTest(rule=rule, value=value):
+                    previous = self.branch_rules
+                    self.branch_rules = copy.deepcopy(previous)
+                    if value is None:
+                        del self.branch_rules[rule]
+                    else:
+                        self.branch_rules[rule] = value
+                    self.route_calls.clear()
+                    try:
+                        with self.assertRaisesRegex(pub.Denied, "unsafe ref updates"):
+                            self.publish()
+                        self.assertFalse(any(method == "POST"
+                                             for method, _, _ in self.route_calls))
+                    finally:
+                        self.branch_rules = previous
+
+    def test_revoked_force_push_rule_stops_before_next_source_write(self):
+        import copy
+        original = self.fake_api
+        def permission_flip(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.branch_rules = copy.deepcopy(self.branch_rules)
+                self.branch_rules["allow_force_pushes"]["enabled"] = True
+            return result
+        with patch.object(pub, "gh_api", side_effect=permission_flip):
+            with self.assertRaisesRegex(pub.Denied, "unsafe ref updates"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" and route.endswith("/git/refs")
+                             for method, route, _ in self.route_calls))
+
+    def test_unprotected_main_refuses_checkout_local_code_execution(self):
+        self.source_protected = [False] * 100
+        with self.assertRaisesRegex(pub.Denied, "main branch is not protected"):
+            self.publish()
+        self.assertFalse(self.preflight_patch_entry.called)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_unreviewed_source_tuple_denies_before_source_read_or_upload(self):
         self.reviewed_snapshot = "# no source tuples approved\n"
@@ -257,6 +428,54 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             [route for method, route, _ in self.route_calls if method == "POST"],
             ["repos/trusted/ci/git/blobs"])
 
+    def test_source_review_threads_must_be_resolved_before_any_export(self):
+        # Required approvals alone do not block unresolved security-review
+        # conversations. Missing, malformed and disabled gates deny all writes.
+        original = self.fake_api
+        for gate in (None, False, {}, {"enabled": False}, {"enabled": "true"}):
+            with self.subTest(gate=gate):
+                self.route_calls.clear()
+                def unprotected_threads(route, method="GET", payload=None):
+                    if route == pub.PROTECTED_RULES_ROUTE:
+                        self.route_calls.append((method, route, payload))
+                        rules = original(route, method, payload)
+                        if gate is None:
+                            rules.pop("required_conversation_resolution", None)
+                        else:
+                            rules["required_conversation_resolution"] = gate
+                        return rules
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=unprotected_threads):
+                    with self.assertRaisesRegex(pub.Denied, "resolved review conversations"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
+        failures = (
+            {"enforce_admins": {"enabled": False},
+             "required_status_checks": {"strict": True, "contexts": ["ci"]}},
+            {"enforce_admins": {"enabled": True},
+             "required_status_checks": None},
+            {"enforce_admins": {"enabled": True},
+             "required_status_checks": {"strict": False, "contexts": ["ci"]}},
+            {"enforce_admins": {"enabled": True},
+             "required_status_checks": {"strict": True, "contexts": []}},
+        )
+        original = self.fake_api
+        for response in failures:
+            with self.subTest(response=response):
+                self.route_calls.clear()
+                def bypassable_main(route, method="GET", payload=None):
+                    if route == pub.PROTECTED_RULES_ROUTE:
+                        self.route_calls.append((method, route, payload))
+                        return response
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=bypassable_main):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
         overrides = (
             {"required_approving_review_count": 0},
@@ -284,30 +503,6 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                     self.root, self.expected_tree, D)
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
-    def test_strict_status_admin_and_ref_admission_before_export(self):
-        import copy
-        invalid = [
-            ("required_status_checks", None),
-            ("required_status_checks", {"strict": False, "contexts": ["ci/test"]}),
-            ("required_status_checks", {"strict": True, "contexts": []}),
-            ("enforce_admins", {"enabled": False}),
-            ("allow_force_pushes", {"enabled": True}),
-            ("allow_deletions", {"enabled": True}),
-        ]
-        for key, value in invalid:
-            with self.subTest(key=key, value=value):
-                existing = self.protection_rules
-                self.protection_rules = copy.deepcopy(existing)
-                self.protection_rules[key] = value
-                self.route_calls.clear()
-                try:
-                    with self.assertRaises(pub.Denied):
-                        self.publish()
-                    self.assertFalse(any(method == "POST"
-                                         for method, _, _ in self.route_calls))
-                finally:
-                    self.protection_rules = existing
-
     def test_unprotected_source_main_denies_without_source_write(self):
         self.source_protected = [False] * 100
         with self.assertRaisesRegex(pub.Denied, "main branch is not protected"):
@@ -333,6 +528,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
                 finally:
                     setattr(self, attribute, original)
+
+    def test_protected_main_revision_change_denies_next_source_write(self):
+        # A reviewed policy can be replaced by a later main commit after
+        # initialization. The transfer must not silently switch authorities.
+        original = self.fake_api
+        def change_main_after_blob(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.source_main_shas = [B] * 100
+            return response
+        with patch.object(pub, "gh_api", side_effect=change_main_after_blob):
+            with self.assertRaisesRegex(pub.Denied, "main changed during transfer"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"], ["repos/trusted/ci/git/blobs"])
 
     def test_source_branch_protection_revoked_before_first_git_write(self):
         self.source_protected = [True, False] + [False] * 98
@@ -702,9 +913,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_numeric_identity_mismatch_blocks_before_source_read(self):
         # A name-only review cannot authorize a recreated repository.
         self.approval.write_text("trusted/ci 456\n")
-        with self.assertRaisesRegex(pub.Denied, "numeric ID differs from reviewed approval policy"):
+        # The unreviewed local policy differs from protected-main bytes.
+        # This is rejected *before* executing the checkout-local shell guard.
+        with self.assertRaisesRegex(pub.Denied, "destination policy is not approved"):
             self.publish()
-        self.assertEqual(self.route_calls, [])
+        self.assertFalse(self.preflight_patch_entry.called)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_name_only_or_malformed_numeric_policy_never_authorizes(self):
         for malformed in (
@@ -1131,11 +1345,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_denied_preflight_halts_before_api(self):
+    def test_denied_preflight_halts_before_private_read_or_write(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
-            with self.assertRaisesRegex(pub.Denied, "not approved"):
-                self.publish()
-        self.assertEqual(self.route_calls, [])
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read before approval")):
+                with self.assertRaisesRegex(pub.Denied, "not approved"):
+                    self.publish()
+        # Protected source-main metadata reads precede checkout-local guard.
+        self.assertTrue(self.route_calls)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_oversized_source_file_rejected(self):
         (self.source / "large").write_bytes(b"x" * (pub.MAX_SINGLE + 1))
