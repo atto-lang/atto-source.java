@@ -119,6 +119,45 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectUnprovenEagerStructuralAndRecursivePatternPredicates() {
+        // The constructor-safe check must examine the match operation,
+        // not merely the scalar value or literal-only nested object.
+        for (String initializer : java.util.List.of(
+                "new Inner() matches structural { value: int }",
+                "new Inner() is type { value: int }",
+                "seed matches Some(_)")) {
+            String source = """
+                    define class Inner as
+                      pub final int value: 42;
+                    end
+                    define class Unsafe as
+                      final int first: 42;
+                      final bool second: %s;
+                      constructor(int seed) { return; }
+                    end
+                    """.formatted(initializer);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)),
+                    "unproven eager predicate must fail closed: " + initializer);
+            assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void retainDirectPrimitiveTypeAndLiteralPatternPredicates() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Safe as
+                  pub final bool primitive: seed is type int;
+                  pub final bool literal: seed matches 42;
+                  pub final bool wildcard: seed matches _;
+                  constructor(int seed) { return; }
+                end
+                """)));
+    }
+
+    @Test
     void rejectEagerModuleMemberResolutionWithoutEffectProof() {
         // A MemberExpr is not proved effect-free merely because its receiver
         // is a simple name; module export resolution may evaluate user code.
