@@ -781,6 +781,40 @@ static void test_foreign_guesses_and_invalid_inputs(void) {
     CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
 }
 
+/* A SourceTask user turn that happens to be active during STOP cannot
+ * impersonate the distinct, VM-issued terminal cleanup capability.
+ */
+static void test_source_lease_cannot_escalate_to_terminal_cleanup(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(24);
+    CHECK(vm != NULL);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_cleanup_cap *ticket = NULL;
+    ores_turn_lease *ordinary = NULL, *cleanup = NULL;
+    CHECK(ores_turn_register(vm, 202, 1, 1, &actor) == ORES_TURN_OK);
+    CHECK(ores_turn_register_source_task(vm, actor, 1, 1, &source) == ORES_TURN_OK);
+    CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
+    CHECK(ores_turn_claim_source(vm, source, &ordinary) == ORES_TURN_OK);
+    CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_note_terminal_injected(vm, ordinary, source)
+          == ORES_TURN_DENIED);
+    CHECK(ores_turn_check_cleanup_effects(vm, ordinary) == ORES_TURN_DENIED);
+    CHECK(ores_turn_complete_cleanup(vm, ordinary, source)
+          == ORES_TURN_DENIED);
+    CHECK(ores_turn_claim_cleanup(vm, ticket, &cleanup) == ORES_TURN_BUSY);
+    CHECK(cleanup == NULL);
+    CHECK(ores_turn_release(vm, ordinary) == ORES_TURN_OK);
+    CHECK(ores_turn_claim_cleanup(vm, ticket, &cleanup) == ORES_TURN_OK);
+    CHECK(ores_turn_note_terminal_injected(vm, cleanup, source) == ORES_TURN_OK);
+    CHECK(ores_turn_check_cleanup_effects(vm, cleanup) == ORES_TURN_OK);
+    CHECK(ores_turn_complete_cleanup(vm, cleanup, source) == ORES_TURN_OK);
+    CHECK(ores_turn_release(vm, cleanup) == ORES_TURN_OK);
+    CHECK(ores_turn_note_source_settled(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+    CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+    CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+}
+
 int main(void) {
     test_one_carrier_stop_and_restart();
     test_forgery_revocation_and_foreign_vm();
@@ -797,6 +831,7 @@ int main(void) {
     test_injected_but_unfinished_cleanup_blocks_retirement();
     test_completion_races_force_revoke();
     test_forked_process_rejects_inherited_vm();
+    test_source_lease_cannot_escalate_to_terminal_cleanup();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
