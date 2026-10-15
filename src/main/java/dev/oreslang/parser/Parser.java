@@ -2946,7 +2946,8 @@ public final class Parser {
         }
 
         if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
-        if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralPattern(parseFiniteF64(previous()));
+        if (match(DECIMAL)) return new Ast.LiteralPattern(parseExactDecimal(previous()));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralPattern(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -3541,13 +3542,41 @@ public final class Parser {
         }
     }
 
+    /** Preserve the exact source digits; never route decimal literals through binary64. */
+    private java.math.BigDecimal parseExactDecimal(Token token) {
+        String lexeme = token.lexeme();
+        if (lexeme.length() > 16_384) {
+            throw error(token, "decimal literal exceeds 16384 source characters");
+        }
+        try {
+            return new java.math.BigDecimal(lexeme.substring(0, lexeme.length() - 1).replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "malformed exact decimal literal: " + lexeme);
+        }
+    }
+
+    /** An overflowing float literal must not silently become infinity. */
+    private double parseFiniteF64(Token token) {
+        String lexeme = token.lexeme();
+        try {
+            double value = Double.parseDouble(lexeme.replace("_", ""));
+            if (!Double.isFinite(value)) throw error(token, "floating-point literal overflows binary64: " + lexeme);
+            return value;
+        } catch (NumberFormatException invalid) {
+            throw error(token, "malformed floating-point literal: " + lexeme);
+        }
+    }
+
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
-        if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralExpr(parseFiniteF64(previous()));
+        if (match(DECIMAL)) return new Ast.LiteralExpr(parseExactDecimal(previous()));
         if (match(IMAG)) {
             String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
-            return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
+            double coefficient = Double.parseDouble(raw);
+            if (!Double.isFinite(coefficient)) throw error(previous(), "imaginary literal overflows binary64");
+            return new Ast.LiteralExpr(new Ast.Imaginary(coefficient));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
