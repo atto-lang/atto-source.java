@@ -3412,9 +3412,22 @@ public final class Parser {
                 Ast.Expr index = parseExpression();
                 consume(RBRACKET, "expected ']' after index");
                 expr = new Ast.IndexExpr(expr, index);
+            } else if (check(QUESTION) && isPostfixPropagationEnd()) {
+                // Only unambiguous completed-expression boundaries. '?' remains
+                // ternary elsewhere; as? is parsed separately as an optional cast.
+                // Later expansions must preserve compact ternary semantics.
+                advance();
+                expr = new Ast.PropagateExpr(expr);
             } else break;
         }
         return expr;
+    }
+
+    private boolean isPostfixPropagationEnd() {
+        if (!check(QUESTION) || current + 1 >= tokens.size()) return false;
+        Token.Type next = tokens.get(current + 1).type();
+        return next == SEMICOLON || next == RPAREN || next == RBRACE
+                || next == RBRACKET || next == COMMA || next == EOF;
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {
