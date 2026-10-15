@@ -3129,18 +3129,13 @@ public final class OwnershipChecker {
             inferGenericBindings(parameters.get(i).type(), actualTypes.get(i),
                     Set.copyOf(allGenericNames), bindings, fixed);
         }
-        if (!genericSpecs.isEmpty()) {
-            if (!genericSpecs.stream().map(Ast.GenericParameter::name).toList()
-                    .equals(explicitGenericNames)) {
-                throw new IllegalArgumentException("ownership generic declaration names diverge");
-            }
-            for (Ast.GenericParameter spec : genericSpecs) {
-                if (bindings.containsKey(spec.name()) || bound.inferenceHoles().contains(spec.name())
-                        || spec.defaultType() == null) continue;
-                Ast.TypeRef resolvedDefault = substituteType(spec.defaultType(), bindings);
-                bindings.put(spec.name(), resolvedDefault);
-            }
-        }
+        GenericCallArguments.applyDefaults(
+                explicitGenericNames, genericSpecs, bindings, bound.inferenceHoles(),
+                ref -> ref,
+                this::substituteType,
+                ref -> GenericCallArguments.containsUnresolvedAstGeneric(
+                        ref, Set.copyOf(allGenericNames)),
+                "generic call");
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),
