@@ -6,10 +6,10 @@
 #include <stdio.h>
 
 #define PASS(expr) do { ores_turn_status rc = (expr); if (rc != ORES_TURN_OK) { \
-    fprintf(stderr, "%s:%d: expected OK for %s, received %d\\n", \
+    fprintf(stderr, "%s:%d: expected OK for %s, received %d\n", \
     __FILE__, __LINE__, #expr, (int)rc); assert(rc == ORES_TURN_OK); } } while (0)
 #define EXPECT(expr, wanted) do { ores_turn_status rc = (expr); if (rc != (wanted)) { \
-    fprintf(stderr, "%s:%d: expected %d for %s, received %d\\n", \
+    fprintf(stderr, "%s:%d: expected %d for %s, received %d\n", \
     __FILE__, __LINE__, (int)(wanted), #expr, (int)rc); assert(rc == (wanted)); } } while (0)
 
 static void test_terminal_cleanup_barriers(void) {
