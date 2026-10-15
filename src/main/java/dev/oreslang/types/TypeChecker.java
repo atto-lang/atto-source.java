@@ -5923,10 +5923,10 @@ public final class TypeChecker {
             case "map" -> new Function(
                     List.of(new Function(List.of(element), Unknown.INSTANCE)),
                     unknownFuture);
-            case "compose", "flatMap" -> new Function(
+            case "compose", "flatMap", "flat_map", "and_then" -> new Function(
                     List.of(new Function(List.of(element), unknownFuture)),
                     unknownFuture);
-            case "onSuccess" -> new Function(
+            case "onSuccess", "on_success" -> new Function(
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
             default -> null;
@@ -5946,7 +5946,8 @@ public final class TypeChecker {
         boolean option = receiver.name().equals("Option") && receiver.arguments().size() == 1;
         boolean result = receiver.name().equals("Result") && receiver.arguments().size() == 2;
         if ((!option && !result) || !(member.equals("map")
-                || member.equals("and_then") || (result && member.equals("map_err")))) return null;
+                || member.equals("and_then") || member.equals("flat_map")
+                || (result && member.equals("map_err")))) return null;
         if (call.arguments().size() != 1) {
             throw new IllegalArgumentException(receiver.name() + "." + member
                     + " expects exactly one callback");
@@ -5963,7 +5964,8 @@ public final class TypeChecker {
                     + " currently requires scalar, non-borrowed payloads and output; "
                     + "affine ownership and aggregate transfer require a later contract");
         }
-        Type callbackReturn = member.equals("and_then")
+        boolean flatten = member.equals("and_then") || member.equals("flat_map");
+        Type callbackReturn = flatten
                 ? new Named(option ? "Option" : "Result",
                         option ? List.of(output) : List.of(output, unchanged))
                 : output;
@@ -5984,7 +5986,8 @@ public final class TypeChecker {
     }
 
     private boolean scalarSumCompositionType(Type type) {
-        if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (type instanceof Primitive primitive)
+            return primitive != Primitive.VOID && primitive != Primitive.NULL;
         if (type instanceof StringLiteral) return true;
         if (!(type instanceof Named named)) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
