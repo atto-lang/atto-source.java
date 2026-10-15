@@ -181,11 +181,16 @@ public final class SealedActorState {
     /**
      * Called once by ActorRuntime after the actor's execution turn has fully
      * quiesced, not by arbitrary guest code. The owner ID fences accidental
-     * cross-actor finalization or stale actor incarnation references.
+     * cross-actor finalization or stale actor incarnation references; the
+     * separate non-forgeable runtime retirement permit authorizes the wipe.
      */
     public void retireFromRuntime(ActorRuntime.ActorId confirmedOwner) {
         if (!owner.equals(confirmedOwner)) {
             throw new SecurityException("cannot retire state for a foreign actor");
+        }
+        if (!ActorRuntime.authorizesActorStateRetirement(owner)) {
+            throw new SecurityException(
+                    "actor state retirement requires trusted runtime finalization authority");
         }
         if (current != null) {
             throw new IllegalStateException("cannot retire actor state with live critical loan");
