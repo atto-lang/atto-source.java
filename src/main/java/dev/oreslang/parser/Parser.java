@@ -3103,9 +3103,11 @@ public final class Parser {
                 || check(RBRACKET) || check(COMMA) || check(EOF)
                 || check(DOT)) {
             throw error(previous(),
-                    "postfix '?' Result/Option propagation is not yet admitted; "
-                            + "use explicit match/return, and keep 'condition ? yes : no' "
-                            + "or 'value as? Type' for their existing meanings");
+                    "postfix '?' is currently admitted only at a completed expression boundary "
+                            + "for a typed synchronous Option/Result return; "
+                            + "use a named carrier and explicit parentheses for chains. "
+                            + "Ternary 'condition ? yes : no' and optional cast 'value as? Type' "
+                            + "retain their existing meanings; optional member access '?.' is unsupported");
         }
         Ast.Expr whenTrue = parseAssignment();
         consume(COLON, "expected ':' in ternary expression");
