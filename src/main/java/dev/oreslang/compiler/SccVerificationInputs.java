@@ -49,6 +49,10 @@ public final class SccVerificationInputs {
             throw new IllegalArgumentException(
                     "sources, compiler environments or override units disagree");
         }
+        // One aggregate AST traversal bound across the entire source graph.
+        // Enforcing only a per-unit cap would permit MAX_UNITS * MAX_NODES
+        // traversal work from adversarial compiler inputs.
+        SccAstShapeGuard.requireImmutableGraph(sources);
         Map<String, Ast.Program> programSnapshot = new LinkedHashMap<>();
         Map<String, ExportInterfaceCodec.Header> environmentSnapshot =
                 new LinkedHashMap<>();
@@ -63,9 +67,6 @@ public final class SccVerificationInputs {
             }
             Ast.Program program = Objects.requireNonNull(entry.getValue(),
                     "source program");
-            // AST record structure is immutable, but Object literal payloads
-            // could otherwise retain user-owned mutable byte[] / collections.
-            SccAstShapeGuard.requireImmutable(program);
             ExportInterfaceCodec.Header header =
                     Objects.requireNonNull(environments.get(id),
                             "missing compilation environment");
