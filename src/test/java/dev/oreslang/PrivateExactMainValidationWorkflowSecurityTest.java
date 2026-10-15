@@ -74,11 +74,15 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         assertEquals("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]",
                 jobProperty(job, "runs-on"),
                 "no hosted or shared-runner fallback is permitted");
-        assertTrue(job.contains("test \"$GITHUB_SHA\" = \"$APPROVED_SHA\""));
-        assertTrue(job.contains(
-                "test \"$(git rev-parse HEAD^{tree})\" = \"$APPROVED_TREE\""));
-        assertTrue(job.contains("persist-credentials: false"));
-        assertTrue(job.contains("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"));
+        assertTrue(hasExactLine(job, 10,
+                "test \"$GITHUB_SHA\" = \"$APPROVED_SHA\""),
+                "the approved commit must be checked by an executable shell line");
+        assertTrue(hasExactLine(job, 10,
+                "test \"$(git rev-parse HEAD^{tree})\" = \"$APPROVED_TREE\""),
+                "the approved tree must be checked by an executable shell line");
+        assertTrue(hasExactLine(job, 10, "persist-credentials: false"));
+        assertTrue(hasExactLine(job, 6,
+                "- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4"));
         assertTrue(job.indexOf("Verify source identity and immutable Git tree")
                 < job.indexOf("graalvm/setup-graalvm@"));
     }
@@ -129,6 +133,22 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void commentedOutCommitOrTreeVerificationMustNotPass() throws Exception {
+        String job = Files.readString(WORKFLOW);
+        job = job.substring(job.indexOf("  validate-exact-main:"));
+        for (String check : new String[] {
+                "test \"$GITHUB_SHA\" = \"$APPROVED_SHA\"",
+                "test \"$(git rev-parse HEAD^{tree})\" = \"$APPROVED_TREE\""
+        }) {
+            assertTrue(hasExactLine(job, 10, check));
+            String mutation = job.replace("          " + check + "\n",
+                    "          # " + check + "\n");
+            assertFalse(hasExactLine(mutation, 10, check),
+                    "commented-out provenance checks must not count as executed");
+        }
+    }
+
+    @Test
     void securityCriticalFilesMustRequestCodeOwnerReview() throws Exception {
         String owners = Files.readString(Path.of(".github/CODEOWNERS"));
         for (String exact : new String[] {
@@ -140,6 +160,11 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
             assertTrue(owners.lines().anyMatch(exact::equals),
                     "missing private-runner CODEOWNERS rule: " + exact);
         }
+    }
+
+    private static boolean hasExactLine(String body, int spaces, String executable) {
+        String expected = " ".repeat(spaces) + executable;
+        return body.lines().anyMatch(expected::equals);
     }
 
     private static String jobProperty(String job, String property) {
