@@ -1874,7 +1874,7 @@ public final class TypeChecker {
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
             }
-            if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            if (name.name().equals("print")) throw unsupportedBlockingIo("print");
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) {
@@ -2135,29 +2135,10 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (isBuiltinStdoutCall(call, "log", env)) {
-                if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
-                }
-                for (Ast.Expr argument : call.arguments()) {
-                    if (argument instanceof Ast.SpreadExpr spread) {
-                        requireSpreadable(typeOf(spread.expression(), env, generics, self), "stdio.stdout.log spread");
-                    } else {
-                        typeOf(argument, env, generics, self);
-                    }
-                }
-                return Primitive.VOID;
-            }
-            if (isBuiltinStdoutCall(call, "logList", env)) {
-                if (call.typeArgumentsPresent()) {
-                    throw new IllegalArgumentException("stdio.stdout.logList does not accept call-site type arguments");
-                }
-                if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
-                    throw new IllegalArgumentException("stdio.stdout.logList expects exactly one array/list/tuple argument");
-                }
-                requireSpreadable(typeOf(call.arguments().getFirst(), env, generics, self), "stdio.stdout.logList");
-                return Primitive.VOID;
-            }
+            if (isBuiltinStdoutCall(call, "log", env))
+                throw unsupportedBlockingIo("stdio.stdout.log");
+            if (isBuiltinStdoutCall(call, "logList", env))
+                throw unsupportedBlockingIo("stdio.stdout.logList");
             if (call.callee() instanceof Ast.NameExpr name
                     && name.name().equals("init")) {
                 throw new IllegalArgumentException(
@@ -2984,7 +2965,7 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")
                     && env.lookup("stdio") == null) {
-                if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                if (member.member().equals("print") || member.member().equals("println")) throw unsupportedBlockingIo("stdio." + member.member());
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
                 if (member.member().equals("stdin")) return new Named("stdio.stdin", List.of());
             }
@@ -4354,83 +4335,44 @@ public final class TypeChecker {
         return actorClass;
     }
 
+    private static IllegalArgumentException unsupportedBlockingIo(String api) {
+        return new IllegalArgumentException(api
+                + " has no nonblocking native implementation; blocking I/O and worker fallbacks are forbidden");
+    }
+
     private static Type builtinIoMember(Type receiver, String name) {
         if (!(receiver instanceof Named named)) return null;
-        if (named.name().equals("fs") || named.name().equals("File")) {
-            Type string = Primitive.STRING;
-            Type booleanType = Primitive.BOOL;
-            switch (name) {
-                case "list_dir": return new Function(List.of(string), new ListType(string));
-                case "is_dir", "is_symlink", "exists": return new Function(List.of(string), booleanType);
-                case "read_text": return new Function(List.of(string), string);
-                case "write_text", "write_text_atomic", "append_text":
-                    return new Function(List.of(string, string), Primitive.VOID);
-                case "remove", "mkdir_all": return new Function(List.of(string), Primitive.VOID);
-                default: break;
-            }
-        }
+        if (Set.of("fs", "File", "TcpConnection", "http", "HttpServer", "HttpExchange", "HttpHandler",
+                "stdio.stdout", "stdio.stdin").contains(named.name()))
+            throw unsupportedBlockingIo(named.name() + "." + name);
         if (named.name().equals("env")) {
-            switch (name) {
-                case "get": return new Function(List.of(Primitive.STRING),
+            return switch (name) {
+                case "get" -> new Function(List.of(Primitive.STRING),
                         new Named("Option", List.of(Primitive.STRING)));
-                case "has": return new Function(List.of(Primitive.STRING), Primitive.BOOL);
-                default: break;
-            }
+                case "has" -> new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                default -> null;
+            };
         }
         Type result;
         List<Type> parameters;
         switch (named.name()) {
-            case "fs", "File" -> {
-                switch (name) {
-                    case "read_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "exists_async" -> { result = Primitive.BOOL; parameters = List.of(Primitive.STRING); }
-                    case "write_text_async", "append_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING, Primitive.STRING); }
-                    case "remove_async", "mkdir_all_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
-                    default -> { return null; }
-                }
-            }
             case "network", "net" -> {
-                if (name.equals("listen_nonblocking")) {
-                    return new Function(List.of(Primitive.STRING, Primitive.INT, Primitive.INT,
-                            Primitive.INT, Primitive.INT), new Named("NioTcpListener", List.of()));
-                }
-                if (!name.equals("connect_async")) return null;
-                result = new Named("TcpConnection", List.of()); parameters = List.of(Primitive.STRING, Primitive.INT);
+                if (!name.equals("listen_async")) throw unsupportedBlockingIo(named.name() + "." + name);
+                result = new Named("NioTcpListener", List.of());
+                parameters = List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.INT, Primitive.INT);
             }
             case "NioTcpListener" -> {
                 switch (name) {
-                    case "accept_async" -> {
-                        result = new Named("NioTcpConnection", List.of());
-                        parameters = List.of();
-                    }
+                    case "accept_async" -> { result = new Named("NioTcpConnection", List.of()); parameters = List.of(); }
                     case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
                     default -> { return null; }
                 }
             }
             case "NioTcpConnection" -> {
                 switch (name) {
-                    case "read_bytes_async" -> {
-                        result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT);
-                    }
-                    case "write_bytes_async" -> {
-                        result = Primitive.INT; parameters = List.of(new ListType(Primitive.INT));
-                    }
+                    case "read_bytes_async" -> { result = new ListType(Primitive.INT); parameters = List.of(Primitive.INT); }
+                    case "write_bytes_async" -> { result = Primitive.INT; parameters = List.of(new ListType(Primitive.INT)); }
                     case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
-                    default -> { return null; }
-                }
-            }
-            case "TcpConnection" -> {
-                switch (name) {
-                    case "read_line_async" -> { result = new Named("Option", List.of(Primitive.STRING)); parameters = List.of(); }
-                    case "write_text_async" -> { result = Primitive.VOID; parameters = List.of(Primitive.STRING); }
-                    case "close_async" -> { result = Primitive.VOID; parameters = List.of(); }
-                    default -> { return null; }
-                }
-            }
-            case "http" -> {
-                switch (name) {
-                    case "get_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING); }
-                    case "post_text_async" -> { result = Primitive.STRING; parameters = List.of(Primitive.STRING, Primitive.STRING); }
                     default -> { return null; }
                 }
             }

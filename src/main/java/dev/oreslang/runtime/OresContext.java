@@ -33,7 +33,6 @@ public final class OresContext implements AutoCloseable {
     private final ActorRuntime actors;
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
-    private final AsyncNativeIo nativeIo = new AsyncNativeIo();
     private final java.util.Set<NativeNioFutureReactor> nioListeners =
             new java.util.HashSet<>();
     private final Object nioLifecycle = new Object();
@@ -42,6 +41,7 @@ public final class OresContext implements AutoCloseable {
     // including listeners currently in the process of being created.
     private static final int MAX_NIO_LISTENERS_PER_CONTEXT = 16;
     private int nioOpening;
+    private final java.util.Set<OresFuture<NativeNioFutureReactor>> nioPendingOpens = new java.util.HashSet<>();
 
     /** Require BOTH active owner-context identity and NETWORK authority. */
     public void requireNioOwner(NativeNioFutureReactor listener, String operation) {
@@ -57,51 +57,50 @@ public final class OresContext implements AutoCloseable {
     }
 
     /** Kernel-only listener admission; public source orchestration is std/net. */
-    public NativeNioFutureReactor listenNioLoopback(
+    public OresFuture<NativeNioFutureReactor> listenNioLoopbackAsync(
             String host, int port, int backlog, int maxConnections, int maxPending) {
         if (ActorRuntime.inActorExecution())
             throw new SecurityException("nonblocking TCP listeners are supervisor-only");
         if (!"127.0.0.1".equals(host))
-            throw new SecurityException("experimental nonblocking TCP only binds loopback");
-        requirePermission(RuntimePermissions.Permission.NET, host + ":" + port,
-                "network.listen_nonblocking");
+            throw new SecurityException("nonblocking TCP only binds loopback");
+        requirePermission(RuntimePermissions.Permission.NET, host + ":" + port, "network.listen_async");
+        OresFuture<NativeNioFutureReactor> result = new OresFuture<>(() -> false, () -> { });
         synchronized (nioLifecycle) {
-            if (nioContextClosed)
-                throw new IllegalStateException("cannot create TCP listener in closed context");
+            if (nioContextClosed) return OresFuture.failed(new IllegalStateException("TCP context closed"));
             if (nioListeners.size() + nioOpening >= MAX_NIO_LISTENERS_PER_CONTEXT)
-                throw new RejectedExecutionException("TCP listener capacity exhausted");
+                return OresFuture.failed(new RejectedExecutionException("TCP listener capacity exhausted"));
             ++nioOpening;
+            nioPendingOpens.add(result);
         }
-        NativeNioFutureReactor reactor;
-        try {
-            reactor = NativeNioFutureReactor.loopback(
-                    port, backlog, maxConnections, maxPending);
-        } catch (java.io.IOException failure) {
-            synchronized (nioLifecycle) { --nioOpening; }
-            throw new IllegalStateException("nonblocking TCP listen failed", failure);
-        } catch (RuntimeException | Error failure) {
-            synchronized (nioLifecycle) { --nioOpening; }
-            throw failure;
+        OresFuture<NativeNioFutureReactor> opening;
+        try { opening = NativeNioFutureReactor.loopbackAsync(port, backlog, maxConnections, maxPending); }
+        catch (RuntimeException | Error failure) {
+            synchronized (nioLifecycle) { --nioOpening; nioPendingOpens.remove(result); }
+            result.failFromRuntime(failure);
+            return result;
         }
-        synchronized (nioLifecycle) {
-            --nioOpening;
-            if (nioContextClosed) {
-                reactor.close();
-                throw new IllegalStateException("TCP context closed during listener admission");
+        opening.whenCompleteRuntime((reactor, failure) -> {
+            boolean closed;
+            synchronized (nioLifecycle) {
+                --nioOpening;
+                nioPendingOpens.remove(result);
+                closed = nioContextClosed;
+                if (!closed && failure == null) nioListeners.add(reactor);
             }
-            nioListeners.add(reactor);
-        }
-        // Source close_async is one-shot. Reap the owner registry only after
-        // the reactor has released sockets and its selector.
-        reactor.onTerminated(() -> {
-            synchronized (nioLifecycle) { nioListeners.remove(reactor); }
+            if (failure != null) { result.failFromRuntime(failure); return; }
+            reactor.onTerminated(() -> {
+                synchronized (nioLifecycle) { nioListeners.remove(reactor); }
+            });
+            if (closed) {
+                reactor.close();
+                result.failFromRuntime(new IllegalStateException("TCP context closed during listener admission"));
+            } else result.completeFromRuntime(reactor);
         });
-        return reactor;
+        return result;
     }
-    public AsyncNativeIo nativeIo() { coreIoPolicy.requireLegacy("legacy I/O worker"); return nativeIo; }
+    public AsyncNativeIo nativeIo() { throw coreIoPolicy.blocking("legacy I/O worker"); }
     public CoreIoPolicy coreIoPolicy() { return coreIoPolicy; }
-    private final NativeHttp http = new NativeHttp(this);
-    public NativeHttp http() { coreIoPolicy.requireLegacy("Java HTTP transport"); return http; }
+    public NativeHttp http() { throw coreIoPolicy.blocking("Java HTTP transport"); }
 
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
@@ -205,8 +204,8 @@ public final class OresContext implements AutoCloseable {
 
     public OresLanguage language() { return language; }
     public TruffleLanguage.Env env() { return env; }
-    public BufferedReader input() { coreIoPolicy.requireLegacy("stdio.stdin"); return input; }
-    public PrintWriter output() { coreIoPolicy.requireLegacy("stdio.stdout"); return output; }
+    public BufferedReader input() { coreIoPolicy.rejectBlocking("stdio.stdin"); return input; }
+    public PrintWriter output() { coreIoPolicy.rejectBlocking("stdio.stdout"); return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
@@ -233,7 +232,7 @@ public final class OresContext implements AutoCloseable {
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         if (capability == IsolatePolicy.Capability.JAVA_INTEROP)
-            coreIoPolicy.requireLegacy("Java interop");
+            coreIoPolicy.rejectBlocking("Java interop");
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
         if (actorPolicy != null && ActorRuntime.currentActorRuntime() != actors) {
             throw new SecurityException(
@@ -498,14 +497,17 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         java.util.Set<NativeNioFutureReactor> closingNio;
+        java.util.Set<OresFuture<NativeNioFutureReactor>> closingOpens;
         synchronized (nioLifecycle) {
             nioContextClosed = true;
             closingNio = java.util.Set.copyOf(nioListeners);
             nioListeners.clear();
+            closingOpens = java.util.Set.copyOf(nioPendingOpens);
+            nioPendingOpens.clear();
         }
         for (NativeNioFutureReactor reactor : closingNio) reactor.close();
-        nativeIo.close();
-        http.close();
+        for (OresFuture<NativeNioFutureReactor> opening : closingOpens)
+            opening.failFromRuntime(new IllegalStateException("TCP context closed during listener admission"));
         RuntimeException failure = null;
         try {
             asyncRuntime.close();

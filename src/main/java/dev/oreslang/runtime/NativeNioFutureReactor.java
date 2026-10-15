@@ -40,8 +40,10 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class NativeNioFutureReactor implements AutoCloseable {
     static final int MAX_IO_BYTES = 65536;
-    private final Selector selector;
-    private final ServerSocketChannel listener;
+    private volatile Selector selector;
+    private ServerSocketChannel listener;
+    private volatile int boundPort;
+    private final OresFuture<NativeNioFutureReactor> opened = new OresFuture<>(() -> false, () -> { });
     private final Thread thread;
     private final int maxConnections;
     private final int maxPending;
@@ -63,43 +65,32 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private volatile Throwable terminalFailure;
     private final OresFuture<Void> terminated = new OresFuture<>(() -> false, () -> { });
 
-    public static NativeNioFutureReactor loopback(int port, int backlog,
-                                           int maxConnections, int maxPending) throws IOException {
+    public static OresFuture<NativeNioFutureReactor> loopbackAsync(
+            int port, int backlog, int maxConnections, int maxPending) {
         if (port < 0 || port > 65535 || backlog <= 0 || backlog > 65535
-                || maxConnections < 1 || maxConnections > 65536 || maxPending < 1 || maxPending > 65536) {
-            throw new IllegalArgumentException("invalid reactor limits");
+                || maxConnections < 1 || maxConnections > 65536 || maxPending < 1 || maxPending > 65536)
+            return OresFuture.failed(new IllegalArgumentException("invalid reactor limits"));
+        NativeNioFutureReactor reactor = new NativeNioFutureReactor(port, backlog, maxConnections, maxPending);
+        try { reactor.thread.start(); }
+        catch (RuntimeException | Error failure) {
+            reactor.opened.failFromRuntime(failure);
+            reactor.terminated.failFromRuntime(failure);
+            reactor.stopped.countDown();
         }
-        Selector selector = Selector.open();
-        ServerSocketChannel server = null;
-        try {
-            server = ServerSocketChannel.open();
-            server.configureBlocking(false);
-            server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), backlog);
-            server.register(selector, 0);
-            return new NativeNioFutureReactor(selector, server, maxConnections, maxPending);
-        } catch (IOException | RuntimeException failure) {
-            if (server != null) try { server.close(); } catch (IOException ignored) { }
-            try { selector.close(); } catch (IOException ignored) { }
-            throw failure;
-        }
+        return reactor.opened;
     }
 
-    private NativeNioFutureReactor(Selector selector, ServerSocketChannel listener,
-                                   int maxConnections, int maxPending) {
-        this.selector = selector;
-        this.listener = listener;
+    private NativeNioFutureReactor(int port, int backlog, int maxConnections, int maxPending) {
         this.maxConnections = maxConnections;
         this.maxPending = maxPending;
-        this.thread = Thread.ofPlatform().daemon(true).name("ores-nio-reactor").unstarted(this::run);
-        thread.start();
+        this.thread = Thread.ofPlatform().daemon(true).name("ores-nio-reactor")
+                .unstarted(() -> run(port, backlog));
     }
 
+    /** Cached by the reactor during open; no socket syscall on a guest carrier. */
     public int localPort() {
-        try {
-            return ((InetSocketAddress) listener.getLocalAddress()).getPort();
-        } catch (IOException failure) {
-            throw new IllegalStateException("TCP listener is closed", failure);
-        }
+        if (shuttingDown.get()) throw new IllegalStateException("TCP listener is closed");
+        return boundPort;
     }
 
     int outstandingFutures() { return pending.get(); }
@@ -436,8 +427,17 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             next.run();
     }
 
-    private void run() {
+    private void run(int port, int backlog) {
         try {
+            selector = Selector.open();
+            listener = ServerSocketChannel.open();
+            listener.configureBlocking(false);
+            // Literal numeric address: opening a loopback listener never invokes DNS.
+            listener.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127, 0, 0, 1}), port), backlog);
+            listener.register(selector, 0);
+            boundPort = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            if (shuttingDown.get()) throw new IOException("TCP listener closed during open");
+            opened.completeFromRuntime(this);
             while (!shuttingDown.get()) {
                 drainCommands();
                 if (shuttingDown.get()) break;
@@ -461,6 +461,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             }
         } catch (Throwable terminal) {
             terminalFailure = terminal;
+            opened.failFromRuntime(terminal);
         } finally {
             synchronized (admissionGate) {
                 shuttingDown.set(true);
@@ -492,8 +493,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 for (OresFuture<?> future : forgotten)
                     future.failFromRuntime(failure);
             } finally {
-                try { listener.close(); } catch (IOException ignored) { }
-                try { selector.close(); } catch (IOException ignored) { }
+                try { if (listener != null) listener.close(); } catch (IOException ignored) { }
+                try { if (selector != null) selector.close(); } catch (IOException ignored) { }
                 terminated.completeFromRuntime(null);
                 stopped.countDown();
             }
@@ -515,7 +516,10 @@ public final class NativeNioFutureReactor implements AutoCloseable {
 
     @Override public void close() {
         synchronized (admissionGate) {
-            if (shuttingDown.compareAndSet(false, true)) selector.wakeup();
+            if (shuttingDown.compareAndSet(false, true)) {
+                Selector active = selector;
+                if (active != null) active.wakeup();
+            }
         }
     }
 }

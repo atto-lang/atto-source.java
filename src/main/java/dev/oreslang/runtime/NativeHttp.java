@@ -31,7 +31,7 @@ public final class NativeHttp implements AutoCloseable {
     }
 
     public synchronized Server listen(String host, int port, int capacity, int bodyLimit, int deadlineMillis) {
-        context.coreIoPolicy().requireLegacy("http.listen");
+        context.coreIoPolicy().rejectBlocking("http.listen");
         long perf = CorePerf.start();
         if (closed) throw new IllegalStateException("HTTP runtime closed");
         if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP listeners belong to the supervisor");
