@@ -15,6 +15,10 @@ import org.graalvm.polyglot.SandboxPolicy;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
@@ -94,6 +98,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         if (program.namespace() != null || !program.imports().isEmpty()) {
             throw new IllegalArgumentException("checked-i64-v1 rejects namespace/import boundaries");
         }
+        Map<String, Set<Integer>> signatures = new HashMap<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.FunctionDecl fn)
@@ -113,8 +118,68 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                             "checked-i64-v1 requires synchronous scalar functions; "
                             + "actor, class, import and effect lowering are unsupported");
                 }
+                signatures.computeIfAbsent(fn.name(), ignored -> new HashSet<>())
+                        .add(fn.parameters().size());
             }
         }
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
+                Set<String> parameters = new HashSet<>();
+                for (Ast.Param parameter : fn.parameters()) {
+                    parameters.add(parameter.name());
+                }
+                Ast.ReturnStmt ret = (Ast.ReturnStmt) fn.body().getFirst();
+                checkExperimentalCheckedI64Expr(ret.value(), parameters, signatures, 0);
+            }
+        }
+    }
+
+    /**
+     * Whitelist only side-effect-free integer/bool expressions which the
+     * checked experimental runtime has actually exercised. A nested match,
+     * trap, float promotion, dynamic call or runtime operation must not bypass
+     * the top-level signature guard. Limit depth before recursive descent.
+     */
+    private static void checkExperimentalCheckedI64Expr(Ast.Expr expr,
+            Set<String> parameters, Map<String, Set<Integer>> signatures, int depth) {
+        if (expr == null || depth >= 128) {
+            throw new IllegalArgumentException("checked-i64-v1 expression depth or null operand");
+        }
+        if (expr instanceof Ast.LiteralExpr literal) {
+            if (literal.value() instanceof Long || literal.value() instanceof Integer
+                    || literal.value() instanceof Boolean) return;
+        } else if (expr instanceof Ast.NameExpr name) {
+            if (parameters.contains(name.name())) return;
+        } else if (expr instanceof Ast.BinaryExpr binary) {
+            if (Set.of("+", "-", "*", "<", "<=", ">", ">=", "==", "!=",
+                    "&&", "||").contains(binary.operator())) {
+                checkExperimentalCheckedI64Expr(binary.left(), parameters, signatures, depth + 1);
+                checkExperimentalCheckedI64Expr(binary.right(), parameters, signatures, depth + 1);
+                return;
+            }
+        } else if (expr instanceof Ast.UnaryExpr unary) {
+            if ("-".equals(unary.operator()) || "!".equals(unary.operator())) {
+                checkExperimentalCheckedI64Expr(unary.operand(), parameters, signatures, depth + 1);
+                return;
+            }
+        } else if (expr instanceof Ast.ConditionalExpr conditional) {
+            checkExperimentalCheckedI64Expr(conditional.condition(), parameters, signatures, depth + 1);
+            checkExperimentalCheckedI64Expr(conditional.whenTrue(), parameters, signatures, depth + 1);
+            checkExperimentalCheckedI64Expr(conditional.whenFalse(), parameters, signatures, depth + 1);
+            return;
+        } else if (expr instanceof Ast.CallExpr call) {
+            if (!call.typeArgumentsPresent() && call.typeArguments().isEmpty()
+                    && call.callee() instanceof Ast.NameExpr target
+                    && signatures.getOrDefault(target.name(), Set.of()).contains(call.arguments().size())) {
+                for (Ast.Expr argument : call.arguments()) {
+                    checkExperimentalCheckedI64Expr(argument, parameters, signatures, depth + 1);
+                }
+                return;
+            }
+        }
+        throw new IllegalArgumentException(
+                "checked-i64-v1 unsupported or impure expression in experimental host profile");
     }
 
     private static boolean isCheckedI64Scalar(Ast.TypeRef type) {
