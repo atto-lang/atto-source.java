@@ -1170,6 +1170,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("@ActorMiddleware '" + ref.name()
                         + "' requires next_val or next; neither may be overloaded");
             }
+            // Dispatch chooses next_val for unary actors when available;
+            // validating an unused procedural next against unary R would
+            // incorrectly prevent one class from handling both actor roles.
+            boolean selectedValueHook = klass.actorReplyRole() == Ast.ActorReplyRole.UNARY
+                    && middleware.methods().stream().anyMatch(m -> m.name().equals("next_val"));
             boolean hasValue = false;
             boolean hasAround = false;
             for (Ast.MethodDecl method : middleware.methods()) {
@@ -1230,6 +1235,7 @@ public final class TypeChecker {
                                 .filter(m -> !m.isStatic() && m.name().equals("run"))
                                 .findFirst().orElse(null);
                         if (klass.actorReplyRole() == Ast.ActorReplyRole.UNARY
+                                && !selectedValueHook
                                 && run != null && !declared.equals(run.returnType())) {
                             throw new IllegalArgumentException("middleware next result type must match unary actor return type");
                         }
