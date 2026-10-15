@@ -107,11 +107,17 @@ public final class OresMain {
                 } else if (arg.startsWith("--permission-check=")) {
                     permissionCheckMode = PermissionCheckMode.parse(
                             arg.substring("--permission-check=".length()));
-                } else if (arg.equals("--allow-all")) {
+                } else if (arg.equals("--allow-all") || arg.equals("-A")) {
                     for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
                         permissionBuilder.allowAll(permission);
                         touchedPermissions.add(permission);
                     }
+                } else if (arg.equals("-R") || arg.startsWith("-R=")) {
+                    parseShortPermissionFlag(arg, "-R", RuntimePermissions.Permission.READ,
+                            permissionBuilder, touchedPermissions);
+                } else if (arg.equals("-W") || arg.startsWith("-W=")) {
+                    parseShortPermissionFlag(arg, "-W", RuntimePermissions.Permission.WRITE,
+                            permissionBuilder, touchedPermissions);
                 } else if (parsePermissionFlag(arg, permissionBuilder, touchedPermissions)) {
                     // handled by the scoped Deno-style permission parser
                 } else if (arg.startsWith("--define=")) {
@@ -142,7 +148,7 @@ public final class OresMain {
                         throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
                     }
                     allowedHostClasses.add(raw);
-                } else if (arg.startsWith("--")) {
+                } else if (arg.startsWith("-")) {
                     throw new UsageException("unknown option: " + arg);
                 } else if (filename == null) filename = arg;
                 else throw new UsageException("only one .ores or .java source file may be supplied");
@@ -198,7 +204,12 @@ public final class OresMain {
 
         final RuntimePermissions permissions;
         if (touchedPermissions.isEmpty()) {
-            permissions = RuntimePermissions.fromCapabilities(policy.capabilities());
+            // The compiler's developer policy contains capabilities used for
+            // internal source loading and process bookkeeping. None of those
+            // become ambient guest host-I/O rights merely by running a file.
+            // Preserve explicit legacy --allow=CAP grants for callers that
+            // intentionally use that spelling.
+            permissions = RuntimePermissions.fromCapabilities(Set.copyOf(additionalCapabilities));
         } else {
             permissions = permissionBuilder.build();
 
@@ -275,6 +286,20 @@ public final class OresMain {
 
     private static final class UsageException extends IllegalArgumentException {
         UsageException(String message) { super(message); }
+    }
+
+    private static void parseShortPermissionFlag(
+            String arg, String prefix, RuntimePermissions.Permission permission,
+            RuntimePermissions.Builder builder,
+            EnumSet<RuntimePermissions.Permission> touched) {
+        if (arg.equals(prefix)) {
+            builder.allowAll(permission);
+        } else {
+            String scopes = arg.substring((prefix + "=").length());
+            requirePermissionScopes(arg, scopes);
+            builder.allowCsv(permission, scopes);
+        }
+        touched.add(permission);
     }
 
     private static boolean parsePermissionFlag(
