@@ -139,10 +139,15 @@ final class NativeActorTurnSchedulerJniTest {
                 assertTrue(first.isDone(), "first task cancellation not delivered");
                 assertTrue(second.isDone(), "another task was stranded by first failure");
                 assertTrue(scheduler.nativeRetirementFailures() >= 1);
-
+                var unfinished = assertThrows(IllegalStateException.class,
+                        scheduler::close);
+                assertTrue(unfinished.getMessage().contains("unresolved SourceTasks"));
                 kernel.cancelCleanup(ticket);
                 assertEquals(1, scheduler.retryNativeQuiescentTasks());
                 assertEquals(0, scheduler.retryNativeQuiescentTasks());
+                // Idempotent close only succeeds AFTER external cleanup
+                // resolved the final outstanding native SourceTask.
+                assertDoesNotThrow(scheduler::close);
                 kernel.stop(); // Kernel.close will enforce no live SourceTasks.
             }
         }
