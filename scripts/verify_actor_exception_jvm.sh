@@ -3,6 +3,25 @@
 # A passing run does not prove Native Image or LLVM guest parity.
 set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+# Print the actual checkout identity alongside fixture output. CI can set
+# ORESLANG_EXPECTED_SOURCE_SHA to a full immutable source commit for a strict
+# exact-head gate. This detects accidental branch drift, not authorization
+# for copying source into another organization.
+checkout_sha=""
+if command -v git >/dev/null 2>&1; then
+    checkout_sha="$(git -C "$root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)"
+fi
+printf 'Oreslang fixture checkout SHA: %s\n' "${checkout_sha:-unavailable}" >&2
+if [[ -n "${ORESLANG_EXPECTED_SOURCE_SHA:-}" ]]; then
+    if [[ ! "${ORESLANG_EXPECTED_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || [[ "$checkout_sha" != "${ORESLANG_EXPECTED_SOURCE_SHA}" ]]; then
+        printf 'Exact-head verification refused: expected %s, actual %s\n' \
+            "$ORESLANG_EXPECTED_SOURCE_SHA" "${checkout_sha:-unavailable}" >&2
+        exit 2
+    fi
+fi
+
 cd "$root"
 
 if ! command -v mvn >/dev/null 2>&1; then
