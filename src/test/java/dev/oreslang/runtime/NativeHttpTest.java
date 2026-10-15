@@ -157,7 +157,7 @@ class NativeHttpTest {
                     assertEquals("yes", after.headers().firstValue("X-Reused").orElseThrow());
                 });
             assertTrue(output.contains("first-shutdown"), output);
-            assertTrue(output.stripTrailing().endsWith("1\\n1\\n0\\n0"), output);
+            assertTrue(output.stripTrailing().endsWith("1\n1\n0\n0"), output);
         }
     }
 
