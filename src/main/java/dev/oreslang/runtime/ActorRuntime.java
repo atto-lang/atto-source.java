@@ -6984,6 +6984,11 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+            if (ActorRaceInstrumentation.enabled()) {
+                ActorRaceInstrumentation monitor = ActorRaceInstrumentation.runtime();
+                monitor.retireActor(this);
+                if (codeActorState != null) monitor.retireMemoryDomain(codeActorState);
+            }
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
