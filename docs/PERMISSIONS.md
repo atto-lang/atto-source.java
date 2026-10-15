@@ -43,10 +43,14 @@ address spellings are normalized before matching. Port 0 is used for
 OS-assigned listener ports. A bare host permits any port on that host.
 A wildcard does not match its parent domain.
 
-The legacy `--allow=CAPABILITY,...` syntax explicitly grants coarse
-capabilities. A scoped Deno-style rule for a category takes precedence
-over the legacy capability grant for that same category. A default
-developer embedding policy does **not** implicitly grant CLI guest I/O.
+The legacy `--allow=CAPABILITY,...` syntax expands the **coarse isolate
+capability ceiling only**. It is not a guest host-I/O grant, with or without
+scoped flags in other categories: for example `--allow=ENVIRONMENT`
+does not authorize reading `PATH`; use `--allow-env=PATH` as well.
+A default developer embedding policy does **not** implicitly grant CLI
+guest I/O. Explicit legacy embedders that invoke
+`RuntimePermissions.fromCapabilities()` are a separate trusted API;
+the public launcher does not silently use that bridge.
 
 ## Security limits and native backends
 
