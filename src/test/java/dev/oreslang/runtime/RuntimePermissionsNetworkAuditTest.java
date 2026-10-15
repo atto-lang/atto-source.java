@@ -1,0 +1,121 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Adversarial endpoint-policy tests for both compiler arguments and runtime I/O.
+ * These do not imply DNS or filesystem sandboxing; they cover scoped policy
+ * normalization and allow/deny precedence before a native host operation.
+ */
+final class RuntimePermissionsNetworkAuditTest {
+    @Test
+    void wildcardPortDenyOverridesAnUnrestrictedNetworkGrant() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "*.example.com:443");
+
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "nested.api.example.com:0443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "API.EXAMPLE.COM.:443"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:444"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "example.com:443"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.net:443"));
+    }
+
+    @Test
+    void wildcardPortAllowOnlyGrantsMatchingSubdomainAndPort() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*.example.com:443");
+
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:80"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "example.com:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "badexample.com:443"));
+    }
+
+    @Test
+    void fullyQualifiedDnsSpellingCannotEvadeExactHostDeny() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "api.example.com");
+
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "api.example.com.:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "API.Example.Com.:80"));
+    }
+
+    @Test
+    void bracketedIpv6CanBeScopedByPort() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]")
+                .withDenied(RuntimePermissions.Permission.NET, "[::1]:443");
+
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "[::1]:80"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "[::1]:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "[::2]:80"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "::1:80"));
+    }
+
+    @Test
+    void malformedEndpointsDoNotUseBroadAllow() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*");
+
+        for (String target : new String[]{
+                "", "api.example.com:0", "api.example.com:65536",
+                "api.example.com:443:999", "api.example.com:", "*.example.com:443",
+                "http://api.example.com:443", "user@api.example.com:443",
+                "api.example.com..:443", "[::1]garbage"
+        }) {
+            assertFalse(policy.allows(RuntimePermissions.Permission.NET, target),
+                    "malformed endpoint unexpectedly allowed: " + target);
+        }
+    }
+
+    @Test
+    void malformedDenyRulesFailClosedDuringPolicyConstruction() {
+        for (String malformed : new String[]{
+                "", " ", "*.example.com:", "*.example.com:abc", "*.example.com:65536",
+                "api.example.com:22:443", "*example.com:443", "http://api.example.com"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withDenied(RuntimePermissions.Permission.NET, malformed),
+                    "malformed deny scope accepted: " + malformed);
+        }
+    }
+
+    @Test
+    void malformedCsvEntriesAreNeverSilentlyDiscarded() {
+        for (String malformed : new String[]{
+                "", " ", ",", "api.example.com,", ",api.example.com",
+                "api.example.com,,other.example.com"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new RuntimePermissions.Builder()
+                            .denyCsv(RuntimePermissions.Permission.NET, malformed),
+                    "malformed deny CSV accepted: " + malformed);
+            assertThrows(IllegalArgumentException.class,
+                    () -> new RuntimePermissions.Builder()
+                            .allowCsv(RuntimePermissions.Permission.NET, malformed),
+                    "malformed allow CSV accepted: " + malformed);
+        }
+    }
+
+    @Test
+    void serializationPreservesPortDenialsAtRuntimeBoundary() {
+        RuntimePermissions original = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "*.example.com:443");
+        IsolatePolicy isolate = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+
+        RuntimePermissions restored = RuntimePermissions.fromApplicationArguments(
+                original.applicationArguments(), isolate);
+        assertFalse(restored.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertTrue(restored.allows(RuntimePermissions.Permission.NET, "api.example.com:80"));
+        assertFalse(restored.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
+    }
+}
