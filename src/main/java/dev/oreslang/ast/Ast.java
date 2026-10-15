@@ -792,7 +792,7 @@ public final class Ast {
         public LoopStmt { body = List.copyOf(body); }
     }
 
-    public enum ChannelOperation { READ, WRITE, DEFAULT }
+    public enum ChannelOperation { READ, WRITE, AWAIT, DEFAULT }
     public enum WaitMode { BLOCKING, NONBLOCKING, IMMEDIATE }
     public enum SelectPolicy { FAIR, PRIORITY, RANDOM }
 
@@ -804,7 +804,7 @@ public final class Ast {
             String bindingName,
             List<Stmt> body,
             boolean mutableReferent,
-            TypeRef declaredBindingType) {
+            TypeRef bindingType) {
         public SelectArm {
             if (operation == null) {
                 throw new IllegalArgumentException("select arm operation is required");
@@ -815,6 +815,9 @@ public final class Ast {
             if (operation == ChannelOperation.DEFAULT && mutableReferent) {
                 throw new IllegalArgumentException("default select arm cannot carry mutable binding");
             }
+            if (bindingType != null && (bindingName == null || operation == ChannelOperation.DEFAULT || operation == ChannelOperation.WRITE)) {
+                throw new IllegalArgumentException("typed select binding requires a readable arm and a name");
+            }
             body = List.copyOf(body);
             if (operation == ChannelOperation.DEFAULT) {
                 if (channel != null || value != null || bindingKind != null || bindingName != null) {
@@ -822,8 +825,8 @@ public final class Ast {
                 }
             } else {
                 if (channel == null) throw new IllegalArgumentException("channel select arm requires a channel");
-                if (operation == ChannelOperation.READ && value != null) {
-                    throw new IllegalArgumentException("read select arm cannot carry a write value");
+                if ((operation == ChannelOperation.READ || operation == ChannelOperation.AWAIT) && value != null) {
+                    throw new IllegalArgumentException("read/await select arm cannot carry a write value");
                 }
                 if (operation == ChannelOperation.WRITE && value == null) {
                     throw new IllegalArgumentException("write select arm requires a value");
@@ -839,16 +842,16 @@ public final class Ast {
                             "select arm without a binding cannot request mutable referent access");
                 }
             }
-            if (declaredBindingType != null
-                    && (operation != ChannelOperation.READ || bindingName == null)) {
+            if (bindingType != null
+                    && ((operation != ChannelOperation.READ && operation != ChannelOperation.AWAIT)
+                            || bindingName == null)) {
                 throw new IllegalArgumentException("typed select binding requires a read arm with a binding");
             }
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body,
                          boolean mutableReferent) {
-            this(operation, channel, value, bindingKind, bindingName, body,
-                    mutableReferent, null);
+            this(operation, channel, value, bindingKind, bindingName, body, mutableReferent, null);
         }
         public SelectArm(ChannelOperation operation, Expr channel, Expr value,
                          BindingKind bindingKind, String bindingName, List<Stmt> body) {
@@ -1001,8 +1004,8 @@ public final class Ast {
             boolean callback,
             List<Stmt> callbackBody) implements Expr {
         public ChannelOpExpr {
-            if (operation == ChannelOperation.DEFAULT) {
-                throw new IllegalArgumentException("default is not a standalone channel operation");
+            if (operation != ChannelOperation.READ && operation != ChannelOperation.WRITE) {
+                throw new IllegalArgumentException("only readch/writech are standalone channel operations");
             }
             if (channel == null) throw new IllegalArgumentException("channel operation requires a channel");
             if (operation == ChannelOperation.READ && value != null) {

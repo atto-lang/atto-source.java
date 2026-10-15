@@ -776,7 +776,7 @@ public final class TreeShaker {
                             arm.bindingName(),
                             rewriteStatements(arm.body(), module, armLocals),
                             arm.mutableReferent(),
-                            arm.declaredBindingType()));
+                            arm.bindingType()));
                 }
                 return List.of(new Ast.SelectStmt(
                         selected.mode(),
@@ -1255,7 +1255,7 @@ public final class TreeShaker {
                         if (arm.bindingName() != null) {
                             armLocals.add(arm.bindingName());
                         }
-                        scanType(arm.declaredBindingType());
+                        scanType(arm.bindingType());
                         scanStatements(module, arm.body(), armLocals);
                     }
                 } else if (statement instanceof Ast.TryStmt tried) {
