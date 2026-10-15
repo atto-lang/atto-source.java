@@ -1465,6 +1465,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaises(pub.Denied):
                     pub.source_tree_sha(entries)
 
+    def test_git_tree_hash_rejects_control_and_backslash_paths(self):
+        # The collector forbids these paths; direct manifest callers must
+        # not compute a seemingly valid Git tree digest for them either.
+        invalid_names = (
+            "path" + chr(0) + "secret.ores",
+            "nested" + chr(10) + "file.ores",
+            "newline" + chr(13) + "file.ores",
+            "control" + chr(1) + "file.ores",
+            "del" + chr(127) + "file.ores",
+            "src" + chr(92) + "secret.ores",
+        )
+        for name in invalid_names:
+            with self.subTest(path=repr(name)):
+                with self.assertRaisesRegex(pub.Denied, "invalid Git tree path"):
+                    pub.source_tree_sha([(name, b"synthetic", "100644")])
+
+    def test_git_tree_hash_rejects_non_utf8_surrogate_without_crashing(self):
+        # Undecodable surrogate code points must return the stable denial
+        # error, never an unhandled UnicodeEncodeError traceback.
+        with self.assertRaisesRegex(pub.Denied, "invalid UTF-8 Git tree path"):
+            pub.source_tree_sha([("path" + chr(0xD800) + ".ores",
+                                  b"synthetic", "100644")])
+
     def test_git_tree_hash_preserves_nested_files_and_executable_modes(self):
         files = [
             ("nested/child.ores", b"one", "100644"),
