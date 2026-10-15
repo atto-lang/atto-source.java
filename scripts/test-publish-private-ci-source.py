@@ -123,6 +123,57 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                             for method, route, _ in self.route_calls
                             if method == "POST"))
 
+    def test_canonical_git_tree_hash_includes_nested_paths_and_executable_mode(self):
+        # Golden SHA independently computed by git init/add/write-tree on a
+        # synthetic fixture containing a/, ab/, an executable and a file.
+        files = [
+            ("a/file.txt", b"inside\\n", "100644"),
+            ("ab/another", b"hi\\0abc\\n", "100644"),
+            ("run.sh", b"#!/bin/sh\\necho hey\\n", "100755"),
+            ("git", b"same prefix as directory", "100644"),
+        ]
+        self.assertEqual(pub.snapshot_tree_sha(files),
+                         "f0f466a883393dd81aefa720031e38c240de338b")
+
+    def test_wrong_reviewed_source_tree_rejects_before_any_upload(self):
+        expected = pub.snapshot_tree_sha(pub.collect_source(self.source, self.root))
+        changed = ("0" if expected[0] != "0" else "1") + expected[1:]
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(pub.Denied, "differs from reviewed exact Git tree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, expected_tree=changed)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_matching_reviewed_source_tree_publishes_exact_isolated_tree(self):
+        expected = pub.snapshot_tree_sha(pub.collect_source(self.source, self.root))
+        original = self.fake_api
+        def expected_git_tree(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/trees" and method == "POST"
+                    and "base_tree" not in payload):
+                self.route_calls.append((method, route, payload))
+                return {"sha": expected}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=expected_git_tree):
+            commit, count = pub.publish(
+                "trusted/ci", self.source, "ci/oreslang-test",
+                self.root, expected_tree=expected)
+        self.assertEqual((commit, count), (A, 1))
+        tree_writes = [r for m, r, _ in self.route_calls
+                       if m == "POST" and r.endswith("/git/trees")]
+        self.assertEqual(len(tree_writes), 2)
+
+    def test_wrong_destination_tree_does_not_create_commit_or_branch(self):
+        expected = pub.snapshot_tree_sha(pub.collect_source(self.source, self.root))
+        # The fake server returns D, which is a valid-looking 40-hex SHA but
+        # not the Git tree computed from the exact synthetic source bytes.
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(pub.Denied, "isolated subtree differs"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, expected_tree=expected)
+        writes = [r for m, r, _ in self.route_calls if m == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs",
+                                   "repos/trusted/ci/git/trees"])
+
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
         with self.assertRaises(pub.Denied):
