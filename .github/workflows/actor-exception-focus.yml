@@ -7,6 +7,7 @@ on:
     paths:
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
       - "src/main/java/dev/oreslang/runtime/ControlWakeRetryQueue.java"
+      - "src/test/java/dev/oreslang/runtime/ControlWakeRetryQueueTest.java"
       - "src/test/java/dev/oreslang/runtime/ActorTypedEffectControlTest.java"
       - "src/test/java/dev/oreslang/TypedExceptionalEffectAdmissionTest.java"
       - "src/test/java/dev/oreslang/SourceActorOnThrowExecutionTest.java"
