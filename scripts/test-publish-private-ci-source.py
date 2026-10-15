@@ -848,7 +848,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # source commit, and exact Git-tree payload at destination.
         with tempfile.TemporaryDirectory() as external:
             candidate = Path(external)
-            (candidate / "worker.ores").write_text("define actor Worker as\\nend\\n")
+            (candidate / "worker.ores").write_text("define actor Worker as\nend\n")
             subprocess.run(["git", "init", "-q", str(candidate)],
                            check=True, capture_output=True)
             subprocess.run(["git", "-C", str(candidate), "add", "--all"],
@@ -890,7 +890,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
             # Changing the source after its commit is rejected before export.
             self.route_calls.clear()
-            (candidate / "worker.ores").write_text("dirty source\\n")
+            (candidate / "worker.ores").write_text("dirty source\n")
             with patch.object(pub, "require_source_tree_match",
                               wraps=self.real_tree_gate):
                 with patch.object(pub, "gh_api",
