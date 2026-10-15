@@ -21,6 +21,25 @@ must stay synchronized (the publisher's offline regression suite checks this).
 Do not insert an ID into a bare-slug allowlist line; it violates the policy
 parser. An ID hardcoded in software is not itself permission to export.
 
+The publisher must also compare the local approval file byte-for-byte with
+the authenticated Contents API response for the pinned source repository's
+`main` branch, including size, encoding, and Git blob identity. That comparison
+runs before private-source export and again before every Git object write. A
+branch-local approval file alone cannot grant its own export rights.
+
+Exact-tree provenance is a separate condition: the published source subtree
+must match the entire checkout's committed `HEAD^{tree}`, and its commit SHA
+and tree SHA must be authenticated against the pinned private source GitHub
+repository before the first source-bearing write. Only checkout-root `.git`
+metadata may be omitted; nested Git metadata or source symlinks are rejected.
+`GIT_*` environment overrides cannot redirect this provenance check.
+
+**Required independent gate:** neither a checked-in policy nor a successful
+source-commit lookup proves that `main` is branch-protected or that its changes
+received independent code-owner approval. Those governance controls must be
+verified separately before enabling an approved destination; a pending
+allowlist PR never authorizes a transfer.
+
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
 Run the checked transfer from trusted, reviewed source, not an untrusted PR
