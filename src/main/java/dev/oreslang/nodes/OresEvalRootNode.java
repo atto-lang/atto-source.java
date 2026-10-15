@@ -1922,6 +1922,28 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
+            // The statement's completion can enter another statement or finish
+            // the entire source task. If that downstream work throws, do not
+            // misreport it as a second completion for the current statement.
+            final boolean[] delivered = {false};
+            SourceFlowCont once = (t, flow) -> {
+                if (delivered[0]) {
+                    throw new IllegalStateException(
+                            "source statement continuation completed more than once");
+                }
+                delivered[0] = true;
+                continuation.accept(t, flow);
+            };
+            runSuspendableStatementDispatch(task, stmt, env, defers, once, delivered);
+        }
+
+        private void runSuspendableStatementDispatch(
+                SourceTask task,
+                Ast.Stmt stmt,
+                Env env,
+                ArrayDeque<Ast.Expr> defers,
+                SourceFlowCont continuation,
+                boolean[] delivered) {
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -2271,6 +2293,10 @@ public final class OresEvalRootNode extends RootNode {
                         "unsupported suspendable statement "
                                 + stmt.getClass().getName());
             } catch (RuntimeException | Error failure) {
+                // The downstream consumer owns any exception after delivery.
+                // In particular, avoid executing catch/finally/defer twice
+                // when the consumer itself terminates with an error.
+                if (delivered[0]) throw failure;
                 continuation.accept(
                         task,
                         SourceFlow.throwing(failure));
