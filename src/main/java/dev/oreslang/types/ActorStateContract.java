@@ -142,6 +142,7 @@ public final class ActorStateContract {
             // by another AST producer/annotation expansion pass.
             if (state.visibility() != Ast.Visibility.PRIVATE
                     || state.bindingKind() != Ast.BindingKind.VAL
+                    || !state.mutableReferent()
                     || state.annotations().size() != 1
                     || !state.annotations().getFirst().name().equals("$actor_state$")
                     || !state.annotations().getFirst().arguments().isEmpty()) {
@@ -156,8 +157,11 @@ public final class ActorStateContract {
             }
             keys = schema.recordMembers().keySet();
             // No continuation-bound alias may be smuggled into actor-state defaults.
+            Set<String> seenDefaults = new java.util.HashSet<>();
             if (state.initializer() instanceof Ast.ObjectExpr defaults) {
                 for (Ast.ObjectField def : defaults.fields()) {
+                    if (!seenDefaults.add(def.name()))
+                        throw new IllegalArgumentException("duplicate actor state default key '" + def.name() + "'");
                     if (!keys.contains(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                     }
