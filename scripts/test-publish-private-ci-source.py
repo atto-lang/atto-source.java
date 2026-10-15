@@ -51,6 +51,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == "repos/" + pub.SOURCE_REPOSITORY + "/git/commits/" + A:
+            return dict(sha=A, tree={"sha": D})
         if route == "repos/" + pub.SOURCE_REPOSITORY:
             return dict(id=self.source_ids.pop(0),
                         full_name=pub.SOURCE_REPOSITORY, visibility="private",
@@ -213,6 +215,35 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "checked_source", wraps=original) as verify:
             self.publish()
         self.assertGreaterEqual(verify.call_count, 2)
+
+    def test_unrecognized_source_commit_fails_before_upload(self):
+        original = self.fake_api
+        def source_commit_missing(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_REPOSITORY + "/git/commits/" + A:
+                raise pub.Denied("source commit missing")
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=source_commit_missing):
+            with self.assertRaisesRegex(pub.Denied, "source commit missing"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_commit_tree_mismatch_fails_before_upload(self):
+        original = self.fake_api
+        for response in ({"sha": A, "tree": {"sha": C}},
+                         {"sha": C, "tree": {"sha": D}},
+                         {"sha": A, "tree": None},
+                         {"sha": A}):
+            with self.subTest(response=response):
+                self.route_calls.clear()
+                def spoofed(route, method="GET", payload=None):
+                    if route == "repos/" + pub.SOURCE_REPOSITORY + "/git/commits/" + A:
+                        return response
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=spoofed):
+                    with self.assertRaisesRegex(pub.Denied, "source commit"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_missing_archived_or_disabled_metadata_fails_closed(self):
         for route_to_break in ("source", "destination"):
