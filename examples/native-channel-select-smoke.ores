@@ -1,5 +1,4 @@
-// Native/JVM smoke contract for the syntax currently implemented on main.
-// Future 'when await' and '->' arms have a separate compiler-integration gate.
+// Shared legacy channel and typed Future syntax are tested together on this integration.
 pub routine main(): void {
   val Channel<int> primary = Channel.new<int>(1);
   val Channel<int> secondary = Channel.new<int>(1);

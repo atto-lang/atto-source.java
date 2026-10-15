@@ -1,5 +1,4 @@
-// Future-select syntax is gated separately from the runtime-only PR #949.
-// Typed read and Future arms require '->' on this language-integration branch.
+// Shared legacy channel and typed Future syntax are tested together on this integration.
 async fnc compute(): int { return 4; }
 pub routine main(): void {
   val Channel<int> pending = Channel.new<int>(1);
