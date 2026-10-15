@@ -65,6 +65,73 @@ final class FutureChannelSelectTest {
     }
 
     @Test
+    void concurrentFairAdmissionsObservePreviouslyCommittedRotation() throws Exception {
+        // Both callers construct their registrations while coordinator
+        // admission is blocked. A cursor sampled in the constructor would
+        // make both select arm zero, even though the first commit rotates FAIR.
+        var first = new ChannelRuntime.Channel<Integer>(2);
+        var second = new ChannelRuntime.Channel<Integer>(2);
+        assertTrue(first.tryWrite(11));
+        assertTrue(first.tryWrite(12));
+        assertTrue(second.tryWrite(21));
+        assertTrue(second.tryWrite(22));
+        var set = ChannelRuntime.SelectSet.of(
+                ChannelRuntime.read(first), ChannelRuntime.read(second));
+
+        var coordinatorField = ChannelRuntime.class.getDeclaredField("COORDINATOR");
+        coordinatorField.setAccessible(true);
+        var coordinator = (java.util.concurrent.locks.ReentrantLock) coordinatorField.get(null);
+        var started = new CountDownLatch(2);
+        var winnerA = new java.util.concurrent.atomic.AtomicReference<ChannelRuntime.SelectResult>();
+        var winnerB = new java.util.concurrent.atomic.AtomicReference<ChannelRuntime.SelectResult>();
+        var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        Thread a;
+        Thread b;
+        coordinator.lock();
+        try {
+            a = Thread.startVirtualThread(() -> {
+                started.countDown();
+                try {
+                    winnerA.set(set.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join());
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            b = Thread.startVirtualThread(() -> {
+                started.countDown();
+                try {
+                    winnerB.set(set.selectAsync(ChannelRuntime.SelectPolicy.FAIR).join());
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                }
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS), "select workers never started");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!(coordinator.hasQueuedThread(a) && coordinator.hasQueuedThread(b))
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(coordinator.hasQueuedThread(a) && coordinator.hasQueuedThread(b),
+                    "both selections must queue before the admission gate is released");
+        } finally {
+            coordinator.unlock();
+        }
+        a.join(5_000);
+        b.join(5_000);
+        assertFalse(a.isAlive(), "first FAIR admission stalled");
+        assertFalse(b.isAlive(), "second FAIR admission stalled");
+        if (failure.get() != null) throw new AssertionError("FAIR worker failed", failure.get());
+
+        assertTrue(winnerA.get() != null && winnerB.get() != null);
+        assertEquals(1, winnerA.get().index() + winnerB.get().index(),
+                "concurrent FAIR admissions must rotate across both ready arms");
+        assertEquals(0, first.pendingRegistrations());
+        assertEquals(0, second.pendingRegistrations());
+        assertEquals(1, first.size());
+        assertEquals(1, second.size());
+    }
+
+    @Test
     void maximumFanInPreservesHighIndexWinnerAndRefundsEveryLosingWaiter() {
         // Probe the largest supported arm set. The channel is deliberately
         // last, so arbitration visits every pending Future before its winner.

@@ -598,7 +598,8 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        // Initialized only under COORDINATOR at admission, after earlier FAIR commits.
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         // Direct, lock-owned lookup prevents quadratic scans over 256 arms
@@ -615,7 +616,7 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
+            // Cursor sampling here would race other selections awaiting COORDINATOR.
             this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
             int foundDefault = -1;
@@ -795,6 +796,9 @@ public final class ChannelRuntime {
     private static void registerLocked(SelectRegistration selection) {
         if (selection.decided || selection.registered) return;
 
+        // Admission is the linearization point for reusable FAIR ordering.
+        // Earlier committed rotations are now visible before capturing order.
+        selection.order = selection.set.initialOrder(selection.policy);
         selection.registered = true;
         ACTIVE.add(selection);
 
@@ -1013,13 +1017,29 @@ public final class ChannelRuntime {
             SelectRegistration selection) {
         if (selection.decided) return null;
 
+        // Rendezvous peer preference must use the same identity-stable Future
+        // observation as the main arbitration scan: a shared Future settling
+        // mid-scan may not let a later alias outrank its earlier alias.
+        java.util.IdentityHashMap<OresFuture<?>, Object> observedFutureStates =
+                new java.util.IdentityHashMap<>();
         for (int index : selection.order) {
             SelectCase selectCase = selection.set.cases.get(index);
             if (selectCase instanceof DefaultCase) continue;
 
             CaseRegistration registration =
                     findRegistration(selection, index);
-            if (registration != null && basicReadyLocked(registration)) {
+            if (registration == null) continue;
+            if (selectCase instanceof FutureCase<?> awaiting) {
+                OresFuture<?> producer = awaiting.future();
+                Object observed;
+                if (observedFutureStates.containsKey(producer)) {
+                    observed = observedFutureStates.get(producer);
+                } else {
+                    observed = producer.runtimeSelectReadyStateOrNull();
+                    observedFutureStates.put(producer, observed);
+                }
+                if (observed != null) return registration;
+            } else if (basicReadyLocked(registration)) {
                 return registration;
             }
         }
