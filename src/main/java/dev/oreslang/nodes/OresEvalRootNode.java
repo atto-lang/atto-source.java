@@ -5473,11 +5473,11 @@ public final class OresEvalRootNode extends RootNode {
         private Object applyRuntimeOwnership(String operation, Object value) {
             return switch (operation) {
                 case "ref" -> new dev.oreslang.runtime.OresPointer(value);
-                case "unref", "deref" -> {
+                case "deref", "unref" -> {
                     if (!(value instanceof dev.oreslang.runtime.OresPointer pointer)) {
                         throw new IllegalArgumentException("rt " + operation + " requires Pointer<T>");
                     }
-                    yield pointer.target();
+                    yield operation.equals("unref") ? pointer.unref() : pointer.target();
                 }
                 // Borrow/take/share alter compiler ownership state, not the JVM handle.
                 case "borrow", "take", "share" -> value;
