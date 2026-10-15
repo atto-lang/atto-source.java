@@ -98,7 +98,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         }
     }
 
-    private final BooleanSupplier cancelAdmission;
+    /** Released at terminal CAS so retained settled Futures cannot pin actor/channel state. */
+    private volatile BooleanSupplier cancelAdmission;
     /** Released only after all subscribers present at settlement have returned. */
     private final Runnable onNotificationDrained;
     private final AtomicReference<Runnable> cancelHook;
@@ -452,7 +453,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
         if (state.get() != PENDING) return false;
-        if (!cancelAdmission.getAsBoolean()) return false;
+        // Capture the admission capability locally: a concurrent terminal
+        // transition may clear the field, but settlement CAS remains final.
+        BooleanSupplier admission = cancelAdmission;
+        if (admission == null || !admission.getAsBoolean()) return false;
 
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
@@ -613,6 +617,14 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     private boolean settle(Object terminal, Runnable afterStateClaimed) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
+
+        // The operation has irrevocably settled. The admission predicate may
+        // capture a SelectRegistration, its cases, channels and write values;
+        // keeping it on a completed Future retains the whole graph. A racing
+        // cancellation holds its own local predicate and must still win the
+        // terminal CAS to change the result, so releasing the stored reference
+        // here does not weaken cancellation arbitration.
+        cancelAdmission = null;
 
         try {
             // The winning cancellation claim runs its internal revoker before
