@@ -30,6 +30,7 @@ struct ores_actor_cap {
 struct ores_source_task_cap {
     struct ores_source_task_cap *next;
     struct ores_actor_cap *actor;
+    struct ores_turn_lease *active_lease; /* only this task’s physical turn */
     uint64_t task_id, generation;
     bool retired, settled, ticket_issued, ticket_closed, ticket_claimed;
     bool terminal_injected, cleanup_completed, terminal_aborted;
@@ -304,6 +305,44 @@ ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
     return status;
 }
 
+/* A scheduler-owned SourceTask must claim its *own* execution turn.
+ * The actor still grants at most one physical carrier at a time. A claim
+ * rejected by STOP never resumes guest user code. The source identity is
+ * fixed for the lease's lifetime and survives future suspension/resumption.
+ */
+ores_turn_status ores_turn_claim_source(ores_turn_vm *vm,
+                                        ores_source_task_cap *source,
+                                        ores_turn_lease **out) {
+    if (out) *out = NULL;
+    if (!same_process(vm) || !out) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = require_live_source(vm, source);
+    if (status == ORES_TURN_OK) {
+        ores_actor_cap *actor = source->actor;
+        if (source->settled || actor->stopped || actor->revoked || actor->retired)
+            status = ORES_TURN_DENIED;
+        else if (source->active_lease) status = ORES_TURN_BUSY;
+        else {
+            status = allocate_lease(vm, actor, out);
+            if (status == ORES_TURN_OK) {
+                (*out)->source = source;
+                source->active_lease = *out;
+            }
+        }
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
+/* A legacy untagged user lease may be executing arbitrary actor user code.
+ * Conservatively prevent settlement while it is active. A tagged lease for
+ * another SourceTask does NOT block this already-quiescent task's retirement.
+ */
+static bool conflicting_source_turn(const ores_source_task_cap *source) {
+    const ores_turn_lease *active = source->actor->active;
+    return source->active_lease || (active && !active->source);
+}
+
 /* A Future may suspend and leave actor->active == NULL while its guest
  * SourceTask is logically alive. Only the trusted scheduler can assert the
  * terminal/quiescence witness; physical idle is never sufficient by itself.
@@ -317,7 +356,7 @@ ores_turn_status ores_turn_note_source_settled(ores_turn_vm *vm,
     ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
         if (source->settled) status = ORES_TURN_DENIED;
-        else if (source->actor->active
+        else if (conflicting_source_turn(source)
                  || (source->ticket_issued && !source->ticket_closed)
                  || (source->ticket_claimed
                      && !source->cleanup_completed
@@ -335,7 +374,7 @@ ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
-        if (!source->settled || source->actor->active
+        if (!source->settled || conflicting_source_turn(source)
                 || (source->ticket_issued && !source->ticket_closed)
                 || (source->ticket_claimed
                     && !source->cleanup_completed
@@ -393,6 +432,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                 status = allocate_lease(vm, a, out);
                 if (status == ORES_TURN_OK) {
                     (*out)->source = ticket->source;
+                    ticket->source->active_lease = *out;
                     ticket->consumed = true;
                     ticket->source->ticket_closed = true;
                     ticket->source->ticket_claimed = true;
@@ -542,6 +582,8 @@ ores_turn_status ores_turn_release(ores_turn_vm *vm, ores_turn_lease *lease) {
             status = ORES_TURN_WRONG_CARRIER;
         else {
             lease->released = true;
+            if (lease->source && lease->source->active_lease == lease)
+                lease->source->active_lease = NULL;
             lease->actor->active = NULL;
             status = ORES_TURN_OK;
         }
