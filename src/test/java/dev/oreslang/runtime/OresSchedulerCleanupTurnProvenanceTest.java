@@ -37,6 +37,8 @@ final class OresSchedulerCleanupTurnProvenanceTest {
             var initialTurn = (OresScheduler.CleanupTurn) initial;
             assertTrue(initialTurn.ownedBy(scheduler));
             assertFalse(initialTurn.authorizedBy(scheduler));
+            assertFalse(initialTurn.eligibleForStoppedCleanup(scheduler),
+                    "queued initial task has no lexical stack to unwind");
             assertFalse(initialTurn.authorizedBy(impostor));
             initial.run();
             assertEquals(1, turns.get());
@@ -46,6 +48,9 @@ final class OresSchedulerCleanupTurnProvenanceTest {
             assertInstanceOf(OresScheduler.CleanupTurn.class, resumed);
             var cleanupTurn = (OresScheduler.CleanupTurn) resumed;
             assertTrue(cleanupTurn.ownedBy(scheduler));
+            assertTrue(cleanupTurn.eligibleForStoppedCleanup(scheduler),
+                    "suspended source task is a legitimate STOP cleanup candidate");
+            assertFalse(cleanupTurn.eligibleForStoppedCleanup(impostor));
             assertTrue(cleanupTurn.authorizedBy(scheduler));
             assertFalse(cleanupTurn.authorizedBy(impostor),
                     "ownership is exact scheduler identity, not matching names");

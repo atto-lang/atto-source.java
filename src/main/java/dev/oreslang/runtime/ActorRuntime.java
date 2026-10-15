@@ -7659,7 +7659,7 @@ public final class ActorRuntime implements AutoCloseable {
             List<MessageEnvelope> retained = new ArrayList<>();
             while (continuationMailbox.drainOne(envelope -> {
                 if (envelope.continuation() instanceof OresScheduler.CleanupTurn turn
-                        && turn.ownedBy(sourceScheduler)) {
+                        && turn.eligibleForStoppedCleanup(sourceScheduler)) {
                     retained.add(envelope);
                 } else {
                     releaseMailboxSlot(true);

@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -127,4 +130,101 @@ final class ActorStopCleanupAdmissionBaselineTest {
             assertEquals(0, neverCleanup.pendingRuntimeWaiterCount());
         }
     }
+    @Test
+    void queuedNeverStartedSourceTasksCannotStarveLiveStopCleanup()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> cleanupGate = new OresFuture<>();
+        AtomicReference<OresFuture<Integer>> activeTask = new AtomicReference<>();
+        CopyOnWriteArrayList<OresFuture<Integer>> neverStarted = new CopyOnWriteArrayList<>();
+        AtomicInteger initialGuestTurns = new AtomicInteger();
+        AtomicInteger liveGuestTurns = new AtomicInteger();
+        AtomicReference<Throwable> floodingFailure = new AtomicReference<>();
+        CountDownLatch firstSuspended = new CountDownLatch(1);
+        CountDownLatch full = new CountDownLatch(1);
+        CountDownLatch releaseFlood = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                if ("start".equals(message)) {
+                    activeTask.set(context.runtime().startActorTask(
+                            (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                                int turn = liveGuestTurns.incrementAndGet();
+                                if (turn == 1) {
+                                    firstSuspended.countDown();
+                                    return OresScheduler.await(producer);
+                                }
+                                if (turn == 2) {
+                                    assertInstanceOf(CancellationException.class, resume.failure());
+                                    cleanupEntered.countDown();
+                                    return OresScheduler.await(cleanupGate);
+                                }
+                                assertEquals(3, turn);
+                                return OresScheduler.done(1);
+                            }));
+                } else if ("flood".equals(message)) {
+                    try {
+                        // Consume all 1024 reserved CONTROL slots with fresh,
+                        // never-entered scheduler tasks while this actor turn
+                        // owns the only physical execution lane.
+                        for (int i = 0; i < 1_024; i++) {
+                            neverStarted.add(context.runtime().startActorTask(
+                                    (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                                        initialGuestTurns.incrementAndGet();
+                                        return OresScheduler.done(123);
+                                    }));
+                        }
+                    } catch (Throwable failure) {
+                        floodingFailure.set(failure);
+                    } finally {
+                        full.countDown();
+                    }
+                    if (!releaseFlood.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("flooding turn never released");
+                    }
+                } else {
+                    throw new AssertionError("unexpected guest message " + message);
+                }
+            });
+            actor.send("start");
+            assertTrue(firstSuspended.await(5, TimeUnit.SECONDS));
+            actor.send("flood");
+            assertTrue(full.await(5, TimeUnit.SECONDS));
+            assertNull(floodingFailure.get(), () -> String.valueOf(floodingFailure.get()));
+            assertEquals(1_024, neverStarted.size());
+
+            CompletableFuture<Void> stopping = CompletableFuture.runAsync(actor::stop);
+            try {
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (actor.isAlive() && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertFalse(actor.isAlive(), "STOP must seal user admission before releasing lane");
+            } finally {
+                releaseFlood.countDown();
+            }
+
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS),
+                    "unstarted queued tasks must not starve an existing suspended cleanup");
+            assertEquals(0, initialGuestTurns.get(),
+                    "STOP must never start any queued task just to clear its control slot");
+            assertFalse(actor.done().isDone(), "cleanup still owns actor state");
+            cleanupGate.completeFromRuntime(4);
+            stopping.get(5, TimeUnit.SECONDS);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(3, liveGuestTurns.get());
+            assertEquals(0, initialGuestTurns.get());
+            assertTrue(actor.failure().isEmpty(), () -> actor.failure().toString());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isCancelled());
+            assertThrows(CancellationException.class, () ->
+                    activeTask.get().get(5, TimeUnit.SECONDS));
+            for (OresFuture<Integer> task : neverStarted) {
+                assertThrows(CancellationException.class,
+                        () -> task.get(5, TimeUnit.SECONDS));
+            }
+        }
+    }
+
 }

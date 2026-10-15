@@ -102,12 +102,16 @@ public final class OresScheduler implements AutoCloseable {
         private final OresScheduler scheduler;
         private final Runnable action;
         private final java.util.function.BooleanSupplier authorization;
+        private final java.util.function.BooleanSupplier previouslyEnteredGuest;
 
         private CleanupTurn(OresScheduler scheduler, Runnable action,
-                java.util.function.BooleanSupplier authorization) {
+                java.util.function.BooleanSupplier authorization,
+                java.util.function.BooleanSupplier previouslyEnteredGuest) {
             this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
             this.action = Objects.requireNonNull(action, "action");
             this.authorization = Objects.requireNonNull(authorization, "authorization");
+            this.previouslyEnteredGuest = Objects.requireNonNull(
+                    previouslyEnteredGuest, "previouslyEnteredGuest");
         }
 
         boolean ownedBy(OresScheduler expected) {
@@ -116,6 +120,11 @@ public final class OresScheduler implements AutoCloseable {
 
         public boolean authorizedBy(OresScheduler expected) {
             return ownedBy(expected) && authorization.getAsBoolean();
+        }
+
+        /** A never-entered task has no lexical cleanup and must not fill STOP's control queue. */
+        boolean eligibleForStoppedCleanup(OresScheduler expected) {
+            return ownedBy(expected) && previouslyEnteredGuest.getAsBoolean();
         }
 
         @Override
@@ -514,7 +523,8 @@ public final class OresScheduler implements AutoCloseable {
 
     private void executeTurn(Runnable turn, Runnable afterTurn,
             java.util.function.Consumer<Throwable> admissionFailure,
-            java.util.function.BooleanSupplier cleanupAuthorization) {
+            java.util.function.BooleanSupplier cleanupAuthorization,
+            java.util.function.BooleanSupplier previouslyEnteredGuest) {
         Objects.requireNonNull(turn, "turn");
         Objects.requireNonNull(afterTurn, "afterTurn");
         ensureOpen();
@@ -550,7 +560,8 @@ public final class OresScheduler implements AutoCloseable {
             }
         };
         executor.execute(cleanupAuthorization == null
-                ? dispatch : new CleanupTurn(this, dispatch, cleanupAuthorization));
+                ? dispatch : new CleanupTurn(this, dispatch, cleanupAuthorization,
+                        previouslyEnteredGuest));
     }
 
     private void ensureOpen() {
@@ -627,6 +638,8 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(NEW);
         private final AtomicBoolean executing = new AtomicBoolean();
         private final AtomicBoolean cancellationInjected = new AtomicBoolean();
+        /** True only after a guest resume entered, never for queued initial dispatches. */
+        private final AtomicBoolean previouslyEnteredGuest = new AtomicBoolean();
         private final AtomicBoolean closeCancellationPending = new AtomicBoolean();
         private final AtomicReference<Resume> pendingResume =
                 new AtomicReference<>(Resume.initialResume());
@@ -729,11 +742,16 @@ public final class OresScheduler implements AutoCloseable {
                         runTurn(ownsExecution);
                     }
                 }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal,
-                        task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null);
+                        task instanceof CleanupAwareTask<?> ? this::cleanupAuthorized : null,
+                        this::hasPreviouslyEnteredGuest);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
+        }
+
+        private boolean hasPreviouslyEnteredGuest() {
+            return previouslyEnteredGuest.get();
         }
 
         private boolean cleanupAuthorized() {
@@ -787,6 +805,7 @@ public final class OresScheduler implements AutoCloseable {
 
                 final Step<T> step;
                 try {
+                    previouslyEnteredGuest.set(true);
                     step = Objects.requireNonNull(
                             task.resume(resume),
                             "OresScheduler task returned null Step");
