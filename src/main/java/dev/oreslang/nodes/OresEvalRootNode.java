@@ -9140,6 +9140,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             Objects.requireNonNull(object, "object");
         }
+        @Override public Object raceMemoryIdentity() { return object; }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
