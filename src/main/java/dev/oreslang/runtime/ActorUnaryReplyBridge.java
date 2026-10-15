@@ -47,10 +47,21 @@ public final class ActorUnaryReplyBridge<R> {
         Objects.requireNonNull(ticket, "reply ticket");
         Objects.requireNonNull(request, "request envelope");
         Objects.requireNonNull(cancelled, "cancellation observer");
-        ticket.requireAdmission(actor, generation);
+        // The claim must precede middleware entry: pending-state checks
+        // alone do not protect against two racing dispatch callers.
+        ticket.claimDispatch(actor, generation);
         UUID responseTo = ticket.requestId();
         try {
-            middleware.invoke(request, cancelled).whenComplete((outcome, failure) -> {
+            BooleanSupplier cancelledOrRevoked = () -> {
+                if (ticket.state() == ActorUnaryReplySlot.State.CANCELLED) return true;
+                if (cancelled.getAsBoolean()) {
+                    ticket.cancel();
+                    return true;
+                }
+                return false;
+            };
+            if (cancelledOrRevoked.getAsBoolean()) return ticket.result();
+            middleware.invoke(request, cancelledOrRevoked).whenComplete((outcome, failure) -> {
                 if (failure != null) {
                     ticket.reject(actor, generation, responseTo, failure);
                 } else if (outcome instanceof ActorMiddlewareValuePipeline.Reply<?> reply) {
