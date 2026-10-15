@@ -119,6 +119,17 @@ runtime quota.
    (namespaces/seccomp/cgroups, sandbox-exec/Seatbelt, AppContainer/Job Objects,
    or a proven equivalent). Shell sessions require separate, explicit,
    administrator-approved authority, not merely an inheritance clause.
+   **Interpreter bypass:** `spawn_process_async(executable: "/bin/sh", ...)`
+   can invoke a shell without calling `open_shell_async`. A separate shell
+   *method* is not an authorization boundary. Every launch, including
+   interpreters, executable scripts, nested shell commands, and BusyBox-style
+   multipurpose tools, must pass the same effective executable policy and OS
+   confinement. Executable name checks alone cannot establish safety: approved
+   binaries may spawn other programs or access files/network. Reject any claim
+   that blocking `sh`, `bash`, and `zsh` by basename prevents shell access.
+   A privileged shell session additionally requires an explicit runtime
+   capability checked at admission; it never follows from the actor base.
+
 5. The manager tracks a maximum live child count, aggregate bytes in pipe
    queues, active readers/writers, outstanding waits, pending spawns, and PTYs.
    Quota exhaustion rejects admission before resource allocation.
@@ -140,6 +151,20 @@ runtime quota.
 9. A shell's `exit` status must **not** call Oreslang `process.exit()` and
    must never terminate the OresVM or its supervisor. Never expose host Java
    `ProcessBuilder` through guest interop.
+
+## Permission and test-runner boundaries
+
+- The existing Java `RuntimePermissions.RUN` checks textual command scopes;
+  it does not yet implement canonical executable admission or interpreter
+  confinement. Do not assume `--ores-permission-run-allow=/some/path`
+  implements sandboxing or path pinning.
+- New CLI flag parsing must reuse `flags-2-env`; do not add a second ad hoc
+  `--allow-run` or `--allow-shell` parser.
+- Private CI mirrors must remain private, have read-only workflow token
+  permissions, keep `persist-credentials: false`, never copy secrets, and
+  prove the exact source tree hash before reporting validation. If GitHub
+  reports zero job steps / zero runner billing time, classify CI as **not
+  executed**, regardless of its displayed success/failure status.
 
 ## Compiler/runtime implementation gates
 
