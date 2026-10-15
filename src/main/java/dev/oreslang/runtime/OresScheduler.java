@@ -724,19 +724,21 @@ public final class OresScheduler implements AutoCloseable {
             // or duplicate dispatch must never clear another running dispatch's
             // executing flag, watchdog identity or quota-retirement barrier.
             AtomicBoolean ownsExecution = new AtomicBoolean();
+            AtomicBoolean nativeEntered = new AtomicBoolean();
             try {
                 executeTurn(() -> {
                     try (var scope = dev.oreslang.interop.MixedInteropBridge.open(interopScope)) {
-                        runTurn(ownsExecution);
+                        runTurn(ownsExecution, nativeEntered);
                     }
-                }, () -> afterCarrierTurn(ownsExecution.get()), this::failTerminal);
+                }, () -> afterCarrierTurn(ownsExecution.get(), nativeEntered.get()),
+                        this::failTerminal);
             } catch (RuntimeException | Error rejected) {
                 failTerminal(rejected);
                 throw rejected;
             }
         }
 
-        private void runTurn(AtomicBoolean ownsExecution) {
+        private void runTurn(AtomicBoolean ownsExecution, AtomicBoolean nativeEntered) {
             // Claim the physical guest execution lease BEFORE transitioning to
             // RUNNING. Otherwise cancellation can observe RUNNING with
             // executing=false, announce quiescence and release actor memory
@@ -750,6 +752,21 @@ public final class OresScheduler implements AutoCloseable {
             }
             ownsExecution.set(true);
             if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            if (nativeSource != null) {
+                try {
+                    // Real TaskRunner gate, not a wrapper around Task.resume().
+                    // Keep the physical lease until afterCarrierTurn exits
+                    // the entire entered guest/interop context.
+                    nativeTurnKernel.enter(nativeSource);
+                    nativeEntered.set(true);
+                } catch (RuntimeException | Error admissionFailure) {
+                    failTerminal(admissionFailure);
+                    if (admissionFailure instanceof VirtualMachineError fatal) throw fatal;
+                    if (admissionFailure instanceof ThreadDeath fatal) throw fatal;
+                    if (admissionFailure instanceof LinkageError fatal) throw fatal;
+                    return;
+                }
+            }
 
             ActorTurnWatchdog.Lease lease = ActorTurnWatchdog.enter(
                     ignored -> watchdogOverruns.incrementAndGet());
@@ -819,7 +836,7 @@ public final class OresScheduler implements AutoCloseable {
          * task Future earlier can let a host close its Polyglot Context while
          * this carrier is still executing guest continuation code.
          */
-        private void afterCarrierTurn(boolean ownsExecution) {
+        private void afterCarrierTurn(boolean ownsExecution, boolean nativeEntered) {
             if (!ownsExecution) {
                 // This carrier never owned the physical lease; another
                 // dispatch may still be inside guest code. Never clear it.
@@ -829,6 +846,13 @@ public final class OresScheduler implements AutoCloseable {
             ActorTurnWatchdog.Lease lease = watchdogLease;
             watchdogLease = null;
             if (lease != null) lease.close();
+            if (nativeEntered) {
+                // This happens AFTER turnExecutor and the guest interop scope
+                // have both returned, on the original native carrier.
+                // On JNI release failure, keep executing=true and fail
+                // closed: never publish DONE while the native VM says BUSY.
+                nativeTurnKernel.exit(nativeSource);
+            }
             executing.set(false);
             // After the guest turn has unwound, release its lifecycle
             // resources before notifying arbitrary Future subscribers.
@@ -1018,6 +1042,13 @@ public final class OresScheduler implements AutoCloseable {
                 // Keep the task observable in the scheduler's live set while a
                 // cancelled/failed guest turn is still physically executing.
                 // A terminal Future is not a carrier-exit witness.
+                // Native retirement is witnessed only at the scheduler's
+                // own TERMINAL + physical-carrier-exit barrier; NOT by Future
+                // notification, timeout cancellation, or an idle actor slot.
+                if (nativeSource != null) {
+                    nativeTurnKernel.settled(nativeSource);
+                    nativeTurnKernel.retire(nativeSource);
+                }
                 tasks.remove(this);
                 cancelWallDeadline();
                 try {
