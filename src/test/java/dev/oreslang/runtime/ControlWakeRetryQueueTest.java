@@ -173,6 +173,22 @@ final class ControlWakeRetryQueueTest {
         }
     }
 
+    @Test void assertionInHostRetryCannotAbortAdmittedActorTurn() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
+        java.util.concurrent.atomic.AtomicInteger actorRan =
+                new java.util.concurrent.atomic.AtomicInteger();
+        assertTrue(queue.register(() -> {
+            throw new AssertionError("synthetic host retry bug");
+        }, queue.epoch()));
+        // QueuedTurn.run() releases a physical slot before calling
+        // the already-admitted actor turn; the wake must not abort it.
+        queue.slotReleased();
+        actorRan.incrementAndGet();
+        assertEquals(1, actorRan.get());
+        assertEquals(1, queue.callbacksFailed());
+        assertEquals(0, queue.pending());
+    }
+
     @Test void failedRetryCallbackDoesNotPreventCurrentCarrierFromRunning() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         AtomicInteger second = new AtomicInteger();
