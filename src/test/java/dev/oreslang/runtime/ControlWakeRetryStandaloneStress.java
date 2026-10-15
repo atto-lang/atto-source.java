@@ -153,6 +153,77 @@ public final class ControlWakeRetryStandaloneStress {
         }
     }
 
+    private static void verifyDequeueHandoffCancellation() throws Exception {
+        // Instrument only the test instance's private ThreadLocal to pause
+        // between a real slotReleased() dequeue and callback-start admission.
+        // No hook or guest entrypoint is added to the production queue.
+        for (boolean closing : new boolean[]{false, true}) {
+            for (int round = 0; round < 64; ++round) {
+                ControlWakeRetryQueue q = new ControlWakeRetryQueue(1);
+                AtomicInteger delivered = new AtomicInteger();
+                Runnable callback = delivered::incrementAndGet;
+                require(q.register(callback, q.epoch()), "handoff registration");
+                CountDownLatch dequeued = new CountDownLatch(1);
+                CountDownLatch resume = new CountDownLatch(1);
+                java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                        new java.util.concurrent.atomic.AtomicReference<>();
+                java.lang.reflect.Field field =
+                        ControlWakeRetryQueue.class.getDeclaredField("retryDispatch");
+                field.setAccessible(true);
+                Object original = field.get(q);
+                field.set(q, new ThreadLocal<Object>() {
+                    @Override public Object get() {
+                        dequeued.countDown();
+                        try {
+                            if (!resume.await(3, TimeUnit.SECONDS)) {
+                                throw new AssertionError("CONTROL handoff gate timed out");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(interrupted);
+                        }
+                        return null;
+                    }
+                });
+                Thread carrier = new Thread(() -> {
+                    try { q.slotReleased(); }
+                    catch (Throwable problem) { failure.set(problem); }
+                }, "control-dequeued-before-cancel");
+                carrier.setDaemon(true);
+                carrier.start();
+                try {
+                    require(dequeued.await(3, TimeUnit.SECONDS),
+                            "CONTROL callback was not dequeued");
+                    require(q.pending() == 0 && q.retained() == 1,
+                            "CONTROL ticket vanished before callback-start");
+                    if (closing) q.close();
+                    else q.cancel(callback);
+                    require(q.retained() == 0,
+                            "revoked in-transit CONTROL ticket retained quota");
+                } finally {
+                    resume.countDown();
+                }
+                carrier.join(3000);
+                require(!carrier.isAlive() && failure.get() == null,
+                        "CONTROL carrier failed: " + failure.get());
+                require(delivered.get() == 0,
+                        "cancelled dequeued CONTROL callback was delivered");
+                field.set(q, original);
+                if (!closing) {
+                    require(q.register(callback, q.epoch()),
+                            "cancel prevented later valid re-registration");
+                    q.slotReleased();
+                    require(delivered.get() == 1,
+                            "next valid CONTROL callback was not delivered");
+                } else {
+                    require(!q.register(callback, q.epoch()),
+                            "closed CONTROL queue accepted a registration");
+                }
+                require(q.retained() == 0, "CONTROL ticket leaked after handoff test");
+            }
+        }
+    }
+
     private static void verifyRetainedAdmissionUnderReentry() {
         // A callback can fill the ordinary pending queue, immediately
         // dequeue itself onto the same carrier's deferred trampoline, then
@@ -334,6 +405,7 @@ public final class ControlWakeRetryStandaloneStress {
         verifyFairnessAndCapacity();
         verifyLifecycleAndEpoch();
         verifyCrossCarrierDeferredCancellation();
+        verifyDequeueHandoffCancellation();
         verifyRetainedAdmissionUnderReentry();
         verifyDeepReentrantWakes();
         verifyFatalDeferredCleanup();
