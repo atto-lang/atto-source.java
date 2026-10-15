@@ -106,6 +106,44 @@ final class ActorGroupTurnGateTest {
     }
 
     @Test
+    void concurrentDispatcherSubmissionsRespectGlobalTurnBound() throws Exception {
+        final int tasks = 500;
+        try (var gate = new ActorGroupTurnGate(3, tasks);
+             var executor = java.util.concurrent.Executors.newFixedThreadPool(8)) {
+            CountDownLatch finished = new CountDownLatch(tasks);
+            AtomicInteger active = new AtomicInteger();
+            AtomicInteger peak = new AtomicInteger();
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            for (int i = 0; i < tasks; i++) {
+                gate.submit(permit -> executor.execute(() -> {
+                    int currentlyRunning = active.incrementAndGet();
+                    peak.accumulateAndGet(currentlyRunning, Math::max);
+                    try {
+                        if (currentlyRunning > 3) {
+                            error.compareAndSet(null, new AssertionError(
+                                    "group exceeded three physical turns"));
+                        }
+                        Thread.onSpinWait();
+                    } finally {
+                        active.decrementAndGet();
+                        try {
+                            permit.release();
+                        } finally {
+                            finished.countDown();
+                        }
+                    }
+                }), () -> error.compareAndSet(null,
+                        new AssertionError("unexpected queued turn cancellation")));
+            }
+            assertTrue(finished.await(15, TimeUnit.SECONDS));
+            assertNull(error.get());
+            assertTrue(peak.get() >= 1 && peak.get() <= 3);
+            assertEquals(0, gate.activeTurns());
+            assertEquals(0, gate.queuedTurns());
+        }
+    }
+
+    @Test
     void cancellationRacingReleaseIsSingleWinnerWithNoDoubleDispatch() throws Exception {
         final int iterations = 160;
         for (int i = 0; i < iterations; i++) {
