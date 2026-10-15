@@ -948,11 +948,16 @@ public final class TypeChecker {
             return true;
         }
         if (expr instanceof Ast.BinaryExpr op) {
-            // Division/remainder can fail (notably integer remainder by
-            // zero) even when both operands were evaluated without effects.
-            // Failure cleanup of a partially built instance is not proven.
-            // Keep them outside eager initialization until that proof exists.
-            if (op.operator().equals("/") || op.operator().equals("%")) return true;
+            // Division/remainder can fail even when both operands are pure.
+            // Shift operations also invoke runtime shiftDistance(), which
+            // throws when an integral shift count is negative or above 63.
+            // No rollback proof exists for fields initialized before these
+            // exceptions, so fail closed on every potentially failing
+            // arithmetic operator until a constructor effect summary proves
+            // its exact argument range and unwinding behavior.
+            if (op.operator().equals("/") || op.operator().equals("%")
+                    || op.operator().equals("<<") || op.operator().equals(">>")
+                    || op.operator().equals(">>>")) return true;
             return fieldInitializerMaySuspend(op.left(), scalarInitializerArgs) || fieldInitializerMaySuspend(op.right(), scalarInitializerArgs);
         }
         if (expr instanceof Ast.UnaryExpr op) {
