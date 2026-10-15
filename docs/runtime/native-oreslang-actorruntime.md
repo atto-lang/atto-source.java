@@ -396,6 +396,45 @@ The script runs the original native suite plus the new fixture.
 The original suite's latest source still needs to be obtained and
 executed through an authorized exact-tree test environment.
 
+### Cleanup-turn capability separation (2026-10-14 audit)
+
+**Security finding (reproduced before the fix):** A normal
+`ores_turn_claim_source` lease for a SourceTask could remain physically
+active across actor STOP. Because terminal-injection and completion checks
+previously authenticated only the SourceTask identity, actor STOP and current
+carrier, the ordinary lease could call
+`ores_turn_note_terminal_injected` and `ores_turn_complete_cleanup`
+successfully **without ever consuming a retained-cleanup ticket**.
+The local reproducer observed `ORES_TURN_OK` for both acknowledgements.
+That incorrectly promoted a normal execution lease to terminal cleanup
+authority.
+
+**Fix:** Native leases now record a separate, non-upgradable
+`cleanup_turn` capability bit set only by successful
+`ores_turn_claim_cleanup`. Terminal signal injection,
+`ores_turn_check_cleanup_effects`, and cleanup completion all require
+both this lease kind **and** a consumed/claimed SourceTask cleanup ticket.
+STOP does not grant cleanup authority to already-issued user or source
+leases. The cleanup-bit remains false on `claim_source` and
+`claim_user`, regardless of which SourceTask ID is carried.
+
+The boundary regression exercises an ordinary source lease both with an
+unclaimed pending cleanup ticket and with **no cleanup ticket at all**,
+verifies all terminal cleanup operations refuse it after STOP, then
+checks that the legitimately claimed cleanup lease can finish exactly
+once. It also preserves carrier ownership, source settlement, and
+actor retirement assertions.
+
+**Local exact-blob validation:** C kernel
+`0c461c22e5466242430a3c38731b0f249b4abdf8`
+and boundary fixture
+`cc494b21a8f15f83007fb4227c645832830ec85b`
+passed GCC/Clang O0/O2, normal and ASan+UBSan (**8/8**),
+plus GCC O1 ThreadSanitizer (**1/1**); each executable also
+runs the fixture's 1,000 FORCE/cleanup stress iterations.
+The original `oresactorturn_test.c` full regression suite and compiled
+Java/LLVM actor runtime remain separate, unverified gates on this head.
+
 ### Next native/Java scheduler integration seam (not yet implemented)
 
 Inspect the existing `OresScheduler.TaskRunner` and
