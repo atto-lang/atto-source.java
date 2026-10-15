@@ -6220,8 +6220,13 @@ public final class TypeChecker {
             return v.elements().stream().anyMatch(a -> questionExprMaySuspend(a, seen));
         if (expr instanceof Ast.ObjectExpr v)
             return v.fields().stream().anyMatch(a -> questionExprMaySuspend(a.value(), seen));
-        // A literal/name/lambda is not itself a suspension; lambda bodies
-        // remain non-admitted for ? until their invocation lifetime is proven.
+        // A lambda can execute during defer cleanup, in a synchronous sum
+        // callback, or on a scheduled Future/Channel continuation. Scan the
+        // body as well, even though closure *creation* does not suspend.
+        if (expr instanceof Ast.LambdaExpr v)
+            return questionExprMaySuspend(v.expressionBody(), seen)
+                    || v.blockBody() != null && v.blockBody().stream()
+                        .anyMatch(a -> questionStmtMaySuspend(a, seen));
         return false;
     }
 
