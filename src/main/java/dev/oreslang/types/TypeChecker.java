@@ -2663,6 +2663,11 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
+                if (receiver instanceof Named sumReceiver) {
+                    Type composed = typeSumCompositionCall(
+                            sumReceiver, member.member(), call, env, generics, self);
+                    if (composed != null) return composed;
+                }
 
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
@@ -5926,6 +5931,69 @@ public final class TypeChecker {
                     named);
             default -> null;
         };
+    }
+
+    /**
+     * V0 keeps sum composition synchronous and scalar-only. This is a
+     * deliberately narrow admission rule: before affine transfer semantics
+     * are proven, no list/class/borrow/capability may be smuggled through a
+     * callback or silently duplicated. Output type arguments are mandatory
+     * until the block-lambda return inference can prove an exact result type.
+     */
+    private Type typeSumCompositionCall(
+            Named receiver, String member, Ast.CallExpr call,
+            Env env, Set<String> generics, Type self) {
+        boolean option = receiver.name().equals("Option") && receiver.arguments().size() == 1;
+        boolean result = receiver.name().equals("Result") && receiver.arguments().size() == 2;
+        if ((!option && !result) || !(member.equals("map")
+                || member.equals("and_then") || (result && member.equals("map_err")))) return null;
+        if (call.arguments().size() != 1) {
+            throw new IllegalArgumentException(receiver.name() + "." + member
+                    + " expects exactly one callback");
+        }
+        if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+            throw new IllegalArgumentException(receiver.name() + "." + member
+                    + " requires one explicit output type argument <U> in this v0 implementation");
+        }
+        Type output = resolve(call.typeArguments().getFirst(), generics, self);
+        Type input = member.equals("map_err") ? receiver.arguments().get(1) : receiver.arguments().getFirst();
+        Type unchanged = result ? receiver.arguments().get(1) : null;
+        if (!scalarSumCompositionType(receiver) || !scalarSumCompositionType(output)) {
+            throw new IllegalArgumentException(receiver.name() + "." + member
+                    + " currently requires scalar, non-borrowed payloads and output; "
+                    + "affine ownership and aggregate transfer require a later contract");
+        }
+        Type callbackReturn = member.equals("and_then")
+                ? new Named(option ? "Option" : "Result",
+                        option ? List.of(output) : List.of(output, unchanged))
+                : output;
+        Function expected = new Function(List.of(input), callbackReturn);
+        Ast.Expr callback = call.arguments().getFirst();
+        Type actual = typeOfAgainstExpected(callback, expected, env, generics, self);
+        if (!(actual instanceof Function)) {
+            throw new IllegalArgumentException(receiver.name() + "." + member
+                    + " requires a typed one-argument callable");
+        }
+        requireReadonlyCapabilityPreserved(actual, expected,
+                receiver.name() + "." + member + " callback");
+        requireAssignable(actual, expected, receiver.name() + "." + member + " callback");
+        return option ? new Named("Option", List.of(output))
+                : new Named("Result", List.of(
+                        member.equals("map_err") ? receiver.arguments().getFirst() : output,
+                        member.equals("map_err") ? output : unchanged));
+    }
+
+    private boolean scalarSumCompositionType(Type type) {
+        if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (type instanceof StringLiteral) return true;
+        if (!(type instanceof Named named)) return false;
+        if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
+        if (named.name().equals("Option")) return named.arguments().size() == 1
+                && scalarSumCompositionType(named.arguments().getFirst());
+        if (named.name().equals("Result")) return named.arguments().size() == 2
+                && scalarSumCompositionType(named.arguments().get(0))
+                && scalarSumCompositionType(named.arguments().get(1));
+        return false;
     }
 
     private Type builtinOptionResultMember(Type receiver, String member) {
