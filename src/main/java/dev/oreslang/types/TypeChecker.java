@@ -100,6 +100,8 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    // Opt-in migration gate: legacy callable bodies are not all suspension-pure yet.
+    private boolean currentStrictSuspension;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -556,6 +558,25 @@ public final class TypeChecker {
         }
     }
 
+    private boolean hasStrictSuspensionAnnotation(List<Ast.Annotation> annotations) {
+        boolean found = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("StrictSuspension")) continue;
+            if (found || !annotation.arguments().isEmpty()) {
+                throw new IllegalArgumentException("@StrictSuspension must be unique and argument-free");
+            }
+            found = true;
+        }
+        return found;
+    }
+
+    private void requireExplicitSuspension(String operation) {
+        if (currentStrictSuspension && !currentMaySuspend) {
+            throw new IllegalArgumentException(
+                    operation + " requires a suspends or async callable under @StrictSuspension");
+        }
+    }
+
     private void requireSuspendableCall(boolean suspends, String label) {
         if (suspends && !currentMaySuspend)
             throw new IllegalArgumentException(
@@ -690,7 +711,9 @@ public final class TypeChecker {
         currentGenerator = fn.generator();
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
+        boolean previousStrictSuspension = currentStrictSuspension;
         currentMaySuspend = fn.async() || fn.suspends();
+        currentStrictSuspension = hasStrictSuspensionAnnotation(fn.annotations());
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
@@ -698,6 +721,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             currentMaySuspend = previousMaySuspend;
+            currentStrictSuspension = previousStrictSuspension;
         }
 
         if (!fn.generator() && returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -1483,7 +1507,9 @@ public final class TypeChecker {
             currentClassOwner = klass;
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
+            boolean previousStrictSuspension = currentStrictSuspension;
             currentMaySuspend = method.async() || method.suspends();
+            currentStrictSuspension = hasStrictSuspensionAnnotation(method.annotations());
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -1491,6 +1517,7 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                currentStrictSuspension = previousStrictSuspension;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1936,6 +1963,9 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
+            if (selected.mode() == Ast.WaitMode.BLOCKING) {
+                requireExplicitSuspension("blocking select");
+            }
             if (selected.mode() == Ast.WaitMode.NONBLOCKING
                     && currentActorKind == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -3612,6 +3642,7 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            requireExplicitSuspension("await");
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named
                     && named.name().equals("Future")
@@ -3629,6 +3660,10 @@ public final class TypeChecker {
                     "await requires Future<T> or ActorRef<T>; got " + awaitedType);
         }
         if (expr instanceof Ast.ChannelOpExpr channelOp) {
+            if (channelOp.mode() == Ast.WaitMode.BLOCKING) {
+                requireExplicitSuspension(
+                        channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
+            }
             Type element = channelElementType(
                     typeOf(channelOp.channel(), env, generics, self),
                     channelOp.operation() == Ast.ChannelOperation.READ ? "readch" : "writech");
