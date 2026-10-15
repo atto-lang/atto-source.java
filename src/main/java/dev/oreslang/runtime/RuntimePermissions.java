@@ -196,7 +196,7 @@ public final class RuntimePermissions {
 
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
-        if (rule == null) return false;
+        if (rule == null || !safeScope(resource)) return false;
 
         // Invalid endpoint spellings must not match a broad network grant.
         if (permission == Permission.NET) {
@@ -374,6 +374,25 @@ public final class RuntimePermissions {
                 && resource.startsWith(scope.substring(0, scope.length() - 1));
     }
 
+    /** Avoid treating malformed host resources as all-access requests.
+     * POSIX filenames may contain control bytes, but they are deliberately
+     * unsupported permission scope/resource spellings across VM backends.
+     */
+    private static boolean safeScope(String value) {
+        if (value == null || value.isBlank()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isISOControl(c)) return false;
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i)))
+                    return false;
+            } else if (Character.isLowSurrogate(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static String normalize(Permission permission, String value) {
         if (value == null || value.isBlank()) return "";
         String trimmed = value.trim();
@@ -454,8 +473,8 @@ public final class RuntimePermissions {
             // Empty filesystem scopes previously normalized to "" and matched
             // EVERY absolute Unix path via resource.startsWith("/").
             // A missing scope must never become a root-wide capability.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty allow scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
@@ -478,8 +497,8 @@ public final class RuntimePermissions {
         public Builder deny(Permission permission, String scope) {
             // Denials must not accept an ambiguous empty resource either;
             // malformed serialized arguments should fail, not be reinterpreted.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty deny scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
@@ -503,6 +522,14 @@ public final class RuntimePermissions {
                     .toList();
             if (values.stream().anyMatch(String::isEmpty))
                 throw new IllegalArgumentException("empty permission scope element for " + permission);
+            // Validate the *entire* CSV before mutating the builder. A later
+            // malformed scope must not leave earlier grants installed if an
+            // embedding caller catches the exception and reuses this builder.
+            for (String scope : values) {
+                if (!safeScope(scope))
+                    throw new IllegalArgumentException("invalid permission scope for " + permission);
+                normalize(permission, scope);
+            }
             return values;
         }
 
