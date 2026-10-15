@@ -550,6 +550,9 @@ public final class Ast {
         }
 
         public DestructureBinding {
+            if (kind == null) {
+                throw new IllegalArgumentException("destructure binding kind cannot be null");
+            }
             if (name == null || name.isBlank()) {
                 throw new IllegalArgumentException("destructure binding name cannot be blank");
             }
@@ -827,6 +830,12 @@ public final class Ast {
             DestructureKind destructureKind,
             List<DestructureBinding> destructureBindings) {
         public SelectArm {
+            if (operation == null) {
+                throw new IllegalArgumentException("select arm operation is required");
+            }
+            if (bindingName != null && bindingName.isBlank()) {
+                throw new IllegalArgumentException("select binding name cannot be blank");
+            }
             body = List.copyOf(body);
             destructureBindings = List.copyOf(destructureBindings);
             boolean hasSimpleBinding = bindingName != null;
