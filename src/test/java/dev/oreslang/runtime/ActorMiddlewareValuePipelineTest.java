@@ -17,6 +17,56 @@ final class ActorMiddlewareValuePipelineTest {
     private static final ActorMiddlewarePipeline.Phase A = ActorMiddlewarePipeline.Phase.ACTOR;
 
     @Test
+    void concurrentTypedNextCannotEscapeParentCompletionFence() throws Exception {
+        var nextRef = new AtomicReference<ActorMiddlewareValuePipeline.Next<Integer>>();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var parent = new CompletableFuture<ActorMiddlewareValuePipeline.Outcome<Integer>>();
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(),
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("race"), A,
+                        (request, draft, next) -> {
+                            nextRef.set(next);
+                            return parent;
+                        }, false)),
+                Set.of(),
+                request -> {
+                    entered.countDown();
+                    try {
+                        if (!release.await(2, TimeUnit.SECONDS))
+                            throw new IllegalStateException("terminal stalled");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                    return CompletableFuture.completedFuture(9);
+                });
+        var result = pipeline.invoke(req("before"), () -> false).toCompletableFuture();
+        var child = new AtomicReference<CompletionStage<ActorMiddlewareValuePipeline.Outcome<Integer>>>();
+        Thread worker = new Thread(() -> child.set(
+                nextRef.get().proceed(req("after"),
+                        ActorMiddlewareValuePipeline.ResponseDraft.defaults())));
+        worker.start();
+        try {
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            parent.complete(new ActorMiddlewareValuePipeline.Reply<>(17));
+            assertFalse(result.isDone(), "typed reply must wait for admitted child completion");
+        } finally {
+            release.countDown();
+            worker.join(2000);
+        }
+        assertFalse(worker.isAlive());
+        assertEquals(17, ((ActorMiddlewareValuePipeline.Reply<Integer>)
+                result.get(2, TimeUnit.SECONDS)).value());
+        assertEquals(9, ((ActorMiddlewareValuePipeline.Reply<Integer>)
+                child.get().toCompletableFuture().get(2, TimeUnit.SECONDS)).value());
+        assertThrows(CompletionException.class, () ->
+                nextRef.get().proceed(req("late"),
+                        ActorMiddlewareValuePipeline.ResponseDraft.defaults())
+                        .toCompletableFuture().join());
+    }
+
+    @Test
     void nextValContinueEnrichesAndReturnsTypedInt() {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("trim"), S,
