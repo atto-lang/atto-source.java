@@ -99,6 +99,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": self.expected_tree}])
         self.assertEqual(tree_writes[1]["base_tree"], B)
 
+    def test_git_tree_sha_matches_known_git_write_tree_result(self):
+        # Verified independently with git init, git add, git write-tree
+        # (main.ores contains hello\n; nested/file.ores contains world\n
+        # and has executable mode 100755).
+        files = [
+            ("main.ores", b"hello\n", "100644"),
+            ("nested/file.ores", b"world\n", "100755"),
+        ]
+        self.assertEqual(pub.source_tree_sha(files),
+                         "6440ebf7d6ce11004a61c53fde672c98a19e1e52")
+
+    def test_invalid_expected_tree_rejected_before_preflight_or_upload(self):
+        for invalid in (None, "", "0" * 39, "g" * 40, "A" * 40):
+            with self.subTest(invalid=invalid):
+                self.route_calls.clear()
+                with self.assertRaises(pub.Denied):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, invalid)
+                self.assertEqual(self.route_calls, [])
+
     def test_wrong_pinned_tree_rejects_before_any_source_upload(self):
         self.expected_tree = "f" * 40
         with self.assertRaisesRegex(pub.Denied, "source snapshot Git tree"):
