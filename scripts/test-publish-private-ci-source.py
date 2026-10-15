@@ -157,7 +157,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def wrong_root_tree(route, method="GET", payload=None):
             if route == "repos/trusted/ci/git/trees/" + E:
                 self.route_calls.append((method, route, payload))
-                return {"tree": [{"path": pub.PREFIX, "mode": "040000",
+                return {"truncated": False,
+                        "tree": [{"path": pub.PREFIX, "mode": "040000",
                                   "type": "tree", "sha": B}]}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=wrong_root_tree):
@@ -189,7 +190,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.route_calls.append((method, route, payload))
                 item = {"path": pub.PREFIX, "mode": "040000", "type": "tree",
                         "sha": self.expected_tree}
-                return {"tree": [item, dict(item)]}
+                return {"truncated": False, "tree": [item, dict(item)]}
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=ambiguous_root_tree):
             with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
