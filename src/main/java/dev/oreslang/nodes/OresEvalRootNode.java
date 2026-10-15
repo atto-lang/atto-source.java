@@ -8579,6 +8579,18 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
+                if (experimentalCheckedI64 && (op == '+' || op == '-' || op == '*')) {
+                    try {
+                        return switch (op) {
+                            case '+' -> Math.addExact(x, y);
+                            case '-' -> Math.subtractExact(x, y);
+                            case '*' -> Math.multiplyExact(x, y);
+                            default -> throw new IllegalStateException("invalid checked i64 operator");
+                        };
+                    } catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("ORES_I64_OVERFLOW: checked signed 64-bit arithmetic", overflow);
+                    }
+                }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
@@ -8602,7 +8614,16 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                long x = ((Number) value).longValue();
+                if (experimentalCheckedI64) {
+                    try { return Math.negateExact(x); }
+                    catch (ArithmeticException overflow) {
+                        throw new IllegalArgumentException("ORES_I64_OVERFLOW: checked signed 64-bit negation", overflow);
+                    }
+                }
+                return -x;
+            }
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
