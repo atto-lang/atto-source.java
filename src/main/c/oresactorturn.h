@@ -35,6 +35,9 @@ typedef enum ores_turn_status {
  * retired with no outstanding cleanup tickets. VM must fence ALL other
  * callers before destruction; pointers from a destroyed VM may be recycled
  * by the allocator and are never valid against a later VM instance.
+ * VM objects and all handles are PROCESS-BOUND. After fork(), the child
+ * must create a NEW VM; operations on inherited parent-VM pointers refuse
+ * with ORES_TURN_INVALID before touching inherited pthread mutex state.
  * Physical turn leases use per-thread monotonic tokens, not reusable pthread_t
  * values. Abandoned leases from exited carriers must NOT be claimed/released
  * by a replacement thread; the VM must quiesce actual guest frames before
