@@ -711,7 +711,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) throw new IllegalArgumentException("ActorRef belongs to another runtime");
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return Optional.empty();
+        if (!isCurrentIncarnation(cell, ref)) return Optional.empty();
         if (dispatcherFor(cell.kind) instanceof ActorAffinityDispatcher lanes) {
             int cpu = lanes.cpuForLane(cell.dispatchLane);
             return Optional.of(new ActorPlacement(cell.dispatchLane, cpu, cpu < 0 ? "lane" : "cpu"));
@@ -803,7 +803,8 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        return cell == null ? Optional.empty() : Optional.ofNullable(cell.codeImage);
+        return !isCurrentIncarnation(cell, ref)
+                ? Optional.empty() : Optional.ofNullable(cell.codeImage);
     }
 
     /** Package-private proof hook: mailbox transport is the runtime Channel<T>. */
@@ -815,7 +816,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        return cell != null
+        return isCurrentIncarnation(cell, ref)
                 && cell.mailbox instanceof ChannelRuntime.Channel<?>
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
     }
@@ -2047,7 +2048,7 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public OresFuture<Void> ready() {
             ActorCell<?> cell = actors.get(id);
-            if (cell != null && !cell.stopped.get()) cell.schedule();
+            if (isCurrentIncarnation(cell, this) && !cell.stopped.get()) cell.schedule();
             return readyFuture;
         }
 
@@ -2099,7 +2100,7 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
             ActorCell<?> cell = actors.get(id);
-            if (cell == null) return true;
+            if (!isCurrentIncarnation(cell, this)) return true;
             cell.awaitFinalized(unit.toNanos(timeout));
             return cell.finalized();
         }
@@ -2154,14 +2155,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(id);
-            return cell == null || cell.parent == null
+            return !isCurrentIncarnation(cell, this) || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
         }
 
         public List<ActorId> childIds() {
             ActorCell<?> cell = actors.get(id);
-            if (cell == null) return List.of();
+            if (!isCurrentIncarnation(cell, this)) return List.of();
             return cell.children.stream().map(child -> child.ref.id()).toList();
         }
 
@@ -2185,7 +2186,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.ref = Objects.requireNonNull(ref, "ref");
             this.ownerActorId = Objects.requireNonNull(ownerActorId, "ownerActorId");
             ActorCell<?> admitted = actors.get(ref.id());
-            if (admitted == null) {
+            if (!isCurrentIncarnation(admitted, ref)) {
                 throw new IllegalStateException("child actor not registered at handle creation");
             }
             this.admittedPolicy = admitted.policy;
@@ -2244,14 +2245,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(ref.id());
-            return cell == null || cell.parent == null
+            return !isCurrentIncarnation(cell, ref) || cell.parent == null
                     ? Optional.empty()
                     : Optional.of(cell.parent.ref.id());
         }
 
         public List<ActorId> childIds() {
             ActorCell<?> cell = actors.get(ref.id());
-            return cell == null
+            return !isCurrentIncarnation(cell, ref)
                     ? List.of()
                     : cell.children.stream()
                             .map(child -> child.ref.id())
@@ -4650,7 +4651,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null) {
+        if (!isCurrentIncarnation(cell, ref)) {
             completion.failFromRuntime(
                     new IllegalStateException(
                             "one-shot actor disappeared before finalization barrier registration"));
@@ -4880,11 +4881,17 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Ref identity is an incarnation capability, not just an ActorId lookup. */
+    private boolean isCurrentIncarnation(ActorCell<?> cell, ActorRef<?> ref) {
+        return cell != null && cell.ref == ref
+                && cell.ref.generation() == ref.generation();
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
-        return cell != null && !cell.stopped.get();
+        return isCurrentIncarnation(cell, ref) && !cell.stopped.get();
     }
 
     public void stop(ActorRef<?> ref) {
@@ -4901,7 +4908,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actors cannot stop other actors");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return;
+        if (!isCurrentIncarnation(cell, ref)) return;
 
         cell.stop();
 
@@ -4949,7 +4956,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         requireActorLifecycleAuthority(ref, "cancel");
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null || cell.finalized()) return false;
+        if (!isCurrentIncarnation(cell, ref) || cell.finalized()) return false;
 
         cell.cancel(new ActorCancelledException(
                 ref.id(),
@@ -4959,7 +4966,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private boolean forceCancelInternal(ActorRef<?> ref) {
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null || cell.finalized()) return false;
+        if (!isCurrentIncarnation(cell, ref) || cell.finalized()) return false;
 
         ForceCancellationAttempt attempt =
                 fenceForceCancellationSubtree(cell);
@@ -5089,7 +5096,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return OresFuture.failed(terminated(ref));
+        if (!isCurrentIncarnation(cell, ref)) return OresFuture.failed(terminated(ref));
         return cell.drainAcceptedMessages();
     }
 
@@ -5104,7 +5111,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         requireActorLifecycleAuthority(ref, "gracefulStop");
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell == null) return ref.done();
+        if (!isCurrentIncarnation(cell, ref)) return ref.done();
         final OresFuture<Void> barrier;
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized || cell.sealing) return ref.done();
@@ -5133,7 +5140,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (!isCurrentIncarnation(cell, ref) || cell.stopped.get()) throw terminated(ref);
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
