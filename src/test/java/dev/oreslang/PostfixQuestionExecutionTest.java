@@ -101,11 +101,11 @@ final class PostfixQuestionExecutionTest {
     }
 
     @Test
-    void sourceCarrierCannotBeReusedAfterQuestionMovesIt() {
+    void affineCarrierCannotBeReusedAfterQuestionMovesIt() {
         String source = """
-                fnc reuse(): Result<int, String> {
-                  val Result<int, String> original = Ok(3);
-                  val int number = original?;
+                fnc reuse(): Result<Array<int>, String> {
+                  val Result<Array<int>, String> original = Ok([1, 2]);
+                  val Array<int> array = original?;
                   return original;
                 }
                 """;
@@ -115,6 +115,18 @@ final class PostfixQuestionExecutionTest {
         assertTrue(invalid.getMessage().contains("moved")
                         || invalid.getMessage().contains("consumed"),
                 invalid::getMessage);
+    }
+
+    @Test
+    void copyableCarrierCanBeReusedAfterQuestion() {
+        String source = """
+                fnc reuse(): Result<int, String> {
+                  val Result<int, String> original = Ok(3);
+                  val int number = original?;
+                  return original;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
