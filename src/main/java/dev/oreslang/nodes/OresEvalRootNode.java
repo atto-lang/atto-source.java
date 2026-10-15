@@ -871,6 +871,12 @@ public final class OresEvalRootNode extends RootNode {
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
                 Object value = args.get(i);
+                // Static int -> decimal widening must create an exact runtime
+                // decimal value before it enters the callee's lexical scope.
+                if (param.type() != null && param.type().name().equals("decimal")
+                        && value instanceof Number number && isIntegral(number)) {
+                    value = java.math.BigDecimal.valueOf(number.longValue());
+                }
                 tuple.add(value);
                 env.define(
                         param.name(),
