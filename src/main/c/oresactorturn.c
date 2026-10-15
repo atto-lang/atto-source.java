@@ -82,6 +82,8 @@ static bool current_actor(const ores_turn_vm *vm, const ores_actor_cap *actor) {
     }
     return false;
 }
+static ores_turn_status require_current(ores_turn_vm *vm,
+                                        ores_actor_cap *actor);
 static bool known_source(const ores_turn_vm *vm,
                          const ores_source_task_cap *source) {
     for (const ores_source_task_cap *p = vm->sources; p; p = p->next) {
