@@ -48,10 +48,12 @@ final class ActorGroupPlacementPolicyTest {
                             ActorGroupPlacementPolicy.CpuAffinity.PREFER_SAME_NUMA_NODE,
                             Integer.MAX_VALUE,
                             ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0)));
-            assertThrows(UnsupportedOperationException.class, () -> runtime.createActorGroup(
+            var cpuBounded = runtime.createActorGroup(
                     new ActorGroupPlacementPolicy(
                             ActorGroupPlacementPolicy.CpuAffinity.ANY, 1,
-                            ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0)));
+                            ActorGroupPlacementPolicy.Accelerator.CPU_ONLY, null, 0));
+            assertEquals(1, runtime.actorGroupCount());
+            cpuBounded.close();
             assertThrows(UnsupportedOperationException.class, () -> runtime.createActorGroup(
                     new ActorGroupPlacementPolicy(
                             ActorGroupPlacementPolicy.CpuAffinity.ANY, Integer.MAX_VALUE,
@@ -122,11 +124,10 @@ final class ActorGroupPlacementPolicyTest {
                             }
                             var policy = new ActorGroupPlacementPolicy(
                                     affinity, parallelism, accelerator, device, inFlight);
-                            boolean unrestricted =
+                            boolean supportedCpuTurns =
                                     affinity == ActorGroupPlacementPolicy.CpuAffinity.ANY
-                                    && accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY
-                                    && parallelism == Integer.MAX_VALUE;
-                            if (unrestricted) {
+                                    && accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY;
+                            if (supportedCpuTurns) {
                                 assertDoesNotThrow(policy::requireSupported);
                                 accepted++;
                             } else {
@@ -139,9 +140,9 @@ final class ActorGroupPlacementPolicyTest {
                 }
             }
         }
-        assertEquals(1, accepted,
-                "the sole admitted configuration is the legacy unrestricted policy");
-        assertEquals(242, rejected, "all other combinations must reject");
+        assertEquals(3, accepted,
+                "only CPU-only bounded/unrestricted turn policies may be admitted");
+        assertEquals(240, rejected, "GPU, locality and malformed policies must reject");
     }
 
     @Test
