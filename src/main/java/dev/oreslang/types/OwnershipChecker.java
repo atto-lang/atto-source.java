@@ -136,6 +136,8 @@ public final class OwnershipChecker {
         }
     }
 
+    private Ast.TypeRef currentQuestionReturn;
+
     private void checkFunction(Ast.FunctionDecl fn) {
         Scope scope = new Scope(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
@@ -143,10 +145,15 @@ public final class OwnershipChecker {
         }
         defineImplicitArguments(scope, fn.parameters());
         boolean previousAsyncGenerator = currentAsyncGenerator;
+        Ast.TypeRef previousQuestionReturn = currentQuestionReturn;
         currentAsyncGenerator = fn.generator() && fn.async();
+        currentQuestionReturn = !fn.async() && !fn.suspends() && !fn.generator()
+                && !fn.trapped() && fn.actorKind() == Ast.ActorKind.NONE
+                ? fn.returnType() : null;
         try {
             checkBlock(fn.body(), scope, fn.returnType());
         } finally {
+            currentQuestionReturn = previousQuestionReturn;
             currentAsyncGenerator = previousAsyncGenerator;
             scope.close();
         }
@@ -918,6 +925,51 @@ public final class OwnershipChecker {
                 state.borrowLease = false;
             }
             return new ValueInfo(state.type, state.kind, provenance, transferredBorrowLease);
+        }
+        if (expr instanceof Ast.PropagateExpr propagated) {
+            if (currentQuestionReturn == null) {
+                throw error("postfix '?' requires a synchronous fnc return context; "
+                        + "method, actor, generator, lambda and async propagation remain unsupported");
+            }
+            // First stage only admits a named local/argument carrier. This
+            // proves one concrete source ownership place is transferred;
+            // computed chains must be staged in val bindings until CFG
+            // ownership joins and suspension continuation handling are proven.
+            if (!(propagated.expression() instanceof Ast.NameExpr)) {
+                throw error("postfix '?' currently requires a named local Option/Result; "
+                        + "bind the chain result before propagating it");
+            }
+            ValueInfo value = checkExpr(propagated.expression(), scope, true);
+            Ast.TypeRef carrier = value.type;
+            if (carrier == null || carrier.isBorrow()
+                    || carrier.arguments().isEmpty()
+                    || !(carrier.name().equals("Option") || carrier.name().equals("Result"))) {
+                throw error("postfix '?' requires an owned typed Option/Result carrier");
+            }
+            if (carrier.name().equals("Option")
+                    && carrier.arguments().size() == 1
+                    && currentQuestionReturn.name().equals("Option")
+                    && currentQuestionReturn.arguments().size() == 1) {
+                Ast.TypeRef payload = carrier.arguments().getFirst();
+                if (payload.isBorrow() || containsMutexGuardType(payload)) {
+                    throw error("postfix '?' cannot allow an escaping borrowed/guard Option payload");
+                }
+                return new ValueInfo(payload, kindOfType(payload), null);
+            }
+            if (carrier.name().equals("Result")
+                    && carrier.arguments().size() == 2
+                    && currentQuestionReturn.name().equals("Result")
+                    && currentQuestionReturn.arguments().size() == 2
+                    && carrier.arguments().get(1).equals(currentQuestionReturn.arguments().get(1))) {
+                Ast.TypeRef payload = carrier.arguments().getFirst();
+                Ast.TypeRef error = carrier.arguments().get(1);
+                if (payload.isBorrow() || error.isBorrow()
+                        || containsMutexGuardType(payload) || containsMutexGuardType(error)) {
+                    throw error("postfix '?' cannot escape borrowed or mutex-guard Result variants");
+                }
+                return new ValueInfo(payload, kindOfType(payload), null);
+            }
+            throw error("postfix '?' requires the exact same Option/Result error carrier return family");
         }
         if (expr instanceof Ast.TrapExpr trapped) {
             ValueInfo value = checkExpr(trapped.expression(), scope, true);
@@ -2507,7 +2559,8 @@ public final class OwnershipChecker {
         } else if (expr instanceof Ast.BinaryExpr e) {
             scanExpr(e.left(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.right(), locals, outer, recursiveBinding, captures, false);
-        } else if (expr instanceof Ast.TrapExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.PropagateExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.TrapExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.UnaryExpr e) scanExpr(e.operand(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ConditionalExpr e) {
             scanExpr(e.condition(), locals, outer, recursiveBinding, captures, false);
@@ -2935,6 +2988,14 @@ public final class OwnershipChecker {
             return state == null ? Ast.TypeRef.inferred() : state.type;
         }
         if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.PropagateExpr propagated) {
+            Ast.TypeRef carrier = syntacticType(propagated.expression(), scope);
+            if (carrier.arguments().size() >= 1
+                    && (carrier.name().equals("Option") || carrier.name().equals("Result"))) {
+                return carrier.arguments().getFirst();
+            }
+            return Ast.TypeRef.inferred();
+        }
         if (expr instanceof Ast.TrapExpr trapped) {
             // Preserve the Option wrapper during generic call inference, even
             // when the operand is a local or literal rather than a CallExpr.
