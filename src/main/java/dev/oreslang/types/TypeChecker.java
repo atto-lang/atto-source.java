@@ -229,6 +229,15 @@ public final class TypeChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                // Pointer<T> is a reserved compiler-owned type, not a class
+                // name that application code can claim while the source
+                // runtime feature is gated on Java/LLVM lifetime parity.
+                if ((decl instanceof Ast.ClassDecl klass && klass.name().equals("Pointer"))
+                        || (decl instanceof Ast.InterfaceDecl iface && iface.name().equals("Pointer"))
+                        || (decl instanceof Ast.TypeAliasDecl alias && alias.name().equals("Pointer"))) {
+                    throw new IllegalArgumentException(
+                            "Pointer is a reserved compiler-owned type; see docs/POINTER_BORROW_AND_ZERO_COPY.md");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
