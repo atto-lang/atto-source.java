@@ -311,6 +311,38 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void throwingActorContinuationFailsItsActorWithoutBeingSwallowed()
+            throws Exception {
+        IllegalStateException original = new IllegalStateException(
+                "continuation consumer failed");
+        CountDownLatch registered = new CountDownLatch(1);
+        AtomicInteger invoked = new AtomicInteger();
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                var target = runtime.captureCurrentContinuationTarget();
+                runtime.enqueueOnCompletion(OresFuture.completed(5), target,
+                        (value, failure) -> {
+                            invoked.incrementAndGet();
+                            assertTrue(runtime.currentThreadOwnsActorExecutionLease(),
+                                    "throwing continuation must still own the actor turn");
+                            throw original;
+                        });
+                registered.countDown();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            var thrown = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(5, TimeUnit.SECONDS));
+            assertSame(original, thrown.getCause(),
+                    "actor supervisor must retain the original continuation failure");
+            assertSame(original, actor.failure().orElse(null));
+            assertEquals(1, invoked.get(),
+                    "a throwing continuation cannot be retried or duplicated");
+        }
+    }
+
+    @Test
     void actorCancellationRevokesPendingCompletionAndDropsLateProducer()
             throws Exception {
         AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
