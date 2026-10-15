@@ -521,6 +521,11 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
+                for (Ast.Param param : fn.parameters()) {
+                    validateCallbackDeliveryParameter(
+                            param, resolveParam(param, all, interfaceSelf), true,
+                            iface.name() + "." + fn.name());
+                }
                 functionType(fn.parameters(), fn.returnType(), false, false, all, interfaceSelf);
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
