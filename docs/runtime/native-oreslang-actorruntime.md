@@ -214,7 +214,11 @@ carrier, matching cleanup lease and source handle, an active STOP and a
 non-revoked actor. The VM may acknowledge injection exactly once, only after
 it truly injected the cancellation signal. The private
 `ores_turn_check_cleanup_effects` returns DENIED until acknowledgement,
-and after lease release or force revocation. Guest code may never invoke these
+and after lease release or force revocation. If a claimed cleanup lease
+releases **without** a terminal injection acknowledgement, the registered
+SourceTask remains a retirement barrier. Only an explicit VM force-revocation
+transition can record a terminal abort and discharge that logical barrier,
+and even then physical carrier leases must exit before actor retirement. Guest code may never invoke these
 intrinsics directly or pass naked pointers as handles.
 
 **Important trust limitation:** the prototype can authenticate membership in
@@ -255,7 +259,8 @@ or approved full-tree export only after authorization.
 
 Native compiler-and-test evidence is required on the exact Git tree; successful
 registration of a GitHub Actions workflow without executed job steps is not
-validation. Cross-org CI mirrors require private/private pinned repository IDs
+validation. Cross-org CI mirrors require a maintainer/security-reviewed destination
+on the protected-branch allowlist, private/private pinned repository IDs,
 and exact tree equality before any conformance claim.
 
 **Critical limitations:** Native `force_revoke` fences *future* claims; it
