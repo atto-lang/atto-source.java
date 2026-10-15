@@ -3040,6 +3040,28 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
+            // A continuation owns its completion after the first delivery.
+            // A downstream callback can synchronously throw while completing
+            // a different source statement (or resuming a waiting Future).
+            // Never reinterpret that throwable as a second expression failure.
+            final boolean[] delivered = {false};
+            SourceValueCont once = (t, value, failure) -> {
+                if (delivered[0]) {
+                    throw new IllegalStateException(
+                            "source expression continuation completed more than once");
+                }
+                delivered[0] = true;
+                continuation.accept(t, value, failure);
+            };
+            evalSuspendableExprDispatch(task, expr, env, once, delivered);
+        }
+
+        private void evalSuspendableExprDispatch(
+                SourceTask task,
+                Ast.Expr expr,
+                Env env,
+                SourceValueCont continuation,
+                boolean[] delivered) {
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
@@ -3592,6 +3614,10 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // If delivery already began, the throwable belongs to the
+                // downstream continuation. Reporting it here would call the
+                // same continuation twice, replaying cleanup or callbacks.
+                if (delivered[0]) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
