@@ -44,6 +44,8 @@ REVIEWED_SNAPSHOTS_ROUTE = (
 SOURCE_SNAPSHOT_ENTRY = re.compile(r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$")
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
 CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS?ref=main"
+CODEOWNERS_ERRORS_ROUTE = SOURCE_METADATA_ROUTE + "/codeowners/errors?ref=main"
+CODEOWNER_PERMISSION_ROUTE = SOURCE_METADATA_ROUTE + "/collaborators/ORESoftware/permission"
 # The last matching CODEOWNERS entry wins. Require a terminal set of exact
 # entries so a later wildcard or missing entry cannot silently undo ownership.
 REQUIRED_CODEOWNER_PATHS = (
@@ -257,6 +259,21 @@ def require_protected_source_codeowners():
                 for path in REQUIRED_CODEOWNER_PATHS]
     if effective[-len(required):] != required:
         raise Denied("private CI publisher and policies lack terminal CODEOWNER coverage")
+    # The CODEOWNERS text can be syntactically well-formed yet ignored by
+    # GitHub (for example, a non-existent owner or invalid pattern). Ask
+    # GitHub's CODEOWNERS validator about the protected main revision.
+    errors = gh_api(CODEOWNERS_ERRORS_ROUTE)
+    if not isinstance(errors.get("errors"), list) or errors["errors"]:
+        raise Denied("protected source CODEOWNERS is invalid according to GitHub")
+    # An @username entry counts only when the referenced GitHub user has
+    # effective write access. Refuse a revoked or unavailable security owner.
+    access = gh_api(CODEOWNER_PERMISSION_ROUTE)
+    owner = access.get("user")
+    if (not isinstance(owner, dict)
+            or owner.get("login") != REQUIRED_CODEOWNER.lstrip("@")
+            or owner.get("type") != "User"
+            or access.get("permission") not in ("write", "admin")):
+        raise Denied("CODEOWNER lacks independently verified repository write access")
 
 
 def require_protected_main_policy(approved_policy):
