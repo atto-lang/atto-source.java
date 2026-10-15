@@ -205,4 +205,45 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
         }
     }
 
+
+    @Test
+    void checkedProfileRejectsUnboundedOrRecursiveScalarCallGraphs() throws Exception {
+        // The source parser may reject some of these earlier than the
+        // checked-runtime gate. Either way they must never execute as checked
+        // scalar code, call uncontrolled recursively, or silently wrap.
+        String[] forbidden = {
+            HEADER + """
+                pub fnc leaf(): int { return 43; }
+                """,
+            HEADER + """
+                pub fnc main(int input): int { return input; }
+                """,
+            HEADER + """
+                pub fnc again(int value): int { return again(value); }
+                pub fnc main(): int { return again(1); }
+                """,
+            HEADER + """
+                pub fnc left(int value): int { return right(value); }
+                pub fnc right(int value): int { return left(value); }
+                pub fnc main(): int { return left(1); }
+                """,
+            HEADER + """
+                pub fnc echo(int value): int { return value; }
+                pub fnc echo(): int { return 43; }
+                pub fnc main(): int { return echo(); }
+                """
+        };
+        for (String source : forbidden) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "unchecked call graph/entrypoint unexpectedly executed: " + source);
+        }
+        // Legal direct scalar chains remain valid after graph validation.
+        assertEquals(43, exit(HEADER + """
+                pub fnc first(int x): int { return x + 1; }
+                pub fnc second(int x): int { return first(x) + 1; }
+                pub fnc main(): int { return second(41); }
+                """));
+    }
+
+
 }
