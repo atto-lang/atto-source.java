@@ -362,7 +362,7 @@ def require_source_tree_match(source, trusted_root, files):
     actual_tree = snapshot_git_tree_sha(files)
     if actual_tree != expected_tree:
         raise Denied("source snapshot differs from committed Git HEAD tree")
-    return expected_tree
+    return commit_sha, expected_tree
 
 
 def publish(repository, source, branch, trusted_root):
@@ -382,7 +382,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
-    exact_source_tree = require_source_tree_match(source, trusted_root, files)
+    source_commit, exact_source_tree = require_source_tree_match(source, trusted_root, files)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -429,7 +429,8 @@ def publish(repository, source, branch, trusted_root):
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
-        "message": "ci: source snapshot from approved private Oreslang checkout",
+        "message": ("ci: source snapshot from approved private Oreslang checkout\n\n"
+                    f"Source-Commit: {source_commit}\nSource-Tree: {exact_source_tree}"),
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
