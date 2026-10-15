@@ -78,10 +78,7 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
-                rootDeclarations.add(parseClass(
-                        modifiers.visibility,
-                        modifiers.isAbstract,
-                        modifiers.visibility != Ast.Visibility.PUBLIC));
+                rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, modifiers.isSealed, modifiers.isFinal));
                 continue;
             }
 
@@ -105,7 +102,7 @@ public final class Parser {
                 validateOnlyVisibilityModifiers(modifiers, "interfaces");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                rootDeclarations.add(parseInterface(modifiers.visibility));
+                rootDeclarations.add(parseInterface(modifiers.visibility, false, modifiers.isSealed));
                 continue;
             }
 
@@ -140,10 +137,7 @@ public final class Parser {
                     rejectCallableStructuralAnnotation(annotations, "class declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                     validateClassModifiers(modifiers);
-                    rootDeclarations.add(parseClass(
-                            modifiers.visibility,
-                            modifiers.isAbstract,
-                            modifiers.visibility != Ast.Visibility.PUBLIC));
+                    rootDeclarations.add(parseClass(modifiers.visibility, modifiers.isAbstract, modifiers.visibility != Ast.Visibility.PUBLIC, modifiers.isSealed, modifiers.isFinal));
                     continue;
                 }
                 if (match(INTERFACE, TRAIT)) {
@@ -151,7 +145,7 @@ public final class Parser {
                     validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                     rejectCallableStructuralAnnotation(annotations, "interface declarations");
                     rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                    rootDeclarations.add(parseInterface(modifiers.visibility));
+                    rootDeclarations.add(parseInterface(modifiers.visibility, false, modifiers.isSealed));
                     continue;
                 }
                 if (match(TYPE)) {
@@ -277,7 +271,7 @@ public final class Parser {
             rejectCallableStructuralAnnotation(annotations, "class declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
             validateClassModifiers(modifiers);
-            return parseClass(modifiers.visibility, modifiers.isAbstract, false);
+            return parseClass(modifiers.visibility, modifiers.isAbstract, false, modifiers.isSealed, modifiers.isFinal);
         }
 
         if (check(CONTRACT) && defineFollowsAfterVisibilityModifiers()) {
@@ -299,7 +293,7 @@ public final class Parser {
             validateOnlyVisibilityModifiers(modifiers, "interfaces");
             rejectCallableStructuralAnnotation(annotations, "interface declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-            return parseInterface(modifiers.visibility);
+            return parseInterface(modifiers.visibility, false, modifiers.isSealed);
         }
 
         if (match(DEFINE)) {
@@ -322,15 +316,14 @@ public final class Parser {
                 rejectCallableStructuralAnnotation(annotations, "class declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "class declarations");
                 validateClassModifiers(modifiers);
-                return parseClass(modifiers.visibility,
-                        modifiers.isAbstract, false);
+                return parseClass(modifiers.visibility, modifiers.isAbstract, false, modifiers.isSealed, modifiers.isFinal);
             }
             if (match(INTERFACE, TRAIT)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
                 validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
                 rejectCallableStructuralAnnotation(annotations, "interface declarations");
                 rejectDiscardedDeclarationAnnotations(annotations, "interface declarations");
-                return parseInterface(modifiers.visibility);
+                return parseInterface(modifiers.visibility, false, modifiers.isSealed);
             }
             if (match(TYPE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -372,7 +365,7 @@ public final class Parser {
 
             Ast.ActorKind actorKind = resolveActorKind(actorToken, isolated, modifiers);
             if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical || modifiers.trapped
-                    || modifiers.isStatic || modifiers.isAbstract) {
+                    || modifiers.isStatic || modifiers.isAbstract || modifiers.isSealed || modifiers.isFinal) {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
@@ -417,7 +410,7 @@ public final class Parser {
             validateOnlyVisibilityModifiers(modifiers, "interfaces/traits");
             rejectCallableStructuralAnnotation(annotations, "interface/trait declarations");
             rejectDiscardedDeclarationAnnotations(annotations, "interface/trait declarations");
-            return parseInterface(modifiers.visibility);
+            return parseInterface(modifiers.visibility, false, modifiers.isSealed);
         }
         if (match(TYPE)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -500,11 +493,16 @@ public final class Parser {
     private Ast.ClassDecl parseClass(
             Ast.Visibility visibility,
             boolean isAbstract,
-            boolean filePrivateScope) {
+            boolean filePrivateScope,
+            boolean isSealed,
+            boolean isFinal) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
-        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> parents = match(EXTENDS, FROM) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        List<String> permits = parsePermitsList();
+        if (!isSealed && !permits.isEmpty()) throw error(previous(), "'permits' requires a sealed class");
+        if (isSealed && isFinal) throw error(previous(), "a class cannot be both sealed and final");
         consume(AS, "expected 'as' after class header");
         boolean braceStyle = match(LBRACE);
         Token.Type classTerminator = braceStyle ? RBRACE : END;
@@ -598,7 +596,7 @@ public final class Parser {
                         : "expected 'end' to close class " + name);
         return new Ast.ClassDecl(
                 name, visibility, isAbstract, Ast.ActorKind.NONE, generics,
-                parents, interfaces, fields, constructor, methods);
+                parents, interfaces, fields, constructor, methods, isSealed, isFinal, permits);
     }
 
     private Ast.ConstructorDecl parseConstructor(
@@ -659,8 +657,10 @@ public final class Parser {
 
     private void validateOnlyVisibilityModifiers(Modifiers modifiers, String context) {
         if (modifiers.async || modifiers.generator || modifiers.structural || modifiers.nonLexical
-                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
-            throw error(previous(), context + " accept only private/pub visibility modifiers");
+                || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted
+                || modifiers.isFinal || (modifiers.isSealed && !context.startsWith("interface"))) {
+            throw error(previous(), context + " accept only private/pub visibility modifiers"
+                    + (context.startsWith("interface") ? " and sealed" : ""));
         }
     }
 
@@ -675,7 +675,7 @@ public final class Parser {
     private void validateNoModifiers(Modifiers modifiers, String context) {
         if (modifiers.visibilitySeen || modifiers.async || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic || modifiers.isAbstract
-                || modifiers.shared || modifiers.untrusted) {
+                || modifiers.shared || modifiers.untrusted || modifiers.isSealed || modifiers.isFinal) {
             throw error(previous(), context + " do not accept declaration modifiers");
         }
     }
@@ -698,7 +698,7 @@ public final class Parser {
                 actorToken, actorToken.type() == ISOACTOR, modifiers);
         if (modifiers.async || modifiers.generator || modifiers.structural
                 || modifiers.nonLexical || modifiers.trapped || modifiers.isStatic
-                || modifiers.isAbstract) {
+                || modifiers.isAbstract || modifiers.isSealed || modifiers.isFinal) {
             throw error(actorToken,
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
@@ -823,16 +823,18 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseContract(Ast.Visibility visibility) {
-        Ast.InterfaceDecl iface = parseInterface(visibility, true);
+        Ast.InterfaceDecl iface = parseInterface(visibility, true, false);
         return new Ast.InterfaceDecl(iface.name(), iface.visibility(), iface.genericParameters(), iface.parents(), iface.members(), true);
     }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false); }
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) { return parseInterface(visibility, false, false); }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract) {
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean moduleContract, boolean isSealed) {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        List<String> permits = parsePermitsList();
+        if (!isSealed && !permits.isEmpty()) throw error(previous(), "'permits' requires a sealed interface");
         boolean braceStyle = match(LBRACE);
         if (!braceStyle) match(AS);
         Token.Type terminator = braceStyle ? RBRACE : END;
@@ -896,7 +898,19 @@ public final class Parser {
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract);
+        return new Ast.InterfaceDecl(name, visibility, generics, parents, members, moduleContract, isSealed, permits);
+    }
+
+    /** permits is contextual; outside type headers it remains an identifier. */
+    private List<String> parsePermitsList() {
+        if (!matchContextualKeyword("permits")) return List.of();
+        List<String> types = new ArrayList<>();
+        do {
+            String name = consume(IDENT, "expected direct subtype name after 'permits'").lexeme();
+            if (types.contains(name)) throw error(previous(), "duplicate permitted subtype '" + name + "'");
+            types.add(name);
+        } while (match(COMMA));
+        return List.copyOf(types);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
@@ -1146,6 +1160,8 @@ public final class Parser {
         boolean isAbstract = false;
         boolean shared = false;
         boolean untrusted = false;
+        boolean isSealed = false;
+        boolean isFinal = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean suspendsSeen = false;
@@ -1220,6 +1236,14 @@ public final class Parser {
                 if (abstractSeen) throw error(previous(), "duplicate 'abstract' modifier");
                 abstractSeen = true;
                 isAbstract = true;
+            } else if (isContextualIdentifier("sealed") && (checkNext(CLASS) || checkNext(INTERFACE) || checkNext(TRAIT))) {
+                if (isSealed) throw error(previous(), "duplicate 'sealed' modifier");
+                advance();
+                isSealed = true;
+            } else if (isContextualIdentifier("final") && checkNext(CLASS)) {
+                if (isFinal) throw error(previous(), "duplicate 'final' modifier");
+                advance();
+                isFinal = true;
             } else if (matchContextualShared()) {
                 if (sharedSeen) throw error(previous(), "duplicate 'shared' modifier");
                 sharedSeen = true;
@@ -1233,7 +1257,7 @@ public final class Parser {
             }
         }
         if (async && suspends) throw error(previous(), "'async suspends' is redundant; choose one");
-        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted);
+        return new Modifiers(visibility, visibilitySeen, async, suspends, generator, structural, nonLexical, trapped, isStatic, isAbstract, shared, untrusted, isSealed, isFinal);
     }
 
     private Modifiers mergeModifiers(Modifiers before, Modifiers after) {
@@ -1252,6 +1276,8 @@ public final class Parser {
         if (before.isAbstract && after.isAbstract) throw error(previous(), "duplicate 'abstract' modifier");
         if (before.shared && after.shared) throw error(previous(), "duplicate 'shared' modifier");
         if (before.untrusted && after.untrusted) throw error(previous(), "duplicate 'untrusted' modifier");
+        if (before.isSealed && after.isSealed) throw error(previous(), "duplicate 'sealed' modifier");
+        if (before.isFinal && after.isFinal) throw error(previous(), "duplicate 'final' modifier");
 
         return new Modifiers(
                 after.visibilitySeen ? after.visibility : before.visibility,
@@ -1265,7 +1291,9 @@ public final class Parser {
                 before.isStatic || after.isStatic,
                 before.isAbstract || after.isAbstract,
                 before.shared || after.shared,
-                before.untrusted || after.untrusted);
+                before.untrusted || after.untrusted,
+                before.isSealed || after.isSealed,
+                before.isFinal || after.isFinal);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -4170,5 +4198,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
+    private record Modifiers(Ast.Visibility visibility, boolean visibilitySeen, boolean async, boolean suspends, boolean generator, boolean structural, boolean nonLexical, boolean trapped, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted, boolean isSealed, boolean isFinal) { }
 }
