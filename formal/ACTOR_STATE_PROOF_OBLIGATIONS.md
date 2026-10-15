@@ -79,8 +79,9 @@ Observed locally:
 | --- | ---: | ---: |
 | (0, 0) | 275 | 748 |
 | (0, 0, 1) | 10,933 | 47,856 |
+| (0, 1, 2) | 53,507 | 267,432 |
 
-A deliberately unsafe mutation is rejected. Bounds: at most two actors,
+Unlogged raw writes, forged write receipts, and read/write overlap mutation controls are rejected. Bounds: at most three actors,
 three turns, one write per actor, one stop/restart generation. This is
 **bounded exhaustive model checking**, not an unbounded mathematical proof.
 
