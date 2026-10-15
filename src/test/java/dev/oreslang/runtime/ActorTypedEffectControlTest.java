@@ -172,6 +172,130 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void oneForOneRestartRequiresCompletedTeardownAndFreshGeneration()
+            throws Exception {
+        CountDownLatch replacementHandled = new CountDownLatch(1);
+        CountDownLatch supervisorHandled = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> failedChild = new AtomicReference<>();
+        AtomicReference<ActorRuntime.ActorHandle<String>> replacementChild = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> first = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            failedChild.set(first);
+                            first.send("fail");
+                        }
+
+                        @Override public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            try {
+                                ActorRuntime.ActorHandle<String> previous = failedChild.get();
+                                assertNotNull(previous);
+                                assertFalse(previous.isAlive(),
+                                        "child must leave the live actor registry before restart");
+                                ActorRuntime.ActorHandle<String> next =
+                                        actors.restartCurrentChildOneForOne(
+                                                notice, previous,
+                                                childContext -> (mail, ignored) -> {
+                                                    if ("fresh".equals(mail)) {
+                                                        replacementHandled.countDown();
+                                                    }
+                                                });
+                                replacementChild.set(next);
+                                assertNotEquals(previous.id(), next.id());
+                                assertTrue(next.ref().generation() > previous.ref().generation());
+                                assertThrows(SecurityException.class, () ->
+                                        actors.restartCurrentChildOneForOne(
+                                                notice, previous, childContext -> (mail, ignored) -> {}));
+                                next.send("fresh");
+                            } catch (Throwable failed) {
+                                callbackFailure.set(failed);
+                            } finally {
+                                supervisorHandled.countDown();
+                            }
+                        }
+                    });
+            parent.send("spawn");
+            assertTrue(supervisorHandled.await(3, TimeUnit.SECONDS),
+                    "supervisor must automatically receive terminal child notice");
+            assertNull(callbackFailure.get(),
+                    () -> "one-for-one restart rejected: " + callbackFailure.get());
+            assertTrue(replacementHandled.await(3, TimeUnit.SECONDS));
+            assertTrue(failedChild.get().ref().awaitTermination(3, TimeUnit.SECONDS));
+            assertNotEquals(failedChild.get().ref().address(),
+                    replacementChild.get().ref().address());
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test void oneForOneRestartBudgetFailsClosedAfterThreeFailures()
+            throws Exception {
+        CountDownLatch budgetReached = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> activeChild = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicInteger failures =
+                new java.util.concurrent.atomic.AtomicInteger();
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        private ActorRuntime.ActorHandle<String> failingChild() {
+                            ActorRuntime.ActorHandle<String> child = actors.spawnChildShared(
+                                    context -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            activeChild.set(child);
+                            child.send("fail");
+                            return child;
+                        }
+                        @Override public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            failingChild();
+                        }
+                        @Override public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            try {
+                                int count = failures.incrementAndGet();
+                                if (count <= 3) {
+                                    ActorRuntime.ActorHandle<String> next =
+                                            actors.restartCurrentChildOneForOne(
+                                                    notice, activeChild.get(),
+                                                    ignored -> (mail, unused) -> {
+                                                        throw GuestActorEffectSignal.raise();
+                                                    });
+                                    activeChild.set(next);
+                                    next.send("fail");
+                                } else {
+                                    assertThrows(IllegalStateException.class, () ->
+                                            actors.restartCurrentChildOneForOne(
+                                                    notice, activeChild.get(),
+                                                    ignored -> (mail, unused) -> {}));
+                                    budgetReached.countDown();
+                                }
+                            } catch (Throwable failed) {
+                                callbackFailure.set(failed);
+                                budgetReached.countDown();
+                            }
+                        }
+                    });
+            parent.send("start");
+            assertTrue(budgetReached.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(),
+                    () -> "restart intensity proof failed: " + callbackFailure.get());
+            assertEquals(4, failures.get());
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void optInParentReceivesAutomaticControlWithoutASecondUserMessage()
             throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
