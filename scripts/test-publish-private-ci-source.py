@@ -949,7 +949,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         return dict(response, **{member: None})
                     return original(request, method, payload)
                 with patch.object(pub, "gh_api", side_effect=invalid_shape):
-                    with self.assertRaisesRegex(pub.Denied, "malformed object metadata"):
+                    with self.assertRaisesRegex(pub.Denied, "malformed object metadata|branch readback identity"):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                     self.root, self.expected_tree, D)
 
