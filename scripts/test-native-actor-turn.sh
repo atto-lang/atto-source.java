@@ -17,7 +17,7 @@ elif [ "${ORES_NATIVE_TSAN:-0}" = 1 ]; then
   sanitizers="-fsanitize=thread -fno-omit-frame-pointer"
 fi
 for opt in 0 2; do
-  for suite in oresactorturn_test oresactorturn_scheduler_boundary_test; do
+  for suite in oresactorturn_test oresactorturn_scheduler_boundary_test oresactorturn_stop_cleanup_done_probe; do
     # Each suite has its own main() and links the exact same native kernel.
     # The second suite proves the VM-only ABI contract, not Java/LLVM parity.
     "${CC:-cc}" -std=c11 "-O$opt" -g -Wall -Wextra -Werror -pedantic \
