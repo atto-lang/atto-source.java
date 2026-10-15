@@ -375,8 +375,8 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            validateActorDeclarationAnnotations(annotations);
+            return parseActorClass(actorKind, modifiers.visibility, ActorPrefix.legacy(), annotations);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -741,8 +741,26 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility, prefix);
+        validateActorDeclarationAnnotations(annotations);
+        return parseActorClass(kind, modifiers.visibility, prefix, annotations);
+    }
+
+    private void validateActorDeclarationAnnotations(List<Ast.Annotation> annotations) {
+        boolean seenMiddleware = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("ActorMiddleware")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " on an actor would be ignored; only @ActorMiddleware is supported; "
+                        + "supervisor middleware must be configured at the trusted supervisor boundary");
+            }
+            if (seenMiddleware) {
+                throw error(previous(), "duplicate @ActorMiddleware annotation on actor");
+            }
+            seenMiddleware = true;
+            if (annotation.arguments().isEmpty()) {
+                throw error(previous(), "@ActorMiddleware requires at least one middleware class");
+            }
+        }
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -768,11 +786,17 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
-        return parseActorClass(actorKind, visibility, ActorPrefix.legacy());
+        return parseActorClass(actorKind, visibility, ActorPrefix.legacy(), List.of());
     }
 
     private Ast.ClassDecl parseActorClass(
             Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix) {
+        return parseActorClass(actorKind, visibility, prefix, List.of());
+    }
+
+    private Ast.ClassDecl parseActorClass(
+            Ast.ActorKind actorKind, Ast.Visibility visibility, ActorPrefix prefix,
+            List<Ast.Annotation> annotations) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -846,7 +870,7 @@ public final class Parser {
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
                 name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods,
-                prefix.role(), prefix.transport());
+                prefix.role(), prefix.transport(), annotations);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
