@@ -1710,7 +1710,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorCell<?> cell,
             OresFuture<?> future) {
         if (cell.stopped.get() || cell.finalized || closed.get()) {
-            future.cancel(false);
+            // The Future has not been admitted into this actor's owned
+            // operations. Rejecting a stale continuation target must not
+            // cancel a producer that can still be used by another consumer.
             return false;
         }
 
