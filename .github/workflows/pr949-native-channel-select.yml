@@ -39,6 +39,35 @@ jobs:
           cache: maven
       - name: Compile and execute the same fixture plus Future waiter lifecycle regressions
         run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest' test
+  full-jvm-verify:
+    needs: syntax-and-guest
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
+    # Admin opt-in; each job needs a fresh single-use ephemeral worker.
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify private original exact-head source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "ores-truffle-oreslang/oreslang-source.java"
+          test "$GITHUB_REF" = "refs/heads/integration/future-select-runtime-current-main-20261014"
+          test "${{ github.event.repository.private }}" = "true"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "Source head $(git rev-parse HEAD)"
+          echo "Source tree $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: graalvm
+          version: '25.3'
+          cache: maven
+      - name: Complete Maven verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+
   native-compiled-guest:
     needs: syntax-and-guest
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
