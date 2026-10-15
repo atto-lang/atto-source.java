@@ -192,6 +192,16 @@ final class ActorRaceInstrumentationTest {
     }
 
     @Test
+    void rejectedStaleOptimisticCommitIsNotAnUnprotectedWrite() {
+        ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
+        probe.observeCheckedCommit(false);  // Actual CAS succeeded.
+        probe.observeCheckedCommit(true);   // Stale version was safely rejected.
+        assertEquals(2, probe.snapshot().checkedCommitAttempts());
+        assertEquals(1, probe.snapshot().rejectedStaleCommits());
+        assertEquals(0, probe.snapshot().memoryRaces());
+    }
+
+    @Test
     void exitByNonownerMustNotReleaseLease() throws Exception {
         ActorRaceInstrumentation probe = ActorRaceInstrumentation.forTesting();
         Object actor = new Object();
