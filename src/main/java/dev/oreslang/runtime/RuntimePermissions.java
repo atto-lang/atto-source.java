@@ -99,13 +99,22 @@ public final class RuntimePermissions {
             IsolatePolicy isolatePolicy) {
         Builder builder = new Builder();
         boolean sawPermissionArgument = false;
+        boolean sawExplicitMarker = false;
+        Set<String> seenSerializedRules = new LinkedHashSet<>();
 
         for (String arg : args) {
             if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
             sawPermissionArgument = true;
             // Even a deny-all policy has zero grant rules. Preserve its explicit
             // presence or fromCapabilities() would silently grant broad I/O.
-            if (arg.equals(ARG_PREFIX + "explicit=true")) continue;
+            if (arg.equals(ARG_PREFIX + "explicit=true")) {
+                if (sawExplicitMarker)
+                    throw new IllegalArgumentException("duplicate Oreslang permission marker");
+                sawExplicitMarker = true;
+                continue;
+            }
+            if (!seenSerializedRules.add(arg))
+                throw new IllegalArgumentException("duplicate Oreslang permission argument");
             String remainder = arg.substring(ARG_PREFIX.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
@@ -132,6 +141,13 @@ public final class RuntimePermissions {
 
         if (!sawPermissionArgument)
             return fromCapabilities(isolatePolicy.capabilities());
+
+        // Serialized scope rules must carry the presence marker emitted by
+        // applicationArguments(). An unmarked fragment is not complete policy
+        // state and must never be interpreted as an authority grant.
+        // This marker establishes format completeness, not authenticity.
+        if (!sawExplicitMarker)
+            throw new IllegalArgumentException("missing explicit Oreslang permission marker");
 
         RuntimePermissions explicit = builder.build();
         // Scoped rules ATTENUATE isolate authority; they must never add a
