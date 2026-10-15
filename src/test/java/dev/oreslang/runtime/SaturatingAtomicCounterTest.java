@@ -73,11 +73,9 @@ final class SaturatingAtomicCounterTest {
 
         // Saturation must remain a terminal value under concurrent increments.
         counter.set(Long.MAX_VALUE - 7);
-        start = new CountDownLatch(1);
-        done = new CountDownLatch(workers);
         // Exercise the CAS overflow edge with the same number of publishers.
-        CountDownLatch edgeStart = start;
-        CountDownLatch edgeDone = done;
+        CountDownLatch edgeStart = new CountDownLatch(1);
+        CountDownLatch edgeDone = new CountDownLatch(workers);
         for (int t = 0; t < workers; ++t) {
             Thread thread = new Thread(() -> {
                 try {
