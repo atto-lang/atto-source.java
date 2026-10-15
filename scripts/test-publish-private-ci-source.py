@@ -49,7 +49,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.archived = [False] * 100
         self.disabled = [False] * 100
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
-        self.preflight.start()
+        self.preflight_patch_entry = self.preflight.start()
         self.addCleanup(self.preflight.stop)
         self.real_publisher_checkout = pub.require_trusted_publisher_checkout
         self.publisher_checkout = patch.object(pub, "require_trusted_publisher_checkout",
@@ -182,6 +182,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                               side_effect=AssertionError("source read before checkout check")):
                 with self.assertRaisesRegex(pub.Denied, "untrusted local checkout"):
                     self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_untrusted_checkout_cannot_execute_checkout_local_preflight(self):
+        # Source-side code must be pinned before a Bash guard from that same
+        # checkout may execute. Simulate a modified PR worktree: the trusted
+        # checkout verifier refuses it and the preflight must not be entered.
+        with patch.object(pub, "require_trusted_publisher_checkout",
+                          side_effect=pub.Denied("untrusted publisher")):
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read before trust")):
+                with self.assertRaisesRegex(pub.Denied, "untrusted publisher"):
+                    self.publish()
+        self.assertFalse(self.preflight_patch_entry.called)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_unprotected_main_refuses_checkout_local_code_execution(self):
+        self.source_protected = [False] * 100
+        with self.assertRaisesRegex(pub.Denied, "main branch is not protected"):
+            self.publish()
+        self.assertFalse(self.preflight_patch_entry.called)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_unreviewed_source_tuple_denies_before_source_read_or_upload(self):
@@ -776,9 +796,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_policy_numeric_identity_mismatch_blocks_before_source_read(self):
         # A name-only review cannot authorize a recreated repository.
         self.approval.write_text("trusted/ci 456\n")
-        with self.assertRaisesRegex(pub.Denied, "numeric ID differs from reviewed approval policy"):
+        # The unreviewed local policy differs from protected-main bytes.
+        # This is rejected *before* executing the checkout-local shell guard.
+        with self.assertRaisesRegex(pub.Denied, "destination policy is not approved"):
             self.publish()
-        self.assertEqual(self.route_calls, [])
+        self.assertFalse(self.preflight_patch_entry.called)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_name_only_or_malformed_numeric_policy_never_authorizes(self):
         for malformed in (
@@ -1205,11 +1228,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
-    def test_denied_preflight_halts_before_api(self):
+    def test_denied_preflight_halts_before_private_read_or_write(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
-            with self.assertRaisesRegex(pub.Denied, "not approved"):
-                self.publish()
-        self.assertEqual(self.route_calls, [])
+            with patch.object(pub, "collect_source",
+                              side_effect=AssertionError("source read before approval")):
+                with self.assertRaisesRegex(pub.Denied, "not approved"):
+                    self.publish()
+        # Protected source-main metadata reads precede checkout-local guard.
+        self.assertTrue(self.route_calls)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_oversized_source_file_rejected(self):
         (self.source / "large").write_bytes(b"x" * (pub.MAX_SINGLE + 1))
