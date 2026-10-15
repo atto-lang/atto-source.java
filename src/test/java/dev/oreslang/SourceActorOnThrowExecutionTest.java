@@ -134,7 +134,7 @@ final class SourceActorOnThrowExecutionTest {
 
     @Test void cooperativeOrLoopingHandlerFailsClosed() throws Exception {
         Path entry = source("throw new WorkerFault(7);",
-                "on_throw(Error problem): bool { loop { return true; } }");
+                "on_throw(Error problem): bool { loop { throw new WorkerFault(8); } return true; }");
         // Accepted as an ordinary source method body, but not as an
         // executable actor failure handler: no suspend/continuation may
         // retain the guest Error past the local exceptional boundary.
