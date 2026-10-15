@@ -6780,7 +6780,14 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!(behavior instanceof ChildFailureHandler<?>)
                         || stopped.get() || finalized || closed.get()) return;
             }
-            schedule(false);
+            try {
+                schedule(false);
+            } catch (RuntimeException failedWake) {
+                // Failure notification must never make the already-finalized
+                // child fail to settle. Preserve the notice for manual polling
+                // and report this unexpected dispatcher failure separately.
+                childFailureWakeRejected.incrementAndGet();
+            }
         }
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
