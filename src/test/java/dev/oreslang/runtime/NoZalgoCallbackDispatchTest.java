@@ -538,10 +538,22 @@ final class NoZalgoCallbackDispatchTest {
             }
             var failed = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> actor.done().get(5, TimeUnit.SECONDS));
-            assertInstanceOf(IllegalStateException.class, failed.getCause());
-            assertTrue(failed.getCause().getMessage().contains(
-                            "continuation mailbox capacity invariant violated"),
-                    () -> String.valueOf(failed.getCause()));
+            Throwable terminal = failed.getCause();
+            boolean mailboxFailure = false;
+            for (Throwable cause = terminal; cause != null; cause = cause.getCause()) {
+                if (cause instanceof ChannelRuntime.ChannelClosedException
+                        || (cause instanceof IllegalStateException
+                                && cause.getMessage() != null
+                                && cause.getMessage().contains(
+                                        "continuation mailbox capacity invariant violated"))) {
+                    mailboxFailure = true;
+                    break;
+                }
+            }
+            assertTrue(mailboxFailure,
+                    () -> "unexpected actor failure cause: " + terminal);
+            assertSame(terminal, actor.failure().orElse(null),
+                    "supervisor must retain the original enqueue failure");
             assertNull(receiveFailure.get(),
                     () -> String.valueOf(receiveFailure.get()));
             assertEquals(0, guestCallbacks.get());
