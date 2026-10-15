@@ -4895,6 +4895,15 @@ public final class TypeChecker {
         }
     }
 
+    // Source module names and canonical/linker identities both count as
+    // namespaces for capability admission. Neither pkg.Pointer nor
+    // pkg::Pointer may masquerade as data-only mailbox contents.
+    static String actorCapabilitySimpleName(String resolvedName) {
+        int dot = resolvedName.lastIndexOf('.');
+        int scope = resolvedName.lastIndexOf("::");
+        return resolvedName.substring(Math.max(dot, scope < 0 ? -1 : scope + 1) + 1);
+    }
+
     private void validateActorCallableBoundaryType(
             Type type,
             Ast.ActorKind actorKind,
@@ -4943,7 +4952,7 @@ public final class TypeChecker {
         // Types declared within an Oreslang module resolve to qualified
         // names (e.g. "CodecModule.NetworkCodec"). Do not allow that
         // qualification to bypass the non-data-capability admission list.
-        String actorBoundarySimpleName = named.name().substring(named.name().lastIndexOf('.') + 1);
+        String actorBoundarySimpleName = actorCapabilitySimpleName(named.name());
         if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
                 "Observable", "ActorRef", "ActorGroup", "ProxyActor",
                 "SupervisorControlCodec", "ControlCodec", "Mailman",
@@ -5035,7 +5044,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
-        String sharedSafetySimpleName = named.name().substring(named.name().lastIndexOf('.') + 1);
+        String sharedSafetySimpleName = actorCapabilitySimpleName(named.name());
         if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
                 "Observable", "ActorRef", "ActorGroup", "ProxyActor",
                 "SupervisorControlCodec", "ControlCodec", "Mailman", "EventBus")
