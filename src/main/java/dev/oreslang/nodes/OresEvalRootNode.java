@@ -8565,6 +8565,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object add(Object left, Object right) {
+            // Checked-i64 cannot bypass numeric overflow admission through
+            // the legacy string-concatenation fast path.
+            if (experimentalCheckedI64 && (left instanceof String || right instanceof String)) {
+                throw new IllegalArgumentException("checked-i64-v1 rejects string addition");
+            }
             if (left instanceof String && right instanceof String) return ((String) left) + right;
             return numeric(left, right, '+');
         }
