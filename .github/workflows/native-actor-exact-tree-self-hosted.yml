@@ -1,0 +1,44 @@
+name: Source-local native actor exact-tree gate
+
+# Explicit operator-triggered job only. Requires a SOURCE-REPOSITORY-attached
+# isolated runner with a protected, admin-managed label. Do not repoint this
+# workflow at an external organization's test repo: the source is private.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit_sha:
+        description: 'Reviewed 40-hex private source commit (not inferred from checkout)'
+        required: true
+        type: string
+      expected_tree_sha:
+        description: 'Reviewed 40-hex full source Git tree (independent pin)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  exact-tree:
+    name: GCC Clang sanitizers JNI JUnit and guest policy
+    runs-on: [self-hosted, linux, x64, ores-private-actor-ci]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.expected_commit_sha }}
+          persist-credentials: false
+      - name: Confirm dispatch commit and reviewed immutable pins
+        env:
+          ORES_CI_EXPECTED_COMMIT_SHA: ${{ inputs.expected_commit_sha }}
+          ORES_CI_EXPECTED_TREE_SHA: ${{ inputs.expected_tree_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Disallow running an arbitrary older/unreviewed source SHA merely
+          # by supplying matching commit/tree input values to dispatch.
+          test "$GITHUB_SHA" = "$ORES_CI_EXPECTED_COMMIT_SHA" || {
+            echo 'Dispatch ref does not match independently reviewed commit' >&2
+            exit 1
+          }
+          sh scripts/test-native-actor-exact-tree-ci.sh
