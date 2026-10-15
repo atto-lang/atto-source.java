@@ -353,4 +353,29 @@ final class MatchProjectionBindingKindsTest {
         assertEquals("43:42", outputOf(source));
     }
 
+    @Test
+    void selectObjectRestCanFeedConstructorRecordProjection() throws Exception {
+        String source = """
+                pub routine main(): void {
+                  val Channel<{first: int, value: int}> ch =
+                      Channel.new<{first: int, value: int}>(1);
+                  writech ch, struct{first: int, value: int}{first: 5, value: 44};
+                  do select {
+                    when readch ch: const {first, ...remaining} -> {
+                      do match Some(remaining) over
+                        on Some as {value} -> {
+                          stdio.stdout.write(first + value);
+                        }
+                        on None -> {
+                          stdio.stdout.write(0);
+                        }
+                      end
+                    }
+                  }
+                  return;
+                }
+                """;
+        assertEquals("49", outputOf(source));
+    }
+
 }
