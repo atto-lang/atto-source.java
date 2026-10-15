@@ -283,7 +283,18 @@ public final class ActorMiddlewarePipeline {
                 if (cancelled.getAsBoolean()) {
                     throw new IllegalStateException("middleware request cancelled");
                 }
-                return Objects.requireNonNull(value, "null middleware outcome");
+                Outcome checked = Objects.requireNonNull(value, "null middleware outcome");
+                // The legacy untyped reference pipeline has no separate
+                // Reject variant. An explicit 4xx/5xx Outcome is a supervisor
+                // rejection, but a successful application response must be
+                // the exact immutable result of the admitted child. Otherwise
+                // supervisor middleware can forge a 2xx body without invoking
+                // the actor, bypassing the same restriction as next_val.
+                if (inSupervisor && checked.status() < 400 && checked != ignored) {
+                    throw new SecurityException(
+                            "supervisor cannot manufacture successful actor outcome");
+                }
+                return checked;
             });
         }).thenCompose(completion -> completion);
     }
