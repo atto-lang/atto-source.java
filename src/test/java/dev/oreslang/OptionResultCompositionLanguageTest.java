@@ -136,6 +136,36 @@ final class OptionResultCompositionLanguageTest {
         assertTrue(thrown.getMessage().contains("Option::unwrap"), thrown::getMessage);
     }
 
+    @Test
+    void callbacksUsingTailCallsResolveFinalValueNotTrampolineMarker() throws Exception {
+        String program = """
+                fnc add_one(int value): int {
+                  return value + 1;
+                }
+
+                fnc wrap(int value): Result<int, String> {
+                  return Ok(value + 2);
+                }
+
+                pub fnc main(): void {
+                  val Option<int> some = Some(4);
+                  val Option<int> mapped = some.map<int>(|int x| -> {
+                    return add_one(x);
+                  });
+                  val Result<int, String> result = Ok(6);
+                  val Result<int, String> bound = result.flat_map<int>(|int x| -> {
+                    return wrap(x);
+                  });
+                  stdio.stdout.write(mapped.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(bound.unwrap());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("5:8", run(program));
+    }
+
     private static void reject(String program, String expected) {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
