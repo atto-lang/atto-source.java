@@ -841,7 +841,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_python_preflight_never_executes_checkout_controlled_bash(self):
         guard = self.root / "scripts" / "check-private-ci-destination.sh"
         guard.parent.mkdir(exist_ok=True)
-        guard.write_text("#!/bin/bash\\nexit 99\\n")
+        guard.write_text("#!/bin/bash\nexit 99\n")
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with patch.object(pub.subprocess, "run",
                               side_effect=AssertionError("checkout code executed")) as run:
@@ -851,7 +851,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                          [("GET", "repos/trusted/ci")])
 
     def test_python_preflight_denies_unapproved_without_running_shell(self):
-        self.approval.write_text("# approval revoked\\n")
+        self.approval.write_text("# approval revoked\n")
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with patch.object(pub.subprocess, "run",
                               side_effect=AssertionError("checkout code executed")) as run:
