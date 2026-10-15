@@ -54,6 +54,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_ref_types = ["commit"] * 100
         self.carrier_default_branches = ["main"] * 100
         self.carrier_main_protected = [True] * 100
+        self.carrier_admin_enforced = [True] * 100
+        self.carrier_status_checks = [True] * 100
+        self.carrier_conversations = [True] * 100
+        self.carrier_review_count = [1] * 100
+        self.carrier_codeowner = [True] * 100
+        self.carrier_stale_review_dismissal = [True] * 100
+        self.carrier_review_bypass = [False] * 100
         self.carrier_branch_commits = [A] * 100
         self.preflight = patch.object(pub, "require_preflight", return_value=123)
         self.preflight_patch_entry = self.preflight.start()
@@ -124,6 +131,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/branches/main":
             return {"name": "main", "protected": self.carrier_main_protected.pop(0),
                     "commit": {"sha": self.carrier_branch_commits.pop(0)}}
+        if route == "repos/trusted/ci/branches/main/protection":
+            valid_checks = self.carrier_status_checks.pop(0)
+            return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
+                    "required_status_checks": {"strict": valid_checks,
+                                               "contexts": ["verified-carrier-ci"] if valid_checks else []},
+                    "required_conversation_resolution": {
+                        "enabled": self.carrier_conversations.pop(0)}}
+        if route == "repos/trusted/ci/branches/main/protection/required_pull_request_reviews":
+            return {"required_approving_review_count": self.carrier_review_count.pop(0),
+                    "require_code_owner_reviews": self.carrier_codeowner.pop(0),
+                    "dismiss_stale_reviews": self.carrier_stale_review_dismissal.pop(0),
+                    "bypass_pull_request_allowances": {
+                        "users": ["bypasser"] if self.carrier_review_bypass.pop(0) else [],
+                        "teams": [], "apps": []}}
         mapping = {
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
@@ -164,6 +185,68 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_carrier_main_protection_revocation_denies_before_next_write(self):
         self.carrier_main_protected = [True, False] + [False] * 98
         with self.assertRaisesRegex(pub.Denied, "carrier main is not protected"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_requires_admin_enforcement_before_source_read(self):
+        self.carrier_admin_enforced = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier review")):
+            with self.assertRaisesRegex(pub.Denied, "administrator and CI protections"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_requires_strict_status_checks_before_source_read(self):
+        self.carrier_status_checks = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier CI policy")):
+            with self.assertRaisesRegex(pub.Denied, "administrator and CI protections"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_requires_conversation_resolution_before_source_read(self):
+        self.carrier_conversations = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier conversation policy")):
+            with self.assertRaisesRegex(pub.Denied, "resolved reviews"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_requires_approving_reviewer_before_source_read(self):
+        self.carrier_review_count = [0] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier reviewer policy")):
+            with self.assertRaisesRegex(pub.Denied, "independent code-owner approval"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_requires_code_owner_review_before_source_read(self):
+        self.carrier_codeowner = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier codeowner policy")):
+            with self.assertRaisesRegex(pub.Denied, "independent code-owner approval"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_requires_stale_review_dismissal_before_source_read(self):
+        self.carrier_stale_review_dismissal = [False] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier stale-review policy")):
+            with self.assertRaisesRegex(pub.Denied, "independent code-owner approval"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_main_rejects_review_bypass_before_source_read(self):
+        self.carrier_review_bypass = [True] * 100
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("read before carrier bypass policy")):
+            with self.assertRaisesRegex(pub.Denied, "review bypass"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_review_enforcement_revocation_denies_before_any_upload(self):
+        self.carrier_admin_enforced = [True, False] + [False] * 98
+        with self.assertRaisesRegex(pub.Denied, "administrator and CI protections"):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
