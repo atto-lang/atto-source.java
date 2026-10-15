@@ -195,6 +195,9 @@ public final class ActorRuntime implements AutoCloseable {
             ActorErrorCatalog.Envelope envelope) {
         public ActorFailureNotice {
             Objects.requireNonNull(actorId, "actorId");
+            if (actorId.equals(supervisorId)) {
+                throw new IllegalArgumentException("actor cannot be its own CONTROL supervisor");
+            }
             Objects.requireNonNull(effect, "effect");
             Objects.requireNonNull(envelope, "envelope");
             String fixedDiagnostic = effect == GuestActorEffectSignal.Kind.RAISE
@@ -6744,14 +6747,21 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong childFailureControlDropped = new AtomicLong();
         private final AtomicLong childFailureWakeRejected = new AtomicLong();
 
-        private boolean acceptDirectChildFailure(ActorFailureNotice notice) {
-            if (!ref.id().equals(notice.supervisorId())) {
-                throw new IllegalArgumentException("child CONTROL notice has wrong parent");
-            }
-            // Child finalization already uses child -> parent lock order.
-            // Serialize admission with the parent's retirement and inbox
-            // reclamation, or a concurrent child could revive a cleared queue.
+        private boolean acceptDirectChildFailure(
+                ActorCell<?> child, ActorFailureNotice notice) {
+            // Never authorize delivery from envelope claims alone. The live
+            // structured lineage is registered under this parent's lifecycle
+            // lock at spawn, and is removed only after child finalization.
+            // The child passes its own runtime-owned cell, never a guest ref.
             synchronized (lifecycleLock) {
+                if (child == null || child.parent != this
+                        || !children.contains(child)
+                        || !child.ref.id().equals(notice.actorId())
+                        || !ref.id().equals(notice.supervisorId())) {
+                    childFailureControlDropped.incrementAndGet();
+                    childFailureControlNoticesDropped.incrementAndGet();
+                    return false;
+                }
                 if (stopped.get() || finalized) {
                     childFailureControlDropped.incrementAndGet();
                     childFailureControlNoticesDropped.incrementAndGet();
@@ -7202,7 +7212,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // ArrayBlockingQueue.offer is nonblocking and has no guest
                 // callbacks, including while this child lifecycle lock is held.
                 if (parent != null) {
-                    wakeParent = parent.acceptDirectChildFailure(pendingControlNotice);
+                    wakeParent = parent.acceptDirectChildFailure(this, pendingControlNotice);
                 }
                 publishActorFailureNotice(pendingControlNotice);
                 pendingControlNotice = null;
