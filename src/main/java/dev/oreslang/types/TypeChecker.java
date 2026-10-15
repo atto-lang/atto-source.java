@@ -3828,6 +3828,11 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
             }
+            // The parser records qualified lambdas, but their callable types,
+            // detached captures, actor-affine dispatch and suspension lowering
+            // are not implemented as a unit yet. Fail closed instead of ever
+            // executing a requested async callback on the caller's stack.
+            requireQualifiedLambdaLowering(lambda);
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
@@ -4503,6 +4508,15 @@ public final class TypeChecker {
         }
     }
 
+    private void requireQualifiedLambdaLowering(Ast.LambdaExpr lambda) {
+        if (lambda.async() || lambda.suspends()) {
+            throw new IllegalArgumentException(
+                    (lambda.async() ? "async" : "suspends")
+                            + " lambda is parsed but not yet supported: "
+                            + "callback ABI, scheduling and ownership lowering must be verified");
+        }
+    }
+
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
@@ -4550,6 +4564,7 @@ public final class TypeChecker {
                 && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void block lambda must explicitly return on every path");
         }
+        requireQualifiedLambdaLowering(lambda);
     }
 
     private Type deref(Type type) {
