@@ -31,16 +31,39 @@ public final class NominalEnumOverloads {
     /** The type identity is the resolved enum DECLARATION, not its cases. */
     public record Position(Kind kind, String id) {
         public Position {
-            Objects.requireNonNull(kind);
-            Objects.requireNonNull(id);
+            Objects.requireNonNull(kind, "overload position kind");
+            Objects.requireNonNull(id, "overload position identity");
+            if (id.isBlank()) {
+                throw new IllegalArgumentException("blank overload position identity");
+            }
+            if (kind == Kind.PRIMITIVE) {
+                if (!SCALARS.contains(id)) {
+                    throw new IllegalArgumentException("unsupported overload primitive: " + id);
+                }
+                // Directly constructed keys must agree with signature() aliases.
+                if (id.equals("String")) id = "string";
+            } else if (!id.contains("::") || id.startsWith("::")
+                    || id.endsWith("::") || id.contains("::::")) {
+                throw new IllegalArgumentException(
+                        "nominal enum overload ID must be declaration-qualified: " + id);
+            }
         }
     }
 
     /** Not a value-dependent selection key: all enum IDs are compiler known. */
     public record Signature(String name, List<Position> positions) {
         public Signature {
-            Objects.requireNonNull(name);
+            Objects.requireNonNull(name, "overload name");
+            if (name.isBlank()) {
+                throw new IllegalArgumentException("blank overload callable name");
+            }
             positions = List.copyOf(positions);
+            // Enforce limits at the immutable key boundary, not just the
+            // signature() factory. select()/compare() accept public records.
+            if (positions.size() > MAX_OVERLOAD_ARITY) {
+                throw new IllegalArgumentException("nominal enum overload exceeds arity limit "
+                        + MAX_OVERLOAD_ARITY);
+            }
         }
         public int arity() { return positions.size(); }
     }
