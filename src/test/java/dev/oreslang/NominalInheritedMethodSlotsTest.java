@@ -194,4 +194,37 @@ final class NominalInheritedMethodSlotsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.TypeChecker.checkTypes(program));
     }
+
+    @Test
+    void staticProofSelectsExactInheritedDeclarationWithoutRuntimeTypeRanking() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color x): int { return 11; }
+                end
+                define class Child extends Base as
+                    pub pick(Mode x): int { return 22; }
+                end
+                """);
+        Map<String, String> enumIds =
+                dev.oreslang.types.NominalEnumOverloads.eligibleEnumSymbols(program);
+        var color = NominalInheritedMethodSlots.selectStatic(
+                program, "Child", Domain.INSTANCE, "pick", 1,
+                Map.of(0, enumIds.get("Color")));
+        var mode = NominalInheritedMethodSlots.selectStatic(
+                program, "Child", Domain.INSTANCE, "pick", 1,
+                Map.of(0, enumIds.get("Mode")));
+        assertEquals("Base", color.owner().name());
+        assertEquals("Child", mode.owner().name());
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalInheritedMethodSlots.selectStatic(
+                        program, "Child", Domain.INSTANCE, "pick", 1, Map.of()));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalInheritedMethodSlots.selectStatic(
+                        program, "Child", Domain.INSTANCE, "pick", 1,
+                        Map.of(0, "forged::Unknown")));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalInheritedMethodSlots.selectStatic(
+                        program, "Child", Domain.INSTANCE, "pick", 1,
+                        Map.of(0, enumIds.get("Color"), 1, enumIds.get("Mode"))));
+    }
 }
