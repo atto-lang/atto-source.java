@@ -1846,11 +1846,15 @@ public final class Parser {
                 // explicit boundary: otherwise '{...}' can be mistaken for
                 // either a record pattern or the following statement body.
                 // The old simple-name/no-binding braced form remains legal.
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select executable arms use the slim arrow '->'; '=>' is reserved for function types");
+                }
                 if ((bindingType != null || destructureKind != null) && !check(ARROW)) {
                     throw error(peek(),
                             "typed/destructured select read arms require '->' before the body");
                 }
-                match(ARROW);
+                match(ARROW); // Legacy simple-read/write syntax remains accepted until formatting migration.
                 if (!check(LBRACE)) {
                     throw error(peek(), "select arm requires '-> { ... }' or legacy '{ ... }'");
                 }
@@ -1871,7 +1875,11 @@ public final class Parser {
 
             if (match(DEFAULT)) {
                 consume(COLON, "select default arm requires ':'");
-                match(ARROW);
+                if (check(FAT_ARROW)) {
+                    throw error(peek(),
+                            "select default arms use the slim arrow '->'; '=>' is reserved for function types");
+                }
+                match(ARROW); // Compatibility with existing arrowless default arms.
                 if (!check(LBRACE)) {
                     throw error(peek(), "select default arm requires a braced body '{ ... }'");
                 }
