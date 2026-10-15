@@ -31,6 +31,9 @@ final class CheckedI64SourceHeaderTest {
         for (String source : new String[] {
                 "\n" + DIRECTIVE + MAIN,
                 " " + DIRECTIVE + MAIN,
+                "\r" + DIRECTIVE + MAIN,
+                "\r\t" + DIRECTIVE + MAIN,
+                DIRECTIVE + "\r" + DIRECTIVE + MAIN,
                 "\t" + DIRECTIVE + MAIN,
                 "\uFEFF" + DIRECTIVE + MAIN,
                 "// oreslang:checked-i64-v1\r\n" + MAIN,
