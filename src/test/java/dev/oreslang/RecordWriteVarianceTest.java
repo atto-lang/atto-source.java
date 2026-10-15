@@ -33,6 +33,24 @@ final class RecordWriteVarianceTest {
     }
 
     @Test
+    void writableTypeMatrixRejectsEveryNonidenticalFieldType() {
+        Types.Type[] types = {
+                Types.Primitive.INT, Types.Primitive.FLOAT, Types.Primitive.DECIMAL,
+                Types.Primitive.COMPLEX, Types.Primitive.BOOL, Types.Primitive.STRING,
+                Types.Unknown.INSTANCE,
+                new Types.Named("Box", java.util.List.of(Types.Primitive.INT))
+        };
+        for (Types.Type from : types) {
+            for (Types.Type to : types) {
+                Record source = new Record(Map.of("payload", from), false);
+                Record writableTarget = new Record(Map.of("payload", to), false);
+                assertEquals(from.equals(to), Types.isAssignable(source, writableTarget),
+                        () -> "unsafe writable field conversion " + from + " -> " + to);
+            }
+        }
+    }
+
+    @Test
     void readonlySourceCannotRegainWriteAuthority() {
         Record readonly = new Record(Map.of("value", Types.Primitive.INT), true);
         Record writable = new Record(Map.of("value", Types.Primitive.INT), false);
