@@ -37,6 +37,20 @@ final class SealedDeclarationEffectModifierTest {
     }
 
     @Test
+    void actorStateFieldsRejectSuspendingOrTrappingModifiers() {
+        rejects("""
+                define actor Worker as
+                    suspends val int count = 0;
+                end
+                """);
+        rejects("""
+                define actor Worker as
+                    trap val int count = 0;
+                end
+                """);
+    }
+
+    @Test
     void contextualModifiersMayInterleaveWithVisibilityAndAbstract() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define sealed pub abstract class Root permits Leaf as end
