@@ -219,6 +219,13 @@ def require_protected_main_policy(approved_policy):
             or not required_checks["contexts"]
             or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
         raise Denied("protected main must require strict source CI checks")
+    # An unresolved security review thread must be able to block the policy
+    # change before the private publisher trusts it. Do not infer this from
+    # required approving reviews: GitHub exposes the gate separately.
+    conversation_gate = rules.get("required_conversation_resolution")
+    if (not isinstance(conversation_gate, dict)
+            or conversation_gate.get("enabled") is not True):
+        raise Denied("protected main must require resolved review conversations")
     reviews = gh_api(PROTECTED_REVIEWS_ROUTE)
     count = reviews.get("required_approving_review_count")
     if (type(count) is not int or count < 1
