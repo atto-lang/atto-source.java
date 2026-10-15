@@ -3201,6 +3201,14 @@ public final class OresEvalRootNode extends RootNode {
                                                                     : null,
                                                             failure2));
                                 } catch (RuntimeException | Error failure2) {
+                                    // A select may complete synchronously: its
+                                    // callback can enter downstream guest code
+                                    // before selectAsync/suspend returns. Once
+                                    // completion was claimed, its exception is
+                                    // the consumer's, not a second select error.
+                                    // Do not swallow it behind the one-shot
+                                    // delivery gate.
+                                    if (delivery.delivered()) throw failure2;
                                     continuation.accept(
                                             t,
                                             null,
