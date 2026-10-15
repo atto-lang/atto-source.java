@@ -266,6 +266,67 @@ after `fork()`. **These new tests have not yet executed on a runner.** The most 
 failed before executing any steps, so neither compilation nor test failure
 can be inferred from that run.
 
+### Exact-blob local native execution (2026-10-14)
+
+The experimental native kernel was compiled and run **locally** against
+GitHub-verified byte-identical blobs, without any cross-repository source
+transfer. Three local file hashes were checked with `git hash-object`:
+
+- `src/main/c/oresactorturn.c`:
+  `874c57d640542228497d253a272b772f8235e8b8`
+- `src/main/c/oresactorturn.h`:
+  `284d33d7186a066051e1f4ff951827fee327e5ad`
+- `src/test/c/oresactorturn_scheduler_boundary_test.c`:
+  `990b6b9e8eb9334deb993f8ddb213f01cfcceddf`
+
+The newly committed fixture exercises a **synthetic trusted native driver**:
+registration, STOP admission, terminal-injection acknowledgement, cleanup
+completion, physical carrier release, state/source retirement, force-abort
+with incomplete cleanup, inherited-VM refusal after `fork()`, and
+**1,000 concurrent FORCE-vs-cleanup races per execution**.
+
+Executed local native matrix: GCC 14 and Clang 17, each at `-O0` and
+`-O2`, with and without AddressSanitizer/UndefinedBehaviorSanitizer:
+**8/8 passing executions**. GCC 14 at `-O1` with ThreadSanitizer:
+**1/1 passing**. Combined **9/9 focused native executions** and
+**9,000 race iterations**. Clang 17 ThreadSanitizer could not link
+because of missing libdispatch/Blocks runtime symbols in the local toolchain;
+no Clang TSan pass is claimed.
+
+`scripts/test-native-actor-turn.sh` now builds and runs BOTH the existing
+`oresactorturn_test.c` and this new fixture for each compiler configuration.
+The **existing full C suite has not been executed locally in this audit**;
+these passing figures describe the new focused fixture only. This is not a
+full-Git-tree Actions result, not a real compiler-lowered Oreslang actor,
+not JDK 25/AOT verification, and not Java/LLVM guest parity. Keep PR draft.
+
+### Next native/Java scheduler integration seam (not yet implemented)
+
+Inspect the existing `OresScheduler.TaskRunner` and
+`ActorRuntime.startActorTask`, rather than creating a second native
+scheduler. `TaskRunner` already has a physical turn admission edge
+(`runTurn`), an after-carrier-exit edge (`afterCarrierTurn`), and a
+quiescence callback (`onQuiescent`). The eventual trusted VM adapter must:
+
+1. Register a real scheduler-owned SourceTask after actor task admission,
+   with actor-incarnation-scoped identity; never accept guest task IDs.
+2. Atomically claim a sealed native turn **before** entering the actor's
+   compiled guest frame. A non-actor task must not be accidentally registered.
+3. Release that same physical turn only after guest execution unwinds, and
+   preserve SourceTask lifetime across every `await`/cooperate/resumption.
+4. On STOP, retain only authenticated source-task terminal continuations;
+   acknowledge injection **only after actual VM cancellation delivery**.
+5. Acknowledge cleanup completion **only after** the guest's `defer`,
+   `finally`, loan release and output cleanup have genuinely finished.
+6. Retire the source task from a quiescent and cancellation-settled path,
+   not from Future completion; publish actor DONE only after all state,
+   child, output and CONTROL barriers.
+
+The C effect-check API is currently a **point-in-time advisory check**:
+there is no safe atomic permission to execute arbitrary guest code after it
+returns. FORCE and guest-effect execution must share a real VM-enforced
+epoch/admission barrier before native authority is used for production.
+
 ### Mainline integration and private-CI policy
 
 PR #917 was brought forward by an exact three-way Git-object merge with
