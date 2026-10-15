@@ -3875,6 +3875,10 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            boolean previousMaySuspend = currentMaySuspend;
+            // A plain callback is a fresh effect boundary. Strict mode must
+            // not inherit its enclosing suspends/async function's permission.
+            if (currentStrictSuspension) currentMaySuspend = false;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -3896,6 +3900,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                currentMaySuspend = previousMaySuspend;
             }
             // The parser records qualified lambdas, but their callable types,
             // detached captures, actor-affine dispatch and suspension lowering
@@ -4610,6 +4615,8 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        boolean previousMaySuspend = currentMaySuspend;
+        if (currentStrictSuspension) currentMaySuspend = false;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -4627,6 +4634,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentMaySuspend = previousMaySuspend;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
