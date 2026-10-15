@@ -93,13 +93,23 @@ public final class RuntimePermissions {
             IsolatePolicy isolatePolicy) {
         Builder builder = new Builder();
         boolean sawPermissionArgument = false;
+        boolean sawExplicitMarker = false;
+        Set<String> seenSerializedRules = new LinkedHashSet<>();
 
         for (String arg : args) {
             if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
             sawPermissionArgument = true;
-            // Even a deny-all policy has zero grant rules. Preserve its explicit
-            // presence or fromCapabilities() would silently grant broad I/O.
-            if (arg.equals(ARG_PREFIX + "explicit=true")) continue;
+            // Even deny-all must stay explicit. Duplicated markers and exact
+            // rule arguments are ambiguous/corrupted serialized policies,
+            // not an opportunity to silently reinterpret caller authority.
+            if (arg.equals(ARG_PREFIX + "explicit=true")) {
+                if (sawExplicitMarker)
+                    throw new IllegalArgumentException("duplicate Oreslang permission marker");
+                sawExplicitMarker = true;
+                continue;
+            }
+            if (!seenSerializedRules.add(arg))
+                throw new IllegalArgumentException("duplicate Oreslang permission argument");
             String remainder = arg.substring(ARG_PREFIX.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
@@ -195,7 +205,7 @@ public final class RuntimePermissions {
 
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
-        if (rule == null) return false;
+        if (rule == null || !safeScope(resource)) return false;
 
         // Invalid endpoint spellings must not match a broad network grant.
         if (permission == Permission.NET) {
@@ -373,6 +383,25 @@ public final class RuntimePermissions {
                 && resource.startsWith(scope.substring(0, scope.length() - 1));
     }
 
+    /** Avoid treating malformed host resources as all-access requests.
+     * POSIX filenames may contain control bytes, but they are deliberately
+     * unsupported permission scope/resource spellings across VM backends.
+     */
+    private static boolean safeScope(String value) {
+        if (value == null || value.isBlank()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isISOControl(c)) return false;
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i)))
+                    return false;
+            } else if (Character.isLowSurrogate(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static String normalize(Permission permission, String value) {
         if (value == null || value.isBlank()) return "";
         String trimmed = value.trim();
@@ -453,8 +482,8 @@ public final class RuntimePermissions {
             // Empty filesystem scopes previously normalized to "" and matched
             // EVERY absolute Unix path via resource.startsWith("/").
             // A missing scope must never become a root-wide capability.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty allow scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
@@ -518,6 +547,8 @@ public final class RuntimePermissions {
                     throw new IllegalArgumentException(
                             "empty comma-separated scope for " + permission);
                 }
+                if (!safeScope(value))
+                    throw new IllegalArgumentException("invalid permission scope for " + permission);
                 values.add("*".equals(value) ? "*" : normalize(permission, value));
             }
             return values;
