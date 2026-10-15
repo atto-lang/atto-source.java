@@ -29,6 +29,63 @@ final class ChannelCommittedCompletionDrainTest {
         }
     }
 
+    /** Invoke the ordering/failure-composition helper without widening runtime API. */
+    private static void runAfterPreservingFailure(
+            Throwable primary, Runnable action) throws Exception {
+        Method method = ChannelRuntime.class.getDeclaredMethod(
+                "runAfterPreservingFailure", Throwable.class, Runnable.class);
+        method.setAccessible(true);
+        try {
+            method.invoke(null, primary, action);
+        } catch (InvocationTargetException exception) {
+            if (exception.getCause() instanceof RuntimeException failure) throw failure;
+            if (exception.getCause() instanceof Error failure) throw failure;
+            throw exception;
+        }
+    }
+
+    @Test
+    void mailboxConsumerFailureStillPublishesCommittedWaitingWriter()
+            throws Exception {
+        ChannelRuntime.Channel<Integer> channel = new ChannelRuntime.Channel<>(1);
+        assertTrue(channel.tryWrite(5));
+        OresFuture<Void> waitingWriter = channel.writeAsync(6);
+        assertFalse(waitingWriter.isDone(), "the buffer is still full");
+        IllegalStateException primary = new IllegalStateException("consumer rejected value");
+
+        assertSame(primary, assertThrows(IllegalStateException.class,
+                () -> channel.drainOne(value -> {
+                    assertEquals(5, value);
+                    throw primary;
+                })));
+
+        assertNull(waitingWriter.get(5, TimeUnit.SECONDS),
+                "an already-admitted writer must receive its terminal publication");
+        assertEquals(6, channel.tryRead().orElseThrow());
+        assertEquals(0, channel.pendingRegistrations());
+    }
+
+    @Test
+    void secondaryFailureIsSuppressedWithoutMaskingThePrimary() throws Exception {
+        IllegalStateException primary = new IllegalStateException("consumer failed");
+        AssertionError late = new AssertionError("notification failed");
+        AtomicInteger ran = new AtomicInteger();
+        runAfterPreservingFailure(primary, () -> {
+            ran.incrementAndGet();
+            throw late;
+        });
+        assertEquals(1, ran.get(), "the required follow-up must execute");
+        assertEquals(1, primary.getSuppressed().length);
+        assertSame(late, primary.getSuppressed()[0]);
+    }
+
+    @Test
+    void followUpFailurePropagatesWhenThereWasNoPrimary() throws Exception {
+        AssertionError late = new AssertionError("notification failed");
+        assertSame(late, assertThrows(AssertionError.class,
+                () -> runAfterPreservingFailure(null, () -> { throw late; })));
+    }
+
     @Test
     void continuesAllCommittedPublicationsAndPreservesOriginalFailure()
             throws Exception {
