@@ -555,13 +555,17 @@ public final class RuntimePermissions {
             String[] parts = scopes.split(",", -1);
             List<String> values = new ArrayList<>(parts.length);
             for (String part : parts) {
+                // Validate the *raw* entry before String.trim(): trim drops
+                // ASCII control characters (including NUL and newline) at
+                // the edges. Otherwise "--allow-env=*\\u0000" becomes "*" and
+                // grants unrestricted environment access.
+                if (!safeScope(part))
+                    throw new IllegalArgumentException("invalid permission scope for " + permission);
                 String value = part.trim();
                 if (value.isEmpty()) {
                     throw new IllegalArgumentException(
                             "empty comma-separated scope for " + permission);
                 }
-                if (!safeScope(value))
-                    throw new IllegalArgumentException("invalid permission scope for " + permission);
                 values.add("*".equals(value) ? "*" : normalize(permission, value));
             }
             return values;
