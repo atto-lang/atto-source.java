@@ -377,6 +377,60 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void cancellationAfterCompletionEnqueueDropsQueuedGuestContinuation()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> sourceRef = new AtomicReference<>();
+        AtomicReference<Throwable> receiveFailure = new AtomicReference<>();
+        AtomicInteger guestCallbacks = new AtomicInteger();
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch releaseReceive = new CountDownLatch(1);
+        CountDownLatch receiveReturned = new CountDownLatch(1);
+
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var source = new OresFuture<Integer>();
+                    var target = runtime.captureCurrentContinuationTarget();
+                    runtime.enqueueOnCompletion(source, target, (value, failure) ->
+                            guestCallbacks.incrementAndGet());
+                    sourceRef.set(source);
+                    registered.countDown();
+                    if (!releaseReceive.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "receive was never released after cancellation");
+                    }
+                } catch (Throwable failure) {
+                    receiveFailure.compareAndSet(null, failure);
+                } finally {
+                    receiveReturned.countDown();
+                }
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            try {
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+                OresFuture<Integer> source = sourceRef.get();
+                assertNotNull(source);
+                assertTrue(source.completeFromRuntime(9),
+                        "producer must complete before actor cancellation");
+                assertEquals(0, guestCallbacks.get(),
+                        "queued continuation must not bypass an active receive");
+                assertTrue(actor.cancel(), "cancellation must fence queued actor work");
+            } finally {
+                // Never strand the carrier if a preceding assertion fails.
+                releaseReceive.countDown();
+            }
+            assertTrue(receiveReturned.await(5, TimeUnit.SECONDS));
+            assertNull(receiveFailure.get(),
+                    () -> String.valueOf(receiveFailure.get()));
+            assertEquals(0, guestCallbacks.get(),
+                    "cancelled actor must discard its already-enqueued continuation");
+            assertEquals(0, sourceRef.get().pendingRuntimeWaiterCount(),
+                    "completed Future must not retain an actor waiter");
+        }
+    }
+
+    @Test
     void actorCancellationRevokesPendingCompletionAndDropsLateProducer()
             throws Exception {
         AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
