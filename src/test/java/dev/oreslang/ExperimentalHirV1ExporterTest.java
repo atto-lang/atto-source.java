@@ -48,6 +48,14 @@ final class ExperimentalHirV1ExporterTest {
             assertTrue(crossFunction.getMessage().contains("unbound or invalid"),
                     crossFunction.getMessage());
 
+            IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                    () -> fromParserAstWithoutTypeChecking("""
+                            pub fnc identity(int value): int { return value; }
+                            pub fnc main(): int { return identity(1 + ghost); }
+                            """, checked));
+            assertTrue(nested.getMessage().contains("unbound or invalid"),
+                    nested.getMessage());
+
             String valid = fromParserAstWithoutTypeChecking("""
                     pub fnc identity(int count): int { return count + 0; }
                     pub fnc main(): int { return identity(43); }
