@@ -73,4 +73,18 @@ final class NumericIeee754HardeningTest {
                     """).asBoolean());
         }
     }
+
+    @Test
+    void complexDivisionAvoidsIntermediateOverflowAndUnderflow() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      return (1e308i / 1e308i) eq 1
+                        && (1e-300i / 1e-300i) eq 1
+                        && ((1e308 + 1e308i) / (1e308 + 1e308i)) eq 1
+                        && ((1e-300 + 1e-300i) / (1e-300 + 1e-300i)) eq 1;
+                    }
+                    """).asBoolean());
+        }
+    }
 }
