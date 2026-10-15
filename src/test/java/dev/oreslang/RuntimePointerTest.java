@@ -37,6 +37,16 @@ final class RuntimePointerTest {
         assertTrue(nested.getMessage().contains("nested Pointer<T>"), nested.getMessage());
     }
 
+    @Test void hostCannotManufacturePointersToCopyScalars() {
+        for (Object scalar : java.util.List.of(
+                42, "text", true, java.util.UUID.randomUUID(),
+                java.math.BigInteger.valueOf(1000))) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> new dev.oreslang.runtime.OresPointer(scalar));
+            assertTrue(error.getMessage().contains("scalar/Copy"), error.getMessage());
+        }
+    }
+
     @Test void hostCannotManufacturePointerOwnershipForRuntimeCapabilities() {
         for (Object capability : java.util.List.of(
                 new dev.oreslang.runtime.ChannelRuntime.Channel<>(1),
