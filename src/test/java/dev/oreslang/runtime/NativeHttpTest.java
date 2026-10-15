@@ -399,6 +399,55 @@ class NativeHttpTest {
         }
     }
 
+    @FunctionalInterface interface TwoClient {
+        void run(int firstPort, int secondPort) throws Exception;
+    }
+
+    private static String runTwoPorts(String program, TwoClient client) throws Exception {
+        CompletableFuture<int[]> ports = new CompletableFuture<>();
+        ByteArrayOutputStream output = new ByteArrayOutputStream() {
+            @Override public synchronized void write(byte[] b, int off, int len) {
+                super.write(b, off, len);
+                if (ports.isDone()) return;
+                String text = toString(StandardCharsets.UTF_8);
+                int firstEnd = text.indexOf('\\n');
+                if (firstEnd < 0) return;
+                int secondEnd = text.indexOf('\\n', firstEnd + 1);
+                if (secondEnd < 0) return;
+                try {
+                    int first = Integer.parseInt(text.substring(0, firstEnd).trim());
+                    int second = Integer.parseInt(
+                            text.substring(firstEnd + 1, secondEnd).trim());
+                    ports.complete(new int[] {first, second});
+                } catch (NumberFormatException badPort) {
+                    ports.completeExceptionally(badPort);
+                }
+            }
+        };
+        try (Context context = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of())
+                .out(output).build();
+             ExecutorService worker = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> clientWork = worker.submit(() -> {
+                try {
+                    int[] actual = ports.get(10, TimeUnit.SECONDS);
+                    client.run(actual[0], actual[1]);
+                } catch (Exception failure) {
+                    throw new CompletionException(failure);
+                }
+            });
+            try {
+                context.eval(Source.newBuilder(
+                        OresLanguage.ID, program, "native-http-two-listeners.ores").build());
+                clientWork.get(10, TimeUnit.SECONDS);
+            } finally {
+                clientWork.cancel(true);
+            }
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+
     @FunctionalInterface interface Client { void run(int port) throws Exception; }
     private static HttpResponse<String> request(int port, String method, String path, String body) throws Exception {
         try (HttpClient client = HttpClient.newHttpClient()) {
