@@ -276,6 +276,53 @@ def require_protected_source_codeowners():
         raise Denied("CODEOWNER lacks independently verified repository write access")
 
 
+
+def require_protected_carrier_codeowners(repository):
+    """Prove carrier workflows have an effective independent security owner.
+
+    GitHub's require_code_owner_reviews flag can be true even when no
+    CODEOWNERS rule covers the inherited Actions workflows. An unreviewed
+    workflow would execute on a transferred private-source branch.
+    """
+    route = f"repos/{repository}"
+    metadata = gh_api(route + "/contents/.github/CODEOWNERS?ref=main")
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 0 <= metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier CODEOWNERS metadata is unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()),
+                               validate=True)
+        decoded = raw.decode("utf-8")
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier CODEOWNERS is not valid UTF-8/base64") from exc
+    digest = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                          + bytes([0]) + raw).hexdigest()
+    if (len(raw) != metadata["size"] or bytes([0]) in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier CODEOWNERS blob integrity failed")
+    effective = [line.strip() for line in decoded.splitlines()
+                 if line.strip() and not line.strip().startswith("#")]
+    # The last matching rule wins. Require these final two rules in order:
+    # no later wildcard or exception can remove security ownership.
+    expected = ["/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+                "/.github/workflows/ " + REQUIRED_CODEOWNER]
+    if effective[-len(expected):] != expected:
+        raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
+    errors = gh_api(route + "/codeowners/errors?ref=main")
+    if not isinstance(errors.get("errors"), list) or errors["errors"]:
+        raise Denied("private carrier CODEOWNERS has GitHub validation errors")
+    access = gh_api(route + "/collaborators/ORESoftware/permission")
+    owner = access.get("user")
+    if (not isinstance(owner, dict)
+            or owner.get("login") != REQUIRED_CODEOWNER.lstrip("@")
+            or owner.get("type") != "User"
+            or access.get("permission") not in ("write", "admin")):
+        raise Denied("private carrier security CODEOWNER lacks write permission")
+
+
 def require_protected_main_policy(approved_policy):
     """Require a known private source and protected main, not just its blob.
 
@@ -720,7 +767,9 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
     remaining = core.get("remaining") if isinstance(core, dict) else None
     if type(remaining) is not int or remaining < 0:
         raise Denied("GitHub core API budget unavailable")
-    required = 16 * estimated_writes + 128
+    # Each write revalidates both source and carrier CODEOWNERS plus all
+    # immutable approvals. Allow headroom for those extra core API reads.
+    required = 24 * estimated_writes + 160
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
@@ -809,6 +858,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     not isinstance(bypass.get(key, []), list) or bypass.get(key)
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
+        require_protected_carrier_codeowners(repository)
         return current_sha
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
