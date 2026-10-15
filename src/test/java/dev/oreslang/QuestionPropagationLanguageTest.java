@@ -364,6 +364,34 @@ final class QuestionPropagationLanguageTest {
     }
 
     @Test
+    void resumedFailureDoesNotCompleteEnclosingStatementTwice() throws Exception {
+        String program = """
+                async fnc source_value(): Result<int, String> {
+                  return Ok(2);
+                }
+
+                async fnc failing(): Result<int, String> {
+                  defer stdio.stdout.write("cleanup:");
+                  val int value = (await source_value())?;
+                  val Array<int> empty = new Array<int>();
+                  return Ok(value + empty.get(0));
+                }
+
+                pub fnc main(): void {
+                  try {
+                    val Result<int, String> result = await failing();
+                    stdio.stdout.write("UNEXPECTED:");
+                  } catch (error) {
+                    stdio.stdout.write("caught");
+                  }
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("cleanup:caught", run(program));
+    }
+
+    @Test
     void asyncQuestionOnlyAcceptsDirectBindingInitializer() {
         reject("""
                 async fnc invalid(Option<int> input): Option<int> {
