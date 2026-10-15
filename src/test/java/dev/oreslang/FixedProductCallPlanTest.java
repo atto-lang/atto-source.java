@@ -58,59 +58,39 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
-    void forgedPublicRecordConstructorsCannotBypassPermutationProof() {
-        var order = List.of(
-                new FixedProductCallPlan.BoundSlot(0, 1, "b"),
-                new FixedProductCallPlan.BoundSlot(1, 0, "a"));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(order, List.of(0, 1)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, null),
-                                new FixedProductCallPlan.BoundSlot(0, 1, null)),
-                        List.of(0, 0)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 2, null)),
-                        List.of(0)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(-1, 0, null)),
-                        List.of(0)));
-        var valid = new FixedProductCallPlan(order, List.of(1, 0));
-        assertEquals(List.of(1, 0), valid.abiToSource());
+    void checkedCallPlanCannotBeForgedThroughPublicConstructors() {
+        // A total permutation is not enough to prove that a source label
+        // names the target ABI slot. Only bind() has declared parameter names.
+        assertEquals(0, FixedProductCallPlan.class.getConstructors().length);
+        assertFalse(FixedProductCallPlan.class.isRecord());
+        assertEquals(1, FixedProductCallPlan.class.getDeclaredConstructors().length);
+        assertTrue(java.lang.reflect.Modifier.isPrivate(
+                FixedProductCallPlan.class.getDeclaredConstructors()[0].getModifiers()));
     }
 
     @Test
-    void publicConstructorCannotForgeNamedOrPositionalGrammar() {
-        // These are total permutations, but none could be produced by bind().
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "a"),
-                                new FixedProductCallPlan.BoundSlot(1, 1, "a")),
-                        List.of(0, 1)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "a"),
-                                new FixedProductCallPlan.BoundSlot(1, 1, null)),
-                        List.of(0, 1)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 1, null),
-                                new FixedProductCallPlan.BoundSlot(1, 0, "a")),
-                        List.of(1, 0)));
-        assertThrows(IllegalArgumentException.class,
-                () -> new FixedProductCallPlan(
-                        List.of(new FixedProductCallPlan.BoundSlot(0, 0, "  "),
-                                new FixedProductCallPlan.BoundSlot(1, 1, "b")),
-                        List.of(0, 1)));
+    void selectedParameterLabelsDetermineAbiRatherThanForgedSlotNames() {
+        var swapped = FixedProductCallPlan.bind(List.of("a", "b"),
+                List.of(named("b"), named("a")));
+        assertEquals(List.of(1, 0), swapped.abiToSource());
+        assertEquals(1, swapped.sourceOrder().getFirst().parameterIndex());
+        assertEquals(0, swapped.sourceOrder().getLast().parameterIndex());
 
-        var validPrefix = new FixedProductCallPlan(
-                List.of(new FixedProductCallPlan.BoundSlot(0, 0, null),
-                        new FixedProductCallPlan.BoundSlot(1, 2, "c"),
-                        new FixedProductCallPlan.BoundSlot(2, 1, "b")),
-                List.of(0, 2, 1));
-        assertEquals(List.of(0, 2, 1), validPrefix.abiToSource());
+        var identity = FixedProductCallPlan.bind(List.of("a", "b"),
+                List.of(named("a"), named("b")));
+        assertEquals(List.of(0, 1), identity.abiToSource());
+        assertNotEquals(identity, swapped);
+        assertEquals(swapped, FixedProductCallPlan.bind(List.of("a", "b"),
+                List.of(named("b"), named("a"))));
+        assertEquals(swapped.hashCode(), FixedProductCallPlan.bind(List.of("a", "b"),
+                List.of(named("b"), named("a"))).hashCode());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(List.of("a", "b"),
+                        List.of(named("a"), named("a"))));
+        assertThrows(IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(List.of("a", "b"),
+                        List.of(named("a"), positional())));
     }
 
     @Test
