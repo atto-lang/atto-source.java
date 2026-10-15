@@ -462,6 +462,66 @@ static void test_terminal_signal_requires_real_lease_and_one_shot_ack(void) {
  * Even after releasing the physical lease, the source task and actor must
  * remain live until an explicit force-abort or successful completion.
  */
+/* Interleave FORCE and the physical carrier's cleanup-completion ack.
+ * Linearization under the VM mutex ensures completion either commits first
+ * or loses to FORCE; in both cases retirement still waits for carrier exit.
+ */
+struct completion_revoke_args {
+    ores_turn_vm *vm;
+    ores_cleanup_cap *ticket;
+    ores_source_task_cap *source;
+    atomic_int ready, go;
+    ores_turn_status claim, injected, completion, release;
+};
+static void *completion_vs_revoke_worker(void *opaque) {
+    struct completion_revoke_args *a = opaque;
+    ores_turn_lease *lease = NULL;
+    a->claim = ores_turn_claim_cleanup(a->vm, a->ticket, &lease);
+    if (a->claim != ORES_TURN_OK) {
+        atomic_store_explicit(&a->ready, 2, memory_order_release);
+        return NULL;
+    }
+    a->injected = ores_turn_note_terminal_injected(a->vm, lease, a->source);
+    atomic_store_explicit(&a->ready, 1, memory_order_release);
+    while (!atomic_load_explicit(&a->go, memory_order_acquire)) sched_yield();
+    a->completion = ores_turn_complete_cleanup(a->vm, lease, a->source);
+    a->release = ores_turn_release(a->vm, lease);
+    return NULL;
+}
+static void test_completion_races_force_revoke(void) {
+    for (unsigned int i = 0; i < 200; ++i) {
+        ores_turn_vm *vm = ores_turn_vm_new(16);
+        CHECK(vm);
+        ores_actor_cap *actor = NULL;
+        ores_source_task_cap *source = NULL;
+        ores_cleanup_cap *ticket = NULL;
+        CHECK(ores_turn_register(vm, 116, i + 1, 1, &actor) == ORES_TURN_OK);
+        CHECK(ores_turn_register_source_task(vm, actor, 1, 1, &source)
+              == ORES_TURN_OK);
+        CHECK(ores_turn_issue_cleanup(vm, source, &ticket) == ORES_TURN_OK);
+        CHECK(ores_turn_stop(vm, actor) == ORES_TURN_OK);
+        struct completion_revoke_args a = {
+            .vm = vm, .ticket = ticket, .source = source,
+            .ready = ATOMIC_VAR_INIT(0), .go = ATOMIC_VAR_INIT(0),
+            .claim = ORES_TURN_INVALID, .injected = ORES_TURN_INVALID,
+            .completion = ORES_TURN_INVALID, .release = ORES_TURN_INVALID
+        };
+        pthread_t thread;
+        CHECK(pthread_create(&thread, NULL, completion_vs_revoke_worker, &a) == 0);
+        while (!atomic_load_explicit(&a.ready, memory_order_acquire)) sched_yield();
+        CHECK(atomic_load_explicit(&a.ready, memory_order_acquire) == 1);
+        CHECK(a.claim == ORES_TURN_OK && a.injected == ORES_TURN_OK);
+        atomic_store_explicit(&a.go, 1, memory_order_release);
+        CHECK(ores_turn_force_revoke(vm, actor) == ORES_TURN_OK);
+        CHECK(pthread_join(thread, NULL) == 0);
+        CHECK(a.completion == ORES_TURN_OK || a.completion == ORES_TURN_DENIED);
+        CHECK(a.release == ORES_TURN_OK);
+        CHECK(ores_turn_retire_source_task(vm, source) == ORES_TURN_OK);
+        CHECK(ores_turn_retire(vm, actor) == ORES_TURN_OK);
+        CHECK(ores_turn_vm_destroy(vm) == ORES_TURN_OK);
+    }
+}
+
 static void test_injected_but_unfinished_cleanup_blocks_retirement(void) {
     ores_turn_vm *vm = ores_turn_vm_new(16);
     CHECK(vm);
@@ -633,6 +693,7 @@ int main(void) {
     test_terminal_signal_requires_real_lease_and_one_shot_ack();
     test_undelivered_terminal_blocks_retirement_until_force();
     test_injected_but_unfinished_cleanup_blocks_retirement();
+    test_completion_races_force_revoke();
     puts("ORES_NATIVE_ACTOR_TURN_CAPABILITY_OK");
     return 0;
 }
