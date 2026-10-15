@@ -57,6 +57,28 @@ public final class OresCompiler {
         return admitLocal(Parser.parse(source));
     }
 
+    /**
+     * Trusted source-text entry point for the restricted VerifiedScc v0
+     * semantic checker. Parsing is deliberately done inside the compiler,
+     * before immutable AST preflight, declaration staging and all-unit
+     * type/ownership verification. This does not perform runtime linking
+     * or grant permission to reuse native compiled objects.
+     */
+    public static VerifiedSccAdmission.VerifiedGraph parseAndVerifySccSources(
+            java.util.Map<String, String> sources,
+            java.util.Map<String, ExportInterfaceCodec.Header> environments,
+            java.util.Map<String, java.util.Map<String, String>> importOverrides) {
+        java.util.Objects.requireNonNull(sources, "source text map");
+        java.util.Map<String, String> frozen =
+                java.util.Map.copyOf(sources);
+        java.util.Map<String, Ast.Program> parsed = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, String> source : frozen.entrySet()) {
+            parsed.put(source.getKey(), Parser.parse(source.getValue()));
+        }
+        return VerifiedSccAdmission.verifyGraph(
+                parsed, environments, importOverrides);
+    }
+
     /** Compiler diagnostics are returned explicitly instead of written to shared stderr. */
     public record AnalysisResult(Ast.Program program, java.util.List<String> warnings) {
         public AnalysisResult { warnings = java.util.List.copyOf(warnings); }
