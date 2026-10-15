@@ -207,6 +207,18 @@ def require_protected_main_policy(approved_policy):
             or not isinstance(branch.get("commit"), dict)):
         raise Denied("source main branch is not protected")
     valid_sha(branch["commit"].get("sha"))
+    reviews = gh_api(PROTECTED_REVIEWS_ROUTE)
+    count = reviews.get("required_approving_review_count")
+    if (type(count) is not int or count < 1
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True):
+        raise Denied("enforced independent code-owner review policy is unavailable")
+    allowances = reviews.get("bypass_pull_request_allowances")
+    if allowances is not None:
+        if not isinstance(allowances, dict) or any(
+                not isinstance(allowances.get(key, []), list)
+                or allowances.get(key) for key in ("users", "teams", "apps")):
+            raise Denied("branch review bypass allowances are not permitted")
     metadata = gh_api(PROTECTED_POLICY_ROUTE)
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):
