@@ -4420,28 +4420,33 @@ public final class ActorRuntime implements AutoCloseable {
                                                     + inherited.memberLimit);
                                 }
                                 cell.managedByGroup.set(inheritedId);
-                                inherited.managedWorkers.put(id, ref);
-                                parent.children.add(cell);
-                                linkedToParent = true;
+                                // Reserve this incarnation before adding it
+                                // to any other structured ownership registry.
                                 if (actors.putIfAbsent(id, cell) != null) {
                                     throw new IllegalStateException(
                                             "actor identity collision cannot replace a live incarnation");
                                 }
+                                if (inherited.managedWorkers.putIfAbsent(id, ref) != null) {
+                                    throw new IllegalStateException(
+                                            "actor identity collision cannot replace a managed worker");
+                                }
+                                parent.children.add(cell);
+                                linkedToParent = true;
                             }
                         } else {
+                            if (actors.putIfAbsent(id, cell) != null) {
+                                throw new IllegalStateException(
+                                        "actor identity collision cannot replace a live incarnation");
+                            }
                             parent.children.add(cell);
                             linkedToParent = true;
-                            if (actors.putIfAbsent(id, cell) != null) {
-                                    throw new IllegalStateException(
-                                            "actor identity collision cannot replace a live incarnation");
-                                }
                         }
                     }
                 } else {
                     if (actors.putIfAbsent(id, cell) != null) {
-                                    throw new IllegalStateException(
-                                            "actor identity collision cannot replace a live incarnation");
-                                }
+                        throw new IllegalStateException(
+                                "actor identity collision cannot replace a live incarnation");
+                    }
                 }
                 return ref;
             } catch (RuntimeException | Error failure) {
