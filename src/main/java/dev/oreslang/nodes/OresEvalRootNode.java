@@ -1943,7 +1943,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation,
-                boolean[] delivered) {
+                AtomicBoolean delivered) {
             try {
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
@@ -3086,7 +3086,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation,
-                boolean[] delivered) {
+                AtomicBoolean delivered) {
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
