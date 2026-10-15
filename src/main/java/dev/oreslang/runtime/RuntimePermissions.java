@@ -1,5 +1,10 @@
 package dev.oreslang.runtime;
 
+import java.net.IDN;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.LinkOption;
@@ -198,7 +203,15 @@ public final class RuntimePermissions {
         Rule rule = rules.get(permission);
         if (rule == null) return false;
 
-        String normalized = normalize(permission, resource);
+        // A malformed network resource must never turn a deny rule into an
+        // accidental grant. Invalid policy scopes are rejected by Builder.
+        final String normalized;
+        try {
+            normalized = normalize(permission, resource);
+        } catch (IllegalArgumentException invalid) {
+            if (permission == Permission.NET) return false;
+            throw invalid;
+        }
         if (rule.denyAll() || matchesAny(permission, normalized, rule.denied())) return false;
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
     }
@@ -242,26 +255,121 @@ public final class RuntimePermissions {
         };
     }
 
+    private record NetworkEndpoint(String host, int port) { }
+
+    /**
+     * Canonicalize a network endpoint without DNS lookup. The same parser is
+     * used for grants, denials and actual connection destinations, so trailing
+     * DNS dots, equivalent numeric IP spellings and port spellings cannot
+     * bypass a scoped deny. IPv6 must use [address][:port] syntax.
+     */
+    private static NetworkEndpoint parseNetworkEndpoint(String value) {
+        if (value == null || value.isBlank())
+            throw new IllegalArgumentException("empty network permission endpoint");
+        String input = value.trim().toLowerCase(Locale.ROOT);
+        String host;
+        String portText = null;
+        if (input.startsWith("[")) {
+            int closing = input.indexOf(']');
+            if (closing < 0) throw new IllegalArgumentException("invalid bracketed IPv6 endpoint");
+            host = input.substring(0, closing + 1);
+            String remainder = input.substring(closing + 1);
+            if (!remainder.isEmpty()) {
+                if (!remainder.startsWith(":"))
+                    throw new IllegalArgumentException("invalid IPv6 port separator");
+                portText = remainder.substring(1);
+            }
+        } else {
+            int colon = input.indexOf(':');
+            if (colon >= 0) {
+                if (input.indexOf(':', colon + 1) >= 0)
+                    throw new IllegalArgumentException("IPv6 endpoints must be bracketed");
+                host = input.substring(0, colon);
+                portText = input.substring(colon + 1);
+            } else {
+                host = input;
+            }
+        }
+
+        if (host.startsWith("[")) {
+            if (!host.endsWith("]")) throw new IllegalArgumentException("invalid IPv6 address");
+            String numeric = host.substring(1, host.length() - 1);
+            if (!numeric.matches("[0-9a-f:.]+") || !numeric.contains(":"))
+                throw new IllegalArgumentException("invalid IPv6 address");
+            try {
+                InetAddress parsed = InetAddress.getByName(numeric);
+                if (!(parsed instanceof Inet6Address))
+                    throw new IllegalArgumentException("invalid IPv6 address");
+                host = "[" + parsed.getHostAddress().toLowerCase(Locale.ROOT) + "]";
+            } catch (UnknownHostException invalid) {
+                throw new IllegalArgumentException("invalid IPv6 address", invalid);
+            }
+        } else {
+            boolean wildcard = host.startsWith("*.");
+            String domain = wildcard ? host.substring(2) : host;
+            if (domain.endsWith(".")) domain = domain.substring(0, domain.length() - 1);
+            if (domain.isEmpty() || domain.indexOf('*') >= 0 || domain.indexOf('[') >= 0
+                    || domain.indexOf(']') >= 0)
+                throw new IllegalArgumentException("invalid network host");
+            if (domain.matches("[0-9.]+")) {
+                if (wildcard) throw new IllegalArgumentException("invalid numeric host wildcard");
+                try {
+                    InetAddress parsed = InetAddress.getByName(domain);
+                    if (!(parsed instanceof Inet4Address))
+                        throw new IllegalArgumentException("invalid IPv4 address");
+                    host = parsed.getHostAddress();
+                } catch (UnknownHostException invalid) {
+                    throw new IllegalArgumentException("invalid IPv4 address", invalid);
+                }
+            } else {
+                try {
+                    domain = IDN.toASCII(domain, IDN.USE_STD3_ASCII_RULES)
+                            .toLowerCase(Locale.ROOT);
+                } catch (IllegalArgumentException invalid) {
+                    throw new IllegalArgumentException("invalid network host", invalid);
+                }
+                if (domain.isEmpty() || domain.length() > 253)
+                    throw new IllegalArgumentException("invalid network host");
+                host = (wildcard ? "*." : "") + domain;
+            }
+        }
+
+        int port = -1;
+        if (portText != null) {
+            if (!portText.matches("[0-9]{1,5}"))
+                throw new IllegalArgumentException("invalid network port");
+            try {
+                port = Integer.parseInt(portText);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException("invalid network port", invalid);
+            }
+            if (port == 0 || port > 65535)
+                throw new IllegalArgumentException("network port must be 1..65535");
+        }
+        return new NetworkEndpoint(host, port);
+    }
+
     private static boolean networkMatches(String resource, String scope) {
-        String target = resource.toLowerCase(Locale.ROOT);
-        String rule = scope.toLowerCase(Locale.ROOT);
-        if (target.equals(rule)) return true;
+        NetworkEndpoint target = parseNetworkEndpoint(resource);
+        NetworkEndpoint rule = parseNetworkEndpoint(scope);
+        if (target.host().startsWith("*.")) return false;
+        boolean sameHost = rule.host().startsWith("*.")
+                ? target.host().endsWith(rule.host().substring(1))
+                    && target.host().length() > rule.host().length() - 1
+                : target.host().equals(rule.host());
+        return sameHost && (rule.port() == -1 || rule.port() == target.port());
+    }
 
-        // A host-only rule permits every port on that host.
-        if (!rule.contains(":")) {
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            if (targetHost.equals(rule)) return true;
-        }
-
-        // "*.example.com" includes subdomains but not the bare parent.
-        if (rule.startsWith("*.")) {
-            String suffix = rule.substring(1);
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            return targetHost.endsWith(suffix) && targetHost.length() > suffix.length();
-        }
-        return false;
+    /** Consistently format IPv4, DNS and IPv6 destinations for permission checks. */
+    public static String networkEndpoint(String host, int port) {
+        if (host == null || host.isBlank())
+            throw new IllegalArgumentException("network host cannot be blank");
+        String bracketed = host.contains(":") && !host.startsWith("[")
+                ? "[" + host + "]" : host;
+        NetworkEndpoint endpoint = parseNetworkEndpoint(bracketed + ":" + port);
+        if (endpoint.host().startsWith("*."))
+            throw new IllegalArgumentException("network destination cannot be a wildcard");
+        return endpoint.host() + ":" + endpoint.port();
     }
 
     private static boolean tokenMatches(String resource, String scope) {
@@ -277,7 +385,10 @@ public final class RuntimePermissions {
 
         return switch (permission) {
             case READ, WRITE, FFI, IMPORT -> normalizePath(trimmed);
-            case NET -> trimmed.toLowerCase(Locale.ROOT);
+            case NET -> {
+                NetworkEndpoint endpoint = parseNetworkEndpoint(trimmed);
+                yield endpoint.host() + (endpoint.port() < 0 ? "" : ":" + endpoint.port());
+            }
             case ENV, RUN, SYS -> trimmed;
         };
     }
@@ -353,11 +464,7 @@ public final class RuntimePermissions {
         }
 
         public Builder allowCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> allow(permission, value));
+            for (String scope : parseCsv(permission, scopes)) allow(permission, scope);
             return this;
         }
 
@@ -379,12 +486,24 @@ public final class RuntimePermissions {
         }
 
         public Builder denyCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> deny(permission, value));
+            for (String scope : parseCsv(permission, scopes)) deny(permission, scope);
             return this;
+        }
+
+        private static List<String> parseCsv(Permission permission, String scopes) {
+            if (scopes == null || scopes.isBlank())
+                throw new IllegalArgumentException("empty permission scope list for " + permission);
+            // split(..., -1) is essential: silently dropping empty tokens in a
+            // --deny-* list can invalidate a requested denial while preserving
+            // the corresponding broad --allow-* authority.
+            List<String> parts = Arrays.stream(scopes.split(",", -1))
+                    .map(String::trim).toList();
+            for (String part : parts) {
+                if (part.isEmpty())
+                    throw new IllegalArgumentException("empty permission scope in " + permission);
+                normalize(permission, part); // validate before mutating the builder
+            }
+            return parts;
         }
 
         public RuntimePermissions build() {
