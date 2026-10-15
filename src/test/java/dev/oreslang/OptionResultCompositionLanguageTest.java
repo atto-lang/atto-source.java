@@ -166,6 +166,41 @@ final class OptionResultCompositionLanguageTest {
         assertEquals("5:8", run(program));
     }
 
+    @Test
+    void invokedCallbacksRunExactlyOnceAndSkippedCallbacksNeverRun() throws Exception {
+        String program = """
+                pub fnc main(): void {
+                  val Option<int> yes = Some(1);
+                  val Option<int> no = None;
+                  val Result<int, String> good = Ok(2);
+                  val Result<int, String> bad = Err("bad");
+                  yes.map<int>(|int x| -> {
+                    stdio.stdout.write("some:");
+                    return x + 1;
+                  });
+                  no.flat_map<int>(|int x| -> {
+                    stdio.stdout.write("BAD-NONE:");
+                    return Some(x);
+                  });
+                  good.map_err<String>(|String e| -> {
+                    stdio.stdout.write("BAD-OK:");
+                    return e;
+                  });
+                  bad.map<int>(|int x| -> {
+                    stdio.stdout.write("BAD-ERR:");
+                    return x;
+                  });
+                  bad.map_err<String>(|String e| -> {
+                    stdio.stdout.write("err");
+                    return e;
+                  });
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("some:err", run(program));
+    }
+
     private static void reject(String program, String expected) {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
