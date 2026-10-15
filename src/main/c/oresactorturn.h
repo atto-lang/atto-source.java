@@ -85,6 +85,15 @@ ores_turn_status ores_turn_note_terminal_injected(ores_turn_vm *vm,
                                                  ores_source_task_cap *source);
 ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
                                                  ores_turn_lease *lease);
+/* Completion is a distinct one-shot event AFTER terminal injection and all
+ * authorized guest cleanup effects have finished on the owning native carrier.
+ * Merely injecting a cancellation signal or releasing its lease cannot
+ * discharge an unfinished cleanup obligation. The trusted scheduler must
+ * acknowledge physical cleanup completion before source-task retirement.
+ */
+ores_turn_status ores_turn_complete_cleanup(ores_turn_vm *vm,
+                                             ores_turn_lease *lease,
+                                             ores_source_task_cap *source);
 ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm,
                                        ores_actor_cap *actor);
 ores_turn_status ores_turn_release(ores_turn_vm *vm,
