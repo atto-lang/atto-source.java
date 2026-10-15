@@ -84,9 +84,36 @@ public final class NominalMethodSlots {
      * until it proves all ancestor/diamond and virtual override contracts.
      */
     public static Map<Slot, Ast.MethodDecl> proveLocalSameArityFamilies(
-            Ast.ClassDecl owner, Map<String, String> eligibleEnumSymbols) {
+            Ast.Program program, Ast.ClassDecl owner) {
+        Objects.requireNonNull(program, "compiler program");
         Objects.requireNonNull(owner, "declaring class");
-        Objects.requireNonNull(eligibleEnumSymbols, "resolved eligible enum IDs");
+        // The helper must resolve enum identities itself from the same
+        // checked program. Accepting caller-made name->enum maps would let a
+        // forged ID bypass lexical namespace and declaration provenance.
+        // Do not trust a same-looking class AST from another code image.
+        int ownerMatches = 0;
+        String resolvedOwner = null;
+        java.util.Set<String> classIds = new java.util.HashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.ClassDecl candidate)) continue;
+                String key = module.name() + "::" + candidate.name();
+                if (!classIds.add(key)) {
+                    throw new IllegalArgumentException(
+                            "duplicate nominal method owner declaration: " + key);
+                }
+                if (candidate == owner) {
+                    ownerMatches++;
+                    resolvedOwner = key;
+                }
+            }
+        }
+        if (ownerMatches != 1) {
+            throw new IllegalArgumentException(
+                    "nominal method owner is not a unique declaration in compiler program");
+        }
+        Map<String, String> eligibleEnumSymbols =
+                NominalEnumOverloads.eligibleEnumSymbols(program);
         Map<FamilyKey, List<Ast.MethodDecl>> families = new LinkedHashMap<>();
         for (Ast.MethodDecl method : owner.methods()) {
             FamilyKey key = new FamilyKey(method.isStatic() ? Domain.STATIC : Domain.INSTANCE,
@@ -122,7 +149,7 @@ public final class NominalMethodSlots {
                             != PairStatus.DISTINCT_ENUMS) {
                         throw new IllegalArgumentException(
                                 "same-arity method family lacks pairwise distinct nominal enums: "
-                                        + owner.name() + "." + entry.getKey().name()
+                                        + resolvedOwner + "." + entry.getKey().name()
                                         + "/" + entry.getKey().arity());
                     }
                 }
