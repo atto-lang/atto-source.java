@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Destination-bound private CI publisher; never execute a caller-supplied command.
 set -euo pipefail
-if [[ $# -ne 5 || "${2:-}" != --source-dir || "${4:-}" != --branch ]]; then
-  printf 'PRIVATE_CI_DESTINATION_REJECTED: usage: run-in-private-ci-destination.sh owner/repo --source-dir DIRECTORY --branch ci/oreslang-NAME\n' >&2
+if [[ $# -ne 7 || "${2:-}" != --source-dir || "${4:-}" != --branch || "${6:-}" != --expected-source-tree ]]; then
+  printf 'PRIVATE_CI_DESTINATION_REJECTED: usage: run-in-private-ci-destination.sh owner/repo --source-dir DIRECTORY --branch ci/oreslang-NAME --expected-source-tree HEX40\n' >&2
   exit 1
 fi
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
