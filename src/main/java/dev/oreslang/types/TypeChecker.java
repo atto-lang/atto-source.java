@@ -363,8 +363,11 @@ public final class TypeChecker {
                 requireSealedChild(iface.name(), interfaceOwners.get(iface),
                         classOwners.get(klass), iface.permits(), klass.name(),
                         klass.isFinal() || klass.isSealed());
-                interfaceChildren.computeIfAbsent(iface, ignored -> new LinkedHashSet<>())
-                        .add(klass.name());
+                if (!interfaceChildren.computeIfAbsent(iface, ignored -> new LinkedHashSet<>())
+                        .add(klass.name())) {
+                    throw new IllegalArgumentException("ambiguous permitted subtype name '"
+                            + klass.name() + "' for sealed interface '" + iface.name() + "'");
+                }
             }
         }
         for (Ast.InterfaceDecl child : interfaceOwners.keySet()) {
@@ -381,8 +384,11 @@ public final class TypeChecker {
                 requireSealedChild(parent.name(), interfaceOwners.get(parent),
                         interfaceOwners.get(child), parent.permits(), child.name(),
                         child.isSealed());
-                interfaceChildren.computeIfAbsent(parent, ignored -> new LinkedHashSet<>())
-                        .add(child.name());
+                if (!interfaceChildren.computeIfAbsent(parent, ignored -> new LinkedHashSet<>())
+                        .add(child.name())) {
+                    throw new IllegalArgumentException("ambiguous permitted subtype name '"
+                            + child.name() + "' for sealed interface '" + parent.name() + "'");
+                }
             }
         }
         for (Ast.ClassDecl klass : classOwners.keySet()) {
