@@ -2058,6 +2058,7 @@ public final class TypeChecker {
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
             if (value instanceof Long) return Primitive.INT;
             if (value instanceof Double) return Primitive.FLOAT;
+            if (value instanceof java.math.BigDecimal) return Primitive.DECIMAL;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
             if (value instanceof dev.oreslang.runtime.OresSymbol symbol) {
@@ -2276,6 +2277,11 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            if ((left == Primitive.DECIMAL && (right == Primitive.FLOAT || right == Primitive.COMPLEX))
+                    || (right == Primitive.DECIMAL && (left == Primitive.FLOAT || left == Primitive.COMPLEX))) {
+                throw new IllegalArgumentException(
+                        "exact decimal and binary floating-point/complex operands require an explicit conversion");
+            }
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -5717,9 +5723,7 @@ public final class TypeChecker {
         if (source instanceof Primitive left && target instanceof Primitive right) {
             if (left == Primitive.VOID || left == Primitive.NULL
                     || right == Primitive.VOID || right == Primitive.NULL) return false;
-            return left == right
-                    || (left == Primitive.FLOAT && right == Primitive.DECIMAL)
-                    || (left == Primitive.DECIMAL && right == Primitive.FLOAT);
+            return left == right;
         }
         if (source instanceof StringLiteral && target == Primitive.STRING) return true;
         if (source instanceof Record left && target instanceof Record right) {
@@ -5767,9 +5771,8 @@ public final class TypeChecker {
 
         if (a instanceof Primitive ap && b instanceof Primitive bp) {
             if (ap == bp) return true;
-            // FLOAT and DECIMAL currently share the same runtime scalar domain.
-            return (ap == Primitive.FLOAT && bp == Primitive.DECIMAL)
-                    || (ap == Primitive.DECIMAL && bp == Primitive.FLOAT);
+            // Decimal values have a distinct exact runtime representation.
+            return false;
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
