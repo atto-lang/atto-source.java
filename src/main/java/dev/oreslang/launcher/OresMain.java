@@ -204,22 +204,15 @@ public final class OresMain {
 
         final RuntimePermissions permissions;
         if (touchedPermissions.isEmpty()) {
-            // The compiler's developer policy contains capabilities used for
-            // internal source loading and process bookkeeping. None of those
-            // become ambient guest host-I/O rights merely by running a file.
-            // Preserve explicit legacy --allow=CAP grants for callers that
-            // intentionally use that spelling.
-            permissions = RuntimePermissions.fromCapabilities(Set.copyOf(additionalCapabilities));
+            // Public compiler and executable entrypoints have no ambient guest
+            // host-I/O grants. Legacy --allow=CAP can expand a coarse isolate
+            // ceiling for compatibility, but does not authorize guest I/O.
+            // Only scoped Deno-style --allow-* grants authorize resources.
+            permissions = RuntimePermissions.denyAll();
         } else {
-            // Generic legacy capabilities are explicit grants only in categories
-            // with no scoped Deno-style flag. A scoped --deny-* or --allow-*
-            // always overrides a generic grant of the same category.
-            for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
-                if (!touchedPermissions.contains(permission)
-                        && additionalCapabilities.contains(permission.capability())) {
-                    permissionBuilder.allowAll(permission);
-                }
-            }
+            // Legacy coarse capabilities remain ceilings, not guest grants,
+            // including in categories not mentioned by a scoped permission flag.
+            // Never promote --allow=ENVIRONMENT into implicit --allow-env=*.
             permissions = permissionBuilder.build();
 
             // A Deno-style permission flag is the authority for its category.
