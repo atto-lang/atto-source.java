@@ -160,24 +160,45 @@ public final class ActorMiddlewareValuePipeline<T> {
                 && receipts.get(stage.key()).request() == request
                 && receipts.get(stage.key()).response() == response)
             return dispatch(slot + 1, request, response, cancelled, receipts);
-        AtomicBoolean advanced = new AtomicBoolean();
-        AtomicBoolean settled = new AtomicBoolean();
-        AtomicReference<CompletionStage<Outcome<T>>> forwarded = new AtomicReference<>();
+        // Continuation admission and middleware settlement share one lock.
+        // Publish the child placeholder BEFORE dispatching it: a fast parent
+        // failure racing an asynchronous next() can no longer miss the child
+        // and publish a terminal reply while guest work is still running.
+        final Object admission = new Object();
+        final boolean[] advanced = {false};
+        final boolean[] settled = {false};
+        AtomicReference<CompletableFuture<Outcome<T>>> forwarded = new AtomicReference<>();
         Next<T> next = (updated, draft) -> {
-            if (settled.get()) return CompletableFuture.failedFuture(
-                    new IllegalStateException("next after middleware completion"));
-            if (!advanced.compareAndSet(false, true)) return CompletableFuture.failedFuture(
-                    new IllegalStateException("next called more than once"));
-            if (cancelled.getAsBoolean()) return CompletableFuture.failedFuture(
-                    new IllegalStateException("request cancelled"));
-            ActorMiddlewarePipeline.Envelope checked = Objects.requireNonNull(updated);
-            ResponseDraft checkedDraft = Objects.requireNonNull(draft);
-            if (privileged && trustedEquivalent.contains(stage.key()))
-                receipts.put(stage.key(), new Receipt(checked, checkedDraft));
-            CompletionStage<Outcome<T>> down = dispatch(
-                    slot + 1, checked, checkedDraft, cancelled, receipts);
-            forwarded.set(down);
-            return down;
+            final CompletableFuture<Outcome<T>> child;
+            final ActorMiddlewarePipeline.Envelope checked;
+            final ResponseDraft checkedDraft;
+            synchronized (admission) {
+                if (settled[0]) return CompletableFuture.failedFuture(
+                        new IllegalStateException("next after middleware completion"));
+                if (advanced[0]) return CompletableFuture.failedFuture(
+                        new IllegalStateException("next called more than once"));
+                if (cancelled.getAsBoolean()) return CompletableFuture.failedFuture(
+                        new IllegalStateException("request cancelled"));
+                checked = Objects.requireNonNull(updated, "next request");
+                checkedDraft = Objects.requireNonNull(draft, "next response draft");
+                advanced[0] = true;
+                child = new CompletableFuture<>();
+                forwarded.set(child);
+            }
+            try {
+                if (privileged && trustedEquivalent.contains(stage.key()))
+                    receipts.put(stage.key(), new Receipt(checked, checkedDraft));
+                CompletionStage<Outcome<T>> result = Objects.requireNonNull(
+                        dispatch(slot + 1, checked, checkedDraft, cancelled, receipts),
+                        "null downstream middleware completion");
+                result.whenComplete((value, failure) -> {
+                    if (failure == null) child.complete(value);
+                    else child.completeExceptionally(failure);
+                });
+            } catch (Throwable failure) {
+                child.completeExceptionally(failure);
+            }
+            return child;
         };
         CompletionStage<Outcome<T>> current;
         try {
@@ -205,8 +226,11 @@ public final class ActorMiddlewareValuePipeline<T> {
         // One observable terminal result, even if around-stage code fails
         // after invoking its child. No detached child may publish late output.
         return current.handle((outcome, failure) -> {
-            settled.set(true);
-            CompletionStage<Outcome<T>> child = forwarded.get();
+            final CompletionStage<Outcome<T>> child;
+            synchronized (admission) {
+                settled[0] = true;
+                child = forwarded.get();
+            }
             CompletionStage<Outcome<T>> drained = child == null
                     ? CompletableFuture.completedFuture(null) : child;
             return drained.handle((ignored, childFailure) -> {
