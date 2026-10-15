@@ -492,7 +492,7 @@ class NativeHttpTest {
                     assertEquals("yes", following.headers()
                             .firstValue("X-Reused").orElseThrow());
                 });
-            assertTrue(output.stripTrailing().endsWith("1\\n1\\n0\\n0"), output);
+            assertTrue(output.stripTrailing().endsWith("1\n1\n0\n0"), output);
         }
     }
 
