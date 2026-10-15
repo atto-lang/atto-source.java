@@ -740,6 +740,36 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
+    def test_codeowner_write_access_revocation_blocks_later_export_writes(self):
+        original = self.fake_api
+        def revoke_after_first_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.codeowner_permission = "read"
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "CODEOWNER lacks"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
+    def test_codeowners_validation_revocation_blocks_later_export_writes(self):
+        original = self.fake_api
+        def invalidate_after_first_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.codeowners_errors = [{"line": 1, "kind": "Invalid owner"}]
+            return result
+        with patch.object(pub, "gh_api", side_effect=invalidate_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "invalid according to GitHub"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
         overrides = (
             {"required_approving_review_count": 0},
