@@ -6,6 +6,7 @@ writes target the exact repository checked by the private-source policy.
 """
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -24,6 +25,14 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+# The local checkout cannot grant itself a private-source transfer approval.
+# Always confirm the exact same bytes exist on the protected source main ref.
+PROTECTED_POLICY_ROUTE = (
+    "repos/ores-truffle-oreslang/oreslang-source.java/contents/"
+    ".github/private-ci-approved-repositories.txt?ref=main"
+)
+
+
 
 # These IDs are bound to reviewed source code, never caller-controlled
 # environment variables or workflow inputs. A reused owner/repo slug with a
@@ -159,6 +168,39 @@ def checked_policy_fingerprint(root, repository):
     if not approved:
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
+
+def checked_protected_main_policy(local_fingerprint):
+    """Deny approvals present only in an unreviewed local working tree/PR.
+
+    GitHub's source-repository protected main is independently authoritative;
+    no checkout-controlled ref, environment variable, or destination response
+    is permitted to replace it. This must be rechecked before every write.
+    """
+    metadata = gh_api(PROTECTED_POLICY_ROUTE)
+    encoded = metadata.get("content")
+    length = metadata.get("size")
+    if (metadata.get("type") != "file"
+            or metadata.get("encoding") != "base64"
+            or not isinstance(encoded, str)
+            or not isinstance(length, int)
+            or isinstance(length, bool)
+            or not 0 <= length <= 16 * 1024
+            or len(encoded) > 24 * 1024):
+        raise Denied("protected main private CI policy unavailable or invalid")
+    try:
+        remote = base64.b64decode("".join(encoded.splitlines()), validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise Denied("protected main private CI policy encoding invalid") from exc
+    if len(remote) != length or hashlib.sha256(remote).digest() != local_fingerprint:
+        raise Denied("local private CI approval differs from protected main")
+    # Verify GitHub's reported blob identifier, guarding malformed responses.
+    reported_sha = valid_sha(metadata.get("sha"))
+    actual_sha = hashlib.sha1(
+        b"blob " + str(length).encode("ascii") + bytes([0]) + remote
+    ).hexdigest()
+    if reported_sha != actual_sha:
+        raise Denied("protected main policy blob integrity mismatch")
+
 
 def collect_source(root, trusted_root, *, omit_checkout_metadata=False):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -388,6 +430,7 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    checked_protected_main_policy(approved_policy)
     # Check both original private source and approved carrier identities before
     # accessing source bytes; neither the slug nor visibility alone is enough.
     checked_source()
@@ -412,6 +455,7 @@ def publish(repository, source, branch, trusted_root):
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_source()
+        checked_protected_main_policy(approved_policy)
         checked_repo(repository)
 
     elements = []
