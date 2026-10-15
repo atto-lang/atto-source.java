@@ -87,6 +87,20 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void complexDivisionRecoversSmallRepresentableComponentAcrossExponentGaps() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val complex quotient =
+                          (-3.8267306126191597e229 - 2.653330234432702e-108i)
+                            / (4.996866008987324e199 + 5.230549533052834e-126i);
+                      return quotient eq (-7.658261409724479e29 + 8.016407798119527e-296i);
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void complexDivisionAvoidsIntermediateOverflowAndUnderflow() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
