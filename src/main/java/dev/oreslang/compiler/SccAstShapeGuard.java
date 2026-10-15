@@ -33,6 +33,21 @@ public final class SccAstShapeGuard {
         new Walker().visit(program, 0);
     }
 
+    /**
+     * The traversal budget is cumulative over the complete dependency graph:
+     * otherwise N individually valid programs can consume N * MAX_NODES
+     * work before any semantic admission is attempted.
+     */
+    public static void requireImmutableGraph(
+            java.util.Map<String, Ast.Program> sources) {
+        if (sources == null) throw new IllegalArgumentException("missing sources");
+        Walker walker = new Walker();
+        for (Ast.Program program : sources.values()) {
+            if (program == null) throw new IllegalArgumentException("missing source program");
+            walker.visit(program, 0);
+        }
+    }
+
     private static final class Walker {
         private int seenNodes;
         private final IdentityHashMap<Object, Boolean> visiting = new IdentityHashMap<>();
