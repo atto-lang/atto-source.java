@@ -252,3 +252,48 @@ on_throw(Error error): bool {
   and uncatchable raised/panicked effects. These tests are committed but
   **not yet known to pass** on an executed exact-head JVM CI job.
 
+## Epoch-fenced CONTROL retry on scheduler release (October 14, 2026)
+
+Supervisor CONTROL scheduling now has a **bounded, event-driven** retry
+registry instead of relying only on the next user mailbox message.
+`ControlWakeRetryQueue` holds at most the actor pool's configured
+`maxActors` host-only Runnable identities, with **one pending registration
+per supervisor ActorCell**. Both `ActorAffinityDispatcher` and
+`ReservedActorDispatcher` notify one registered waiter when an admitted
+task starts and releases a physical queue slot. No timer, worker dedicated to
+retry, busy loop, or guest callback is involved. Ordinary and CONTROL
+admission budgets remain independent.
+
+The caller snapshots a dispatcher release epoch **before** attempting the
+first CONTROL wake. When both CONTROL and ordinary admission reject, it
+registers a callback using that epoch. A slot released between rejection and
+registration causes an immediate one-shot callback; a later release dequeues
+one waiter FIFO. Registrations are coalesced per parent actor. Parent
+finalization cancels any still-pending registration. Failed queue submissions
+release permits **without signalling** waiters (they did not free a physical
+queue slot), avoiding recursive rejection cascades. Shutdown clears the
+bounded registry without executing queued callbacks.
+
+A retry still uses the actor's original serialized scheduling ticket and
+physical dispatch lane. Its immutable failure notice remains in the parent
+CONTROL inbox; no guest Error or child heap pointer enters the queue.
+`childFailureWakesRejected` counts failed submissions. If the bounded retry
+registry itself cannot accept a waiter, the rejected notification remains
+host-auditable and can be consumed on a later legitimate parent turn; this
+is **not** a guarantee of progress when all carrier workers are permanently
+blocked or the scheduler is closed.
+
+New deterministic JUnit fixtures `ControlWakeRetryQueueTest` and
+`ReservedControlDispatcherTest` exercise release-before-register,
+register-before-release, single-delivery FIFO, cancellation, shutdown,
+admission saturation in both affinity modes, and re-admission on a slot
+release. These fixtures are selected by
+`scripts/verify_actor_exception_jvm.sh` but have **not** passed the exact
+GraalVM/JDK25 repository test suite due to GitHub Actions jobs failing
+before steps execute. A separate isolated Java 21 smoke harness exercised
+eight pure retry-queue assertions; that is not proof of full runtime
+correctness, AOT, or native parity.
+
+Structured one-for-one restart, restart intensity limits, source-language
+on_raise recovery and LLVM guest lowering remain unimplemented.
+
