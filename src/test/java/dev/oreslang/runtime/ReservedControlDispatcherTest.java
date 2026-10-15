@@ -124,6 +124,23 @@ final class ReservedControlDispatcherTest {
                 () -> dispatcher.executeControl(() -> {}));
     }
 
+    @Test
+    void affinityShutdownToleratesForeignHostPendingRunnable() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ActorAffinityDispatcher lanes = new ActorAffinityDispatcher(
+                1, 1, 1, new int[0], ignored -> worker);
+        AtomicInteger effects = new AtomicInteger();
+        Runnable foreign = effects::incrementAndGet;
+        worker.enqueueForeign(foreign);
+        lanes.executeOnLane(0, effects::incrementAndGet);
+        List<Runnable> abandoned = lanes.shutdownNow();
+        assertEquals(2, abandoned.size());
+        assertSame(foreign, abandoned.get(0));
+        assertEquals(0, effects.get());
+        assertThrows(RejectedExecutionException.class,
+                () -> lanes.executeControlOnLane(0, effects::incrementAndGet));
+    }
+
     /**
      * Minimal deterministic executor. Never creates threads; submissions are
      * invoked explicitly, and shutdown returns queued unexecuted runnables.
@@ -134,6 +151,7 @@ final class ReservedControlDispatcherTest {
         private boolean rejected;
 
         synchronized void reject(boolean value) { rejected = value; }
+        synchronized void enqueueForeign(Runnable runnable) { pending.addLast(runnable); }
         synchronized int pending() { return pending.size(); }
 
         synchronized void runNext() {
