@@ -187,6 +187,37 @@ final class ActorGroupPlacementPolicyTest {
     }
 
     @Test
+    void foreignRuntimeActorCannotInspectOrCreateGroupsInAnotherRuntime() throws Exception {
+        try (ActorRuntime owner = new ActorRuntime();
+             ActorRuntime foreign = new ActorRuntime()) {
+            var ownerGroup = owner.createActorGroup();
+            CountDownLatch observed = new CountDownLatch(1);
+            AtomicReference<Throwable> error = new AtomicReference<>();
+            var actor = foreign.spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    factoryContext -> (message, context) -> {
+                        try {
+                            assertThrows(SecurityException.class, ownerGroup::placementPolicy);
+                            assertThrows(SecurityException.class,
+                                    () -> owner.createActorGroup(ActorGroupPlacementPolicy.unrestricted()));
+                        } catch (Throwable problem) {
+                            error.set(problem);
+                        } finally {
+                            observed.countDown();
+                        }
+                    });
+            actor.send(1);
+            assertTrue(observed.await(5, TimeUnit.SECONDS));
+            assertNull(error.get());
+            assertEquals(1, owner.actorGroupCount(),
+                    "foreign actor cannot allocate groups in a different runtime");
+            ownerGroup.close();
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void groupMembershipRemainsOrthogonalToImmutablePlacementPolicy() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var groupA = runtime.createActorGroup(ActorGroupPlacementPolicy.unrestricted());
