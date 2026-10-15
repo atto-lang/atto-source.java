@@ -204,7 +204,7 @@ public final class ActorRaceInstrumentation {
         if (conflict) races++;
         if (write) {
             location.writes.put(thread, clock.time(thread));
-            location.reads.clear();
+            // Retain concurrent reader epochs for subsequent writer comparisons.
         } else {
             location.reads.put(thread, clock.time(thread));
         }
