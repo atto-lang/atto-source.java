@@ -441,3 +441,41 @@ retry assertions and fatal VM signal propagation. This is a host-only helper
 test, **not** evidence that the full Java actor runtime, JDK25/GraalVM
 Native Image or LLVM guest runtime passed.
 
+
+## Dequeued CONTROL cancellation fence and retained quota (2026-10-15)
+
+`ControlWakeRetryQueue` now uses an identity-bearing `Retry` ticket, rather
+than a plain deferred `Runnable`. The ticket stays visible to `cancel()`
+or `close()` from the instant a physical slot release dequeues the wake
+until its **callback-start admission** is linearized under the queue monitor.
+Cancellation before that point revokes the ticket and refunds its retained
+quota exactly once. Cancellation after start cannot roll back a callback
+already executing; downstream actor generation/ownership checks remain
+mandatory. Cancelling a ticket also removes its reference from the
+in-transit tracking set immediately, so a delayed carrier does not pin
+that reference in the queue.
+
+A single bounded retention counter continues to cover pending, deferred,
+and dequeued-but-not-started callbacks; fresh/stale-epoch retry handling,
+FIFO/lane-locality fairness, fatal callback cleanup, and subsequent valid
+re-registration must remain intact. No guest callback is executed inside
+the queue monitor.
+
+**Local exact-class verification:** Java 21 `javac -Xlint:all -Werror`
+compiled the file with Git blob SHA
+`09d83f5cd371823ab529baf428f410dbf4c6f7a4`.
+A package-local harness executed 200 deterministic pre-start cancel/close
+handoff trials, 600,000 reentrant registration attempts, 75,000
+registrations across 12 threads, and fatal-callback cleanup, all passing.
+The deterministic handoff trial pauses a carrier after dequeue using a
+host-only reflective ThreadLocal gate; the committed JUnit and standalone
+stress runners include the regression and check immediate ticket unlink.
+
+**Verification limits:** this is exact-file JVM evidence, not execution of
+the checked-in full JUnit suite, Maven integration, GraalVM Native Image,
+or compiler guest exceptions. [Focused Actions run #38781817261](https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/38781817261)
+failed with zero executed steps, so CI has not verified this change.
+A private, source-free Benefactor runner probe completed three steps
+successfully, but the protected-main source-transfer allowlist remains empty.
+No private source objects were mirrored to another organization.
+
