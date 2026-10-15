@@ -79,7 +79,7 @@ final class SourceActorOnThrowExecutionTest {
 
     @Test void throwInsideOnThrowCannotExportAnotherGuestError() throws Exception {
         Path entry = source("throw new WorkerFault(7);",
-                "on_throw(Error problem): bool { throw new WorkerFault(8); }");
+                "on_throw(Error problem): bool { throw new WorkerFault(8); return false; }");
         assertDoesNotThrow(() -> LinkedProgramRunner.validate(entry));
         RuntimeException failure = assertThrows(RuntimeException.class, () -> run(entry));
         java.util.ArrayDeque<Throwable> queue = new java.util.ArrayDeque<>();
