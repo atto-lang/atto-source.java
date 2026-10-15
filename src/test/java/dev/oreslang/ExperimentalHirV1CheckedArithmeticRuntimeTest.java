@@ -269,4 +269,34 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
     }
 
 
+
+    @Test
+    void checkedProfileRejectsNativeSymbolAliasesAndBooleanMain() {
+        String[] invalid = {
+            HEADER + """
+                pub fnc puts(int value): int { return value; }
+                pub fnc main(): int { return puts(43); }
+                """,
+            HEADER + """
+                pub fnc __oreslang_guest_main(): int { return 43; }
+                pub fnc main(): int { return __oreslang_guest_main(); }
+                """,
+            HEADER + """
+                pub fnc main(): bool { return true; }
+                """,
+            HEADER + """
+                pub fnc echoed(int value, int value): int { return value; }
+                pub fnc main(): int { return echoed(43, 0); }
+                """
+        };
+        for (String source : invalid) {
+            assertThrows(RuntimeException.class, () -> exit(source),
+                    "checked source must reject native-symbol/entry/parameter ABI ambiguity");
+        }
+        assertEquals(43, assertDoesNotThrow(() -> exit(HEADER + """
+                pub fnc identity(int value): int { return value; }
+                pub fnc main(): int { return identity(43); }
+                """)));
+    }
+
 }
