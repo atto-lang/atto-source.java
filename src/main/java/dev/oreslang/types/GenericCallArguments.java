@@ -69,14 +69,8 @@ final class GenericCallArguments {
                 inferenceHoles.add(name);
             } else {
                 // Only a *whole* generic argument may be an inference hole.
-                // A nested '_' or synthetic '$infer(int arity) {
-        List<String> names = new ArrayList<>(arity);
-        for (int i = 0; i < arity; i++) names.add("$callable" + i);
-        return List.copyOf(names);
-    }
-}
- must not enter the type
-                // checker as an apparently concrete nominal type.
+                // Nested '_' or synthetic '$infer$' markers must never reach
+                // the type checker as apparently concrete nominal types.
                 requireConcreteExplicitType(value, label);
                 types.put(name, value);
             }
