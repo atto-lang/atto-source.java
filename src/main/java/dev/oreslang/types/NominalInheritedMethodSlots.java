@@ -54,6 +54,35 @@ public final class NominalInheritedMethodSlots {
         return planner.collect(planner.resolve(rootClass, null), domain, methodName, arity);
     }
 
+    /**
+     * Compiler-only selection for an inherited method family. The argument
+     * proofs MUST originate from statically resolved enum declarations; this
+     * method never accepts runtime object values, enum tags, or payloads.
+     *
+     * <p>Selection does not make the target executable. A separate immutable
+     * call-site binding and matching runtime/JIT/AOT vtable ABI are required.
+     */
+    public static Target selectStatic(
+            Ast.Program program, String rootClass, Domain domain,
+            String methodName, int arity, Map<Integer, String> staticEnumProofs) {
+        Objects.requireNonNull(staticEnumProofs, "static enum proofs");
+        Map<Slot, Target> plan = prove(program, rootClass, domain, methodName, arity);
+        if (plan.isEmpty()) {
+            throw new IllegalArgumentException("no inherited nominal method candidates");
+        }
+        List<Signature> signatures = new ArrayList<>(plan.size());
+        for (Slot slot : plan.keySet()) {
+            signatures.add(new Signature(slot.name(), slot.positions()));
+        }
+        Signature selected = NominalEnumOverloads.select(signatures, staticEnumProofs);
+        for (Map.Entry<Slot, Target> entry : plan.entrySet()) {
+            if (selected.positions().equals(entry.getKey().positions())) {
+                return entry.getValue();
+            }
+        }
+        throw new IllegalStateException("static method selection lost exact declaration identity");
+    }
+
     private static final class Planner {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Set<String> ambiguous = new HashSet<>();
