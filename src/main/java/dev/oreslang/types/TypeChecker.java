@@ -268,7 +268,41 @@ public final class TypeChecker {
         }
     }
 
+    private static void rejectMisplacedActorMiddleware(
+            List<Ast.Annotation> annotations, String site) {
+        for (Ast.Annotation a : annotations) {
+            if (a.name().equals("ActorMiddleware") || a.name().equals("SupervisorMiddleware")) {
+                throw new IllegalArgumentException("@" + a.name()
+                        + " must be declared on an actor type or configured by the trusted supervisor, not " + site);
+            }
+        }
+    }
+
     private void validate(Ast.Program program) {
+        // Middleware is an executable authorization contract, not a generic
+        // class/method/module annotation. Never ignore it on the wrong site.
+        for (Ast.ModuleDecl module : program.modules()) {
+            rejectMisplacedActorMiddleware(module.annotations(), "module " + module.name());
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    rejectMisplacedActorMiddleware(fn.annotations(), "function " + fn.name());
+                } else if (decl instanceof Ast.FieldDecl field) {
+                    rejectMisplacedActorMiddleware(field.annotations(), "module field " + field.name());
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        rejectMisplacedActorMiddleware(field.annotations(), "field " + klass.name() + "." + field.name());
+                    }
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        rejectMisplacedActorMiddleware(method.annotations(), "method " + klass.name() + "." + method.name());
+                    }
+                    if (klass.constructor() != null) {
+                        rejectMisplacedActorMiddleware(klass.constructor().annotations(),
+                                "constructor " + klass.name());
+                    }
+                }
+            }
+        }
+
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before
