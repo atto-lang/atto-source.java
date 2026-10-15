@@ -218,3 +218,37 @@ modes, separate normal/CONTROL permits, saturated admission, unexpected
 physical submission rejection, and shutdown cleanup. These tests have not
 been confirmed passing on an executable exact-head CI runner.
 
+
+## Actor-local on_throw(Error): bool receive-turn slice (October 14, 2026)
+
+The Java frontend now admits a **private, nonstatic, nongeneric,
+nonsuspending** actor method exactly of the form:
+
+```oreslang
+on_throw(Error error): bool {
+    // Runs on the failing actor's original execution domain.
+    return true;
+}
+```
+
+- This hook is invoked only when a guest `throw` escapes a **receive** turn,
+  including a cooperative `SourceTask` receive. Lexical guest `try/catch`
+  takes precedence. `on_start` and partially constructed actor-state failures
+  still fail closed; they do not invoke the hook.
+- `true` acknowledges this turn's uncaught guest Error; `false` or an
+  unavailable hook escalates as a payload-free `RAISE`. An invalid/missing
+  return, a nested uncaught guest Error or an attempted suspended/looping hook
+  also escalates. Only the original actor-local activation sees the Error
+  instance. No Error, guest stack or host exception carrying it is published
+  to supervisor CONTROL.
+- Explicit `raise` and `panic` **bypass** `on_throw`; cancellation and
+  host fatal effects are not consumed by it. Calling `self.on_throw` directly
+  is rejected; the VM owns this lifecycle hook.
+- This is intentionally **not** source `on_raise`, `recover`, automatic
+  supervisor restart or LLVM guest effect lowering. Those remain fail-closed.
+- The linked-source regression class `SourceActorOnThrowExecutionTest`
+  verifies both synchronous and cooperative receive paths, local catch
+  precedence, false/true handling, nested throw redaction, invalid signatures
+  and uncatchable raised/panicked effects. These tests are committed but
+  **not yet known to pass** on an executed exact-head JVM CI job.
+
