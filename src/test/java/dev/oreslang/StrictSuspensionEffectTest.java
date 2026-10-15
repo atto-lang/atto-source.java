@@ -57,6 +57,23 @@ final class StrictSuspensionEffectTest {
     }
 
     @Test
+    void plainCallbackCannotInheritEnclosingSuspendsEffectInStrictMode() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck("""
+                        async fnc answer(): int { return 1; }
+                        @StrictSuspension
+                        suspends fnc register(): void {
+                            val cb = |int value| -> {
+                                stdio.println(await answer());
+                            };
+                            return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("requires a suspends or async"),
+                error::getMessage);
+    }
+
+    @Test
     void unannotatedLegacyBodyIsNotSilentlyMigratedToStrictMode() {
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
                 async fnc answer(): int { return 1; }
