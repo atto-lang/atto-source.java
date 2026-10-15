@@ -72,4 +72,25 @@ final class LinkedProgramRunnerSourceBudgetTest {
                 () -> LinkedProgramRunner.validate(temp.resolve("unit0.ores"), Map.of()));
     }
 
+    @Test
+    void linkedEntryRejectsBinaryNulEvenInComment() throws Exception {
+        Path source = temp.resolve("binary-nul.ores");
+        Files.write(source, new byte[] {'/', '/', ' ', 0, '\n'});
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(source, Map.of()));
+    }
+
+    @Test
+    void importedUnitRejectsBinaryNulEvenInComment() throws Exception {
+        Path entry = temp.resolve("with-nul-import.ores");
+        Path child = temp.resolve("nul-child.ores");
+        Files.writeString(entry, """
+                import * as child from "./nul-child.ores";
+                pub routine main(): void { return; }
+                """);
+        Files.write(child, new byte[] {'/', '/', ' ', 0, '\n'});
+        assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(entry, Map.of()));
+    }
+
 }
