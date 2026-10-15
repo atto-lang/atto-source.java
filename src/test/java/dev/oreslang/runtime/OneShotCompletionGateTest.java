@@ -114,6 +114,77 @@ final class OneShotCompletionGateTest {
     }
 
     @Test
+    void claimIsVisibleBeforeTheFirstConsumerReturnsAndLateCompletionCannotReenter()
+            throws Exception {
+        OneShotCompletionGate gate = new OneShotCompletionGate();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger callbacks = new AtomicInteger();
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> gate.deliver(() -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("consumer release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                callbacks.incrementAndGet();
+            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS),
+                    "first callback must enter before duplicate delivery");
+            assertTrue(gate.delivered(),
+                    "terminal claim must publish before consumer execution finishes");
+            var duplicate = pool.submit(() -> gate.deliver(callbacks::incrementAndGet));
+            assertFalse(duplicate.get(5, TimeUnit.SECONDS),
+                    "duplicate callback must not wait for or overlap first completion");
+            release.countDown();
+            assertTrue(first.get(5, TimeUnit.SECONDS));
+            assertEquals(1, callbacks.get());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void racingCancellationSuccessAndFailureAreLinearized() throws Exception {
+        final int rounds = 128;
+        final int actors = 3;
+        try (var pool = Executors.newFixedThreadPool(actors)) {
+            for (int round = 0; round < rounds; round++) {
+                OneShotCompletionGate gate = new OneShotCompletionGate();
+                AtomicInteger published = new AtomicInteger();
+                AtomicReference<String> result = new AtomicReference<>();
+                CountDownLatch ready = new CountDownLatch(actors);
+                CountDownLatch start = new CountDownLatch(1);
+                List<java.util.concurrent.Future<Boolean>> claims = new ArrayList<>();
+                for (String terminal : List.of("cancelled", "success", "failure")) {
+                    claims.add(pool.submit(() -> {
+                        ready.countDown();
+                        if (!start.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("completion race start timed out");
+                        }
+                        return gate.deliver(() -> {
+                            published.incrementAndGet();
+                            result.set(terminal);
+                        });
+                    }));
+                }
+                assertTrue(ready.await(5, TimeUnit.SECONDS));
+                start.countDown();
+                int winners = 0;
+                for (var claim : claims) if (claim.get(5, TimeUnit.SECONDS)) winners++;
+                assertEquals(1, winners, "round " + round);
+                assertEquals(1, published.get(), "round " + round);
+                assertTrue(List.of("cancelled", "success", "failure").contains(result.get()));
+                assertTrue(gate.delivered());
+            }
+        }
+    }
+
+    @Test
     void concurrentCompletionsRunConsumerAtMostOnce() throws Exception {
         OneShotCompletionGate gate = new OneShotCompletionGate();
         AtomicInteger callbacks = new AtomicInteger();
