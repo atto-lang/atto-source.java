@@ -25,7 +25,10 @@ public final class ActorRaceInstrumentation {
     private static final int MAX_LIVE_ACTORS = 100_000;
     private static final int MAX_SYNC_DOMAINS = 100_000;
     private static final ActorRaceInstrumentation RUNTIME = new ActorRaceInstrumentation();
-    private static final boolean ENABLED = Boolean.getBoolean("ores.test.race");
+    // The public test CLI sets ORES_RACE_REQUIRED=1 for its child backend.
+    // Activation does not itself imply that all guest memory accesses are probed.
+    private static final boolean ENABLED = Boolean.getBoolean("ores.test.race")
+            || "1".equals(System.getenv("ORES_RACE_REQUIRED"));
 
     public record Snapshot(long accesses, long memoryRaces,
                            long actorChecks, long actorOverlapViolations,
