@@ -211,31 +211,49 @@ public final class ActorMiddlewarePipeline {
                 && supervisorReceipts.get(stage.key()) == request) {
             return run(position + 1, request, cancelled, supervisorReceipts);
         }
-        AtomicBoolean advanced = new AtomicBoolean();
-        AtomicBoolean settled = new AtomicBoolean();
-        java.util.concurrent.atomic.AtomicReference<CompletionStage<Outcome>> downstream =
+        // Admission and settlement linearize together. A parent may never
+        // settle while its claimed child is still being published.
+        final Object admission = new Object();
+        final boolean[] advanced = {false};
+        final boolean[] settled = {false};
+        java.util.concurrent.atomic.AtomicReference<CompletableFuture<Outcome>> downstream =
                 new java.util.concurrent.atomic.AtomicReference<>();
         Next next = updated -> {
-            if (settled.get()) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("middleware next after completion"));
+            final CompletableFuture<Outcome> child;
+            final Envelope checked;
+            synchronized (admission) {
+                if (settled[0]) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("middleware next after completion"));
+                }
+                if (advanced[0]) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("middleware next is single-use"));
+                }
+                if (cancelled.getAsBoolean()) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("middleware request cancelled"));
+                }
+                checked = Objects.requireNonNull(updated, "next request");
+                advanced[0] = true;
+                child = new CompletableFuture<>();
+                downstream.set(child);
             }
-            if (!advanced.compareAndSet(false, true)) {
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("middleware next is single-use"));
+            try {
+                if (inSupervisor && verifiedEquivalence.contains(stage.key())) {
+                    supervisorReceipts.put(stage.key(), checked);
+                }
+                CompletionStage<Outcome> invoked = Objects.requireNonNull(
+                        run(position + 1, checked, cancelled, supervisorReceipts),
+                        "null downstream middleware completion");
+                invoked.whenComplete((value, failure) -> {
+                    if (failure == null) child.complete(value);
+                    else child.completeExceptionally(failure);
+                });
+            } catch (Throwable failure) {
+                child.completeExceptionally(failure);
             }
-            if (cancelled.getAsBoolean()) {
-                return CompletableFuture.failedFuture(new IllegalStateException("middleware request cancelled"));
-            }
-            if (inSupervisor && verifiedEquivalence.contains(stage.key())) {
-                // Proof becomes usable only after the trusted supervisor
-                // middleware reaches its continuation, not at admission.
-                supervisorReceipts.put(stage.key(), updated);
-            }
-            CompletionStage<Outcome> invoked = run(
-                    position + 1, Objects.requireNonNull(updated), cancelled, supervisorReceipts);
-            downstream.set(invoked);
-            return invoked;
+            return child;
         };
         CompletionStage<Outcome> result;
         try {
@@ -248,8 +266,11 @@ public final class ActorMiddlewarePipeline {
         // must not settle before downstream finishes (or is cancelled by its
         // trusted owner). Otherwise a late handler can write after rejection.
         return result.handle((value, failure) -> {
-            settled.set(true);
-            CompletionStage<Outcome> forwarded = downstream.get();
+            final CompletionStage<Outcome> forwarded;
+            synchronized (admission) {
+                settled[0] = true;
+                forwarded = downstream.get();
+            }
             CompletionStage<Outcome> drain = forwarded == null
                     ? CompletableFuture.completedFuture(null) : forwarded;
             return drain.handle((ignored, downstreamFailure) -> {
