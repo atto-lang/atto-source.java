@@ -7409,11 +7409,25 @@ public final class ActorRuntime implements AutoCloseable {
                 ExecutorService dispatcher = dispatcherFor(kind);
                 Runnable dispatch = () -> runBatch(dispatchTicket);
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
-                    if (fatalOnRejection) lanes.executeOnLane(dispatchLane, dispatch);
-                    else lanes.executeControlOnLane(dispatchLane, dispatch);
+                    if (fatalOnRejection) {
+                        lanes.executeOnLane(dispatchLane, dispatch);
+                    } else {
+                        try {
+                            lanes.executeControlOnLane(dispatchLane, dispatch);
+                        } catch (RejectedExecutionException reserveUnavailable) {
+                            // A burst may consume the CONTROL budget while
+                            // normal admission is still available. Reuse that
+                            // capacity before reporting a failed wake.
+                            lanes.executeOnLane(dispatchLane, dispatch);
+                        }
+                    }
                 } else if (!fatalOnRejection
                         && dispatcher instanceof ReservedActorDispatcher reserved) {
-                    reserved.executeControl(dispatch);
+                    try {
+                        reserved.executeControl(dispatch);
+                    } catch (RejectedExecutionException reserveUnavailable) {
+                        reserved.execute(dispatch);
+                    }
                 } else {
                     dispatcher.execute(dispatch);
                 }
