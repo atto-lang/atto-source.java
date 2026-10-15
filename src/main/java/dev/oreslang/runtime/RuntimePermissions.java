@@ -317,9 +317,16 @@ public final class RuntimePermissions {
                 host = text.substring(0, colon);
                 portText = text.substring(colon + 1);
             }
-            if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
-            if (host.isEmpty() || host.startsWith(".") || host.contains("..")
-                    || !host.matches("[a-z0-9*._-]+")) return null;
+            if (host.endsWith(".")) {
+                host = host.substring(0, host.length() - 1);
+            }
+            // Only one DNS root dot is valid. Reject an additional dot here:
+            // policy construction and matching both normalize endpoints, so
+            // accepting it would otherwise strip one dot on each pass.
+            if (host.isEmpty() || host.startsWith(".") || host.endsWith(".")
+                    || host.contains("..") || !host.matches("[a-z0-9*._-]+")) {
+                return null;
+            }
             if (host.contains("*") && !(allowWildcard && host.startsWith("*.")
                     && host.indexOf('*', 1) < 0)) return null;
             // Numeric IPv4 aliases (127.1, 2130706433, leading-zero octets)

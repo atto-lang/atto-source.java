@@ -135,11 +135,31 @@ final class RuntimePermissionsNetworkAuditTest {
                 "", "api.example.com:0", "api.example.com:65536",
                 "api.example.com:443:999", "api.example.com:", "*.example.com:443",
                 "http://api.example.com:443", "user@api.example.com:443",
-                "api.example.com..:443", "[::1]garbage"
+                "api.example.com..:443", "api.example.com..", "api.example.com...:443",
+                "[::1]garbage"
         }) {
             assertFalse(policy.allows(RuntimePermissions.Permission.NET, target),
                     "malformed endpoint unexpectedly allowed: " + target);
         }
+    }
+
+    @Test
+    void repeatedDnsRootDotsAreRejectedBeforePolicyRoundTrip() {
+        for (String malformed : new String[]{
+                "api.example.com..", "api.example.com..:443",
+                "api.example.com...:443", "*.example.com..:443"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.NET, malformed));
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withDenied(RuntimePermissions.Permission.NET, malformed));
+        }
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com.:443");
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.com.:443"));
     }
 
     @Test
