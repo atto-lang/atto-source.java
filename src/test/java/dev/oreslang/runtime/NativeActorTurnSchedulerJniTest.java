@@ -231,6 +231,31 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeActorWitnessRejectsSecondSchedulerOwnerWithoutBreakingFirst() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler first = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var collision = assertThrows(IllegalStateException.class,
+                        () -> OresScheduler.managedWithNativeTurnWitness(
+                                1, Runnable::run, kernel));
+                assertTrue(collision.getMessage().contains("already bound"));
+                // A rejected second owner must not consume SourceTask ID 1 or
+                // close the real first owner's actor VM/carrier.
+                assertEquals(71,
+                        first.start(resume -> OresScheduler.done(71))
+                                .get(5, TimeUnit.SECONDS));
+            }
+            // Deliberately do not transfer ownership on close. Native VM
+            // capabilities/actor incarnation cannot silently be reused.
+            var reused = assertThrows(IllegalStateException.class,
+                    () -> OresScheduler.managedWithNativeTurnWitness(
+                            1, Runnable::run, kernel));
+            assertTrue(reused.getMessage().contains("already bound"));
+            kernel.stop();
+        }
+    }
+
+    @Test
     void nativeActorWitnessRejectsMultiplePhysicalSchedulerLanes() {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(16)) {
             assertThrows(IllegalArgumentException.class,
