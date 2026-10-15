@@ -158,6 +158,50 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeRetryRefusesToReportIdleWhileTrustedQuiescenceIsRunning() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var entered = new CountDownLatch(1);
+                var release = new CountDownLatch(1);
+                var calls = new AtomicInteger();
+                OresFuture<Integer> result = scheduler.start(
+                        resume -> OresScheduler.done(321),
+                        () -> {
+                            calls.incrementAndGet();
+                            entered.countDown();
+                            try {
+                                if (!release.await(5, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException(
+                                            "trusted quiescence release not signaled");
+                                }
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(interrupted);
+                            }
+                        });
+                try {
+                    assertTrue(entered.await(5, TimeUnit.SECONDS));
+                    assertFalse(result.isDone());
+                    var incomplete = assertThrows(IllegalStateException.class,
+                            scheduler::retryNativeQuiescentTasks);
+                    assertTrue(incomplete.getMessage().contains(
+                            "trusted quiescence is still running"));
+                    assertFalse(result.isDone(),
+                            "retry must not publish DONE while callback is in flight");
+                    assertEquals(1, calls.get(), "retry must not reenter callback");
+                } finally {
+                    release.countDown();
+                }
+                assertEquals(321, result.get(5, TimeUnit.SECONDS));
+                assertEquals(0, scheduler.retryNativeQuiescentTasks());
+                assertEquals(1, calls.get());
+                kernel.stop();
+            }
+        }
+    }
+
+    @Test
     void nativeTerminalPublicationWaitsForTrustedQuiescenceCallback() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
