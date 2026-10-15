@@ -43,9 +43,13 @@ scalar-return expression formed from literals and the supported unary and
 arithmetic operations. Abstract static methods are not admissible.
 
 The zero-argument built-in `Array` exception cannot be applied to a
-shadowing guest class of the same name. Partial-construction resource failure
-cleanup and full transitive effect summaries remain **unproven**, so these
-exceptions must not be widened without executable regressions.
+shadowing local class, an imported binding of the same name, or an
+inferred-type marker without an explicit constructor effect proof. Runtime
+dispatch treats `Array` as a built-in before ordinary class lookup; the
+checker must not silently conflate this case with arbitrary guest imports.
+Partial-construction resource failure cleanup and full transitive effect
+summaries remain **unproven**, so these exceptions must not be widened
+without executable regressions.
 
 ## Constructor self
 
