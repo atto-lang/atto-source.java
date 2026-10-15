@@ -1384,6 +1384,58 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
                              for method, route, _ in self.route_calls))
 
+    def test_deterministic_fuzz_batch_contents_and_serialized_request_bound(self):
+        # Exercise GitHub's actual JSON serialization model, not merely
+        # unescaped source length. Every file must be retained exactly once,
+        # without changing bytes or executable bits across the batching plan.
+        import random
+        import json
+        rng = random.Random(0xC1A55AFE)
+        cases = 180
+        for scenario in range(cases):
+            count = (1, 15, 16, 17, 63, 64, 65, 97, 160)[scenario % 9]
+            files = []
+            for index in range(count):
+                choice = rng.randrange(12)
+                if choice == 0:
+                    raw = bytes([1]) * rng.randrange(1, 40_000)
+                elif choice == 1:
+                    raw = (("🚀" * rng.randrange(1, 4000)).encode("utf-8"))
+                elif choice == 2:
+                    raw = (("\\\\\"" * rng.randrange(1, 12_000)).encode("utf-8"))
+                elif choice == 3:
+                    raw = b"binary\\x00\\xff" + bytes([rng.randrange(256)])
+                elif choice == 4:
+                    raw = b"x" * rng.randrange(130_000, 138_000)
+                else:
+                    raw = (f"hello-{scenario}-{index}-".encode("utf-8")
+                           * rng.randrange(0, 120))
+                rel = f"nested/{scenario:03d}/item-{index:04d}.ores"
+                files.append((rel, raw, rng.choice(("100644", "100755"))))
+            batches = pub.prepare_source_tree_batches(files)
+            self.assertEqual([row[:3] for batch in batches for row in batch], files)
+            self.assertTrue(all(1 <= len(batch) <= pub.TREE_BATCH_MAX_ENTRIES
+                                for batch in batches))
+            for batch in batches:
+                elements = []
+                for rel, data, mode, as_text in batch:
+                    entry = {"path": rel, "mode": mode, "type": "blob"}
+                    if as_text is not None:
+                        self.assertEqual(as_text.encode("utf-8"), data)
+                        self.assertNotIn(b"\\x00", data)
+                        entry["content"] = as_text
+                    else:
+                        entry["sha"] = hashlib.sha1(
+                            b"blob " + str(len(data)).encode("ascii") + b"\\x00" + data
+                        ).hexdigest()
+                    elements.append(entry)
+                payload = {"tree": elements, "base_tree": "a" * 40}
+                encoded = json.dumps(payload).encode("utf-8")
+                self.assertLessEqual(
+                    len(encoded), pub.TREE_BATCH_MAX_BYTES,
+                    f"scenario={scenario} escaped Git Trees API body exceeded limit"
+                )
+
     def test_git_tree_sha_matches_known_git_write_tree_result(self):
         # Verified independently with git init, git add, git write-tree
         # (main.ores contains hello\n; nested/file.ores contains world\n
