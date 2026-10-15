@@ -42,8 +42,10 @@ class RaceTraceRecorderTest {
         try (RaceTraceRecorder out = RaceTraceRecorder.open(file, "r1", "graal")) {
             assertThrows(IllegalArgumentException.class,
                     () -> out.task("injected\"}\n{\"op\":\"end"));
-            out.task("ok");
+            assertThrows(IOException.class, () -> out.task("ok"));
+
         }
+        assertFalse(Files.readString(file).contains("\\\"op\\\":\\\"end\\\""));
         assertThrows(IOException.class, () -> RaceTraceRecorder.open(file, "r2", "graal"));
         assertThrows(IllegalArgumentException.class,
                 () -> RaceTraceRecorder.open(temporary.resolve("other.jsonl"), "invalid run\n", "graal"));
