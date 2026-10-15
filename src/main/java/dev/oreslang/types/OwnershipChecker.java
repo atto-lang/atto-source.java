@@ -2007,6 +2007,19 @@ public final class OwnershipChecker {
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
+        // A callback may escape its current lexical scope when the API declares
+        // deferred/maybe-inline delivery. Even if a dynamic or generic callable
+        // reaches this checker, never let it smuggle a borrowed callable or
+        // actor-confined loan into an independently admitted continuation.
+        // checkLambda() above also rejects borrowed captures and transfers
+        // move-only captures before the registration call can complete.
+        if (param.callbackDelivery() != Ast.CallbackDelivery.UNSPECIFIED
+                && (argument.kind == ValueKind.IMM_BORROW
+                    || argument.kind == ValueKind.MUT_BORROW
+                    || (argument.type != null && argument.type.isBorrow()))) {
+            throw error(callable + " callback argument " + position
+                    + " requires an owned callable; borrowed callbacks cannot escape registration");
+        }
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
