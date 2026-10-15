@@ -283,6 +283,7 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
+        validateSealedHierarchies();
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before
@@ -312,6 +313,121 @@ public final class TypeChecker {
                 }
             } finally {
                 currentLexicalModule = previousModule;
+            }
+        }
+    }
+
+    /**
+     * Sealed hierarchies are closed inside one compilation unit and module.
+     * No imported or runtime-discovered implementation may bypass admission.
+     * Runtime generation/linker proofs and sealed-match exhaustiveness remain
+     * separate features; this pass enforces the source inheritance contract.
+     */
+    private void validateSealedHierarchies() {
+        Map<Ast.ClassDecl, Set<String>> classChildren = new IdentityHashMap<>();
+        Map<Ast.InterfaceDecl, Set<String>> interfaceChildren = new IdentityHashMap<>();
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            if (klass.isSealed() && klass.isFinal()) {
+                throw new IllegalArgumentException("class '" + klass.name()
+                        + "' cannot be both sealed and final");
+            }
+            if (klass.isFinal() && klass.isAbstract()) {
+                throw new IllegalArgumentException("class '" + klass.name()
+                        + "' cannot be both abstract and final");
+            }
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && (klass.isSealed() || klass.isFinal() || !klass.permits().isEmpty())) {
+                throw new IllegalArgumentException("sealed/final actor class hierarchies are not enabled");
+            }
+            if (!klass.isSealed() && !klass.permits().isEmpty()) {
+                throw new IllegalArgumentException("'permits' requires a sealed class: " + klass.name());
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue; // Object/List builtin marker
+                if (parent.isFinal()) {
+                    throw new IllegalArgumentException("final class '" + parent.name()
+                            + "' cannot be extended by '" + klass.name() + "'");
+                }
+                if (parent.isSealed()) {
+                    requireSealedChild(parent.name(), classOwners.get(parent),
+                            classOwners.get(klass), parent.permits(), klass.name(),
+                            klass.isFinal() || klass.isSealed());
+                    classChildren.computeIfAbsent(parent, ignored -> new LinkedHashSet<>())
+                            .add(klass.name());
+                }
+            }
+            for (Ast.TypeRef ifaceRef : klass.interfaces()) {
+                Ast.InterfaceDecl iface = findInterface(ifaceRef.name());
+                if (iface == null || !iface.isSealed()) continue;
+                requireSealedChild(iface.name(), interfaceOwners.get(iface),
+                        classOwners.get(klass), iface.permits(), klass.name(),
+                        klass.isFinal() || klass.isSealed());
+                interfaceChildren.computeIfAbsent(iface, ignored -> new LinkedHashSet<>())
+                        .add(klass.name());
+            }
+        }
+        for (Ast.InterfaceDecl child : interfaceOwners.keySet()) {
+            if (child.moduleContract() && child.isSealed()) {
+                throw new IllegalArgumentException("module contract '" + child.name()
+                        + "' cannot be sealed");
+            }
+            if (!child.isSealed() && !child.permits().isEmpty()) {
+                throw new IllegalArgumentException("'permits' requires a sealed interface: " + child.name());
+            }
+            for (Ast.TypeRef parentRef : child.parents()) {
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent == null || !parent.isSealed()) continue;
+                requireSealedChild(parent.name(), interfaceOwners.get(parent),
+                        interfaceOwners.get(child), parent.permits(), child.name(),
+                        child.isSealed());
+                interfaceChildren.computeIfAbsent(parent, ignored -> new LinkedHashSet<>())
+                        .add(child.name());
+            }
+        }
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            if (klass.isSealed()) {
+                verifyPermittedChildren("class", klass.name(), klass.permits(),
+                        classChildren.getOrDefault(klass, Set.of()));
+            }
+        }
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) {
+            if (iface.isSealed()) {
+                verifyPermittedChildren("interface", iface.name(), iface.permits(),
+                        interfaceChildren.getOrDefault(iface, Set.of()));
+            }
+        }
+    }
+
+    private static void requireSealedChild(
+            String parentName, String parentModule, String childModule,
+            List<String> permits, String childName, boolean closedChild) {
+        // Imported sealed parents have no complete hierarchy proof in this unit.
+        if (parentModule == null || childModule == null || !parentModule.equals(childModule)) {
+            throw new IllegalArgumentException("sealed type '" + parentName
+                    + "' permits only same-module direct subtypes with complete source metadata");
+        }
+        if (!permits.isEmpty() && !permits.contains(childName)) {
+            throw new IllegalArgumentException("sealed type '" + parentName
+                    + "' does not permit direct subtype '" + childName + "'");
+        }
+        if (!closedChild) {
+            throw new IllegalArgumentException("direct subtype '" + childName
+                    + "' of sealed type '" + parentName + "' must be sealed or final");
+        }
+    }
+
+    private static void verifyPermittedChildren(
+            String kind, String name, List<String> permitted, Set<String> actual) {
+        if (actual.isEmpty()) {
+            throw new IllegalArgumentException("sealed " + kind + " '" + name
+                    + "' must have at least one direct subtype in the same module");
+        }
+        for (String specified : permitted) {
+            if (!actual.contains(specified)) {
+                throw new IllegalArgumentException("sealed " + kind + " '" + name
+                        + "' permits '" + specified
+                        + "' but it is not a direct subtype declared in this module");
             }
         }
     }
