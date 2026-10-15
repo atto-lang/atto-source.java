@@ -659,6 +659,17 @@ public final class OresScheduler implements AutoCloseable {
                     "OresScheduler cannot be closed from one of its own task turns; "
                             + "close it from an outside/root scheduler task");
         }
+        if (nativeTurnKernel != null && CURRENT_CARRIER_SCHEDULER.get() == this) {
+            // The native witness is still completing a physical carrier
+            // handoff, including trusted onQuiescent and subscriber callbacks.
+            // shutdownNow() here would interrupt our OWN cleanup carrier,
+            // potentially converting completed native retirement into a
+            // partially published Java cleanup. Require an outside/root owner
+            // to initiate shutdown after the carrier returns.
+            throw new IllegalStateException(
+                    "native actor scheduler close has unresolved SourceTasks or shutdown: "
+                            + "cannot close from an active physical carrier");
+        }
         final Set<TaskRunner<?>> admitted;
         synchronized (taskAdmissionLock) {
             if (!closed.compareAndSet(false, true)) {
