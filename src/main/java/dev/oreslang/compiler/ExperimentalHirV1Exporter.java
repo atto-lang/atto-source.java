@@ -89,6 +89,23 @@ public final class ExperimentalHirV1Exporter {
                     "result_type", type(function.returnType()),
                     "body", expression(ret.value(), 0, new int[]{0})));
         }
+        // HIR v1 forbids direct and mutual recursion. Fail at emission,
+        // rather than publishing an artifact that the shared verifier rejects.
+        Map<String, Ast.FunctionDecl> declarations = new LinkedHashMap<>();
+        for (Ast.FunctionDecl function : functions) {
+            declarations.put(function.name(), function);
+        }
+        Map<String, Set<String>> edges = new LinkedHashMap<>();
+        for (Ast.FunctionDecl function : functions) {
+            Ast.ReturnStmt returned = (Ast.ReturnStmt) function.body().get(0);
+            Set<String> calls = new HashSet<>();
+            collectCalls(returned.value(), declarations, calls);
+            edges.put(function.name(), calls);
+        }
+        Set<String> completed = new HashSet<>();
+        for (String name : edges.keySet()) {
+            rejectCycles(name, edges, new HashSet<>(), completed);
+        }
         Map<String, Object> envelope = object(
                 "ir_family", "ores-hir", "schema_version", "1.0.0-experimental",
                 "module_id", "source", "required_features", FEATURES, "functions", emitted);
@@ -132,6 +149,34 @@ public final class ExperimentalHirV1Exporter {
             return object("kind", "call", "function", name.name(), "args", args);
         }
         throw unsupported("expression outside experimental typed HIR subset");
+    }
+
+    private static void collectCalls(Ast.Expr expr,
+                                     Map<String, Ast.FunctionDecl> declarations,
+                                     Set<String> edges) {
+        if (expr instanceof Ast.BinaryExpr binary) {
+            collectCalls(binary.left(), declarations, edges);
+            collectCalls(binary.right(), declarations, edges);
+        } else if (expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr name) {
+            Ast.FunctionDecl target = declarations.get(name.name());
+            if (target == null || target.parameters().size() != call.arguments().size()) {
+                throw unsupported("unknown callee or invalid direct-call arity");
+            }
+            edges.add(name.name());
+            for (Ast.Expr argument : call.arguments()) collectCalls(argument, declarations, edges);
+        }
+    }
+
+    private static void rejectCycles(String name, Map<String, Set<String>> edges,
+                                     Set<String> visiting, Set<String> completed) {
+        if (completed.contains(name)) return;
+        if (!visiting.add(name)) throw unsupported("recursive function call graph");
+        for (String callee : edges.get(name)) {
+            rejectCycles(callee, edges, visiting, completed);
+        }
+        visiting.remove(name);
+        completed.add(name);
     }
 
     private static String type(Ast.TypeRef type) {
