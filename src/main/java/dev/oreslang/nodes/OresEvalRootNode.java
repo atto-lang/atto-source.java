@@ -8499,6 +8499,12 @@ public final class OresEvalRootNode extends RootNode {
                 Object left,
                 Object right,
                 IdentityHashMap<Object, IdentityHashMap<Object, Boolean>> seen) {
+            // Numeric IEEE equality precedes reference-identity fast paths:
+            // the same boxed NaN is still unequal to itself.
+            if (left instanceof Number a && right instanceof Number b)
+                return numericValueEquals(a, b);
+            if (left == right && left instanceof Complex c)
+                return !Double.isNaN(c.real) && !Double.isNaN(c.imaginary);
             if (left == right) return true;
             if (left == null || right == null) return false;
 
@@ -8507,9 +8513,6 @@ public final class OresEvalRootNode extends RootNode {
                 return left instanceof dev.oreslang.runtime.OresSymbol
                         && right instanceof dev.oreslang.runtime.OresSymbol
                         && left.equals(right);
-            }
-            if (left instanceof Number a && right instanceof Number b) {
-                return numericValueEquals(a, b);
             }
             if (left instanceof Complex || right instanceof Complex) {
                 try {
