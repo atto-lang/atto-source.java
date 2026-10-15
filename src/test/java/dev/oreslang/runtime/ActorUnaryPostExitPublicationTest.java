@@ -137,6 +137,9 @@ final class ActorUnaryPostExitPublicationTest {
     void stopAfterGuestTurnButBeforeContextLeaveDropsStagedReply() throws Exception {
         var owner = new AtomicReference<ActorRuntime.ActorRef<Integer>>();
         var admitted = new CountDownLatch(1);
+        var completedAfterReply = new java.util.concurrent.atomic.AtomicInteger();
+        var ticketRef = new AtomicReference<ActorUnaryReplySlot<
+                ActorMiddlewareValuePipeline.Reply<Integer>>>();
         var external = new AtomicReference<java.util.concurrent.CompletionStage<
                 ActorMiddlewareValuePipeline.Reply<Integer>>>();
         var bridge = new ActorUnaryReplyBridge<>(
@@ -150,12 +153,18 @@ final class ActorUnaryPostExitPublicationTest {
                     // Trigger STOP after the guest callback unwound, but before
                     // TurnExecutor.execute returned to the actor dispatcher.
                     var actor = owner.get();
-                    if (actor != null && external.get() != null) actor.stop();
+                    var ticket = ticketRef.get();
+                    // First REPLIED turn settles the actor-local slot; the
+                    // next turn freezes and stages its external publication.
+                    if (actor != null && ticket != null
+                            && ticket.state() == ActorUnaryReplySlot.State.REPLIED
+                            && completedAfterReply.incrementAndGet() == 2) actor.stop();
                 })) {
             var actor = runtime.<Integer>spawn(() -> (message, context) -> {
                 var ticket = new ActorUnaryReplySlot<
                         ActorMiddlewareValuePipeline.Reply<Integer>>(
                         context.self().id(), context.self().generation(), UUID.randomUUID());
+                ticketRef.set(ticket);
                 external.set(bridge.dispatchActorOwnedPostExit(
                         context, ticket, request(), () -> false));
                 admitted.countDown();
@@ -164,6 +173,7 @@ final class ActorUnaryPostExitPublicationTest {
             actor.send(1);
             assertTrue(admitted.await(3, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertEquals(2, completedAfterReply.get(), "must stop at staged publication boundary");
             assertThrows(RuntimeException.class, () -> external.get().toCompletableFuture().join());
         }
     }
