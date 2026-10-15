@@ -23,6 +23,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.OneShotCompletionGate;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -3076,16 +3077,10 @@ public final class OresEvalRootNode extends RootNode {
             // Each evaluation is a one-shot operation, even if a synchronous
             // downstream callback throws or a completion races cancellation.
             // The marker must be set BEFORE entering user continuation code.
-            java.util.concurrent.atomic.AtomicBoolean delivered =
-                    new java.util.concurrent.atomic.AtomicBoolean();
-            SourceValueCont singleDelivery = (t, value, failure) -> {
-                if (!delivered.compareAndSet(false, true)) {
-                    throw new IllegalStateException(
-                            "suspendable expression attempted duplicate completion");
-                }
-                continuation.accept(t, value, failure);
-            };
-            evalSuspendableExprImpl(task, expr, env, singleDelivery, delivered);
+            OneShotCompletionGate delivery = new OneShotCompletionGate();
+            SourceValueCont singleDelivery = (t, value, failure) ->
+                    delivery.deliver(() -> continuation.accept(t, value, failure));
+            evalSuspendableExprImpl(task, expr, env, singleDelivery, delivery);
         }
 
         private void evalSuspendableExprImpl(
@@ -3093,7 +3088,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation,
-                java.util.concurrent.atomic.AtomicBoolean delivered) {
+                OneShotCompletionGate delivery) {
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
@@ -3605,7 +3600,7 @@ public final class OresEvalRootNode extends RootNode {
             } catch (RuntimeException | Error failure) {
                 // Once the callback was invoked, its exception belongs to
                 // the consumer. Reporting it again would deliver twice.
-                if (delivered.get()) throw failure;
+                if (delivery.delivered()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -3895,14 +3890,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                final Object completed;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, null, failure);
+                    completed = future.join();
+                } catch (RuntimeException | Error completionFailure) {
+                    continuation.accept(task, null, completionFailure);
+                    return;
                 }
+                continuation.accept(task, completed, null);
                 return;
             }
 
@@ -4194,14 +4189,14 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
+                        final Object owned;
                         try {
-                            continuation.accept(
-                                    t,
-                                    applyRuntimeOwnership(runtime.operation(), value),
-                                    null);
+                            owned = applyRuntimeOwnership(runtime.operation(), value);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
+                            return;
                         }
+                        continuation.accept(t, owned, null);
                     });
         }
 
@@ -4371,46 +4366,44 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            final Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
+                result = invoke(invocation);
+            } catch (RuntimeException | Error invocationFailure) {
+                continuation.accept(task, null, invocationFailure);
+                return;
+            }
+
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // An already settled Future does not relinquish the actor
+                // lane or release a no-yield guard. Only join() belongs
+                // inside the completion-failure catch.
+                if (future.isDone()) {
+                    final Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completionFailure) {
+                        continuation.accept(task, null, completionFailure);
                         return;
                     }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
+                    continuation.accept(task, completed, null);
+                    return;
                 }
-            } catch (RuntimeException | Error failure) {
-                continuation.accept(task, null, failure);
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null,
+                            new IllegalStateException(
+                                    "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                task.suspend(
+                        future,
+                        (t, value, failure) ->
+                                continuation.accept(t, value, failure));
+                return;
             }
+
+            // Never catch the consumer's exception and invoke it again.
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
