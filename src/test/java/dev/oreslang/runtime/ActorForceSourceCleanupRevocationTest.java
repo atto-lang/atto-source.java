@@ -338,4 +338,103 @@ final class ActorForceSourceCleanupRevocationTest {
         }
     }
 
+    @Test
+    void deniedForceRevocationDoesNotExpireParkedCleanupDuringHostFence()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            OresFuture<Integer> originalProducer = new OresFuture<>();
+            OresFuture<Integer> cleanupProducer = new OresFuture<>();
+            CountDownLatch taskEntered = new CountDownLatch(1);
+            CountDownLatch cleanupEntered = new CountDownLatch(1);
+            CountDownLatch cleanupFinished = new CountDownLatch(1);
+            CountDownLatch revokerEntered = new CountDownLatch(1);
+            CountDownLatch releaseRevoker = new CountDownLatch(1);
+            AtomicReference<OresFuture<Void>> taskRef = new AtomicReference<>();
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                taskRef.set(context.runtime().startActorTask(
+                        new OresScheduler.CleanupAwareTask<Void>() {
+                            private int pc;
+                            @Override public OresScheduler.Step<Void> resume(
+                                    OresScheduler.Resume resume) {
+                                if (pc++ == 0) {
+                                    taskEntered.countDown();
+                                    return OresScheduler.await(originalProducer);
+                                }
+                                if (pc == 2) {
+                                    assertInstanceOf(CancellationException.class,
+                                            resume.failure());
+                                    cleanupEntered.countDown();
+                                    return OresScheduler.await(cleanupProducer);
+                                }
+                                assertEquals(17, resume.value());
+                                cleanupFinished.countDown();
+                                return OresScheduler.done(null);
+                            }
+                        }));
+            });
+
+            actor.send("start");
+            assertTrue(taskEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            long registrationDeadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (cleanupProducer.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < registrationDeadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(1, cleanupProducer.pendingRuntimeWaiterCount());
+
+            runtime.setForceCancellationTreeHook(request -> {
+                revokerEntered.countDown();
+                try {
+                    assertTrue(releaseRevoker.await(5, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return false;
+            });
+            AtomicReference<Throwable> killFailure = new AtomicReference<>();
+            Thread revoker = Thread.ofPlatform().start(() -> {
+                try {
+                    actor.forceCancel();
+                    killFailure.set(new AssertionError("denied revocation unexpectedly succeeded"));
+                } catch (IllegalStateException expected) {
+                    // Resume the previously suspended lexical cleanup.
+                } catch (Throwable unexpected) {
+                    killFailure.set(unexpected);
+                }
+            });
+            try {
+                assertTrue(revokerEntered.await(5, TimeUnit.SECONDS));
+                // Exceed the normal 2-second STOP grace while the host still
+                // holds the temporary force-fence. This must not retire the
+                // source task, since physical revocation is not confirmed.
+                Thread.sleep(2_400);
+                assertFalse(actor.awaitTermination(50, TimeUnit.MILLISECONDS),
+                        "pending host revocation must not retire active cleanup");
+                assertFalse(taskRef.get().isDone(),
+                        "pending source cleanup cannot be settled by the STOP timer");
+            } finally {
+                releaseRevoker.countDown();
+            }
+            revoker.join(5_000);
+            assertFalse(revoker.isAlive());
+            if (killFailure.get() != null) throw new AssertionError(killFailure.get());
+            cleanupProducer.completeFromRuntime(17);
+            assertTrue(cleanupFinished.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    actor.failure().orElseThrow(),
+                    "a denied revoker cannot turn successful lexical cleanup into a timeout");
+            assertEquals(0, cleanupProducer.pendingRuntimeWaiterCount());
+            assertThrows(CancellationException.class,
+                    () -> taskRef.get().get(5, TimeUnit.SECONDS));
+        }
+    }
+
 }
