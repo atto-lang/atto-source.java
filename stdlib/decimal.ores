@@ -1,0 +1,35 @@
+// Exact base-ten scalar operations. Source-first Oreslang stdlib; no host bridge.
+// Decimal addition/subtraction/multiplication preserve all input digits.
+// Division at the operator level uses deterministic decimal128 HALF_EVEN.
+define module decimal as
+
+  pub fnc sum(Array<decimal> values): decimal {
+    let decimal total = 0d;
+    for const value of values do
+      total = total + value;
+    done
+    return total;
+  }
+
+  pub fnc pow_nonnegative(decimal value, int exponent): Result<decimal, String> {
+    if exponent < 0 || exponent > 4096; do
+      return Err("decimal exponent must be between 0 and 4096");
+    fi
+    let decimal result = 1d;
+    let decimal base = value;
+    let int n = exponent;
+    for (let i = 0; i < n; i = i + 1) {
+      result = result * base;
+    }
+    return Ok(result);
+  }
+
+  pub fnc horner(Array<decimal> descending_coefficients, decimal x): decimal {
+    let decimal value = 0d;
+    for const coefficient of descending_coefficients do
+      value = value * x + coefficient;
+    done
+    return value;
+  }
+
+end
