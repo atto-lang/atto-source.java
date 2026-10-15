@@ -43,6 +43,7 @@ REVIEWED_SNAPSHOTS_ROUTE = (
 )
 SOURCE_SNAPSHOT_ENTRY = re.compile(r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$")
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
+PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
 
 
@@ -207,6 +208,17 @@ def require_protected_main_policy(approved_policy):
             or not isinstance(branch.get("commit"), dict)):
         raise Denied("source main branch is not protected")
     protected_main_sha = valid_sha(branch["commit"].get("sha"))
+    rules = gh_api(PROTECTED_RULES_ROUTE)
+    if (not isinstance(rules.get("enforce_admins"), dict)
+            or rules["enforce_admins"].get("enabled") is not True):
+        raise Denied("protected main must enforce rules for administrators")
+    required_checks = rules.get("required_status_checks")
+    if (not isinstance(required_checks, dict)
+            or required_checks.get("strict") is not True
+            or not isinstance(required_checks.get("contexts"), list)
+            or not required_checks["contexts"]
+            or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
+        raise Denied("protected main must require strict source CI checks")
     reviews = gh_api(PROTECTED_REVIEWS_ROUTE)
     count = reviews.get("required_approving_review_count")
     if (type(count) is not int or count < 1

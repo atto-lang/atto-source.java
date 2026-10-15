@@ -76,6 +76,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
                         commit={"sha": self.source_main_shas.pop(0)})
+        if route == pub.PROTECTED_RULES_ROUTE:
+            return {"enforce_admins": {"enabled": True},
+                    "required_status_checks": {"strict": True,
+                                               "contexts": ["preflight-regressions"]}}
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
                     "require_code_owner_reviews": True,
@@ -308,6 +312,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(
             [route for method, route, _ in self.route_calls if method == "POST"],
             ["repos/trusted/ci/git/blobs"])
+
+    def test_source_branch_protection_must_enforce_admins_and_strict_ci(self):
+        failures = (
+            {"enforce_admins": {"enabled": False},
+             "required_status_checks": {"strict": True, "contexts": ["ci"]}},
+            {"enforce_admins": {"enabled": True},
+             "required_status_checks": None},
+            {"enforce_admins": {"enabled": True},
+             "required_status_checks": {"strict": False, "contexts": ["ci"]}},
+            {"enforce_admins": {"enabled": True},
+             "required_status_checks": {"strict": True, "contexts": []}},
+        )
+        original = self.fake_api
+        for response in failures:
+            with self.subTest(response=response):
+                self.route_calls.clear()
+                def bypassable_main(route, method="GET", payload=None):
+                    if route == pub.PROTECTED_RULES_ROUTE:
+                        self.route_calls.append((method, route, payload))
+                        return response
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=bypassable_main):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root, self.expected_tree, D)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
         overrides = (
