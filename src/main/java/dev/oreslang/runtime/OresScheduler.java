@@ -1122,7 +1122,10 @@ public final class OresScheduler implements AutoCloseable {
                         throw failure;
                     }
                 }
-                tasks.remove(this);
+                // Preserve the historical non-native removal order. An
+                // opt-in native task stays visible in the live set until
+                // its trusted callback and deadline release finish.
+                if (nativeSource == null) tasks.remove(this);
                 cancelWallDeadline();
                 try {
                     onQuiescent.run();
@@ -1130,10 +1133,13 @@ public final class OresScheduler implements AutoCloseable {
                     deadlineQuiescenceRetired.set(true);
                     releaseDeadlineSlotIfRetired();
                 }
-                // Do not attest trusted callback success from a finally:
-                // an exception in onQuiescent/deadline retirement must NOT
-                // make the normal terminal Future externally visible.
-                nativeQuiescenceCallbackFinished.set(true);
+                // Do not attest callback success from a finally: a thrown
+                // trusted callback means no native-backed DONE publication.
+                // Remove from the live set BEFORE making DONE eligible.
+                if (nativeSource != null) {
+                    tasks.remove(this);
+                    nativeQuiescenceCallbackFinished.set(true);
+                }
             }
         }
 
