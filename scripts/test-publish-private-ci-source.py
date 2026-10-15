@@ -25,6 +25,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
         self.approval.write_text("trusted/ci 123\n")
+        approved_bytes = self.approval.read_bytes()
+        self.protected_policy_sha = hashlib.sha1(
+            b"blob " + str(len(approved_bytes)).encode("ascii")
+            + b"\0" + approved_bytes
+        ).hexdigest()
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         self.route_calls = []
@@ -38,6 +43,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == pub.PROTECTED_POLICY_ROUTE:
+            return {"type": "file", "sha": self.protected_policy_sha}
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch="main",
@@ -265,6 +272,45 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         child.chmod(0o755)
         changed_mode_hash = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         self.assertNotEqual(nested_hash, changed_mode_hash)
+
+    def test_unmerged_branch_policy_cannot_authorize_source_export(self):
+        # Local PR checkout contains an approval, but protected source main
+        # does not. No source bytes may be sent.
+        self.protected_policy_sha = "f" * 40
+        with self.assertRaisesRegex(pub.Denied, "not approved on protected source main"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_missing_or_malformed_protected_main_metadata_is_denied(self):
+        original = self.fake_api
+        for wrong in ({}, {"type": "dir", "sha": self.protected_policy_sha},
+                      {"type": "file", "sha": None}):
+            with self.subTest(wrong=wrong):
+                self.route_calls.clear()
+                def untrusted_main(route, method="GET", payload=None):
+                    if route == pub.PROTECTED_POLICY_ROUTE:
+                        self.route_calls.append((method, route, payload))
+                        return wrong
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=untrusted_main):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, self.expected_tree)
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_protected_main_revocation_blocks_next_git_write(self):
+        original = self.fake_api
+        def revoke_main_after_first_blob(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.protected_policy_sha = "f" * 40
+            return response
+        with patch.object(pub, "gh_api", side_effect=revoke_main_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "not approved on protected source main"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root, self.expected_tree)
+        self.assertEqual([route for method, route, _ in self.route_calls if method == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
