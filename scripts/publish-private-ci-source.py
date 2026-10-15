@@ -737,7 +737,17 @@ def prepare_source_tree_batches(files):
                 as_text = data.decode("utf-8")
             except UnicodeDecodeError:
                 pass
-        item_size = (len(data) if as_text is not None else 40) + len(rel.encode("utf-8")) + 128
+        # Charge the serialized JSON payload rather than raw UTF-8 bytes.
+        # Escaped control characters and non-ASCII text can multiply size.
+        path_bytes = len(json.dumps(rel).encode("utf-8"))
+        content_bytes = (len(json.dumps(as_text).encode("utf-8"))
+                         if as_text is not None else 40)
+        item_size = content_bytes + path_bytes + 128
+        if item_size > TREE_BATCH_MAX_BYTES and as_text is not None:
+            as_text = None
+            item_size = 40 + path_bytes + 128
+        if item_size > TREE_BATCH_MAX_BYTES:
+            raise Denied("private CI Git tree entry exceeds request size limit")
         if batch and (len(batch) >= TREE_BATCH_MAX_ENTRIES
                       or size + item_size > TREE_BATCH_MAX_BYTES):
             batches.append(batch)
