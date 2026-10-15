@@ -812,7 +812,13 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
 
 def publish(repository, source, branch, trusted_root, expected_source_tree,
             expected_source_commit):
-    if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
+    # Git ref-format restrictions are stricter than the character allowlist.
+    # Reject impossible refs before reading private source or creating blobs:
+    # Git disallows '..', a trailing '.', and the '.lock' suffix.
+    if (not NAME.fullmatch(repository)
+            or not BRANCH.fullmatch(branch)
+            or ".." in branch
+            or branch.endswith((".", ".lock"))):
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
