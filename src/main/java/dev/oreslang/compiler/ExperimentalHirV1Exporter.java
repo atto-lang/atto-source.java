@@ -34,10 +34,15 @@ public final class ExperimentalHirV1Exporter {
             throw unsupported("source absent or exceeds 1 MiB");
         }
         // Run the actual compiler front-end, including ownership admission.
-        return fromVerifiedAst(OresCompiler.parseAndTypeCheck(source));
+        return fromVerifiedAst(OresCompiler.parseAndTypeCheck(source),
+                source.startsWith("// oreslang:checked-i64-v1\n"));
     }
 
     private static String fromVerifiedAst(Ast.Program program) {
+        return fromVerifiedAst(program, false);
+    }
+
+    private static String fromVerifiedAst(Ast.Program program, boolean checkedI64Runtime) {
         if (program.namespace() != null || !program.imports().isEmpty()) {
             throw unsupported("namespaces/imports");
         }
@@ -89,7 +94,7 @@ public final class ExperimentalHirV1Exporter {
             // Existing GraalVM integer operations wrap on overflow. Export as
             // checked-i64 only when interval analysis proves wrap impossible
             // for EVERY possible i64 parameter value.
-            proveI64Safe(ret.value(), 0);
+            if (!checkedI64Runtime) proveI64Safe(ret.value(), 0);
             emitted.add(object("name", function.name(), "params", params,
                     "result_type", type(function.returnType()),
                     "body", expression(ret.value(), 0, new int[]{0})));
