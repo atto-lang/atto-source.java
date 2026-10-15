@@ -105,6 +105,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
              "content": "", "sha": "a" * 40},
             {"type": "file", "encoding": "base64", "size": 0,
              "content": "", "sha": "a" * 40},
+            {"type": "file", "encoding": "base64", "size": True,
+             "content": "", "sha": "a" * 40},
+            {"type": "file", "encoding": "base64", "size": 16385,
+             "content": "", "sha": "a" * 40},
         ]
         for payload in bad_payloads:
             self.route_calls.clear()
@@ -119,6 +123,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaises(pub.Denied):
                     pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
             self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_ref_creation_rechecks_protected_main_after_commit(self):
+        original = self.fake_api
+        def revoke_after_commit(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/commits" and method == "POST":
+                self.protected_policy = b"# revoked just before ref creation\n"
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_commit):
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        writes = [r for m, r, _ in self.route_calls if m == "POST"]
+        self.assertEqual(writes[-1], "repos/trusted/ci/git/commits")
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
+    def test_protected_main_policy_is_read_before_each_upload_write(self):
+        self.publish()
+        for i, (method, route, _) in enumerate(self.route_calls):
+            if method != "POST":
+                continue
+            previous = self.route_calls[i - 2:i]
+            self.assertEqual([r for _, r, _ in previous],
+                             [pub.PROTECTED_POLICY_ROUTE, "repos/trusted/ci"],
+                             "every GitHub write must revalidate protected main and private identity")
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
