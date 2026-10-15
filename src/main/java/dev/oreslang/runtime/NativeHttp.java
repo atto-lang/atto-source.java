@@ -114,20 +114,32 @@ public final class NativeHttp implements AutoCloseable {
             created++;
             Worker attached = worker;
             worker.actor.done().whenCompleteRuntime((ignored, failure) -> {
-                for (State state : List.copyOf(attached.requests)) state.abort(500);
-                // Fully retired workers must not remain retained by a long-
-                // lived server that has handled many worker generations.
-                for (Server server : List.copyOf(attached.served)) {
-                    server.pooledWorkers.remove(attached);
+                try {
+                    // An exceptional abort must not strand later requests
+                    // attached to the same terminated worker generation.
+                    RuntimeException cleanupFailure = abortEveryAccepted(
+                            List.copyOf(attached.requests), state -> state.abort(500));
+                    if (cleanupFailure != null) throw cleanupFailure;
+                } finally {
+                    // Once actor.done settled, its physical carrier exited.
+                    // Release both sides of listener/worker tracking even if
+                    // an individual HTTP socket cleanup failed.
+                    for (Server server : List.copyOf(attached.served)) {
+                        server.pooledWorkers.remove(attached);
+                    }
+                    attached.served.clear();
+                    attached.requests.clear();
                 }
-                attached.served.clear();
             });
             return worker;
         }
         private void stopPool() {
             Worker[] snapshot;
             synchronized (this) { snapshot = workers.clone(); }
-            for (Worker worker : snapshot) if (worker != null) worker.actor.cancel();
+            RuntimeException failure = abortEveryAccepted(
+                    Arrays.stream(snapshot).filter(Objects::nonNull).toList(),
+                    worker -> worker.actor.cancel());
+            if (failure != null) throw failure;
         }
         private final class Worker {
             final ActorRuntime.ActorRef<Object> actor;
