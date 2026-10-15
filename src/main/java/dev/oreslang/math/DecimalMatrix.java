@@ -17,6 +17,9 @@ public final class DecimalMatrix {
     private static final int MAX_CELLS = 65_536;
     private static final int MAX_DIMENSION = 65_536;
     private static final int MAX_DIGITS_PER_CELL = 4_096;
+    // A per-cell cap alone permits 65,536 independent 4,096-digit values.
+    // Bound total significant-digit storage per matrix as well.
+    private static final long MAX_TOTAL_SIGNIFICANT_DIGITS = 1_000_000L;
     private static final int MAX_ABSOLUTE_SCALE = 16_384;
     private static final long MAX_SCALAR_MULTIPLIES = 100_000;
     private final int rows;
@@ -41,6 +44,7 @@ public final class DecimalMatrix {
         if (values.length != matrix.cells.length) {
             throw new IllegalArgumentException("matrix cell count mismatches shape");
         }
+        long significantDigits = 0;
         for (int i = 0; i < values.length; i++) {
             String literal = Objects.requireNonNull(values[i], "decimal cell");
             // Reject excessively long input before BigDecimal(String) allocates.
@@ -49,6 +53,10 @@ public final class DecimalMatrix {
             }
             BigDecimal value = new BigDecimal(literal);
             validateDecimal(value);
+            significantDigits += value.precision();
+            if (significantDigits > MAX_TOTAL_SIGNIFICANT_DIGITS) {
+                throw new IllegalArgumentException("matrix significant-digit budget exceeded");
+            }
             matrix.cells[i] = value;
         }
         return matrix;
@@ -69,6 +77,9 @@ public final class DecimalMatrix {
             DecimalMatrix left, DecimalMatrix right, MathContext context) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
+        Objects.requireNonNull(context, "context");
+        checkMultiplyShapesAndWork(left.rows, left.columns, right.rows, right.columns,
+                left.rows, right.columns);
         DecimalMatrix result = zeros(left.rows, right.columns);
         multiplyInto(result, left, right, context);
         return result;
@@ -87,19 +98,15 @@ public final class DecimalMatrix {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
         Objects.requireNonNull(context, "context");
-        if (left.columns != right.rows || output.rows != left.rows
-                || output.columns != right.columns) {
-            throw new IllegalArgumentException("matrix shape mismatch");
-        }
-        if ((long) left.rows * left.columns * right.columns > MAX_SCALAR_MULTIPLIES) {
-            throw new IllegalArgumentException("matrix arithmetic budget exceeded");
-        }
+        checkMultiplyShapesAndWork(left.rows, left.columns, right.rows, right.columns,
+                output.rows, output.columns);
         if (output == left || output == right) {
             throw new IllegalArgumentException("output must not alias inputs");
         }
         // Stage results until every destination cell passes resource checks.
         // Failure must not publish a partially updated caller-owned matrix.
         BigDecimal[] staged = new BigDecimal[output.cells.length];
+        long significantDigits = 0;
         for (int row = 0; row < left.rows; row++) {
             for (int column = 0; column < right.columns; column++) {
                 BigDecimal sum = BigDecimal.ZERO;
@@ -109,10 +116,25 @@ public final class DecimalMatrix {
                 }
                 BigDecimal rounded = sum.round(context);
                 validateDecimal(rounded);
+                significantDigits += rounded.precision();
+                if (significantDigits > MAX_TOTAL_SIGNIFICANT_DIGITS) {
+                    throw new IllegalArgumentException("matrix significant-digit budget exceeded");
+                }
                 staged[output.index(row, column)] = rounded;
             }
         }
         System.arraycopy(staged, 0, output.cells, 0, staged.length);
+    }
+
+    private static void checkMultiplyShapesAndWork(
+            int leftRows, int inner, int rightRows, int rightColumns,
+            int outputRows, int outputColumns) {
+        if (inner != rightRows || outputRows != leftRows || outputColumns != rightColumns) {
+            throw new IllegalArgumentException("matrix shape mismatch");
+        }
+        if ((long) leftRows * inner * rightColumns > MAX_SCALAR_MULTIPLIES) {
+            throw new IllegalArgumentException("matrix arithmetic budget exceeded");
+        }
     }
 
     private int index(int row, int column) {
