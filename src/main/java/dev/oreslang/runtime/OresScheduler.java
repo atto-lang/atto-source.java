@@ -746,7 +746,18 @@ public final class OresScheduler implements AutoCloseable {
         // native retirement; it must NOT re-run a failed cleanup callback.
         // A concurrent/repeated close cannot return success while the first
         // cancellation sweep is still delivering synchronous notifications.
-        if (nativeTurnKernel != null) nativeCloseSweepFinished.set(true);
+        if (nativeTurnKernel != null) {
+            nativeCloseSweepFinished.set(true);
+            if (nativeShutdownFailure == null
+                    && (!tasks.isEmpty() || nativeQuiescencePublicationsInFlight.get() != 0)) {
+                // Even the FIRST close must not report success while an
+                // already-retired source's Java callback or publication
+                // acknowledgement is still in flight. Future cancellation
+                // is a notification, not an actor-DONE witness.
+                throw new IllegalStateException(
+                        "native actor scheduler close has unresolved SourceTasks or shutdown");
+            }
+        }
         if (nativeShutdownFailure instanceof Error fatal) throw fatal;
         if (nativeShutdownFailure instanceof RuntimeException failure) throw failure;
     }
