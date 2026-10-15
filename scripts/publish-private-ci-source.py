@@ -663,15 +663,55 @@ def source_tree_sha(files):
 
     return hash_directory(root).hex()
 
-def require_private_ci_api_budget(file_count):
-    """Refuse transfers likely to exhaust GitHub's core API rate limit.
+# Inline only bounded, valid UTF-8 file contents in the Git Trees API. GitHub
+# creates the corresponding blob objects atomically with each tree POST.
+# Binary and large files still use individually verified Git blob uploads.
+TREE_INLINE_MIN_FILES = 16
+TREE_INLINE_MAX_BYTES = 128 * 1024
+TREE_BATCH_MAX_ENTRIES = 64
+TREE_BATCH_MAX_BYTES = 256 * 1024
 
-    Each file requires 15 independent live security/identity reads plus
-    one blob POST. The remaining fixed writes and readbacks need reserve.
-    This does not override any per-write approval checks.
+
+def prepare_source_tree_batches(files):
+    """Bound request size and preserve per-write admission for every batch.
+
+    Partial trees are constructed only from prior *isolated source trees*,
+    never from the carrier's main tree. The final SHA must still equal the
+    independently pinned full source Git tree before a branch is created.
     """
+    allow_inline = len(files) >= TREE_INLINE_MIN_FILES
+    batches = []
+    batch = []
+    size = 0
+    for rel, data, mode in files:
+        as_text = None
+        if allow_inline and len(data) <= TREE_INLINE_MAX_BYTES and b"\\x00" not in data:
+            try:
+                as_text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
+        item_size = (len(data) if as_text is not None else 40) + len(rel.encode("utf-8")) + 128
+        if batch and (len(batch) >= TREE_BATCH_MAX_ENTRIES
+                      or size + item_size > TREE_BATCH_MAX_BYTES):
+            batches.append(batch)
+            batch = []
+            size = 0
+        batch.append((rel, data, mode, as_text))
+        size += item_size
+    if batch:
+        batches.append(batch)
+    return batches
+
+
+def require_private_ci_api_budget(file_count, estimated_writes=None):
+    """Reserve per-write authorization calls, including partial tree batches."""
     if type(file_count) is not int or file_count < 1 or file_count > MAX_FILES:
         raise Denied("private CI snapshot file count invalid")
+    if estimated_writes is None:
+        estimated_writes = file_count
+    if (type(estimated_writes) is not int or estimated_writes < 1
+            or estimated_writes > 2 * MAX_FILES):
+        raise Denied("private CI estimated write count invalid")
     budget = gh_api("rate_limit")
     if not isinstance(budget, dict):
         raise Denied("GitHub core API budget unavailable")
@@ -680,7 +720,7 @@ def require_private_ci_api_budget(file_count):
     remaining = core.get("remaining") if isinstance(core, dict) else None
     if type(remaining) is not int or remaining < 0:
         raise Denied("GitHub core API budget unavailable")
-    required = 16 * file_count + 128
+    required = 16 * estimated_writes + 128
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
@@ -778,7 +818,13 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("source snapshot Git tree differs from pinned expected SHA")
     # Fail before any mutable GitHub object is created rather than leaving
     # partial private blobs after a predictable core-rate-limit exhaustion.
-    require_private_ci_api_budget(len(files))
+    batches = prepare_source_tree_batches(files)
+    # First isolated tree and the final root/commit/ref writes fit in the
+    # fixed reserve. Remaining source-tree batches and binary blob writes
+    # incur a complete fresh admission before every POST.
+    blob_writes = sum(text is None for batch in batches for _, _, _, text in batch)
+    reserved_writes = max(1, blob_writes + len(batches) - 1)
+    require_private_ci_api_budget(len(files), reserved_writes)
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
@@ -792,26 +838,38 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
             raise Denied("private carrier default branch changed during transfer")
         require_pinned_carrier_main(base_sha)
 
-    elements = []
-    for rel, data, mode in files:
-        authorize_write()  # recheck approval and identity before each write
-        blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
-            "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
-        })
-        blob_sha = valid_sha(blob.get("sha"))
-        expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
-                                + bytes([0]) + data).hexdigest()
-        if blob_sha != expected:
-            raise Denied("uploaded blob digest does not match local source bytes")
-        elements.append({"path": rel, "mode": mode,
-                         "type": "blob", "sha": blob_sha})
-    # Construct the source subtree from scratch, without base_tree. Overlaying
-    # PREFIX/file onto the destination base tree retains old private files
-    # that are no longer present in this snapshot.
-    authorize_write()
-    isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
-                      payload={"tree": elements})
-    isolated_sha = valid_sha(isolated.get("sha"))
+    isolated_sha = None
+    for batch in batches:
+        elements = []
+        for rel, data, mode, as_text in batch:
+            entry = {"path": rel, "mode": mode, "type": "blob"}
+            if as_text is not None:
+                # GitHub creates this UTF-8 blob as part of the upcoming
+                # single reviewed tree write; no separate blob POST.
+                entry["content"] = as_text
+            else:
+                authorize_write()  # recheck before each binary/large blob POST
+                blob = gh_api(f"repos/{repository}/git/blobs", method="POST", payload={
+                    "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"
+                })
+                blob_sha = valid_sha(blob.get("sha"))
+                expected = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                                        + bytes([0]) + data).hexdigest()
+                if blob_sha != expected:
+                    raise Denied("uploaded blob digest does not match local source bytes")
+                entry["sha"] = blob_sha
+            elements.append(entry)
+        # Each tree POST creates blobs as well as the tree. Reconfirm every
+        # protection/approval immediately before sending any private bytes.
+        authorize_write()
+        isolated_payload = {"tree": elements}
+        if isolated_sha is not None:
+            isolated_payload["base_tree"] = isolated_sha
+        isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
+                          payload=isolated_payload)
+        isolated_sha = valid_sha(isolated.get("sha"))
+    # Intermediate trees are not approval evidence. Only the final complete
+    # Git tree digest can authenticate the snapshot.
     if isolated_sha != expected_source_tree:
         raise Denied("destination source subtree differs from pinned expected SHA")
     # Replace the entire PREFIX subtree atomically in the new root tree.
