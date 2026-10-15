@@ -22,6 +22,15 @@ final class ControlWakeRetryQueue {
     private long releaseEpoch;
     private boolean closed;
     private long callbacksFailed;
+    // Per carrier thread and retry queue: nested synchronous slot releases
+    // must not consume an unbounded number of Java stack frames. A state
+    // contains no callback reference after its outer dispatch returns.
+    private static final class RetryDispatch {
+        boolean active;
+        final ArrayDeque<Runnable> later = new ArrayDeque<>();
+    }
+    private final ThreadLocal<RetryDispatch> retryDispatch =
+            ThreadLocal.withInitial(RetryDispatch::new);
     // Guarded by the queue monitor: bounded affinity preference over FIFO.
     private int consecutiveAffinityBypasses;
 
@@ -124,24 +133,40 @@ final class ControlWakeRetryQueue {
 
     private void notifyRetry(Runnable ready) {
         if (ready == null) return;
+        RetryDispatch state = retryDispatch.get();
+        if (state.active) {
+            // A host wake callback can synchronously release the next
+            // physical slot. Queue it on this thread rather than recursing.
+            state.later.addLast(ready);
+            return;
+        }
+        state.active = true;
         try {
-            // The callback can only attempt a scheduler submission; it cannot
-            // execute a guest handler on this carrier.
-            ready.run();
-        } catch (RuntimeException | AssertionError failedSubmission) {
-            // A nonfatal host retry bug must not abort the *unrelated*
-            // admitted turn whose physical queue slot just became free.
-            // Do not catch VirtualMachineError or ThreadDeath: process-fatal
-            // conditions must retain their normal emergency semantics.
-            synchronized (this) {
-                // Like ActorRuntime's CONTROL loss counters, diagnostics
-                // must never wrap negative after sustained failures.
-                if (callbacksFailed < 0 || callbacksFailed == Long.MAX_VALUE) {
-                    callbacksFailed = Long.MAX_VALUE;
-                } else {
-                    ++callbacksFailed;
+            Runnable next = ready;
+            while (next != null) {
+                try {
+                    // The callback can only attempt scheduler admission; it
+                    // must never run a guest actor handler on this carrier.
+                    next.run();
+                } catch (RuntimeException | AssertionError failedSubmission) {
+                    // An unrelated admitted actor turn cannot be aborted by
+                    // a nonfatal supervisor retry callback failure. Process
+                    // fatal errors retain their existing propagation policy.
+                    synchronized (this) {
+                        if (callbacksFailed < 0 || callbacksFailed == Long.MAX_VALUE) {
+                            callbacksFailed = Long.MAX_VALUE;
+                        } else {
+                            ++callbacksFailed;
+                        }
+                    }
                 }
+                next = state.later.pollFirst();
             }
+        } finally {
+            // A fatal callback must never leave captured retry Runnables
+            // pinned in the carrier's ThreadLocal on pooled threads.
+            state.later.clear();
+            state.active = false;
         }
     }
 }
