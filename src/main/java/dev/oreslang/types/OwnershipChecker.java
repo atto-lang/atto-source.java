@@ -459,9 +459,16 @@ public final class OwnershipChecker {
             // A deferred lambda is executed synchronously at this lexical
             // scope's exit. Its captures must remain owned by the caller
             // until cleanup, rather than being moved into an escaping closure.
-            ValueInfo value = defer.expression() instanceof Ast.LambdaExpr lambda
-                    ? checkLambda(lambda, scope, null, false, true)
-                    : checkExpr(defer.expression(), scope, false);
+            Ast.TypeRef previousQuestionReturn = currentQuestionReturn;
+            currentQuestionReturn = null;
+            ValueInfo value;
+            try {
+                value = defer.expression() instanceof Ast.LambdaExpr lambda
+                        ? checkLambda(lambda, scope, null, false, true)
+                        : checkExpr(defer.expression(), scope, false);
+            } finally {
+                currentQuestionReturn = previousQuestionReturn;
+            }
             if (containsMutexGuardType(value.type)) {
                 throw error("defer cannot produce a guard-bearing value");
             }
@@ -551,7 +558,13 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> exceptional = stateSnapshot(scope);
             // Finally sees both the ordinary and exceptional predecessor.
             mergeBranchState(entry, List.of(normal, exceptional));
-            checkBlock(attempted.finallyBody(), scope, returnType);
+            Ast.TypeRef previousQuestionReturn = currentQuestionReturn;
+            currentQuestionReturn = null;
+            try {
+                checkBlock(attempted.finallyBody(), scope, returnType);
+            } finally {
+                currentQuestionReturn = previousQuestionReturn;
+            }
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
