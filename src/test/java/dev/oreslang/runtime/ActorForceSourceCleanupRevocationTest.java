@@ -155,4 +155,42 @@ final class ActorForceSourceCleanupRevocationTest {
                     () -> taskRef.get().get(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void confirmedRevocationCannotExecuteAlreadyRegisteredFinalCleanup()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 2, 64, 16))) {
+            CountDownLatch cleanupRegistered = new CountDownLatch(1);
+            CountDownLatch releaseCarrier = new CountDownLatch(1);
+            AtomicInteger finalCleanup = new AtomicInteger();
+
+            var actor = runtime.<String>spawnSharedTrusted(
+                    context -> (message, turn) -> {
+                        turn.runtime().endCurrentActorWithCleanup(
+                                finalCleanup::incrementAndGet);
+                        cleanupRegistered.countDown();
+                        try {
+                            assertTrue(releaseCarrier.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                    });
+            actor.send("end");
+            assertTrue(cleanupRegistered.await(5, TimeUnit.SECONDS));
+            runtime.setForceCancellationTreeHook(request -> true);
+            try {
+                assertTrue(actor.forceCancel());
+            } finally {
+                releaseCarrier.countDown();
+            }
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(0, finalCleanup.get(),
+                    "force-revoked actor must not re-enter guest final cleanup");
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    actor.failure().orElseThrow());
+        }
+    }
+
 }
