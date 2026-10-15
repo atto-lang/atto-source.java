@@ -172,6 +172,27 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
+    void deterministicByteCorpusExercisesActualBinderFuzzOracle() {
+        var random = new java.util.Random(1011L);
+        // All six fuzz modes are covered without relying on whether a random
+        // byte happens to select a particular invalid-input mode.
+        for (int mode = 0; mode < 6; mode++) {
+            for (int arity = 0; arity <= 11; arity++) {
+                byte[] bytes = new byte[32];
+                random.nextBytes(bytes);
+                bytes[0] = (byte) arity;
+                bytes[1] = (byte) mode;
+                FixedProductCallPlanFuzzTarget.verify(bytes);
+            }
+        }
+        for (int i = 0; i < 1_024; i++) {
+            byte[] bytes = new byte[random.nextInt(129)];
+            random.nextBytes(bytes);
+            FixedProductCallPlanFuzzTarget.verify(bytes);
+        }
+    }
+
+    @Test
     void labelComparisonIsCaseSensitive() {
         assertRejected("unknown", List.of(named("A"), named("b"), named("c")));
     }
