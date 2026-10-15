@@ -198,14 +198,18 @@ public final class ChannelRuntime {
             } finally {
                 COORDINATOR.unlock();
             }
+            Throwable consumerFailure = null;
             try {
-                // Deliver the older buffered value before notifying producers
-                // whose writes were admitted into the newly freed capacity.
+                // FIFO: deliver the older buffered value before publishing
+                // newly admitted writes; retain a failing consumer as primary.
                 consumer.accept(value);
+            } catch (RuntimeException | Error failure) {
+                consumerFailure = failure;
+                throw failure;
             } finally {
-                // A throwing mailbox consumer must not strand already-committed
-                // writes, cancellation cleanup, or released waiter credits.
-                runCompletions(completions);
+                // Committed writes must still be published if the consumer fails.
+                runAfterPreservingFailure(
+                        consumerFailure, () -> runCompletions(completions));
             }
             return true;
         }
@@ -1284,7 +1288,44 @@ public final class ChannelRuntime {
         return result;
     }
 
+    /**
+     * Execute required cleanup/follow-up despite a previous failure. Preserve
+     * the original exception as primary rather than masking it with a later
+     * listener, cleanup, or notification failure.
+     */
+    private static void runAfterPreservingFailure(
+            Throwable primaryFailure, Runnable requiredAction) {
+        try {
+            requiredAction.run();
+        } catch (RuntimeException | Error laterFailure) {
+            if (primaryFailure == null) throw laterFailure;
+            if (primaryFailure != laterFailure) {
+                primaryFailure.addSuppressed(laterFailure);
+            }
+        }
+    }
+
+    /**
+     * Every atomic commit may publish more than one terminal Future (notably
+     * rendezvous pairs), and unregistering Future arms queues loser detachments
+     * ahead of publication. A failure in any one completion must not prevent
+     * the remaining committed operations from being published or detached.
+     *
+     * <p>Do not execute this drain while holding COORDINATOR. Preserve the
+     * original failure after running all remaining callbacks, rather than
+     * silently treating a broken internal completion hook as success.</p>
+     */
     private static void runCompletions(List<Runnable> completions) {
-        for (Runnable completion : completions) completion.run();
+        Throwable firstFailure = null;
+        for (Runnable completion : completions) {
+            try {
+                completion.run();
+            } catch (RuntimeException | Error failure) {
+                if (firstFailure == null) firstFailure = failure;
+                else if (firstFailure != failure) firstFailure.addSuppressed(failure);
+            }
+        }
+        if (firstFailure instanceof RuntimeException failure) throw failure;
+        if (firstFailure instanceof Error failure) throw failure;
     }
 }
