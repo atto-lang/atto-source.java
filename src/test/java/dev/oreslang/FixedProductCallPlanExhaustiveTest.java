@@ -42,7 +42,7 @@ final class FixedProductCallPlanExhaustiveTest {
             FixedProductCallPlan plan = FixedProductCallPlan.bind(parameters, slots);
             assertEquals(arity, plan.sourceOrder().size());
             for (int i = 0; i < arity; i++) {
-                assertEquals(expectedAbiToSource[i], plan.abiToSource().get(i));
+                assertEquals(expectedAbiToSource[i], plan.abiToSource().get(i).intValue());
                 assertEquals(i, plan.sourceOrder().get(i).sourceIndex());
             }
             assertEquals(plan, new FixedProductCallPlan(plan.sourceOrder(), plan.abiToSource()));
