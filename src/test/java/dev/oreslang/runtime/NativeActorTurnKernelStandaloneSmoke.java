@@ -16,6 +16,14 @@ public final class NativeActorTurnKernelStandaloneSmoke {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(128)) {
             var first = kernel.register(1, 1);
             var second = kernel.register(2, 1);
+            // JNI leases are OS-carrier-bound: virtual-thread migration is unsafe.
+            AtomicReference<Throwable> virtualFailure = new AtomicReference<>();
+            Thread virtual = Thread.ofVirtual().start(() -> {
+                try { rejects(() -> kernel.enter(first)); }
+                catch (Throwable e) { virtualFailure.set(e); }
+            });
+            virtual.join();
+            if (virtualFailure.get() != null) throw new AssertionError(virtualFailure.get());
             kernel.enter(first);
             rejects(() -> kernel.enter(second));
             rejects(() -> kernel.settled(first));
