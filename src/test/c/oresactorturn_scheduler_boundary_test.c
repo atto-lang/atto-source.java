@@ -32,8 +32,10 @@ static void test_suspended_task_retirement_barrier(void) {
     IS(ores_turn_retire(vm, actor), ORES_TURN_DENIED);
     /* Pretend the real scheduler terminal callback is now complete. */
     OK(ores_turn_note_source_settled(vm, source));
-    IS(ores_turn_issue_cleanup(vm, source, (ores_cleanup_cap **)&actor),
+    ores_cleanup_cap *unused_ticket = NULL;
+    IS(ores_turn_issue_cleanup(vm, source, &unused_ticket),
        ORES_TURN_DENIED);
+    assert(unused_ticket == NULL);
     OK(ores_turn_retire_source_task(vm, source));
     OK(ores_turn_stop(vm, actor));
     OK(ores_turn_retire(vm, actor));
