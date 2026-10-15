@@ -182,6 +182,59 @@ final class ActorCarrierQuiescenceTest {
     }
 
     @Test
+    void boundedObserverQuotaRejectsOverflowAndReleasesEveryAdmittedObserver()
+            throws Exception {
+        CountDownLatch processed = new CountDownLatch(1);
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean holdOnce = new AtomicBoolean();
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (processed.getCount() == 0 && holdOnce.compareAndSet(false, true)) {
+                held.countDown();
+                awaitTestRelease(release);
+            }
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> processed.countDown());
+            try {
+                actor.send(1);
+                assertTrue(held.await(5, TimeUnit.SECONDS));
+                var observers = new java.util.ArrayList<OresFuture<Void>>();
+                for (int i = 0; i < 1_024; i++) {
+                    OresFuture<Void> observer = runtime.quiesceAcceptedMessages(actor);
+                    assertFalse(observer.isDone(), "observer " + i + " settled before carrier exit");
+                    observers.add(observer);
+                }
+
+                // Exhaustion must fail closed, never allocate unbounded
+                // pending shutdown observers or silently return success.
+                for (int i = 0; i < 50; i++) {
+                    OresFuture<Void> overflow = runtime.quiesceAcceptedMessages(actor);
+                    assertTrue(overflow.isDone());
+                    var denied = assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> overflow.get(1, TimeUnit.SECONDS));
+                    assertInstanceOf(ActorRuntime.ActorResourceExhaustedException.class,
+                            denied.getCause());
+                }
+                release.countDown();
+                for (OresFuture<Void> observer : observers) {
+                    observer.get(5, TimeUnit.SECONDS);
+                }
+                assertTrue(runtime.quiesceAcceptedMessages(actor).isDone(),
+                        "observer capacity must be reclaimed after quiescence");
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
     void foreignRuntimeCannotClaimQuiescenceOfAnotherActor() throws Exception {
         try (ActorRuntime owner = new ActorRuntime();
              ActorRuntime foreign = new ActorRuntime()) {
