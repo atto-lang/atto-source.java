@@ -32,6 +32,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ).hexdigest()
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
+        self.remote_source_commit = D
+        self.remote_source_tree = None
         self.route_calls = []
         self.source_identity = ["ores-truffle-oreslang/oreslang-source.java"] * 100
         self.source_ids = [1400792274] * 100
@@ -58,6 +60,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         commit={"sha": A})
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
+        if route == f"repos/{pub.SOURCE_REPOSITORY}/git/commits/" + D:
+            return {"sha": self.remote_source_commit,
+                    "tree": {"sha": self.expected_tree if self.remote_source_tree is None
+                             else self.remote_source_tree}}
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch="main",
@@ -91,7 +97,46 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
-            return pub.publish(repo, self.source, branch, self.root, self.expected_tree)
+            return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_pinned_immutable_source_commit_is_authenticated_before_any_source_write(self):
+        self.remote_source_commit = E
+        with self.assertRaisesRegex(pub.Denied, "source commit identity"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_mismatched_remote_commit_tree_denies_before_source_read_or_upload(self):
+        self.remote_source_tree = E
+        with patch.object(pub, "collect_source", side_effect=AssertionError(
+                "source must not be read without independently verified tree")):
+            with self.assertRaisesRegex(pub.Denied, "source commit tree"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_commit_revalidation_denies_on_remote_tree_flip_before_first_write(self):
+        original = self.fake_api
+        first = [True]
+        def commit_flip(route, method="GET", payload=None):
+            if route == f"repos/{pub.SOURCE_REPOSITORY}/git/commits/" + D:
+                if first[0]:
+                    first[0] = False
+                    return original(route, method, payload)
+                self.remote_source_tree = E
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=commit_flip):
+            with self.assertRaisesRegex(pub.Denied, "source commit tree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_invalid_source_commit_sha_denies_before_metadata_or_file_read(self):
+        for bad in (None, "", "A" * 40, "g" * 40, "0" * 39):
+            with self.subTest(bad=bad):
+                self.route_calls.clear()
+                with self.assertRaises(pub.Denied):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                self.root, self.expected_tree, bad)
+                self.assertEqual(self.route_calls, [])
 
     def test_unprotected_source_main_denies_without_source_write(self):
         self.source_protected = [False] * 100
@@ -153,7 +198,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=go_public_after_root_readback):
             with self.assertRaisesRegex(pub.Denied, "private visibility"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
         self.assertTrue(any(m == "POST" and r.endswith("/git/refs")
                             for m, r, _ in self.route_calls))
 
@@ -167,7 +212,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=revoke_policy_after_root_readback):
             with self.assertRaisesRegex(pub.Denied, "not approved on protected source main"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
         self.assertTrue(any(m == "POST" and r.endswith("/git/refs")
                             for m, r, _ in self.route_calls))
 
@@ -193,7 +238,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "gh_api", side_effect=invalid_shape):
                     with self.assertRaisesRegex(pub.Denied, "malformed object metadata"):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                                    self.root, self.expected_tree)
+                                    self.root, self.expected_tree, D)
 
     def test_created_branch_confirmation_must_point_to_commit(self):
         original = self.fake_api
@@ -206,7 +251,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=changed_ref):
             with self.assertRaisesRegex(pub.Denied, "created CI branch"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
 
     def test_branch_readback_must_point_to_created_commit(self):
         original = self.fake_api
@@ -218,7 +263,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=changed_ref):
             with self.assertRaisesRegex(pub.Denied, "branch readback"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
 
     def test_branch_commit_readback_must_match_published_tree(self):
         original = self.fake_api
@@ -230,7 +275,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=wrong_commit_tree):
             with self.assertRaisesRegex(pub.Denied, "commit tree differs"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
 
     def test_committed_subtree_readback_must_match_pinned_source(self):
         original = self.fake_api
@@ -244,7 +289,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=wrong_root_tree):
             with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
 
     def test_truncated_or_unknown_git_tree_readback_is_denied(self):
         original = self.fake_api
@@ -261,7 +306,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "gh_api", side_effect=incomplete_tree):
                     with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                                    self.root, self.expected_tree)
+                                    self.root, self.expected_tree, D)
 
     def test_committed_subtree_must_not_have_duplicate_entries(self):
         original = self.fake_api
@@ -275,7 +320,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=ambiguous_root_tree):
             with self.assertRaisesRegex(pub.Denied, "committed CI source subtree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                            self.root, self.expected_tree)
+                            self.root, self.expected_tree, D)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
@@ -310,7 +355,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.route_calls.clear()
                 with self.assertRaises(pub.Denied):
                     pub.publish("trusted/ci", self.source, "ci/oreslang-test",
-                                self.root, invalid)
+                                self.root, invalid, D)
                 self.assertEqual(self.route_calls, [])
 
     def test_wrong_pinned_tree_rejects_before_any_source_upload(self):
@@ -329,7 +374,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=wrong_tree):
             with self.assertRaisesRegex(pub.Denied, "destination source subtree"):
                 pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root,
-                            self.expected_tree)
+                            self.expected_tree, D)
         self.assertFalse(any(r.endswith("/git/commits") or r.endswith("/git/refs")
                              for m, r, _ in self.route_calls if m == "POST"))
 
@@ -368,7 +413,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "gh_api", side_effect=untrusted_main):
                     with self.assertRaises(pub.Denied):
                         pub.publish("trusted/ci", self.source,
-                                    "ci/oreslang-test", self.root, self.expected_tree)
+                                    "ci/oreslang-test", self.root, self.expected_tree, D)
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_protected_main_revocation_blocks_next_git_write(self):
@@ -381,7 +426,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=revoke_main_after_first_blob):
             with self.assertRaisesRegex(pub.Denied, "not approved on protected source main"):
                 pub.publish("trusted/ci", self.source,
-                            "ci/oreslang-test", self.root, self.expected_tree)
+                            "ci/oreslang-test", self.root, self.expected_tree, D)
         self.assertEqual([route for method, route, _ in self.route_calls if method == "POST"],
                          ["repos/trusted/ci/git/blobs"])
 
@@ -468,7 +513,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return result
         with patch.object(pub, "gh_api", side_effect=revoke_after_blob):
             with self.assertRaisesRegex(pub.Denied, "approval.*(revoked|changed)"):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, self.expected_tree)
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, self.expected_tree, D)
         writes = [r for m, r, _ in self.route_calls if m == "POST"]
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
@@ -886,7 +931,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=bad):
             with self.assertRaises(pub.Denied):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, self.expected_tree)
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, self.expected_tree, D)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
     def test_valid_looking_but_incorrect_blob_sha_is_rejected(self):
@@ -897,7 +942,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return original(route, method, payload)
         with patch.object(pub, "gh_api", side_effect=wrong):
             with self.assertRaisesRegex(pub.Denied, "digest"):
-                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, self.expected_tree)
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root, self.expected_tree, D)
         self.assertFalse(any(r.endswith("/git/refs") for _, r, _ in self.route_calls))
 
     def test_source_must_be_under_trusted_checkout(self):
@@ -907,7 +952,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             (outside / "outside.ores").write_text("private data")
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
                 with self.assertRaisesRegex(pub.Denied, "trusted checkout"):
-                    pub.publish("trusted/ci", outside, "ci/oreslang-test", self.root, self.expected_tree)
+                    pub.publish("trusted/ci", outside, "ci/oreslang-test", self.root, self.expected_tree, D)
         finally:
             (outside / "outside.ores").unlink()
             outside.rmdir()
