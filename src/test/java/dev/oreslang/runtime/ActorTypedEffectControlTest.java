@@ -408,6 +408,68 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void oneForOneRestartRejectsForeignRuntimeChildHandle()
+            throws Exception {
+        CountDownLatch foreignChildReady = new CountDownLatch(1);
+        CountDownLatch supervisorChecked = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> foreignChild =
+                new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+
+        try (ActorRuntime otherRuntime = new ActorRuntime();
+             ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> unrelatedParent = otherRuntime.spawnShared(
+                    () -> (mail, parentContext) -> {
+                        foreignChild.set(otherRuntime.spawnChildShared(
+                                childContext -> (childMail, ignored) -> {}));
+                        foreignChildReady.countDown();
+                    });
+            unrelatedParent.send("spawn");
+            assertTrue(foreignChildReady.await(3, TimeUnit.SECONDS));
+            assertNotNull(foreignChild.get());
+
+            ActorRuntime.ActorRef<String> supervisor = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> child = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.send("fail");
+                        }
+
+                        @Override public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            try {
+                                assertThrows(SecurityException.class, () ->
+                                        actors.restartCurrentChildOneForOne(
+                                                notice, foreignChild.get(),
+                                                replacement -> (mail, ignored) -> {}),
+                                        "a different ActorRuntime's capability must not authorize a restart");
+                            } catch (Throwable failure) {
+                                callbackFailure.set(failure);
+                            } finally {
+                                supervisorChecked.countDown();
+                            }
+                        }
+                    });
+            supervisor.send("spawn");
+            assertTrue(supervisorChecked.await(3, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(),
+                    () -> "cross-runtime restart capability was accepted: " + callbackFailure.get());
+            assertTrue(supervisor.isAlive(),
+                    "foreign restart attempts must not terminate the supervisor");
+            assertTrue(foreignChild.get().isAlive(),
+                    "foreign child must not be stopped or consumed by another runtime");
+            supervisor.stop();
+            assertTrue(supervisor.awaitTermination(3, TimeUnit.SECONDS));
+            unrelatedParent.stop();
+            assertTrue(unrelatedParent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void cancellationDuringSupervisorCallbackRejectsOneForOneRestart()
             throws Exception {
         CountDownLatch callbackEntered = new CountDownLatch(1);
