@@ -187,6 +187,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_candidate_destination_requires_separate_policy_approval(self):
+        candidate = ("ores-dummy-org-oreslang-stack/"
+                     "ores-dummy-org-oreslang-stack-infra")
+        self.assertEqual(pub.PINNED_DESTINATION_IDS[candidate], 1412142815)
+        # The immutable-ID pin alone grants no export permission. A missing
+        # protected-branch policy must reject BEFORE any repository or Git
+        # API call, including the first upload.
+        with patch.object(pub, "require_preflight",
+                          side_effect=pub.Denied("destination not approved")):
+            with self.assertRaisesRegex(pub.Denied, "not approved"):
+                self.publish(repo=candidate)
+        self.assertEqual(self.route_calls, [])
+
+    def test_candidate_destination_replacement_id_denied_before_write(self):
+        candidate = ("ores-dummy-org-oreslang-stack/"
+                     "ores-dummy-org-oreslang-stack-infra")
+        expected_id = pub.PINNED_DESTINATION_IDS[candidate]
+        self.assertEqual(expected_id, 1412142815)
+        for invalid_id in (expected_id + 1, None, str(expected_id), False):
+            with self.subTest(repo_id=invalid_id):
+                self.route_calls.clear()
+                metadata = {
+                    "id": invalid_id, "full_name": candidate,
+                    "visibility": "private", "private": True,
+                    "archived": False, "disabled": False
+                }
+                with patch.object(pub, "gh_api", return_value=metadata):
+                    with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+                        pub.checked_repo(candidate)
+                self.assertEqual(self.route_calls, [])
+
     def test_destination_subtree_mismatch_cannot_publish_ci_ref(self):
         original = self.fake_api
 
