@@ -1,7 +1,6 @@
 # Postfix `?` propagation — Java compiler admission RFC
 
-**Status (2026-10-15): compiler routing foundation + parser rejection gate.
-No executable postfix `?` source support in this PR.**
+**Status (2026-10-15): an initial executable Java synchronous `Option`/`Result` local-carrier slice has been implemented in draft #1017 but remains UNVERIFIED by an executed CI job. Typed-throw, methods, lambdas, suspension, actors and backend parity remain unadmitted.**
 Canonical public Oreslang names use snake_case. Shared normative contract:
 [common-source PR #36](https://github.com/ores-truffle-oreslang/oreslang-common-source/pull/36).
 Related typed throwable/raise/panic RFC:
@@ -33,13 +32,7 @@ Related typed throwable/raise/panic RFC:
 
 ## Current implementation proof boundary
 
-`PostfixQuestionRoutes` contains a closed, deterministic *compiler-only*
-policy object; it is NOT wired into AST/typechecking/evaluator. The Java
-parser's `parseConditional` explicitly rejects suffix `?` at completed
-expression boundaries while preserving `condition ? yes : no` and
-`value as? Type` semantics. `PostfixQuestionAdmissionTest` and
-`PostfixQuestionRoutesTest` are host-side tests, not a source
-propagation acceptance proof.
+`PostfixQuestionRoutes` is a closed reference route policy object; the first guest-language slice additionally uses `Ast.PropagateExpr` parsed at completed-expression boundaries, checked against the enclosing synchronous fnc's exact return type, consumed once by `OwnershipChecker` from a named local/parameter, and lowered in the evaluator through a `ReturnSignal` that preserves `finally`/`defer`. `PostfixQuestionExecutionTest` adds guest-language regression cases for success, early Err/None, try/finally, LIFO cleanup and moves. Those tests are **committed but not verified passing**. The policy helper is not yet directly integrated into type checking for typed `throws E` routes. Direct chained calls such as `parse_port(text)?` are intentionally rejected by the ownership checker: bind their Result to a named local first.
 
 ## Integration checklist before exposing the token as valid source
 
@@ -64,5 +57,4 @@ propagation acceptance proof.
    panic/raise/cancel, plus unsupported-family negatives), Java JVM/Native
    Image and native LLVM comparison, and formatter idempotence.
 
-Until these are proven, leave postfix `?` fail-closed; do not mark this
-draft PR ready based on the routing-helper tests alone.
+Until these are proven, keep all unsupported postfix `?` forms fail-closed; do not mark this draft PR ready before exact-branch-head guest execution, runtime cleanup tests, and ownership negatives pass.
