@@ -137,6 +137,13 @@ public final class RuntimePermissions {
         if (!sawPermissionArgument)
             return fromCapabilities(isolatePolicy.capabilities());
 
+        // Serialized scoped authority must carry the marker emitted by
+        // applicationArguments(). A partial/truncated policy must not
+        // silently become an authorization grant. The marker is a format
+        // invariant, NOT a cryptographic proof of the host's authority.
+        if (!sawExplicitMarker)
+            throw new IllegalArgumentException("missing explicit Oreslang permission marker");
+
         RuntimePermissions explicit = builder.build();
         // Scoped rules ATTENUATE isolate authority; they must never add a
         // coarse capability omitted by the host's isolation boundary. The
