@@ -198,6 +198,9 @@ public final class RuntimePermissions {
         Rule rule = rules.get(permission);
         if (rule == null) return false;
 
+        // Invalid endpoint spellings must not match a broad network grant.
+        if (permission == Permission.NET && parseNetworkScope(resource, false) == null)
+            return false;
         String normalized = normalize(permission, resource);
         if (rule.denyAll() || matchesAny(permission, normalized, rule.denied())) return false;
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
@@ -242,26 +245,77 @@ public final class RuntimePermissions {
         };
     }
 
+    /**
+     * Compare normalized host and port independently. Comparing a wildcard
+     * hostname against the whole "host:port" string previously made
+     * --deny-net=*.example.com:443 a no-op against --allow-net=*.
+     */
     private static boolean networkMatches(String resource, String scope) {
-        String target = resource.toLowerCase(Locale.ROOT);
-        String rule = scope.toLowerCase(Locale.ROOT);
-        if (target.equals(rule)) return true;
-
-        // A host-only rule permits every port on that host.
-        if (!rule.contains(":")) {
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            if (targetHost.equals(rule)) return true;
+        NetworkScope target = parseNetworkScope(resource, false);
+        NetworkScope rule = parseNetworkScope(scope, true);
+        if (target == null || rule == null) return false;
+        if (rule.port() != null && !rule.port().equals(target.port())) return false;
+        if (rule.host().startsWith("*.")) {
+            String suffix = rule.host().substring(1);
+            return target.host().endsWith(suffix)
+                    && target.host().length() > suffix.length();
         }
+        return rule.host().equals(target.host());
+    }
 
-        // "*.example.com" includes subdomains but not the bare parent.
-        if (rule.startsWith("*.")) {
-            String suffix = rule.substring(1);
-            int targetColon = target.lastIndexOf(':');
-            String targetHost = targetColon > 0 ? target.substring(0, targetColon) : target;
-            return targetHost.endsWith(suffix) && targetHost.length() > suffix.length();
+    private record NetworkScope(String host, Integer port) {
+        String canonical() {
+            return port == null ? host : host + ":" + port;
         }
-        return false;
+    }
+
+    /**
+     * Host[:port] or [IPv6][:port]; no DNS lookup, unbracketed IPv6,
+     * credentials, URL path, partial port, or additional colon is accepted.
+     * Canonicalize the final DNS dot so a deny cannot be bypassed with an
+     * equivalent fully-qualified DNS hostname.
+     */
+    private static NetworkScope parseNetworkScope(String input, boolean allowWildcard) {
+        if (input == null || input.isBlank()) return null;
+        String text = input.trim().toLowerCase(Locale.ROOT);
+        String host;
+        String portText = null;
+        if (text.startsWith("[")) {
+            int closing = text.indexOf(']');
+            if (closing < 3 || text.indexOf('[', 1) >= 0) return null;
+            host = text.substring(0, closing + 1);
+            String literal = host.substring(1, host.length() - 1);
+            if (!literal.contains(":") || !literal.matches("[0-9a-f:.]+")) return null;
+            if (closing + 1 < text.length()) {
+                if (text.charAt(closing + 1) != ':') return null;
+                portText = text.substring(closing + 2);
+            }
+        } else {
+            int colon = text.indexOf(':');
+            if (colon < 0) {
+                host = text;
+            } else {
+                if (text.indexOf(':', colon + 1) >= 0) return null;
+                host = text.substring(0, colon);
+                portText = text.substring(colon + 1);
+            }
+            if (host.endsWith(".")) host = host.substring(0, host.length() - 1);
+            if (host.isEmpty() || host.startsWith(".") || host.contains("..")
+                    || !host.matches("[a-z0-9*._-]+")) return null;
+            if (host.contains("*") && !(allowWildcard && host.startsWith("*.")
+                    && host.indexOf('*', 1) < 0)) return null;
+        }
+        Integer port = null;
+        if (portText != null) {
+            if (portText.isEmpty() || !portText.matches("[0-9]{1,5}")) return null;
+            try {
+                port = Integer.parseInt(portText);
+            } catch (NumberFormatException invalid) {
+                return null;
+            }
+            if (port < 1 || port > 65535) return null;
+        }
+        return new NetworkScope(host, port);
     }
 
     private static boolean tokenMatches(String resource, String scope) {
@@ -277,7 +331,13 @@ public final class RuntimePermissions {
 
         return switch (permission) {
             case READ, WRITE, FFI, IMPORT -> normalizePath(trimmed);
-            case NET -> trimmed.toLowerCase(Locale.ROOT);
+            case NET -> {
+                NetworkScope scope = parseNetworkScope(trimmed, true);
+                if (scope == null) {
+                    throw new IllegalArgumentException("invalid network permission scope '" + trimmed + "'");
+                }
+                yield scope.canonical();
+            }
             case ENV, RUN, SYS -> trimmed;
         };
     }
@@ -353,11 +413,9 @@ public final class RuntimePermissions {
         }
 
         public Builder allowCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> allow(permission, value));
+            for (String scope : requireCsvScopes(permission, scopes)) {
+                allow(permission, scope);
+            }
             return this;
         }
 
@@ -379,12 +437,23 @@ public final class RuntimePermissions {
         }
 
         public Builder denyCsv(Permission permission, String scopes) {
-            if (scopes == null || scopes.isBlank()) return this;
-            Arrays.stream(scopes.split(","))
-                    .map(String::trim)
-                    .filter(value -> !value.isEmpty())
-                    .forEach(value -> deny(permission, value));
+            for (String scope : requireCsvScopes(permission, scopes)) {
+                deny(permission, scope);
+            }
             return this;
+        }
+
+        // Strictly reject empty CSV fields. Silently dropping empty deny
+        // entries makes a policy appear stronger than it actually is.
+        private static List<String> requireCsvScopes(Permission permission, String scopes) {
+            if (scopes == null || scopes.isBlank())
+                throw new IllegalArgumentException("empty permission scope list for " + permission);
+            List<String> values = Arrays.stream(scopes.split(",", -1))
+                    .map(String::trim)
+                    .toList();
+            if (values.stream().anyMatch(String::isEmpty))
+                throw new IllegalArgumentException("empty permission scope element for " + permission);
+            return values;
         }
 
         public RuntimePermissions build() {
