@@ -285,6 +285,9 @@ public final class NativeHttp implements AutoCloseable {
         private final int bodyLimit, deadlineMillis;
         private final ArrayDeque<Exchange> pending = new ArrayDeque<>();
         private final Set<State> active = ConcurrentHashMap.newKeySet();
+        // State.release removes admission before publishing the completion future.
+        // Keep shutdown pending until every such publication has returned.
+        private final AtomicInteger releasesInProgress = new AtomicInteger();
         private final Set<Handler.Worker> pooledWorkers = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
         private volatile boolean stopped;
@@ -421,7 +424,8 @@ public final class NativeHttp implements AutoCloseable {
             return drained;
         }
         private synchronized void completeDrain() {
-            if (!transportStopped || !active.isEmpty() || drained == null || pooledBarrierStarted) {
+            if (!readyForCarrierBarrier(transportStopped, active.isEmpty(), releasesInProgress.get())
+                    || drained == null || pooledBarrierStarted) {
                 return;
             }
             pooledBarrierStarted = true;
@@ -594,14 +598,27 @@ public final class NativeHttp implements AutoCloseable {
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
-            if (server.active.remove(this)) {
-                if (poolWorker != null) poolWorker.requests.remove(this);
-                if (CorePerf.enabled()) {
-                    CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
+            // Increment BEFORE removing the last active request: an unrelated
+            // shutdown thread must not see active.isEmpty() while the request's
+            // completion callback is still being published. Even duplicate
+            // release attempts participate in this short-lived fence.
+            server.releasesInProgress.incrementAndGet();
+            try {
+                if (server.active.remove(this)) {
+                    if (poolWorker != null) poolWorker.requests.remove(this);
+                    if (CorePerf.enabled()) {
+                        CorePerf.elapsed(CorePerf.HTTP_LIFETIME, admittedNanos, System.nanoTime());
+                    }
+                    synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
+                    server.admission.release();
+                    server.completed.incrementAndGet();
+                    completion.completeFromRuntime((long) responseStatus);
                 }
-                synchronized (server) { server.pending.removeIf(exchange -> exchange.state == this); }
-                server.admission.release(); server.completed.incrementAndGet(); server.completeDrain();
-                completion.completeFromRuntime((long) responseStatus);
+            } finally {
+                server.releasesInProgress.decrementAndGet();
+                // The final release, not active.remove(), is the point at which
+                // the shutdown barrier can safely observe request completion.
+                server.completeDrain();
             }
         }
     }
@@ -812,6 +829,17 @@ public final class NativeHttp implements AutoCloseable {
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
             return result;
         }
+    }
+
+    /**
+     * Transport shutdown is safe to advance to actor quiescence only after
+     * all accepted requests have left the completion-publication section.
+     * active.isEmpty() alone is insufficient because State.release removes
+     * its state before publishing the completion callback.
+     */
+    static boolean readyForCarrierBarrier(
+            boolean transportStopped, boolean activeEmpty, int releasesInProgress) {
+        return transportStopped && activeEmpty && releasesInProgress == 0;
     }
 
     /** Only an active runtime/listener can admit a new actor transfer. */
