@@ -24,8 +24,13 @@ class NativeSurefireEvidenceTests(unittest.TestCase):
             "failures": str(failures), "errors": str(errors),
             "skipped": str(skipped),
         })
+        selected = (sorted(gate.REQUIRED_METHODS[name])
+                    if name in gate.REQUIRED_METHODS else [])
         for n in range(tests if cases is None else cases):
-            case = ET.SubElement(root, "testcase", name=f"test{n}")
+            # Use actual JUnit method names for the real JNI contract,
+            # while other report fixtures may use synthetic test names.
+            method = selected[n] if n < len(selected) else f"test{n}"
+            case = ET.SubElement(root, "testcase", name=method)
             if n == 0 and skipped:
                 ET.SubElement(case, "skipped")
             if n == 0 and failures:
@@ -47,6 +52,23 @@ class NativeSurefireEvidenceTests(unittest.TestCase):
     def test_jni_partial_execution_rejected(self):
         self.report("NativeActorTurnSchedulerJniTest", 14)
         with self.assertRaises(gate.VerificationFailure):
+            gate.verify(self.reports, "jni")
+
+    def test_jni_valid_count_but_replaced_method_rejected(self):
+        report = self.report("NativeActorTurnSchedulerJniTest", 15)
+        root = ET.fromstring(report.read_bytes())
+        root.findall("testcase")[0].set("name", "unrelatedGreenerTest")
+        report.write_bytes(ET.tostring(root))
+        with self.assertRaisesRegex(gate.VerificationFailure, "methods absent or replaced"):
+            gate.verify(self.reports, "jni")
+
+    def test_jni_duplicate_method_even_with_valid_count_rejected(self):
+        report = self.report("NativeActorTurnSchedulerJniTest", 15)
+        root = ET.fromstring(report.read_bytes())
+        cases = root.findall("testcase")
+        cases[-1].set("name", cases[0].get("name"))
+        report.write_bytes(ET.tostring(root))
+        with self.assertRaisesRegex(gate.VerificationFailure, "duplicate testcase"):
             gate.verify(self.reports, "jni")
 
     def test_missing_policy_class_rejected(self):
