@@ -88,9 +88,14 @@ Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
-per file, requires the source directory to remain **inside the trusted
-checkout**, and walks the source **through directory file descriptors** to
-prevent parent-directory symlink swap races. It rejects symbolic links,
+per file. The reviewed publisher's code and approval policy remain in its own
+trusted checkout; the source candidate may reside in a **different, untrusted
+Git checkout**. Its entire committed `HEAD^{tree}` must match the snapshot,
+and the commit/tree identity must resolve in the pinned private source GitHub
+repository before any source-bearing write. The publisher never runs code
+from the candidate checkout merely to authorize mirroring. It walks candidate
+source **through directory file descriptors** to prevent parent-directory
+symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
 filesystem objects. Directory enumeration is bounded to 4,096 entries,
 1,024 directories and a maximum depth of 64. It verifies every uploaded
