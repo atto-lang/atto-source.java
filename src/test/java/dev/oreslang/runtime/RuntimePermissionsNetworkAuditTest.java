@@ -59,6 +59,52 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void equivalentIpv6AddressSpellingsCannotEvadeExactDeny() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]")
+                .withDenied(RuntimePermissions.Permission.NET,
+                        "[0:0:0:0:0:0:0:1]:443");
+
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "[::1]:443"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET,
+                "[0000:0000:0000:0000:0000:0000:0000:0001]:00443"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "[::1]:444"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "[::2]:444"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "127.0.0.1:444"));
+    }
+
+    @Test
+    void malformedIpv6CannotMatchBroadAllowOrBecomeDenyRule() {
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*");
+        for (String malformed : new String[]{
+                "[:::1]:443", "[1:2:3:4:5:6:7:8:9]:443", "[12345::1]:443",
+                "[::1%lo0]:443", "[::ffff:127.0.0.1]:443",
+                "[::1]:443:444", "[::1]:0", "[::1]:65536"
+        }) {
+            assertFalse(broad.allows(RuntimePermissions.Permission.NET, malformed),
+                    "malformed IPv6 endpoint matched unrestricted grant: " + malformed);
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withDenied(RuntimePermissions.Permission.NET, malformed),
+                    "malformed IPv6 deny scope accepted: " + malformed);
+        }
+    }
+
+    @Test
+    void canonicalIpv6DenialsSurviveApplicationArgumentRoundTrip() {
+        RuntimePermissions original = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]")
+                .withDenied(RuntimePermissions.Permission.NET, "[0:0:0:0:0:0:0:1]:443");
+        RuntimePermissions restored = RuntimePermissions.fromApplicationArguments(
+                original.applicationArguments(),
+                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK));
+        assertFalse(restored.allows(RuntimePermissions.Permission.NET, "[::1]:443"));
+        assertTrue(restored.allows(RuntimePermissions.Permission.NET,
+                "[0000:0000:0000:0000:0000:0000:0000:0001]:8443"));
+    }
+
+    @Test
     void malformedEndpointsDoNotUseBroadAllow() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
