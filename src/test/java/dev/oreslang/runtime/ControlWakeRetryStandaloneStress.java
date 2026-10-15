@@ -200,6 +200,13 @@ public final class ControlWakeRetryStandaloneStress {
                     else q.cancel(callback);
                     require(q.retained() == 0,
                             "revoked in-transit CONTROL ticket retained quota");
+                    java.lang.reflect.Field liveTickets =
+                            ControlWakeRetryQueue.class.getDeclaredField("aboutToInvoke");
+                    liveTickets.setAccessible(true);
+                    synchronized (q) {
+                        require(((java.util.Set<?>)liveTickets.get(q)).isEmpty(),
+                                "cancel/close retained dequeued callback metadata");
+                    }
                 } finally {
                     resume.countDown();
                 }
