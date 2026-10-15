@@ -1964,7 +1964,7 @@ public final class OresEvalRootNode extends RootNode {
                                 try {
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
-                                        List<?> items = asSequence(value);
+                                        Iterable<?> items = iterableValues(value, env);
                                         // A destructure selects a prefix. Evaluate
                                         // the source once, and bind only requested
                                         // positions; omitted suffix items are not
@@ -1975,18 +1975,7 @@ public final class OresEvalRootNode extends RootNode {
                                                 env,
                                                 "destructure");
                                     } else {
-                                        for (Ast.DestructureBinding binding :
-                                                destructure.bindings()) {
-                                            if (!binding.isDiscard()) {
-                                                env.define(
-                                                        binding.name(),
-                                                        destructureMember(
-                                                                value,
-                                                                binding.name(),
-                                                                env),
-                                                        binding.kind());
-                                            }
-                                        }
+                                        bindObjectDestructure(value, destructure.bindings(), env);
                                     }
                                     continuation.accept(
                                             t,
@@ -4987,17 +4976,7 @@ public final class OresEvalRootNode extends RootNode {
                             env,
                             "destructure");
                 } else {
-                    Set<String> selectedMembers = new LinkedHashSet<>();
-                    for (Ast.DestructureBinding binding : destructure.bindings()) {
-                        if (!binding.isDiscard() && !binding.rest()) selectedMembers.add(binding.name());
-                    }
-                    for (Ast.DestructureBinding binding : destructure.bindings()) {
-                        if (binding.isDiscard()) continue;
-                        Object bound = binding.rest()
-                                ? destructureRestObject(value, selectedMembers)
-                                : destructureMember(value, binding.name(), env);
-                        env.define(binding.name(), bound, binding.kind());
-                    }
+                    bindObjectDestructure(value, destructure.bindings(), env);
                 }
                 return;
             }
@@ -8086,7 +8065,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(value instanceof Map<?, ?> record)
                         || !(value instanceof ReadonlyRecordValue
                             || value.getClass() == LinkedHashMap.class
-                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$"))) {
+                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$")
+                            // object-rest creates an immutable snapshot through
+                            // Collections.unmodifiableMap; it is still a record.
+                            || value.getClass().getName().equals("java.util.Collections$UnmodifiableMap"))) {
                     return false;
                 }
                 // Stage all required fields before introducing any bound name.
@@ -8804,7 +8786,7 @@ public final class OresEvalRootNode extends RootNode {
                     + " but declared " + declared);
         }
 
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return java.util.Arrays.asList(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
 
         /**
          * Bind only the winning readch payload. Pattern projection is staged
@@ -8822,25 +8804,39 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (arm.destructureKind() == Ast.DestructureKind.OBJECT) {
-                Set<String> selected = new LinkedHashSet<>();
-                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
-                    if (!binding.rest()) selected.add(binding.name());
-                }
-                LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
-                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
-                    staged.put(binding.name(),
-                            binding.rest()
-                                    ? destructureRestObject(value, selected)
-                                    : destructureMember(value, binding.name(), destination));
-                }
-                for (Ast.DestructureBinding binding : arm.destructureBindings()) {
-                    destination.define(
-                            binding.name(), staged.get(binding.name()), binding.kind());
-                }
+                bindObjectDestructure(value, arm.destructureBindings(), destination);
                 return;
             }
             if (arm.bindingName() != null) {
                 destination.define(arm.bindingName(), value, arm.bindingKind());
+            }
+        }
+
+        /**
+         * Evaluate every projected field (including object rest) before publishing
+         * any local name. The sync, suspendable, and selected-channel paths must
+         * implement the same object-destructuring semantics.
+         */
+        private void bindObjectDestructure(
+                Object value, List<Ast.DestructureBinding> bindings, Env destination) {
+            Set<String> selected = new LinkedHashSet<>();
+            for (Ast.DestructureBinding binding : bindings) {
+                if (!binding.isDiscard() && !binding.rest()) {
+                    selected.add(binding.name());
+                }
+            }
+            LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
+            for (Ast.DestructureBinding binding : bindings) {
+                if (binding.isDiscard()) continue;
+                Object projected = binding.rest()
+                        ? destructureRestObject(value, selected)
+                        : destructureMember(value, binding.name(), destination);
+                staged.put(binding.name(), projected);
+            }
+            for (Ast.DestructureBinding binding : bindings) {
+                if (!binding.isDiscard()) {
+                    destination.define(binding.name(), staged.get(binding.name()), binding.kind());
+                }
             }
         }
 

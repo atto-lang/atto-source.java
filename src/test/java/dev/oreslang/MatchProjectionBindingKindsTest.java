@@ -328,4 +328,29 @@ final class MatchProjectionBindingKindsTest {
                 """;
         assertEquals("9", outputOf(source));
     }
+    @Test
+    void objectRestSnapshotsCanBeMatchedFromBothCallableAndRoutine() throws Exception {
+        String source = """
+                fnc extract(): int {
+                  const {first, ...remaining} =
+                      struct{first: int, value: int}{first: 1, value: 42};
+                  do match Some(remaining) over
+                    on Some as {value} -> { return value; }
+                    on None -> { return 0; }
+                  end
+                }
+                pub routine main(): void {
+                  const {first, ...remaining} =
+                      struct{first: int, value: int}{first: 2, value: 43};
+                  do match Some(remaining) over
+                    on Some as {value} -> { stdio.stdout.write(value); }
+                    on None -> { stdio.stdout.write(0); }
+                  end
+                  stdio.stdout.write(":" + extract());
+                  return;
+                }
+                """;
+        assertEquals("43:42", outputOf(source));
+    }
+
 }
