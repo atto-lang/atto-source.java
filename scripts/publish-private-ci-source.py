@@ -548,11 +548,20 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     if source_tree_sha(files) != expected_source_tree:
         raise Denied("source snapshot Git tree differs from pinned expected SHA")
     base = checked_repo(repository, expected_id=approved_destination_id)
-    default = base.get("default_branch")
-    if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
-        raise Denied("destination default branch is invalid")
-    base_ref = gh_api(f"repos/{repository}/git/ref/heads/{default}")
-    base_sha = nested_sha(base_ref, "object")
+    # Never inherit a caller-selected or unreviewed carrier branch: inherited
+    # workflow definitions execute with the destination repository's token.
+    if base.get("default_branch") != "main":
+        raise Denied("private carrier default branch is not trusted main")
+    def require_pinned_carrier_main(expected_sha=None):
+        ref = gh_api(f"repos/{repository}/git/ref/heads/main")
+        current_sha = nested_sha(ref, "object")
+        if (ref.get("ref") != "refs/heads/main"
+                or ref["object"].get("type") != "commit"):
+            raise Denied("private carrier main ref is not a verified commit")
+        if expected_sha is not None and current_sha != expected_sha:
+            raise Denied("private carrier main changed during source transfer")
+        return current_sha
+    base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = nested_sha(base_commit, "tree")
     def authorize_write():
@@ -563,7 +572,10 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         require_reviewed_source_snapshot(expected_source_commit, expected_source_tree,
                                          approved_destination_id, reviewed_snapshot_sha)
         verify_source_commit(expected_source_commit, expected_source_tree)
-        checked_repo(repository, expected_id=approved_destination_id)
+        current = checked_repo(repository, expected_id=approved_destination_id)
+        if current.get("default_branch") != "main":
+            raise Denied("private carrier default branch changed during transfer")
+        require_pinned_carrier_main(base_sha)
 
     elements = []
     for rel, data, mode in files:
