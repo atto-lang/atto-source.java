@@ -22,6 +22,7 @@ final class ReservedActorDispatcher extends AbstractExecutorService {
     private final ExecutorService delegate;
     private final Semaphore ordinaryPermits;
     private final Semaphore controlPermits;
+    private final ControlWakeRetryQueue controlRetries;
     private final AtomicBoolean shutdown = new AtomicBoolean();
 
     ReservedActorDispatcher(ExecutorService delegate, int ordinaryCapacity, int controlCapacity) {
@@ -31,7 +32,14 @@ final class ReservedActorDispatcher extends AbstractExecutorService {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         ordinaryPermits = new Semaphore(ordinaryCapacity);
         controlPermits = new Semaphore(controlCapacity);
+        controlRetries = new ControlWakeRetryQueue(ordinaryCapacity);
     }
+
+    long controlRetryEpoch() { return controlRetries.epoch(); }
+    boolean registerControlRetry(Runnable callback, long epoch) {
+        return controlRetries.register(callback, epoch);
+    }
+    void cancelControlRetry(Runnable callback) { controlRetries.cancel(callback); }
 
     ExecutorService delegate() { return delegate; }
 
@@ -49,12 +57,12 @@ final class ReservedActorDispatcher extends AbstractExecutorService {
         if (shutdown.get() || !permits.tryAcquire()) {
             throw new RejectedExecutionException("actor scheduling admission unavailable");
         }
-        QueuedTurn task = new QueuedTurn(command, permits);
+        QueuedTurn task = new QueuedTurn(command, permits, controlRetries);
         try {
             if (shutdown.get()) throw new RejectedExecutionException("actor dispatcher closed");
             delegate.execute(task);
         } catch (RuntimeException | Error failure) {
-            task.releaseSlot();
+            task.releaseSlot(false);
             throw failure;
         }
     }
@@ -62,19 +70,24 @@ final class ReservedActorDispatcher extends AbstractExecutorService {
     private static final class QueuedTurn implements Runnable {
         private final Runnable command;
         private final Semaphore permits;
+        private final ControlWakeRetryQueue retries;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private QueuedTurn(Runnable command, Semaphore permits) {
+        private QueuedTurn(Runnable command, Semaphore permits, ControlWakeRetryQueue retries) {
             this.command = command;
             this.permits = permits;
+            this.retries = retries;
         }
 
-        private void releaseSlot() {
-            if (released.compareAndSet(false, true)) permits.release();
+        private void releaseSlot(boolean started) {
+            if (released.compareAndSet(false, true)) {
+                permits.release();
+                if (started) retries.slotReleased();
+            }
         }
 
         @Override public void run() {
-            releaseSlot();
+            releaseSlot(true);
             command.run();
         }
     }
@@ -83,10 +96,11 @@ final class ReservedActorDispatcher extends AbstractExecutorService {
 
     @Override public List<Runnable> shutdownNow() {
         shutdown.set(true);
+        controlRetries.close();
         List<Runnable> abandoned = new ArrayList<>();
         for (Runnable pending : delegate.shutdownNow()) {
             if (pending instanceof QueuedTurn turn) {
-                turn.releaseSlot();
+                turn.releaseSlot(false);
                 abandoned.add(turn.command);
             } else {
                 // Defensive: a host-supplied executor may return custom tasks.
