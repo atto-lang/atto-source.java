@@ -3305,22 +3305,17 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                final Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
-                                                } catch (RuntimeException | Error failure3) {
-                                                    continuation.accept(
-                                                            t2,
-                                                            null,
-                                                            failure3);
+                                                    result = binary(
+                                                            binary.operator(),
+                                                            left,
+                                                            right);
+                                                } catch (RuntimeException | Error binaryFailure) {
+                                                    continuation.accept(t2, null, binaryFailure);
+                                                    return;
                                                 }
+                                                continuation.accept(t2, result, null);
                                             }
                                         });
                             });
@@ -3396,33 +3391,28 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final boolean matches;
+                                final Throwable castFailure;
                                 try {
-                                    boolean matches =
-                                            oresTypeMatches(
-                                                    value,
-                                                    cast.targetType());
-                                    if (cast.mode()
-                                            == Ast.CastMode.OPTIONAL) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        matches,
-                                                        matches ? value : null),
-                                                null);
-                                    } else if (!matches) {
-                                        continuation.accept(
-                                                t,
-                                                null,
-                                                new OresCastError(
-                                                        "cannot cast runtime type "
-                                                                + oresRuntimeTypeName(value)
-                                                                + " to "
-                                                                + cast.targetType().name()));
-                                    } else {
-                                        continuation.accept(t, value, null);
-                                    }
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    matches = oresTypeMatches(value, cast.targetType());
+                                    castFailure = !matches && cast.mode() != Ast.CastMode.OPTIONAL
+                                            ? new OresCastError(
+                                                    "cannot cast runtime type "
+                                                            + oresRuntimeTypeName(value)
+                                                            + " to "
+                                                            + cast.targetType().name())
+                                            : null;
+                                } catch (RuntimeException | Error typeFailure) {
+                                    continuation.accept(t, null, typeFailure);
+                                    return;
+                                }
+                                if (castFailure != null) {
+                                    continuation.accept(t, null, castFailure);
+                                } else if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                                    continuation.accept(t,
+                                            new OptionValue(matches, matches ? value : null), null);
+                                } else {
+                                    continuation.accept(t, value, null);
                                 }
                             });
                     return;
@@ -3443,17 +3433,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Object memberValue;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            member(
-                                                    receiver,
-                                                    member.member(),
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    memberValue = member(receiver, member.member(), env);
+                                } catch (RuntimeException | Error memberFailure) {
+                                    continuation.accept(t, null, memberFailure);
+                                    return;
                                 }
+                                continuation.accept(t, memberValue, null);
                             });
                     return;
                 }
@@ -3480,19 +3467,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         failure2);
                                                 return;
                                             }
+                                            final Object indexed;
                                             try {
-                                                continuation.accept(
-                                                        t2,
-                                                        indexValue(
-                                                                receiver,
-                                                                key),
-                                                        null);
-                                            } catch (RuntimeException | Error failure3) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure3);
+                                                indexed = indexValue(receiver, key);
+                                            } catch (RuntimeException | Error indexFailure) {
+                                                continuation.accept(t2, null, indexFailure);
+                                                return;
                                             }
+                                            continuation.accept(t2, indexed, null);
                                         });
                             });
                     return;
@@ -3508,17 +3490,15 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Object assigned;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            assignEvaluated(
-                                                    assignment.target(),
-                                                    value,
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    assigned = assignEvaluated(
+                                            assignment.target(), value, env);
+                                } catch (RuntimeException | Error assignmentFailure) {
+                                    continuation.accept(t, null, assignmentFailure);
+                                    return;
                                 }
+                                continuation.accept(t, assigned, null);
                             });
                     return;
                 }
@@ -3542,17 +3522,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Object instantiated;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            instantiateEvaluated(
-                                                    created,
-                                                    values,
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    instantiated = instantiateEvaluated(created, values, env);
+                                } catch (RuntimeException | Error constructorFailure) {
+                                    continuation.accept(t, null, constructorFailure);
+                                    return;
                                 }
+                                continuation.accept(t, instantiated, null);
                             });
                     return;
                 }

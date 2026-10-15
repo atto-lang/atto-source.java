@@ -40,6 +40,34 @@ final class OneShotCompletionGateTest {
     }
 
     @Test
+    void reentrantConsumerCannotDeliverASecondTime() {
+        OneShotCompletionGate gate = new OneShotCompletionGate();
+        AtomicInteger callbacks = new AtomicInteger();
+        assertTrue(gate.deliver(() -> {
+            callbacks.incrementAndGet();
+            assertTrue(gate.delivered());
+            assertFalse(gate.deliver(callbacks::incrementAndGet));
+        }));
+        assertEquals(1, callbacks.get());
+    }
+
+    @Test
+    void firstThrowRemainsPrimaryWhenDuplicateAttemptOccursInsideConsumer() {
+        OneShotCompletionGate gate = new OneShotCompletionGate();
+        IllegalArgumentException original = new IllegalArgumentException("original");
+        AtomicInteger callbacks = new AtomicInteger();
+        IllegalArgumentException caught = assertThrows(IllegalArgumentException.class,
+                () -> gate.deliver(() -> {
+                    callbacks.incrementAndGet();
+                    assertFalse(gate.deliver(callbacks::incrementAndGet));
+                    throw original;
+                }));
+        assertSame(original, caught);
+        assertEquals(1, callbacks.get());
+        assertFalse(gate.deliver(callbacks::incrementAndGet));
+    }
+
+    @Test
     void concurrentCompletionsRunConsumerAtMostOnce() throws Exception {
         OneShotCompletionGate gate = new OneShotCompletionGate();
         AtomicInteger callbacks = new AtomicInteger();
