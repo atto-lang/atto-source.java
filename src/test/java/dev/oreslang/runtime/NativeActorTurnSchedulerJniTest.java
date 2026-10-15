@@ -11,67 +11,51 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Actual OresScheduler.TaskRunner -> JNI -> native C source-turn smoke.
- *
- * This is test-only explicit turn wrapping, NOT an installed production bridge.
- * Run only with -Dores.native.actor.turn.experimental=true and a built JNI
- * library on java.library.path. Normal Maven builds must never load JNI.
+ * Real TaskRunner admission / afterCarrierTurn / onQuiescent JNI lifecycle.
+ * Not the production actor scheduler; this test configures native enforcement
+ * explicitly for a private platform-carrier scheduler. Disabled by default.
  */
 @EnabledIfSystemProperty(named = "ores.native.actor.turn.experimental", matches = "true")
 final class NativeActorTurnSchedulerJniTest {
     @Test
-    void actualSchedulerSuspendsResumesAndAcknowledgesPhysicalQuiescence() throws Exception {
+    void actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
-            try (OresScheduler scheduler = new OresScheduler(1)) {
-                var source = kernel.register(1, 1);
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
                 var gate = new OresFuture<Integer>();
                 var steps = new AtomicInteger();
                 var started = new CountDownLatch(1);
                 OresFuture<Integer> result = scheduler.start(resume -> {
-                    kernel.enter(source);
-                    try {
-                        if (steps.getAndIncrement() == 0) {
-                            started.countDown();
-                            return OresScheduler.<Integer>await(gate);
-                        }
-                        assertFalse(resume.initial());
-                        return OresScheduler.done(42);
-                    } finally {
-                        kernel.exit(source);
+                    if (steps.getAndIncrement() == 0) {
+                        started.countDown();
+                        return OresScheduler.<Integer>await(gate);
                     }
-                }, () -> {
-                    kernel.settled(source);
-                    kernel.retire(source);
+                    assertFalse(resume.initial());
+                    return OresScheduler.done(42);
                 });
                 assertTrue(started.await(5, TimeUnit.SECONDS));
                 gate.completeFromRuntime(42);
                 assertEquals(42, result.get(5, TimeUnit.SECONDS));
                 assertEquals(2, steps.get());
+                // The terminal Future is published only after native SourceTask
+                // lease release + retirement in TaskRunner.afterCarrierTurn().
                 kernel.stop();
             }
         }
     }
 
     @Test
-    void stopRejectsResumedGuestTurnAndStillRetiresQuiescentSource() throws Exception {
+    void nativeStopDeniesActualScheduledResumeAndStillRetiresSource() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
-            try (OresScheduler scheduler = new OresScheduler(1)) {
-                var source = kernel.register(2, 1);
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
                 var gate = new OresFuture<Integer>();
                 var started = new CountDownLatch(1);
                 var steps = new AtomicInteger();
                 OresFuture<Integer> result = scheduler.start(resume -> {
-                    kernel.enter(source); // must be rejected after STOP
-                    try {
-                        steps.incrementAndGet();
-                        started.countDown();
-                        return OresScheduler.<Integer>await(gate);
-                    } finally {
-                        kernel.exit(source);
-                    }
-                }, () -> {
-                    kernel.settled(source);
-                    kernel.retire(source);
+                    steps.incrementAndGet();
+                    started.countDown();
+                    return OresScheduler.<Integer>await(gate);
                 });
                 assertTrue(started.await(5, TimeUnit.SECONDS));
                 kernel.stop();
@@ -80,6 +64,32 @@ final class NativeActorTurnSchedulerJniTest {
                         () -> result.get(5, TimeUnit.SECONDS));
                 assertInstanceOf(IllegalStateException.class, failure.getCause());
                 assertEquals(1, steps.get(), "guest must not resume after STOP");
+            }
+        }
+    }
+
+    @Test
+    void rejectedNativeClaimDoesNotPublishAnotherTaskAsDone() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                    1, Runnable::run, kernel)) {
+                var gate = new OresFuture<Integer>();
+                var blocked = new CountDownLatch(1);
+                var normalTurns = new AtomicInteger();
+                OresFuture<Integer> first = scheduler.start(resume -> {
+                    normalTurns.incrementAndGet();
+                    blocked.countDown();
+                    return OresScheduler.<Integer>await(gate);
+                });
+                assertTrue(blocked.await(5, TimeUnit.SECONDS));
+                kernel.stop();
+                OresFuture<Integer> second = scheduler.start(
+                        resume -> OresScheduler.done(77));
+                assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS));
+                // A task admitted after native STOP cannot claim a new native
+                // source identity or be allowed to run guest code.
+                assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS));
+                assertEquals(1, normalTurns.get());
             }
         }
     }
