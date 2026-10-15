@@ -4900,10 +4900,14 @@ public final class ActorRuntime implements AutoCloseable {
      * HOST-ONLY HTTP shutdown barrier. A normal drain finishes while the
      * TurnExecutor can still be inside its host/Truffle context boundary.
      * This observer waits until all previously admitted user messages have
-     * finished AND the physical carrier has actually left that boundary.
-     * A stopped actor instead settles after physical finalization.
+     * finished AND the physical carrier has actually left that boundary,
+     * with no already-queued successor turn/continuation. A stopped actor
+     * instead settles after physical finalization (even if mail was dropped).
      *
-     * This does not seal admissions or authorize foreign-runtime references.
+     * This is a point-in-time observation, not a perpetual actor-idle lease:
+     * an unrelated later send can schedule fresh work. The HTTP caller must
+     * stop its own admissions before relying on this barrier. It never grants
+     * authority over a foreign-runtime reference.
      */
     OresFuture<Void> quiesceAcceptedMessages(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("observe actor carrier quiescence");
