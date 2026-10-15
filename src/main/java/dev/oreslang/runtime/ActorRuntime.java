@@ -6741,25 +6741,24 @@ public final class ActorRuntime implements AutoCloseable {
             if (!ref.id().equals(notice.supervisorId())) {
                 throw new IllegalArgumentException("child CONTROL notice has wrong parent");
             }
-            // A retired parent cannot be revived or accumulate CONTROL data.
-            if (stopped.get() || finalized) {
+            // Child finalization already uses child -> parent lock order.
+            // Serialize admission with the parent's retirement and inbox
+            // reclamation, or a concurrent child could revive a cleared queue.
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) {
+                    childFailureControlDropped.incrementAndGet();
+                    return false;
+                }
+                ArrayBlockingQueue<ActorFailureNotice> inbox =
+                        childFailureControlInbox.get();
+                if (inbox == null) {
+                    inbox = new ArrayBlockingQueue<>(CHILD_FAILURE_CONTROL_SLOTS);
+                    childFailureControlInbox.set(inbox);
+                }
+                if (inbox.offer(notice)) return true;
                 childFailureControlDropped.incrementAndGet();
                 return false;
             }
-            ArrayBlockingQueue<ActorFailureNotice> inbox =
-                    childFailureControlInbox.get();
-            if (inbox == null) {
-                ArrayBlockingQueue<ActorFailureNotice> fresh =
-                        new ArrayBlockingQueue<>(CHILD_FAILURE_CONTROL_SLOTS);
-                if (childFailureControlInbox.compareAndSet(null, fresh)) {
-                    inbox = fresh;
-                } else {
-                    inbox = childFailureControlInbox.get();
-                }
-            }
-            if (inbox.offer(notice)) return true;
-            childFailureControlDropped.incrementAndGet();
-            return false;
         }
 
         /**
@@ -7585,10 +7584,16 @@ public final class ActorRuntime implements AutoCloseable {
                     // A suspended source receive cannot hide CONTROL work, but
                     // source actors do not yet implement on_raise dispatch.
                     if (behavior instanceof ChildFailureHandler<?> handler) {
-                        ArrayBlockingQueue<ActorFailureNotice> control =
-                                childFailureControlInbox.get();
-                        ActorFailureNotice notice =
-                                control == null ? null : control.poll();
+                        ActorFailureNotice notice;
+                        synchronized (lifecycleLock) {
+                            // This is the same admission gate as ordinary
+                            // mailbox dispatch: cancellation that wins first
+                            // forbids a new supervisor callback.
+                            if (stopped.get() || finalized) break;
+                            ArrayBlockingQueue<ActorFailureNotice> control =
+                                    childFailureControlInbox.get();
+                            notice = control == null ? null : control.poll();
+                        }
                         if (notice != null) {
                             @SuppressWarnings("unchecked")
                             ChildFailureHandler<M> typedHandler =
