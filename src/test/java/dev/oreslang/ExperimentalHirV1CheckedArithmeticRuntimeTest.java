@@ -129,4 +129,24 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
             () -> ExperimentalHirV1Exporter.fromSource(legacy));
         assertDoesNotThrow(() -> ExperimentalHirV1Exporter.fromSource(HEADER + legacy));
     }
+
+    @Test
+    void overflowUsesTypedGuestBoundaryAndNeverLeaksHostArithmeticCause() {
+        String source = HEADER + "pub fnc main(): int { return 9223372036854775807 + 1; }";
+        RuntimeException thrown = assertThrows(RuntimeException.class, () -> exit(source));
+        boolean typed = false;
+        for (Throwable cursor = thrown; cursor != null; cursor = cursor.getCause()) {
+            if (cursor instanceof dev.oreslang.runtime.CheckedI64OverflowException overflow) {
+                typed = true;
+                assertEquals("ORES_I64_OVERFLOW", overflow.errorCode());
+                assertEquals("ArithmeticOverflowError", overflow.guestErrorName());
+                assertEquals("add", overflow.operation());
+                assertNull(overflow.getCause(), "Host java.lang.ArithmeticException must not escape");
+            }
+            assertFalse(cursor instanceof ArithmeticException,
+                    "Host arithmetic throwable cannot cross the Oreslang guest boundary");
+        }
+        assertTrue(typed, "Expected a typed checked-i64 boundary failure");
+    }
+
 }
