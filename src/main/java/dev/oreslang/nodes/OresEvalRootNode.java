@@ -1543,6 +1543,15 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
 
+        private boolean cachedExpressionSuspension(Ast.Expr expr) {
+            Boolean cached = suspensionResults.get(expr);
+            if (cached != null) return cached;
+            boolean result = expressionContainsPotentialSuspension(expr,
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+            suspensionResults.put(expr, result);
+            return result;
+        }
+
         private boolean expressionContainsPotentialSuspension(
                 Ast.Expr expr,
                 Set<Object> seen) {
@@ -3070,10 +3079,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env,
                 SourceValueCont continuation) {
             try {
-                if (!expressionContainsPotentialSuspension(
-                        expr,
-                        java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
+                if (!cachedExpressionSuspension(expr)) {
                     continuation.accept(
                             task,
                             eval(expr, env),
@@ -9050,16 +9056,22 @@ public final class OresEvalRootNode extends RootNode {
             return cp;
         }
         private boolean hasLiveMutexGuards() {
-            Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            return hasLiveMutexGuards(java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+        }
+
+        private boolean hasLiveMutexGuards(Set<Object> seen) {
             for (Slot slot : slots.values()) {
                 if (containsLiveMutexGuard(slot.value, seen)) return true;
             }
-            return parent != null && parent.hasLiveMutexGuards();
+            return parent != null && parent.hasLiveMutexGuards(seen);
         }
 
         private static boolean containsLiveMutexGuard(Object value, Set<Object> seen) {
             if (value == null) return false;
             if (value instanceof OresMutex.Guard<?> guard) return !guard.released();
+            // Scalar leaves cannot contain guards and need no graph reservation.
+            if (value instanceof String || value instanceof Long || value instanceof Double || value instanceof Integer
+                    || value instanceof Float || value instanceof Short || value instanceof Byte || value instanceof Boolean) return false;
             if (!seen.add(value)) return false;
 
             if (value instanceof OptionValue option) {

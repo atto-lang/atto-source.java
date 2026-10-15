@@ -524,6 +524,7 @@ public final class NativeHttp implements AutoCloseable {
         private OresFuture<Object> respondBuffer(int status, String contentType, byte[] bytes) {
             validateStatus(status); setHeader("Content-Type", contentType);
             if (bytes.length > state.server.bodyLimit) throw new IllegalArgumentException("response too large");
+            if (!ActorRuntime.inActorExecution()) return respondOnActor(status, contentType, bytes);
             return operation(() -> {
                 synchronized (state) {
                     if (state.committed) throw new IllegalStateException("response already started");
@@ -538,7 +539,33 @@ public final class NativeHttp implements AutoCloseable {
                 state.finish(); return null;
             });
         }
+        // Root/middleware replies take the same single-owner mailbox handoff
+        // as application replies; only immutable response data is captured.
+        private OresFuture<Object> respondOnActor(int status, String contentType, byte[] bytes) {
+            OresFuture<Object> result = new OresFuture<>(() -> false, () -> { });
+            ActorRuntime.ActorRef<String> responder = context.actors().spawnShared(() -> (token, actor) -> {
+                try {
+                    Exchange owned = claim(token);
+                    owned.respondBuffer(status, contentType, bytes).whenCompleteRuntime((value, failure) -> {
+                        if (failure == null) result.completeFromRuntime(value);
+                        else result.failFromRuntime(failure);
+                        actor.self().stop();
+                    });
+                } catch (RuntimeException failure) {
+                    result.failFromRuntime(failure);
+                    actor.self().stop();
+                }
+            });
+            responder.done().whenCompleteRuntime((ignored, failure) -> {
+                if (!result.isDone()) result.failFromRuntime(new IllegalStateException("HTTP response actor stopped before completion", failure));
+            });
+            try { responder.send(moveTo(responder)); }
+            catch (RuntimeException failure) { responder.cancel(); state.abort(500); result.failFromRuntime(failure); }
+            return result;
+        }
+
         public OresFuture<Object> start(int status, String contentType) {
+            if (!ActorRuntime.inActorExecution()) throw new IllegalStateException("streaming HTTP responses require an actor-owned exchange");
             validateStatus(status); setHeader("Content-Type", contentType);
             return operation(() -> {
                 synchronized (state) {
