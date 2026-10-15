@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.HashSet;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -180,7 +180,7 @@ public final class ActorMiddlewarePipeline {
     public CompletionStage<Outcome> invoke(Envelope request, BooleanSupplier cancelled) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(cancelled, "cancelled");
-        return run(0, request, cancelled, new HashMap<>());
+        return run(0, request, cancelled, new ConcurrentHashMap<>());
     }
 
     private CompletionStage<Outcome> run(int position, Envelope request,
@@ -208,7 +208,7 @@ public final class ActorMiddlewarePipeline {
         // Subsequent context mutation invalidates the exact-envelope proof.
         if (!inSupervisor && stage.maySkipAfterSupervisor()
                 && verifiedEquivalence.contains(stage.key())
-                && Objects.equals(supervisorReceipts.get(stage.key()), request)) {
+                && supervisorReceipts.get(stage.key()) == request) {
             return run(position + 1, request, cancelled, supervisorReceipts);
         }
         AtomicBoolean advanced = new AtomicBoolean();
