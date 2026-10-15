@@ -57,6 +57,38 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void classAllowlistCannotExposeOtherUnscopedHostIoPackages() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP);
+        // Each representative exposes or creates an object able to reach
+        // host files, sockets, persistent state, or external resources.
+        // Rejecting a class name must happen before HostAccess is built.
+        for (String className : new String[]{
+                "java.util.logging.FileHandler",
+                "java.util.logging.SocketHandler",
+                "java.util.prefs.Preferences",
+                "java.util.zip.ZipInputStream",
+                "java.util.jar.JarInputStream",
+                "javax.imageio.stream.FileImageInputStream",
+                "javax.naming.InitialContext",
+                "javax.net.ssl.SSLSocketFactory",
+                "java.sql.DriverManager",
+                "javax.sql.DataSource",
+                "java.rmi.registry.LocateRegistry",
+                "javax.xml.parsers.DocumentBuilderFactory",
+                "org.xml.sax.InputSource",
+                "java.awt.Desktop",
+                "java.util.ResourceBundle"}) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(className)),
+                    "unsafe host class admitted: " + className);
+            assertTrue(denied.getMessage().contains("direct Java host I/O"),
+                    "class must be rejected at scoped-I/O boundary: " + className);
+        }
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
