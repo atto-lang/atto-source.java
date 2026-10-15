@@ -1781,8 +1781,8 @@ bitwise/logical AND, and wildcard imports retain their ordinary meanings.
 | `rt take value` | Transfers ownership and invalidates a move-only source. Cannot turn a borrow into ownership. |
 | `rt borrow value` | Lexical read-only view. `rt borrow mut value` requests exclusive mutable access. |
 | `rt ref value` | Transfers owned reference-backed data into a strong, move-only `Pointer<T>`. |
-| `rt unref pointer` | Read-only borrowed access to the pointee, without copying or releasing it. |
-| `rt deref pointer` | Exact synonym of `rt unref`, including lifetime and mutability checks. |
+| `rt unref pointer` | Consumes a unique named `Pointer<T>` and returns owned `T`; rejected while any borrowed views remain live. The handle is invalid after use. |
+| `rt deref pointer` | Read-only borrowed view of the live pointee; pointer retains ownership. |
 
 Each one-operand operation accepts command or parenthesized form. Bare `ref`,
 `unref`, and `deref` names are ordinary application identifiers. `Pointer` is a
@@ -1790,9 +1790,10 @@ compiler-owned type; only `rt ref` constructs it.
 
 ```ores
 const Pointer<{value: int}> pointer = rt ref struct{value: int}{value: 7};
-const {value: int} view = rt unref pointer;
+const {value: int} view = rt deref pointer;
 const same = rt deref(pointer);
 stdio.println(view.value + same.value);
+// Once all views end, `rt unref pointer` moves the original value back out.
 ```
 
 A pointer strongly retains a newly constructed target, including an empty
@@ -1820,7 +1821,12 @@ are rejected. A pointer is local ownership authority, not actor/channel/isolate
 transport authority. `rt copy`/`rt share` do not duplicate pointer handles.
 
 These are managed handles, not numeric addresses: no pointer arithmetic, manual
-free, or pinning is implied. `unref` and `deref` never request garbage collection.
+free, or pinning is implied. `rt unref` invalidates the pointer and transfers
+its value without cloning. `rt deref` leaves the pointer live and borrows.
+Neither operation requests garbage collection. The Java `rt ref` evaluator
+currently constructs an `OresPointer` host object: it is zero-copy of the target,
+**not** a demonstrated zero-allocation operation. `rt deref mut` is not yet admitted;
+the immutable `rt deref` must not grant mutable authority.
 The JVM or Native Image collector reclaims unreachable managed graphs; any live
 pointer or live view keeps its target reachable. See [garbage collection](garbage-collection.md).
 
