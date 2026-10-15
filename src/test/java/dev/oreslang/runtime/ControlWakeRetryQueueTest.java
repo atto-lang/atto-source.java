@@ -83,6 +83,28 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void continuouslyMatchingAffinityCannotStarveOldestSupervisor() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(64);
+        AtomicInteger oldest = new AtomicInteger();
+        AtomicInteger localityMatches = new AtomicInteger();
+        long epoch = queue.epoch();
+        assertTrue(queue.register(oldest::incrementAndGet, epoch, 0));
+        for (int i = 0; i < 32; ++i) {
+            assertTrue(queue.register(localityMatches::incrementAndGet, epoch, 1));
+        }
+
+        for (int i = 0; i < 16; ++i) queue.slotReleased(1);
+        assertEquals(0, oldest.get(), "affinity may prefer 16 matching wakes");
+        assertEquals(16, localityMatches.get());
+        queue.slotReleased(1);
+        assertEquals(1, oldest.get(),
+                "older supervisor must run after bounded affinity bypasses");
+        assertEquals(16, localityMatches.get());
+        for (int i = 0; i < 16; ++i) queue.slotReleased(1);
+        assertEquals(32, localityMatches.get());
+        assertEquals(0, queue.pending());
+    }
+
     @Test void globalAdmissionReleaseFallsBackToOtherLaneWithoutStarvation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         AtomicInteger executed = new AtomicInteger();
