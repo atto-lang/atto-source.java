@@ -82,7 +82,9 @@ final class NumericIeee754HardeningTest {
                       return (1e308i / 1e308i) eq 1
                         && (1e-300i / 1e-300i) eq 1
                         && ((1e308 + 1e308i) / (1e308 + 1e308i)) eq 1
-                        && ((1e-300 + 1e-300i) / (1e-300 + 1e-300i)) eq 1;
+                        && ((1e-300 + 1e-300i) / (1e-300 + 1e-300i)) eq 1
+                        && (5e-324i / 5e-324i) eq 1
+                        && ((1e308 + 1e308i) / (1e-308 + 1e-308i)) eq (1e308 / 1e-308);
                     }
                     """).asBoolean());
         }
