@@ -345,3 +345,29 @@ Actor registration now uses `putIfAbsent` rather than `put` for every root/child
 `ActorIncarnationIdentityTest` uses host-test-only reflection to create detached references that carry an identical ActorId and either an older or equal generation; neither can send, cancel, stop or inspect the live incarnation. The original actor remains operable. The test is included in `scripts/verify_actor_exception_jvm.sh`. This regression is **committed, not yet executed successfully** in the project JUnit/JDK25/GraalVM test suite.
 
 The existing reservation/CONTROL retry/one-for-one restart code remains draft; no source-language `on_raise` recovery, full LLVM guest execution, formal lifecycle model proof, or successful exact-head CI is claimed.
+
+## Affinity-aware CONTROL retry fairness (2026-10-14)
+
+The existing bounded `ControlWakeRetryQueue` now tags waiting host callbacks
+with the physical affinity lane of their owning actor. Each actual queued-turn
+start still releases one physical queue permit and signals **at most one**
+pending retry; when the release originated on lane L, the scheduler prefers
+a waiting callback for L within the first 16 FIFO entries. If none is found,
+the globally oldest waiter runs instead. This global fallback is essential:
+ordinary and CONTROL admission semaphore budgets are shared between lanes,
+so a release from a different lane may be the only event that makes the
+supervisor admissible. A strictly lane-local retry queue could deadlock.
+
+The bounded scan keeps physical dispatcher handoffs from doing unbounded
+per-turn queue traversal. `ActorRuntime` passes the parent actor's assigned
+lane into the host-only retry registration. Non-affinity pools retain the
+existing FIFO and epoch handoff behavior. Tests cover same-lane preference,
+cross-lane progress and the 16-entry scan limit; the focused JVM script
+already includes the updated test class.
+
+**Verification scope:** an isolated Java 21 compilation and execution of the
+same retry-queue logic completed 36 assertions. That is not the full Oreslang
+JDK25/JUnit/GraalVM runtime build. The exact PR's focused Actions job still
+returns `failure` with no executed steps or useful logs. Both private-CI
+destination allowlists are empty, so no cross-org source mirror has been
+authorized. Keep this draft and do not merge.
