@@ -8,8 +8,11 @@ cache entries, and logs.
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
 default**. No cross-repository mirroring is authorized until maintainers and
-security reviewers explicitly add an exact `owner/repo` destination through a
-reviewed, protected-branch change.
+security reviewers explicitly add a destination's exact `owner/repo` **and
+immutable numeric GitHub repository ID** through a reviewed, protected-branch
+change. Each uncommented line must contain precisely `owner/repo 123456789`
+(one ASCII space, no extra whitespace); name-only entries, duplicate names,
+duplicate IDs, and wildcards are rejected.
 
 Do **not** accept a CI destination allowlist from environment variables or
 unreviewed workflow inputs: a caller must not be able to grant its own approval.
@@ -53,20 +56,19 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
-For each invocation, the publisher also reads and pins the destination's
-numeric GitHub repository ID during its initial approved preflight. Before
-every Git object write it rechecks that numeric ID, full name, explicit
-private visibility, and the repository's active (non-archived, non-disabled)
-status. The shell preflight fails on missing or malformed numeric IDs and
-unknown active status. A private repository can otherwise be renamed and
-replaced with a different private repository under the same name.
+The Bash preflight and Python publisher both require the live destination's
+positive numeric repository ID to equal the **independently reviewed ID in the
+protected policy**, before reading private source or creating Git objects.
+The publisher also pins this ID throughout each transfer, checking live name,
+numeric identity, private visibility, and active (non-archived, non-disabled)
+status before every Git object write. Missing status or an ID mismatch fails
+closed, including deletion/recreation under an already reviewed name.
 
-**Limit:** the current reviewed allowlist records repository names, not their
-numeric IDs. These checks prevent an identity swap *during a transfer*, not
-replacement between the original code-owner review and the first preflight.
-Security reviewers must independently compare the live numeric repository ID
-against their reviewed destination record before approving a transfer. Adding
-review-time numeric-ID pinning remains a separate fail-closed policy enhancement.
+**Limit:** the policy only becomes trustworthy after independent review and
+protected-`main` merge. The transfer still has unavoidable API time-of-check/
+time-of-use windows between live metadata checks and writes; GitHub ownership
+and destination confidentiality require operational controls and retention
+review. Approval from an untrusted PR checkout is never valid.
 
 API failure before ref creation can leave unreferenced Git objects in
 the private destination; a follow-up retention policy is still needed.
