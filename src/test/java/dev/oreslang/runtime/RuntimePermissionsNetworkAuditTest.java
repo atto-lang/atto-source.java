@@ -193,6 +193,20 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void portlessNetworkAuthorizationCannotBypassPortScopedDeny() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "*.example.com:443")
+                .withDenied(RuntimePermissions.Permission.NET, "[::1]:443");
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "api.example.com"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "API.EXAMPLE.COM."));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "[::1]"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "other.example.net"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:444"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "[::1]:444"));
+    }
+
+    @Test
     void serializationPreservesPortDenialsAtRuntimeBoundary() {
         RuntimePermissions original = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*")
