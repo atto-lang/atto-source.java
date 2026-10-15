@@ -6891,16 +6891,17 @@ public final class ActorRuntime implements AutoCloseable {
             // lock at spawn, and is removed only after child finalization.
             // The child passes its own runtime-owned cell, never a guest ref.
             synchronized (lifecycleLock) {
-                // Parent callbacks are published only after the child's
-                // done/finalized barriers. At that point the child is no
-                // longer in the live-child set, but the runtime-owned cell
-                // remains the authority for the terminated lineage.
-                boolean knownLiveChild = child != null && children.contains(child);
+                // Only a fully retired child cell can publish terminal
+                // CONTROL. Live parent membership alone is NOT sufficient:
+                // otherwise a future call site could race memory retirement,
+                // done observers, or the one-for-one restart barrier.
+                // childFinalized() removes membership before this handoff.
                 boolean completedChild = child != null
+                        && !children.contains(child)
                         && !actors.containsKey(child.ref.id())
-                        && child.ref.doneFuture.isDone();
-                if (child == null || child.parent != this
-                        || (!knownLiveChild && !completedChild)
+                        && child.ref.doneFuture.isDone()
+                        && child.finalizedFuture.isDone();
+                if (!completedChild || child.parent != this
                         || !child.ref.id().equals(notice.actorId())
                         || !ref.id().equals(notice.supervisorId())) {
                     childFailureControlDropped.incrementAndGet();
