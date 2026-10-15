@@ -264,9 +264,10 @@ final class NativeActorTurnSchedulerJniTest {
                     });
             assertTrue(callbackInvoked.await(5, TimeUnit.SECONDS));
             if (callbackError.get() != null) throw new AssertionError(callbackError.get());
-            // The first close was invoked from the quiescence carrier and may
-            // cancel the public Future. That notification is not actor DONE.
-            assertTrue(result.isDone());
+            // Reentrant close is rejected BEFORE it can set closed or
+            // interrupt the cleanup carrier. The original guest result must
+            // complete normally only after trusted quiescence publishes it.
+            assertEquals(314, result.get(5, TimeUnit.SECONDS));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             boolean fullyClosed = false;
             while (System.nanoTime() < deadline && !fullyClosed) {
