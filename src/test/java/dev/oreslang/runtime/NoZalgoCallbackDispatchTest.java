@@ -26,6 +26,8 @@ final class NoZalgoCallbackDispatchTest {
             AtomicBoolean insideRegistrar = new AtomicBoolean();
             AtomicLong firstDispatch = new AtomicLong();
             AtomicReference<Thread> registrarCarrier = new AtomicReference<>();
+            AtomicBoolean callbackDoneInsideRegistrar = new AtomicBoolean();
+            AtomicInteger segmentsSeenInsideRegistrar = new AtomicInteger(-1);
 
             OresFuture<Integer> result = scheduler.start(resume -> {
                 if (segments.getAndIncrement() == 0) {
@@ -35,13 +37,18 @@ final class NoZalgoCallbackDispatchTest {
                         insideRegistrar.set(true);
                         try {
                             callback.resolve(41);
-                            assertTrue(callback.isDone());
-                            assertEquals(1, segments.get(),
-                                    "synchronous settlement must not recurse into guest code");
+                            // Registrar exceptions after resolve() are intentionally
+                            // swallowed by the callback adapter. Capture evidence here
+                            // and assert it *after* fromCallback has returned.
+                            callbackDoneInsideRegistrar.set(callback.isDone());
+                            segmentsSeenInsideRegistrar.set(segments.get());
                         } finally {
                             insideRegistrar.set(false);
                         }
                     });
+                    assertTrue(callbackDoneInsideRegistrar.get());
+                    assertEquals(1, segmentsSeenInsideRegistrar.get(),
+                            "synchronous foreign settlement recursively entered guest code");
                     assertEquals(41, settled.get(0, TimeUnit.MILLISECONDS));
                     return OresScheduler.await(settled);
                 }
@@ -99,6 +106,7 @@ final class NoZalgoCallbackDispatchTest {
             var producerFinished = new CountDownLatch(1);
             var insideFirstSegment = new AtomicBoolean();
             var producer = new AtomicReference<Thread>();
+            var producerFailure = new AtomicReference<Throwable>();
             var segments = new AtomicInteger();
             var firstDispatch = new AtomicLong();
 
@@ -129,12 +137,15 @@ final class NoZalgoCallbackDispatchTest {
                 try {
                     producer.set(Thread.currentThread());
                     assertTrue(source.completeFromRuntime(9));
+                } catch (Throwable failure) {
+                    producerFailure.compareAndSet(null, failure);
                 } finally {
                     producerFinished.countDown();
                 }
             });
             foreign.join(5_000);
             assertFalse(foreign.isAlive());
+            assertNull(producerFailure.get(), () -> String.valueOf(producerFailure.get()));
             assertEquals(10, result.get(5, TimeUnit.SECONDS));
             assertEquals(2, segments.get());
         }
