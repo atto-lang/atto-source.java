@@ -19,6 +19,65 @@ import org.junit.jupiter.api.Test;
 final class ReservedControlDispatcherTest {
 
     @Test
+    void exhaustedAffinityBudgetsRecoverThroughDeferredControlRetry() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ActorAffinityDispatcher lanes = new ActorAffinityDispatcher(
+                1, 1, 1, new int[0], ignored -> worker);
+        AtomicInteger delivered = new AtomicInteger();
+        try {
+            lanes.executeOnLane(0, () -> {});
+            lanes.executeControlOnLane(0, () -> {});
+            long epoch = lanes.controlRetryEpoch();
+            assertThrows(RejectedExecutionException.class,
+                    () -> lanes.executeControlOnLane(0, delivered::incrementAndGet));
+            assertThrows(RejectedExecutionException.class,
+                    () -> lanes.executeOnLane(0, delivered::incrementAndGet));
+            assertTrue(lanes.registerControlRetry(() -> {
+                try {
+                    lanes.executeControlOnLane(0, delivered::incrementAndGet);
+                } catch (RejectedExecutionException busyReserve) {
+                    lanes.executeOnLane(0, delivered::incrementAndGet);
+                }
+            }, epoch));
+            assertEquals(0, delivered.get());
+            worker.runNext(); // frees ordinary admission and replays one retry
+            assertEquals(2, worker.pending());
+            worker.runNext(); // original CONTROL
+            worker.runNext(); // deferred parent CONTROL
+            assertEquals(1, delivered.get());
+        } finally {
+            lanes.shutdownNow();
+        }
+    }
+
+    @Test
+    void exhaustedNonAffinityBudgetsRecoverThroughDeferredControlRetry() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ReservedActorDispatcher dispatcher = new ReservedActorDispatcher(worker, 1, 1);
+        AtomicInteger delivered = new AtomicInteger();
+        try {
+            dispatcher.execute(() -> {});
+            dispatcher.executeControl(() -> {});
+            long epoch = dispatcher.controlRetryEpoch();
+            assertThrows(RejectedExecutionException.class,
+                    () -> dispatcher.executeControl(delivered::incrementAndGet));
+            assertTrue(dispatcher.registerControlRetry(() -> {
+                try {
+                    dispatcher.executeControl(delivered::incrementAndGet);
+                } catch (RejectedExecutionException busyReserve) {
+                    dispatcher.execute(delivered::incrementAndGet);
+                }
+            }, epoch));
+            worker.runNext();
+            worker.runNext();
+            worker.runNext();
+            assertEquals(1, delivered.get());
+        } finally {
+            dispatcher.shutdownNow();
+        }
+    }
+
+    @Test
     void laneControlHasSeparateBudgetAndPreservesLaneIdentity() {
         RecordingExecutor worker = new RecordingExecutor();
         ActorAffinityDispatcher lanes = new ActorAffinityDispatcher(
