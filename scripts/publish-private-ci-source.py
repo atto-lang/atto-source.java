@@ -673,6 +673,8 @@ def require_private_ci_api_budget(file_count):
     if type(file_count) is not int or file_count < 1 or file_count > MAX_FILES:
         raise Denied("private CI snapshot file count invalid")
     budget = gh_api("rate_limit")
+    if not isinstance(budget, dict):
+        raise Denied("GitHub core API budget unavailable")
     resources = budget.get("resources")
     core = resources.get("core") if isinstance(resources, dict) else None
     remaining = core.get("remaining") if isinstance(core, dict) else None
