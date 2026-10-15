@@ -43,6 +43,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_private = [True] * 100
         self.source_visibility = ["private"] * 100
         self.source_protected = [True] * 100
+        self.source_main_shas = [A] * 100
         self.visibility = ["private"] * 100
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
@@ -74,7 +75,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         disabled=False, default_branch="main")
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
-                        commit={"sha": A})
+                        commit={"sha": self.source_main_shas.pop(0)})
         if route == pub.PROTECTED_REVIEWS_ROUTE:
             return {"required_approving_review_count": 1,
                     "require_code_owner_reviews": True,
@@ -360,6 +361,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
                 finally:
                     setattr(self, attribute, original)
+
+    def test_protected_main_revision_change_denies_next_source_write(self):
+        # A reviewed policy can be replaced by a later main commit after
+        # initialization. The transfer must not silently switch authorities.
+        original = self.fake_api
+        def change_main_after_blob(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.source_main_shas = [B] * 100
+            return response
+        with patch.object(pub, "gh_api", side_effect=change_main_after_blob):
+            with self.assertRaisesRegex(pub.Denied, "main changed during transfer"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, self.expected_tree, D)
+        self.assertEqual([route for method, route, _ in self.route_calls
+                          if method == "POST"], ["repos/trusted/ci/git/blobs"])
 
     def test_source_branch_protection_revoked_before_first_git_write(self):
         self.source_protected = [True, False] + [False] * 98
