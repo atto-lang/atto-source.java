@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.RuntimePermissions;
 import org.junit.jupiter.api.Test;
@@ -69,4 +70,43 @@ final class ChildProcManagerActorContractTest {
         assertFalse(policy.allows(RuntimePermissions.Permission.RUN, "/bin/zsh"));
         assertTrue(policy.allows(RuntimePermissions.Permission.RUN, "/bin/sh"));
     }
+    @Test
+    void unimplementedBuiltinParentCannotBeTypeCheckedOrSpawned() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        define actor CPM extends ChildProcManager as
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("not implemented yet"));
+    }
+
+    @Test
+    void ordinaryActorCannotImpersonateReservedRuntimeBase() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        define actor ChildProcManager as
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("reserved built-in actor base"));
+    }
+
+    @Test
+    void typeAliasCannotImpersonateReservedRuntimeBase() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        type ChildProcManager = int;
+                        """)));
+        assertTrue(error.getMessage().contains("reserved built-in actor base"));
+    }
+
+    @Test
+    void processBaseCannotBeLaunderedThroughActorType() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        define actor UserDefinedManager extends ChildProcManager as
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("no process-spawning actor"));
+    }
+
 }
