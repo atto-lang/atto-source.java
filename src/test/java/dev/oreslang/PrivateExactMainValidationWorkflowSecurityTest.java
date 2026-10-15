@@ -18,8 +18,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
 
         // Presence-only tests can be bypassed by retaining the safe string
         // inside a comment while changing the actual workflow trigger/guard.
-        String triggers = between(text, "\n  workflow_dispatch:", "\npermissions:");
-        assertEquals("\n  workflow_dispatch:\n", triggers,
+        String triggers = between(text, "\non:\n", "\npermissions:");
+        assertEquals("\non:\n  workflow_dispatch:\n", triggers,
                 "workflow_dispatch must be the only event");
         assertEquals("\npermissions:\n  contents: read\n",
                 between(text, "\npermissions:", "\nconcurrency:"),
