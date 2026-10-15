@@ -47,6 +47,51 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void affinityReleasePrefersMatchingLaneWithinBoundedWindow() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(4);
+        StringBuilder order = new StringBuilder();
+        long epoch = queue.epoch();
+        assertTrue(queue.register(() -> order.append('A'), epoch, 0));
+        assertTrue(queue.register(() -> order.append('B'), epoch, 1));
+        assertTrue(queue.register(() -> order.append('C'), epoch, 0));
+        queue.slotReleased(1);
+        assertEquals("B", order.toString(),
+                "lane one should not retry a saturated unrelated lane first");
+        queue.slotReleased(0);
+        queue.slotReleased(0);
+        assertEquals("BAC", order.toString());
+        assertEquals(0, queue.pending());
+    }
+
+    @Test void globalAdmissionReleaseFallsBackToOtherLaneWithoutStarvation() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
+        AtomicInteger executed = new AtomicInteger();
+        assertTrue(queue.register(executed::incrementAndGet, queue.epoch(), 3));
+        // The permit may have been held by an unrelated lane. A purely
+        // lane-local queue would strand this supervisor indefinitely.
+        queue.slotReleased(9);
+        assertEquals(1, executed.get());
+        assertEquals(0, queue.pending());
+    }
+
+    @Test void boundedLocalityScanStillMakesProgressOnLargeBacklogs() {
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(32);
+        StringBuilder delivery = new StringBuilder();
+        long epoch = queue.epoch();
+        for (int i = 0; i < 20; ++i) {
+            assertTrue(queue.register(() -> delivery.append('x'), epoch, 0));
+        }
+        assertTrue(queue.register(() -> delivery.append('y'), epoch, 1));
+        queue.slotReleased(1);
+        // The scan is bounded; outside that window, oldest waiter wins.
+        assertEquals("x", delivery.toString());
+        for (int i = 0; i < 19; ++i) queue.slotReleased(0);
+        queue.slotReleased(1);
+        assertEquals(21, delivery.length());
+        assertEquals('y', delivery.charAt(20));
+        assertEquals(0, queue.pending());
+    }
+
     @Test void cancelledOrClosedSupervisorNeverReceivesStaleWake() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         AtomicInteger called = new AtomicInteger();
