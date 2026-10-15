@@ -2,6 +2,52 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-15 — expanded source-local validation and integrated JNI cleanup barrier
+
+**Source-local CI security hardening:** the immutable-tree script now rejects
+not only dirty or ordinary untracked files, but also **ignored untracked
+inputs** hidden from `git status --porcelain` (e.g. ignored Maven/compiler
+overlays). It now enforces Linux `x86_64` explicitly. The synthetic
+preflight adds ignored-overlay and fake-ARM64 negative cases; **10/10 denial
+checks executed successfully on the local isolated fixture**. Verified the
+local shell bytes against the exact GitHub blobs:
+
+- `scripts/test-native-actor-exact-tree-ci.sh`:
+  `f9b5b4854e546f49588f5613552a70b14ae20916`
+- `scripts/test-native-actor-ci-preflight.sh`:
+  `7af20aeaeb8e1e80d8169718b1db9725382e8b3b`
+
+**Native barrier coverage defined (NOT EXECUTED):** the real-scheduler
+standalone and JUnit suites now test the full STOP → blocked terminal
+publication → simulated terminal-signal injection → cleanup completion →
+still-blocked active cleanup lease → physical release → source retirement →
+terminal Future publication path. Crucially, the test host **simulates**
+terminal injection; this does not prove that a compiled guest `defer` or
+`finally` ran. The JNI smoke defines **seven scenarios per iteration**,
+default **84 across 12 iterations**, and the native opt-in JUnit class now
+has **15 test methods**.
+
+**Guest policy and migration regression gate:** the exact-tree runner now
+requires the existing `NativeActorRuntimePolicyTest` (which compiles the
+real `examples/native-actorruntime-contract.ores`) alongside current Java
+bootstrap actor STOP, output cleanup, readiness, structured cancellation,
+physical turn finalization and mailbox STOP races. Five additional guest
+deny-cases cover the missing negative retirement/DONE/cleanup branches.
+These have not run against this exact PR head; Java bootstrap regression
+passes would not establish native compiler/runtime parity.
+
+**Runner:** `.github/workflows/native-actor-exact-tree-self-hosted.yml`
+provides a manual-only, pinned exact-tree gate intended for an explicitly
+authorized isolated self-hosted runner labeled `ores-private-actor-ci`
+attached to the private source repository. **No such runner was provisioned
+by this work.** GitHub manual dispatch may require this workflow to be
+installed on default branch before it becomes available; security-reviewed
+workflow installation is separate from merging production native enforcement.
+The existing source-org jobs continue to fail with no recorded steps.
+
+**Release remains fail-closed:** native enforcement default-off, PR draft,
+no approved cross-organization mirror or unverified production switch.
+
 ## 2026-10-15 — parallel scheduler claims: executable regression committed
 
 The duplicate-owner regressions previously proved sequential exclusion but
@@ -12,9 +58,9 @@ native-backed SourceTask through the winning scheduler. They also check that
 the VM cannot be rebound after the winner closes.
 
 - Standalone JNI smoke: `concurrentNativeSchedulerClaimsHaveOneWinner`;
-  six distinct scenarios per iteration, default **72 planned executions**.
+  seven distinct scenarios per iteration, default **84 planned executions**.
 - Opt-in JUnit: `concurrentNativeKernelOwnerClaimsAreExclusive`.
-  The opt-in suite now defines **14 JUnit cases**.
+  The opt-in suite now defines **15 JUnit cases**.
 
 **Execution status:** neither new regression has executed. The source-org
 GitHub Actions native ABI workflow automatically started for the new commit,
@@ -52,8 +98,8 @@ Both the opt-in `NativeActorTurnSchedulerJniTest` and the Maven-free
 real-scheduler/JNI smoke now exercise duplicate-owner refusal, continued
 successful operation of the original owner, and refusal to silently
 reassign a previously bound kernel. With the new regression, the
-standalone smoke defines **six scenarios per native VM iteration**,
-12 iterations by default (72 executions *when the suite runs*). 
+standalone smoke defines **seven scenarios per native VM iteration**,
+12 iterations by default (84 executions *when the suite runs*). 
 These tests are committed but have **not** been executed on the
 current full Java/native source tree.
 
