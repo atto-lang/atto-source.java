@@ -7287,7 +7287,9 @@ public final class OresEvalRootNode extends RootNode {
                 case "map", "and_then", "flat_map" -> (Invokable) args -> {
                     Invokable callback = requireSumCompositionCallback(args, "Option." + name);
                     if (!option.present()) return option;
-                    Object mapped = callback.call(List.of(option.value()));
+                    // A callback may tail-call another Ores function. The raw
+                    // Invokable result can be a TailCall trampoline marker.
+                    Object mapped = invoke(invokableInvocation(callback, List.of(option.value())));
                     if (name.equals("map")) return new OptionValue(true, mapped);
                     if (!(mapped instanceof OptionValue)) {
                         throw new IllegalArgumentException("Option.and_then callback must return Option<U>");
@@ -7326,7 +7328,7 @@ public final class OresEvalRootNode extends RootNode {
                     Invokable callback = requireSumCompositionCallback(args, "Result." + name);
                     boolean runCallback = name.equals("map_err") ? !result.ok() : result.ok();
                     if (!runCallback) return result;
-                    Object mapped = callback.call(List.of(result.value()));
+                    Object mapped = invoke(invokableInvocation(callback, List.of(result.value())));
                     if (name.equals("and_then") || name.equals("flat_map")) {
                         if (!(mapped instanceof ResultValue)) {
                             throw new IllegalArgumentException(
