@@ -7003,7 +7003,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, false);
                     };
-                    case "compose", "flatMap" -> (Invokable) args -> {
+                    case "compose", "flatMap", "flat_map", "and_then" -> (Invokable) args -> {
                         requireOne(args, "Future." + name);
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException(
@@ -7011,7 +7011,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, true, false);
                     };
-                    case "onSuccess" -> (Invokable) args -> {
+                    case "onSuccess", "on_success" -> (Invokable) args -> {
                         requireOne(args, "Future.onSuccess");
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException(
