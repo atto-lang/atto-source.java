@@ -96,6 +96,30 @@ final class NominalMethodSlotsTest {
     }
 
     @Test
+    void actorEntryPointsCannotEnterOrdinaryNominalVtableProof() {
+        Ast.Program original = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """);
+        Ast.ClassDecl ordinary = owner(original);
+        Ast.ClassDecl actor = new Ast.ClassDecl(
+                ordinary.name(), false, Ast.ActorKind.SHARED,
+                List.of(), List.of(), List.of(), List.of(), ordinary.methods());
+        Ast.ModuleDecl root = original.modules().getFirst();
+        java.util.List<Ast.Decl> declarations = new java.util.ArrayList<>();
+        for (Ast.Decl declaration : root.declarations()) {
+            declarations.add(declaration == ordinary ? actor : declaration);
+        }
+        Ast.Program forgedActor = new Ast.Program(List.of(
+                new Ast.ModuleDecl(root.name(), declarations)));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> NominalMethodSlots.proveLocalSameArityFamilies(forgedActor, actor));
+        assertTrue(denied.getMessage().contains("actor entrypoints"), denied.getMessage());
+    }
+
+    @Test
     void genericOwnerAndUnresolvedGenericMethodsFailClosed() {
         assertThrows(IllegalArgumentException.class, () -> prove("""
                 define class Picker<T> as
