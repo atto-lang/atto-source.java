@@ -8640,6 +8640,13 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
+            // High-precision values must never reach doubleValue() implicitly.
+            // The exact scalar helper enforces explicit domain, digit and scale
+            // budgets. Guest BigInt/Decimal type admission remains separate.
+            if (a instanceof java.math.BigInteger || b instanceof java.math.BigInteger
+                    || a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal) {
+                return dev.oreslang.math.ExactScalarMath.evaluate(a, b, op);
+            }
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
@@ -8666,6 +8673,12 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
+            if (value instanceof java.math.BigInteger b) {
+                return dev.oreslang.math.ExactScalarMath.evaluate(java.math.BigInteger.ZERO, b, '-');
+            }
+            if (value instanceof java.math.BigDecimal d) {
+                return dev.oreslang.math.ExactScalarMath.evaluate(java.math.BigDecimal.ZERO, d, '-');
+            }
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
@@ -8731,7 +8744,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
-        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private Complex asComplex(Object value) {
+            if (value instanceof Complex c) return c;
+            if (value instanceof java.math.BigInteger || value instanceof java.math.BigDecimal) {
+                throw new IllegalArgumentException("explicit conversion required from BigInt/Decimal to binary64 complex");
+            }
+            if (value instanceof Number n) return new Complex(n.doubleValue(), 0);
+            throw new IllegalArgumentException("value is not numeric");
+        }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
