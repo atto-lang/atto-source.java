@@ -320,4 +320,21 @@ final class ActorUnaryPostExitPublicationTest {
         }
     }
 
+    @Test
+    void throwingTrustedPostExitPublicationFailsOwnerInsteadOfStrandingWork() throws Exception {
+        var queued = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawn(() -> (message, context) -> {
+                runtime.publishAfterCurrentActorCarrierExit(() -> {
+                    throw new IllegalStateException("trusted host publication failed");
+                });
+                queued.countDown();
+            });
+            actor.send(1);
+            assertTrue(queued.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(3, TimeUnit.SECONDS));
+            assertThrows(RuntimeException.class, () -> actor.getDone().join());
+        }
+    }
+
 }
