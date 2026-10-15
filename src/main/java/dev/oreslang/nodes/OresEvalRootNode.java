@@ -8576,27 +8576,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
-                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(left.toString())
-                            .compareTo(new java.math.BigDecimal(right.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return left.doubleValue() == right.doubleValue();
-                }
-            }
             boolean integralLeft = isIntegral(left);
             boolean integralRight = isIntegral(right);
             if (integralLeft && integralRight) return left.longValue() == right.longValue();
-            if (integralLeft != integralRight) {
-                // Converting a long above 2^53 to double silently merges
-                // distinct numeric values. Compare exact finite decimal
-                // representations instead, matching static subsumption.
-                Number integer = integralLeft ? left : right;
-                Number floating = integralLeft ? right : left;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
+            if (integralLeft != integralRight
+                    || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger
+                    || left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal) {
+                // BigInt/Decimal are finite: they must never equal NaN/Infinity,
+                // even when a huge finite value converts to floating infinity.
+                if (isNaN(left) || isNaN(right)
+                        || isInfiniteFloat(left) || isInfiniteFloat(right)) return false;
+                return exactFiniteDecimal(left).compareTo(exactFiniteDecimal(right)) == 0;
             }
             return left.doubleValue() == right.doubleValue();
         }
