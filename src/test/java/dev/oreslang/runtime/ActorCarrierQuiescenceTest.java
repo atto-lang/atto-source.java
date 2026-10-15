@@ -123,6 +123,46 @@ final class ActorCarrierQuiescenceTest {
         }
     }
 
+    @Test
+    void cancellationWithDiscardedMailSettlesOnlyAfterPhysicalFinalization()
+            throws Exception {
+        CountDownLatch messageProcessed = new CountDownLatch(1);
+        CountDownLatch carrierHeld = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean pause = new AtomicBoolean();
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (messageProcessed.getCount() == 0
+                    && pause.compareAndSet(false, true)) {
+                carrierHeld.countDown();
+                awaitTestRelease(release);
+            }
+        };
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> messageProcessed.countDown());
+            try {
+                actor.send(1);
+                assertTrue(carrierHeld.await(5, TimeUnit.SECONDS));
+                actor.send(2); // will be dropped by cancellation
+                OresFuture<Void> observer = runtime.quiesceAcceptedMessages(actor);
+                assertFalse(observer.isDone());
+                actor.cancel();
+                assertFalse(observer.isDone(),
+                        "logical stop is not physical termination");
+                release.countDown();
+                observer.get(5, TimeUnit.SECONDS);
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
     private static void awaitTestRelease(CountDownLatch release) {
         try {
             if (!release.await(5, TimeUnit.SECONDS)) {
