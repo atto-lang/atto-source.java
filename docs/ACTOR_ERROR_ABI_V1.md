@@ -297,3 +297,42 @@ correctness, AOT, or native parity.
 Structured one-for-one restart, restart intensity limits, source-language
 on_raise recovery and LLVM guest lowering remain unimplemented.
 
+## Host-only one-for-one restart authority and terminal barrier (October 14, 2026)
+
+Java `ActorRuntime.restartCurrentChildOneForOne(notice, retiredHandle,
+replacementFactory)` is now a **host-runtime-only** restart primitive,
+available only inside the structurally owning parent's current
+`ChildFailureHandler.onChildFailure` callback. The exact immutable notice
+object must be the current callback's notice, its actor and supervisor IDs
+must match the original parent-owned `ActorHandle`, and the old child must
+have left the live actor registry **and** completed its terminal Future.
+The authority is consumed **before** replacement admission so the same
+notice cannot spawn multiple replacements even if the factory fails.
+
+To enforce this without blocking the parent actor, global host audit notice
+publication remains before terminal observers settle, but delivery to the
+parent's per-actor CONTROL inbox is deferred until *after* unregistration,
+the child exit hook and the done/finalized Future barriers. Parent lineage
+acceptance recognizes only the original runtime-owned child cell while
+rejecting forged IDs or unrelated owners. A concurrent parent shutdown
+drops and accounts for the undeliverable notice.
+
+Replacement spawns under the **original effective child policy and kind**,
+with a newly allocated ActorId and strictly increasing ActorRef generation.
+The retired ActorRef/ActorHandle cannot silently redirect to the new actor.
+A parent-local, actor-turn-confined restart intensity cap allows at most
+three calls to this primitive in a rolling one-minute window. The cap
+does not apply to arbitrary explicit user spawns, so it is not a general
+admission quota or automatic restart policy.
+
+JUnit fixtures cover a successful single restart with a fresh generation,
+replay rejection for the same notice, stale old-reference message rejection,
+and a fourth restart being rejected by the intensity budget. These tests are
+committed but **not verified passing** at the exact branch head while
+GitHub Actions jobs fail before starting executed steps.
+
+This does **not** implement source-language `on_raise`, policy-configurable
+backoff, durable restart state across parent failures, `one_for_all`/
+`rest_for_one`, or LLVM guest restart parity. Keep the PR draft until full
+compiler/runtime, AOT and lifecycle regression tests execute successfully.
+
