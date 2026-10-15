@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1385,6 +1386,7 @@ public final class ActorRuntime implements AutoCloseable {
      * code directly.</p>
      */
     public final class ContinuationTarget {
+        private final ActorRuntime owner = ActorRuntime.this;
         private final ActorId actorId;
 
         private ContinuationTarget(ActorId actorId) {
@@ -1752,6 +1754,10 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(future, "future");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(continuation, "continuation");
+        if (target.owner != this) {
+            throw new SecurityException(
+                    "completion continuation target belongs to a different actor runtime");
+        }
 
         ActorCell<?> cell = actors.get(target.actorId());
         if (cell == null || !ownFuture(cell, future)) return;
@@ -1759,6 +1765,44 @@ public final class ActorRuntime implements AutoCloseable {
         future.whenCompleteRuntime(
                 (value, failure) ->
                         target.enqueue(() -> continuation.accept(value, failure)));
+    }
+
+    /**
+     * Adapt a host CompletionStage to an actor-owned continuation WITHOUT
+     * executing the continuation on its producer, IO, timer, or JVM callback
+     * thread. This is a scheduler bridge, not a guest callback facility.
+     *
+     * Register the actor-owned waiter first, then attach the producer stage.
+     * CompletionStage.whenComplete may run synchronously on registration for
+     * already-completed inputs; it may only settle the intermediary OresFuture.
+     * That Future's sole registered handler enqueues onto the bounded internal
+     * actor continuation mailbox. Stopping the actor cancels the intermediary
+     * and prevents late publication into its former execution domain.
+     */
+    public <T> void enqueueOnCompletion(
+            CompletionStage<T> completion,
+            ContinuationTarget target,
+            BiConsumer<? super T, ? super Throwable> continuation) {
+        Objects.requireNonNull(completion, "completion stage");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(continuation, "continuation");
+        if (target.owner != this) {
+            throw new SecurityException(
+                    "completion continuation target belongs to a different actor runtime");
+        }
+        OresFuture<T> deferred = new OresFuture<>();
+        enqueueOnCompletion(deferred, target, continuation);
+        try {
+            completion.whenComplete((value, error) -> {
+                if (error != null) {
+                    deferred.failFromRuntime(OresFuture.unwrap(error));
+                } else {
+                    deferred.completeFromRuntime(value);
+                }
+            });
+        } catch (RuntimeException | Error registrationFailure) {
+            deferred.failFromRuntime(registrationFailure);
+        }
     }
 
     private boolean enqueueContinuation(ActorId actorId, Runnable continuation) {
