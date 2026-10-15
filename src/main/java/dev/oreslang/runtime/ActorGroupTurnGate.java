@@ -129,6 +129,12 @@ final class ActorGroupTurnGate implements AutoCloseable {
             this.onCancelled = onCancelled;
         }
 
+        boolean isSettled() {
+            synchronized (lock) {
+                return state == State.CANCELLED || state == State.RELEASED;
+            }
+        }
+
         /**
          * Returns true only if queued work was actually withdrawn. A granted
          * turn cannot be revoked here; actor cancellation still fences entry.
