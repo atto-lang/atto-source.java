@@ -104,4 +104,86 @@ final class ActorSealedStateAdmissionHardeningTest {
         Ast.Program p = Parser.parse("define actor A as state: Map<string,int>; end");
         assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(p));
     }
+
+    private static Ast.Program replaceStateField(Ast.Program parsed, Ast.FieldDecl changed) {
+        Ast.ClassDecl actor = (Ast.ClassDecl) parsed.modules().getFirst().declarations().getFirst();
+        return replaceActor(parsed, new Ast.ClassDecl(
+                actor.name(), actor.visibility(), actor.isAbstract(), actor.actorKind(),
+                actor.genericParameters(), actor.parents(), actor.interfaces(), List.of(changed),
+                actor.constructor(), actor.methods(), actor.serial()));
+    }
+
+    @Test void forgedHiddenStateFlagsAndAnnotationsRejectAfterAstRewrite() {
+        Ast.Program parsed = source("0");
+        Ast.FieldDecl field = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        List<Ast.FieldDecl> forged = List.of(
+                new Ast.FieldDecl(field.name(), field.visibility(), Ast.BindingKind.LET,
+                        field.type(), field.annotations(), field.initializer(), field.mutableReferent()),
+                new Ast.FieldDecl(field.name(), field.visibility(), field.bindingKind(),
+                        field.type(), field.annotations(), field.initializer(), false),
+                new Ast.FieldDecl(field.name(), field.visibility(), field.bindingKind(),
+                        field.type(), List.of(new Ast.Annotation("$actor_state$",
+                                List.of(Ast.TypeRef.simple("int")))), field.initializer(), true),
+                new Ast.FieldDecl(field.name(), field.visibility(), field.bindingKind(),
+                        field.type(), List.of(new Ast.Annotation("$actor_state$", List.of()),
+                                new Ast.Annotation("injected", List.of())), field.initializer(), true));
+        for (Ast.FieldDecl changed : forged) {
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(replaceStateField(parsed, changed)));
+            assertTrue(denied.getMessage().contains("canonical sealed compiler-owned layout"),
+                    denied::getMessage);
+        }
+    }
+
+    @Test void nestedDuplicateDefaultKeysRejectAfterAstRewrite() {
+        Ast.Program parsed = source("0");
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.ObjectExpr nested = new Ast.ObjectExpr(List.of(
+                Ast.ObjectField.named("same", new Ast.LiteralExpr(1L)),
+                Ast.ObjectField.named("same", new Ast.LiteralExpr(2L))));
+        Ast.ObjectExpr defaults = new Ast.ObjectExpr(
+                List.of(Ast.ObjectField.named("value", nested)));
+        Ast.FieldDecl injected = new Ast.FieldDecl(state.name(), state.visibility(),
+                state.bindingKind(), state.type(), state.annotations(),
+                defaults, state.mutableReferent());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(replaceStateField(parsed, injected)));
+        assertTrue(denied.getMessage().contains("owned constant expression"),
+                denied::getMessage);
+    }
+
+    @Test void everyImplicitSuspensionShapeRejectsInsideLiveLoan() {
+        List<String> statements = List.of(
+                "for (let i = 0; i < 2; i = i + 1) do val next = i + 1; done",
+                "for const item of arr[1, 2, 3] do val next = item + 1; done",
+                "for const [item] of arr[[1], [2]] do val next = item + 1; done",
+                "loop do break; done",
+                "defer cleanup();");
+        for (String statement : statements) {
+            String text = "define actor Counter as\n"
+                    + "state { value: int = 0; }\n"
+                    + "read(): int with state.read, suspend, alloc { "
+                    + "return using state.read(|s| -> { " + statement
+                    + " return s.value; }); } end";
+            Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(text), statement);
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(parsed), statement);
+            assertTrue(denied.getMessage().contains("actor state loan cannot cross"),
+                    () -> statement + ": " + denied.getMessage());
+        }
+    }
+
+    @Test void indexedStateLoanProjectionCannotBypassTypedMemberGate() {
+        String text = "define actor Counter as\n"
+                + "state { value: int = 0; }\n"
+                + "read(): int with state.read { "
+                + "return using state.read(|s| -> { return s[\"value\"]; }); } end";
+        Ast.Program parsed = assertDoesNotThrow(() -> Parser.parse(text));
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(parsed));
+        assertTrue(denied.getMessage().contains("verified typed projection lowering"),
+                denied::getMessage);
+    }
 }
