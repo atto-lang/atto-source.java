@@ -1,15 +1,7 @@
 name: Private CI destination policy self-test
 on:
+  # Required job must always be reported for a PR, including doc-only PRs.
   pull_request:
-    paths:
-      - 'scripts/check-private-ci-destination.sh'
-      - 'scripts/test-private-ci-destination.sh'
-      - 'scripts/run-in-private-ci-destination.sh'
-      - 'scripts/publish-private-ci-source.py'
-      - 'scripts/test-publish-private-ci-source.py'
-      - '.github/private-ci-approved-repositories.txt'
-      - '.github/CODEOWNERS'
-      - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
   push:
     paths:
       - 'scripts/check-private-ci-destination.sh'
@@ -27,13 +19,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
       - name: Assert private CI guard fail-closed behavior
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
           python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
           bash scripts/test-private-ci-destination.sh
+          python3 -m unittest discover -s tests -p 'test_ci_private_mirror_preflight.py' -v
           for attempt in 1 2 3; do
             echo "Private publisher adversarial pass ${attempt}/3"
             python3 scripts/test-publish-private-ci-source.py
