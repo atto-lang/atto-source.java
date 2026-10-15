@@ -1,5 +1,7 @@
 package dev.oreslang.nodes;
 
+import dev.oreslang.runtime.CheckedI64OverflowException;
+
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
@@ -8588,7 +8590,7 @@ public final class OresEvalRootNode extends RootNode {
                             default -> throw new IllegalStateException("invalid checked i64 operator");
                         };
                     } catch (ArithmeticException overflow) {
-                        throw new IllegalArgumentException("ORES_I64_OVERFLOW: checked signed 64-bit arithmetic", overflow);
+                        throw CheckedI64OverflowException.forOperator(op);
                     }
                 }
                 return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -8619,7 +8621,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (experimentalCheckedI64) {
                     try { return Math.negateExact(x); }
                     catch (ArithmeticException overflow) {
-                        throw new IllegalArgumentException("ORES_I64_OVERFLOW: checked signed 64-bit negation", overflow);
+                        throw CheckedI64OverflowException.forNegation();
                     }
                 }
                 return -x;
