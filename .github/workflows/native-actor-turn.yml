@@ -2,16 +2,24 @@ name: Native Oreslang actor turn ABI
 on:
   pull_request:
     paths:
-      - 'src/main/c/oresactorturn.*'
+      - 'src/main/c/oresactorturn*.c'
+      - 'src/main/c/oresactorturn.h'
       - 'src/test/c/oresactorturn*_test.c'
       - 'scripts/test-native-actor-turn.sh'
+      - 'scripts/test-native-actor-jni.sh'
+      - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
       - '.github/workflows/native-actor-turn.yml'
   push:
     branches: [main]
     paths:
-      - 'src/main/c/oresactorturn.*'
+      - 'src/main/c/oresactorturn*.c'
+      - 'src/main/c/oresactorturn.h'
       - 'src/test/c/oresactorturn*_test.c'
       - 'scripts/test-native-actor-turn.sh'
+      - 'scripts/test-native-actor-jni.sh'
+      - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
+      - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
 permissions:
   contents: read
 jobs:
@@ -49,3 +57,23 @@ jobs:
           git rev-parse HEAD^{tree}
       - name: ThreadSanitizer — both original and scheduler-boundary suites
         run: sh scripts/test-native-actor-turn.sh
+  native-jni-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CC: gcc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Record exact JVM/JNI source tree
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          git hash-object src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java src/main/c/oresactorturnjni.c src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java
+      - name: Compile and run opt-in JDK 21 native JNI boundary smoke
+        run: |
+          if [ -n "${JAVA_HOME_21_X64:-}" ]; then
+            export JAVA_HOME="$JAVA_HOME_21_X64"
+            export PATH="$JAVA_HOME/bin:$PATH"
+          fi
+          java -version
+          sh scripts/test-native-actor-jni.sh
