@@ -7381,7 +7381,9 @@ public final class ActorRuntime implements AutoCloseable {
                 publishActorFailureNotice(terminalControl);
             }
             unregisterActor(this);
-            if (parent != null) parent.childFinalized(this);
+            // Do not release the parent's structured-child barrier yet.
+            // Otherwise a stopping parent may settle its done Future before
+            // this child's own terminal observers have been resolved.
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
                 // Preserve the initializer failure as the direct cause of
@@ -7395,6 +7397,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (terminal == null) ref.doneFuture.completeFromRuntime(null);
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
+            // The owning parent may now complete its shutdown without racing
+            // ahead of this child's terminal and finalization observers.
+            if (parent != null) parent.childFinalized(this);
             lifecycleLock.notifyAll();
             // Parent-owned CONTROL publication is last. The child is no
             // longer registered; heap/exit hook and done/finalized barriers
