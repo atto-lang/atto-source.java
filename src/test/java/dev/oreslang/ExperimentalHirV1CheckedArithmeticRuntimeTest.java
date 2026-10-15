@@ -168,4 +168,23 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
         assertTrue(admitted, "Must reject checked class code at runtime admission");
     }
 
+
+    @Test
+    void checkedProfileRejectsNestedUncheckedOperationsEvenOnDeadBranch() throws Exception {
+        String[] unsafe = {
+            HEADER + "pub fnc main(): int { return 43 % 2; }",
+            HEADER + "pub fnc main(): int { return true ? 43 : (9223372036854775807 % 2); }"
+        };
+        for (String source : unsafe) {
+            RuntimeException failure = assertThrows(RuntimeException.class, () -> exit(source));
+            boolean classified = false;
+            for (Throwable cursor = failure; cursor != null; cursor = cursor.getCause()) {
+                classified |= String.valueOf(cursor.getMessage()).contains("checked-i64-v1");
+            }
+            assertTrue(classified, "Unsupported nested numeric operation must fail closed");
+        }
+        // Unmarked programs retain their original arithmetic semantics.
+        assertEquals(1, exit("pub fnc main(): int { return 43 % 2; }"));
+    }
+
 }
