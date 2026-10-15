@@ -55,7 +55,7 @@ jobs:
           version: '25.3'
 
       - name: Compile and execute the same fixture plus Future waiter lifecycle regressions
-        run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest,ChannelMappedSelectionCancellationTest,PrivateCiRunnerWorkflowSecurityTest' test
+        run: mvn -B -ntp '-Dtest=NativeChannelSelectSmokeTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest,ChannelMappedSelectionCancellationTest,ChannelMappedCancellationStressTest,PrivateCiRunnerWorkflowSecurityTest' test
   full-jvm-verify:
     needs: syntax-and-guest
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' && (vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha)) }}
