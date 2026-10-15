@@ -195,6 +195,64 @@ all eight GCC/Clang/optimization/sanitizer configurations passed.
 This proves rejected stale carrier release in a regression, **not**
 a production-grade recovery protocol for a legitimately abandoned lease.
 
+### Registered SourceTask cleanup provenance (implementation in progress)
+
+The prototype no longer accepts an arbitrary actor handle as sufficient proof
+to mint a retained-cleanup ticket. The trusted VM adapter must first call
+`ores_turn_register_source_task(vm, actor, task_id, task_generation, out)`.
+This allocates a **VM-owned opaque SourceTask handle**, rejects forged/foreign
+handles, fences stale incarnations, and disallows duplicate live task IDs and
+non-monotonic generations for the same actor. Ticket issuance now requires
+that exact source handle and is one-shot per SourceTask. Outstanding source
+registrations block actor retirement even when every ticket has been consumed
+or canceled. Source retirement is separately gated on ticket settlement and
+physical carrier quiescence.
+
+Claiming a cleanup turn is also **not** proof that the terminal signal was
+injected. `ores_turn_note_terminal_injected` requires the original physical
+carrier, matching cleanup lease and source handle, an active STOP and a
+non-revoked actor. The VM may acknowledge injection exactly once, only after
+it truly injected the cancellation signal. The private
+`ores_turn_check_cleanup_effects` returns DENIED until acknowledgement,
+and after lease release or force revocation. Guest code may never invoke these
+intrinsics directly or pass naked pointers as handles.
+
+**Important trust limitation:** the prototype can authenticate membership in
+*its own registry*, but it cannot prove that the caller registered an actual
+scheduler SourceTask or that terminal injection physically occurred. The VM
+adapter is still trusted to register genuine SourceTasks and acknowledge
+real injections. These checks are not effective production controls until
+wired to backend-managed task objects, cancellation and scheduler dispatch.
+
+The expanded C adversarial fixture includes forged/cross-VM SourceTask
+handles, duplicate or decreasing task generations, double issue, retirement
+barriers, replay after actor restart, wrong-carrier acknowledgement, and
+force-revocation effects rejection. **These new tests have not yet executed
+on a runner.** The most recent funded private CI attempt
+[#38658876999](https://github.com/canonical-cloud/canonical-e2e/actions/runs/38658876999)
+failed before executing any steps, so neither compilation nor test failure
+can be inferred from that run.
+
+### Mainline integration and private-CI policy
+
+PR #917 was brought forward by an exact three-way Git-object merge with
+main at `3f1643c0cd88a766308bb44b9705c55f8b3cf518`. No blob-level
+collisions occurred. Mainline ownership/select code and the CI security
+controls were retained, while the ten native-runtime PR file changes
+were overlaid. The combined source tree must still pass JDK 25, guest and
+native-image validation before any production merge.
+
+Mainline `.github/private-ci-approved-repositories.txt` has **no approved
+destination**. The reviewed security policy explicitly prohibits all
+cross-repository private-source transfers until an exact destination has
+been approved through protected-branch maintainer/security review. Private
+visibility and successful runner canaries are not sufficient permission.
+Do not send any further source to `canonical-cloud`, `3FA-app`, or another
+organization without that review. Earlier native-only private mirror objects
+require security-owner review and retention/disclosure assessment; deleting
+refs does not remove Git object bytes. Use a source-org runner if available,
+or approved full-tree export only after authorization.
+
 Native compiler-and-test evidence is required on the exact Git tree; successful
 registration of a GitHub Actions workflow without executed job steps is not
 validation. Cross-org CI mirrors require private/private pinned repository IDs
@@ -202,8 +260,9 @@ and exact tree equality before any conformance claim.
 
 **Critical limitations:** Native `force_revoke` fences *future* claims; it
 does not asynchronously terminate an already-running native carrier. Cleanup
-tickets may only be minted by the trusted scheduler for a real registered
-SourceTask; the prototype does not independently inspect SourceTask metadata.
+tickets now require a registered VM-private SourceTask handle, but the
+prototype cannot independently attest scheduler provenance or actual terminal
+signal delivery until integrated with live backend task objects.
 Physical turn admission and actor retirement still require the rest of the
 runtime's capability, child, cleanup and output barriers. C pointers are not
 safe to export into user code, IPC, Java interop or ordinary Ores values.
