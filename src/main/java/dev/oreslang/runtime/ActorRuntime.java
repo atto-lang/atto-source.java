@@ -1800,7 +1800,7 @@ public final class ActorRuntime implements AutoCloseable {
                     deferred.completeFromRuntime(value);
                 }
             });
-        } catch (RuntimeException | Error registrationFailure) {
+        } catch (RuntimeException registrationFailure) {
             deferred.failFromRuntime(registrationFailure);
         }
     }
