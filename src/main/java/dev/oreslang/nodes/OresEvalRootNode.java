@@ -3073,6 +3073,27 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
+            // Each evaluation is a one-shot operation, even if a synchronous
+            // downstream callback throws or a completion races cancellation.
+            // The marker must be set BEFORE entering user continuation code.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont singleDelivery = (t, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable expression attempted duplicate completion");
+                }
+                continuation.accept(t, value, failure);
+            };
+            evalSuspendableExprImpl(task, expr, env, singleDelivery, delivered);
+        }
+
+        private void evalSuspendableExprImpl(
+                SourceTask task,
+                Ast.Expr expr,
+                Env env,
+                SourceValueCont continuation,
+                java.util.concurrent.atomic.AtomicBoolean delivered) {
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
@@ -3582,6 +3603,9 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // Once the callback was invoked, its exception belongs to
+                // the consumer. Reporting it again would deliver twice.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -4203,6 +4227,7 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Invocation invocation;
                                 try {
                                     // Overload identity depends only on expanded
                                     // arity; source labels bind after selection.
@@ -4213,17 +4238,20 @@ public final class OresEvalRootNode extends RootNode {
                                                 "no function " + name.name()
                                                         + " with expanded arity " + evaluated.values().size());
                                     }
-                                    Invocation invocation =
+                                    invocation =
                                             functionInvocation(selected, evaluated.inAbiOrder(selected));
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            env,
-                                            continuation);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                } catch (RuntimeException | Error bindingFailure) {
+                                    continuation.accept(t, null, bindingFailure);
+                                    return;
                                 }
+                                // Guest completion may invoke the caller synchronously.
+                                // Do not catch and re-deliver consumer exceptions here.
+                                completeSourceInvocation(
+                                        t,
+                                        invocation,
+                                        invocationDeclaresAsync(invocation),
+                                        env,
+                                        continuation);
                             });
                     return;
                 }
@@ -4249,19 +4277,21 @@ public final class OresEvalRootNode extends RootNode {
                                                 continuation.accept(t2, null, argumentFailure);
                                                 return;
                                             }
+                                            final Invocation invocation;
                                             try {
-                                                Invocation invocation = module.owner()
+                                                invocation = module.owner()
                                                         .prepareModuleInvocation(
                                                                 module.module(),
                                                                 member.member(),
                                                                 evaluated);
-                                                completeSourceInvocation(
-                                                        t2, invocation,
-                                                        invocationDeclaresAsync(invocation),
-                                                        env, continuation);
-                                            } catch (RuntimeException | Error e) {
-                                                continuation.accept(t2, null, e);
+                                            } catch (RuntimeException | Error bindingFailure) {
+                                                continuation.accept(t2, null, bindingFailure);
+                                                return;
                                             }
+                                            completeSourceInvocation(
+                                                    t2, invocation,
+                                                    invocationDeclaresAsync(invocation),
+                                                    env, continuation);
                                         });
                                 return;
                             }
@@ -4274,25 +4304,24 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        final Invocation invocation;
                                         try {
-                                            Invocation invocation =
+                                            invocation =
                                                     prepareInvocationEvaluated(
                                                             call,
                                                             receiver,
                                                             values,
                                                             env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    env,
-                                                    continuation);
-                                        } catch (RuntimeException | Error failure3) {
-                                            continuation.accept(t2, null, failure3);
+                                        } catch (RuntimeException | Error bindingFailure) {
+                                            continuation.accept(t2, null, bindingFailure);
+                                            return;
                                         }
+                                        completeSourceInvocation(
+                                                t2,
+                                                invocation,
+                                                invocationDeclaresAsync(invocation),
+                                                env,
+                                                continuation);
                                     });
                         });
                 return;
