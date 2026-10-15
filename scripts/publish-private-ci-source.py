@@ -133,12 +133,17 @@ def checked_policy_fingerprint(root, repository):
     except UnicodeDecodeError as exc:
         raise Denied("private CI approval policy cannot be decoded") from exc
     approved = False
+    reviewed_names = set()
     for line in lines:
         if not line or line.startswith("#"):
             continue
         if not NAME.fullmatch(line):
             raise Denied("private CI approval policy contains an invalid entry")
-        if line.casefold() == repository.casefold():
+        normalized = line.casefold()
+        if normalized in reviewed_names:
+            raise Denied("private CI approval policy contains duplicate destination entries")
+        reviewed_names.add(normalized)
+        if normalized == repository.casefold():
             approved = True
     if not approved:
         raise Denied("destination approval was revoked or absent")
