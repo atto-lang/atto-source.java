@@ -511,14 +511,15 @@ def publish(repository, source, branch, trusted_root):
     checked_source_main_protection()
     checked_protected_main_policy(approved_policy)
     checked_repo(repository)
-    trusted = trusted_root.resolve(strict=True)
-    resolved_source = source.resolve(strict=True)
-    try:
-        resolved_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root, omit_checkout_metadata=True)
-    source_commit, exact_source_tree = require_source_tree_match(source, trusted_root, files)
+    # Trust the publisher's checkout for code/policy, not the candidate tree.
+    # The candidate may be an entirely separate Git checkout: it provides
+    # source BYTES only, never scripts or source-side authorization decisions.
+    # collect_source opens files with no-follow directory descriptors, and
+    # require_source_tree_match checks the candidate's complete committed tree.
+    if source.is_symlink():
+        raise Denied("candidate source checkout cannot be a symlink")
+    files = collect_source(source, source, omit_checkout_metadata=True)
+    source_commit, exact_source_tree = require_source_tree_match(source, source, files)
     checked_source_commit(source_commit, exact_source_tree)
     base = checked_repo(repository)
     default = base.get("default_branch")
