@@ -74,6 +74,7 @@ public final class TreeShaker {
         private final Map<String, String> uniqueSymbols = new LinkedHashMap<>();
         private final Set<String> ambiguousSymbols = new LinkedHashSet<>();
         private final Set<String> moduleNames = new LinkedHashSet<>();
+        private final Set<String> scannedModuleMetadata = new LinkedHashSet<>();
 
         private final LinkedHashSet<String> retained = new LinkedHashSet<>();
         private final LinkedHashSet<String> externalBindings = new LinkedHashSet<>();
@@ -97,7 +98,10 @@ public final class TreeShaker {
 
             while (!work.isEmpty()) {
                 Symbol symbol = symbols.get(work.removeFirst());
-                if (symbol != null) scanDeclaration(symbol.module(), symbol.declaration());
+                if (symbol != null) {
+                    scanRetainedModuleMetadata(symbol.module());
+                    scanDeclaration(symbol.module(), symbol.declaration());
+                }
             }
 
             Ast.Program pruned = pruneProgram(rewritten);
@@ -173,6 +177,10 @@ public final class TreeShaker {
                     || !function.genericParameters().isEmpty()
                     || function.actorKind() != Ast.ActorKind.NONE
                     || function.async()
+                    // A constant-looking result does not erase a callable's effect contract.
+                    || function.suspends()
+                    || function.generator()
+                    || function.trapped()
                     || function.parameters().size() != arguments.size()
                     || function.body().size() != 1
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
@@ -1058,6 +1066,21 @@ public final class TreeShaker {
                 return null;
             }
             return uniqueSymbols.get(name);
+        }
+
+        /**
+         * A retained declaration also retains its enclosing module's public
+         * contract and annotation dependencies. These are module metadata,
+         * not dependencies of any individual function signature.
+         */
+        private void scanRetainedModuleMetadata(String moduleName) {
+            if (!scannedModuleMetadata.add(moduleName)) return;
+            for (Ast.ModuleDecl module : rewritten.modules()) {
+                if (!module.name().equals(moduleName)) continue;
+                for (Ast.TypeRef contract : module.contracts()) scanType(contract);
+                for (Ast.Annotation annotation : module.annotations()) scanAnnotation(annotation);
+                return;
+            }
         }
 
         private void scanDeclaration(String module, Ast.Decl declaration) {

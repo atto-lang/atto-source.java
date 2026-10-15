@@ -210,7 +210,7 @@ public final class Ast {
     /** A source generic name and its optional compile-time default type. */
     public record GenericParameter(String name, TypeRef defaultType) {
         public GenericParameter {
-            if (name == null || name.isBlank() || name.startsWith("$")) {
+            if (name == null || name.isBlank() || name.equals("_") || name.startsWith("$")) {
                 throw new IllegalArgumentException("invalid generic parameter name");
             }
         }

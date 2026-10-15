@@ -85,4 +85,78 @@ final class TreeShakerGenericDefaultsHardeningTest {
                 .declarations().getFirst();
         assertTrue(kept.trapped(), "trap effect must not disappear under optimization");
     }
+
+    @Test
+    void optimizerRetainsModuleContractAndAnnotationTypeDependencies() {
+        Ast.InterfaceDecl contract = new Ast.InterfaceDecl(
+                "ServiceContract", Ast.Visibility.PRIVATE,
+                List.of(), List.of(), List.of(), true);
+        Ast.ClassDecl annotatedType = new Ast.ClassDecl(
+                "Marker", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                List.of(), List.of(), List.of(), List.of(), null, List.of());
+        Ast.ClassDecl unused = new Ast.ClassDecl(
+                "Unused", Ast.Visibility.PRIVATE, false, Ast.ActorKind.NONE,
+                List.of(), List.of(), List.of(), List.of(), null, List.of());
+        Ast.FunctionDecl entry = new Ast.FunctionDecl(
+                "entry", Ast.Visibility.PUBLIC, false,
+                List.of(), List.of(), Ast.TypeRef.simple("int"),
+                List.of(), List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(1))));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("service",
+                        List.of(new Ast.Annotation("meta",
+                                List.of(Ast.TypeRef.simple("Marker")))),
+                        List.of(Ast.TypeRef.simple("ServiceContract")),
+                        List.of(contract, annotatedType, unused, entry))));
+
+        TreeShaker.Result result = TreeShaker.shake(program, BuildOptions.library(Map.of()));
+        assertTrue(result.retained("service.entry"));
+        assertTrue(result.retained("service.ServiceContract"),
+                "a retained module must keep its contract-only type");
+        assertTrue(result.retained("service.Marker"),
+                "a retained module must keep its annotation-only type");
+        assertTrue(result.removed("service.Unused"),
+                "unrelated private types must remain removable");
+        Ast.ModuleDecl kept = result.program().modules().getFirst();
+        assertEquals(List.of(Ast.TypeRef.simple("ServiceContract")), kept.contracts());
+        assertEquals(1, kept.annotations().size());
+    }
+
+    @Test
+    void effectfulConstantReturningCallablesAreNeverInlined() {
+        // Exercise the optimizer directly on generated AST: effect semantics
+        // are separately checked by the source type checker before lowering.
+        for (int effect = 0; effect < 3; effect++) {
+            String name = "effect" + effect;
+            Ast.FunctionDecl target = new Ast.FunctionDecl(
+                    name, Ast.CallableKind.FNC, Ast.Visibility.PRIVATE,
+                    false, effect == 0, effect == 1, false, false,
+                    effect == 2, Ast.ActorKind.NONE,
+                    List.of(), List.of(), Ast.TypeRef.simple("int"), List.of(),
+                    List.of(new Ast.ReturnStmt(new Ast.LiteralExpr(7))), List.of());
+            Ast.FunctionDecl caller = new Ast.FunctionDecl(
+                    "entry", Ast.Visibility.PUBLIC, false,
+                    List.of(), List.of(), Ast.TypeRef.simple("int"), List.of(),
+                    List.of(new Ast.ReturnStmt(
+                            new Ast.CallExpr(new Ast.NameExpr(name), List.of()))));
+            Ast.Program program = new Ast.Program(List.of(
+                    new Ast.ModuleDecl("service", List.of(target, caller))));
+
+            TreeShaker.Result result = TreeShaker.shake(program, BuildOptions.library(Map.of()));
+            assertTrue(result.retained("service." + name),
+                    "an effectful callable must not become dead after inlining");
+            Ast.FunctionDecl keptCaller = result.program().modules().getFirst().declarations()
+                    .stream().filter(Ast.FunctionDecl.class::isInstance)
+                    .map(Ast.FunctionDecl.class::cast)
+                    .filter(fn -> fn.name().equals("entry")).findFirst().orElseThrow();
+            Ast.ReturnStmt returned = (Ast.ReturnStmt) keptCaller.body().getFirst();
+            assertInstanceOf(Ast.CallExpr.class, returned.value(),
+                    "optimizer must retain the call's effect boundary");
+        }
+    }
+
+    @Test
+    void generatedAstRejectsInferenceHoleAsGenericDeclaration() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Ast.GenericParameter("_", null));
+    }
 }
