@@ -107,7 +107,9 @@ public final class ExactScalarMath {
 
     private static BigDecimal toDecimal(Number number) {
         if (number instanceof BigDecimal v) return v;
-        return new BigDecimal(toBigInteger(number));
+        BigInteger value = toBigInteger(number);
+        validate(value); // reject enormous host integers before decimal conversion
+        return new BigDecimal(value);
     }
 
     private static BigDecimal checked(BigDecimal result) {
