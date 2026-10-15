@@ -151,7 +151,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
 
     private static long countLines(String text, String exact) {
         return java.util.regex.Pattern.compile(
-                "(?m)^" + java.util.regex.Pattern.quote(exact) + "$")
+                "(?m)^[ \\t]*" + java.util.regex.Pattern.quote(exact) + "$")
                 .matcher(text).results().count();
     }
 
