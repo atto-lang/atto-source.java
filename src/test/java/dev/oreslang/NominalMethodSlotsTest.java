@@ -33,8 +33,7 @@ final class NominalMethodSlotsTest {
 
     private static Map<Slot, Ast.MethodDecl> prove(String classes) {
         Ast.Program parsed = Parser.parse(ENUMS + classes);
-        return NominalMethodSlots.proveLocalSameArityFamilies(owner(parsed),
-                NominalEnumOverloads.eligibleEnumSymbols(parsed));
+        return NominalMethodSlots.proveLocalSameArityFamilies(parsed, owner(parsed));
     }
 
     @Test
@@ -113,6 +112,41 @@ final class NominalMethodSlotsTest {
     }
 
     @Test
+    void forgedOwnerFromDifferentProgramCannotSupplyMethodProofs() {
+        Ast.Program registered = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """);
+        Ast.Program replacement = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub choose(Color value): int { return 7; }
+                    pub choose(Mode value): int { return 8; }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalMethodSlots.proveLocalSameArityFamilies(registered, owner(replacement)));
+        assertEquals(2, NominalMethodSlots.proveLocalSameArityFamilies(
+                registered, owner(registered)).size());
+    }
+
+    @Test
+    void repeatedCanonicalClassOwnerCannotEnterMethodProof() {
+        Ast.Program parsed = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """);
+        Ast.ClassDecl klass = owner(parsed);
+        Ast.Program duplicated = new Ast.Program(List.of(
+                new Ast.ModuleDecl("alpha", List.of(klass, klass))));
+        assertThrows(IllegalArgumentException.class, () ->
+                NominalMethodSlots.proveLocalSameArityFamilies(duplicated, klass));
+    }
+
+    @Test
     void declarationOrderCannotChangeAnyLinkSymbol() {
         var first = prove("""
                 define class Picker as
@@ -158,9 +192,9 @@ final class NominalMethodSlotsTest {
                     pub choose(Mode value): int { return 2; }
                 end
                 """);
-        assertEquals(2, NominalMethodSlots.proveLocalSameArityFamilies(owner(program),
-                NominalEnumOverloads.eligibleEnumSymbols(program)).size());
-        assertThrows(IllegalArgumentException.class,
+        assertEquals(2, NominalMethodSlots.proveLocalSameArityFamilies(program, owner(program)).size());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.TypeChecker.checkTypes(program));
+        assertTrue(denied.getMessage().contains("not enabled"), denied.getMessage());
     }
 }
