@@ -1,0 +1,44 @@
+{
+  "initial": {
+    "counter": 0
+  },
+  "expected": {
+    "counter": 2
+  },
+  "actors": [
+    {
+      "name": "suspended",
+      "turns": [
+        [
+          {
+            "op": "read",
+            "key": "counter",
+            "as": "snapshot"
+          }
+        ],
+        [
+          {
+            "op": "write",
+            "key": "counter",
+            "value": {
+              "local": "snapshot",
+              "add": 1
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "name": "concurrent",
+      "turns": [
+        [
+          {
+            "op": "atomic_add",
+            "key": "counter",
+            "value": 1
+          }
+        ]
+      ]
+    }
+  ]
+}
