@@ -1673,9 +1673,11 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        // Local guest throw has a separate AST form. Its Error-only type and
-        // lexical catch scope are checked by TypeChecker before execution.
-        // Raise, panic and recover remain gated until CONTROL delivery exists.
+        // Guest throw is nominal Error-only: outside actors it requires a
+        // lexical catch; in synchronous actors it may be caught locally or
+        // escalates to payload-free raise on an unhandled actor-turn exit.
+        // Explicit raise/panic are admitted for checked synchronous actor
+        // code. Source-language recover and on_* hooks remain gated.
         if (match(THROW)) {
             if (check(SEMICOLON) || isSafeStatementBoundary()) {
                 throw error(previous(), "throw requires a guest Error value");
