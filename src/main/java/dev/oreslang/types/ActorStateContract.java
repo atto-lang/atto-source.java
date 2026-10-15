@@ -115,6 +115,11 @@ public final class ActorStateContract {
         for (Ast.TypeRef parent : klass.parents()) {
             checkInheritedActorLayout(klass, parent, declared, active);
         }
+        // Compiler passes must not introduce a constructor after parsing: it would
+        // create a second, unchecked initialization/write authority.
+        if (klass.constructor() != null) {
+            throw new IllegalArgumentException("actor constructors cannot bypass sealed state initialization");
+        }
         Ast.FieldDecl state = stateField(klass);
         // Actors without state are legal, but their methods must still be
         // checked: an early return here lets a state-less actor reference
@@ -132,6 +137,19 @@ public final class ActorStateContract {
         // declared map with zero keys. Both cases are still inspected.
         Set<String> keys = null;
         if (state != null) {
+            // The hidden state slot is a compiler-owned layout, not an ordinary
+            // field whose visibility, mutability or annotation can be changed
+            // by another AST producer/annotation expansion pass.
+            if (state.visibility() != Ast.Visibility.PRIVATE
+                    || state.bindingKind() != Ast.BindingKind.VAL
+                    || state.annotations().size() != 1
+                    || !state.annotations().getFirst().name().equals("$actor_state$")
+                    || !state.annotations().getFirst().arguments().isEmpty()) {
+                throw new IllegalArgumentException("actor state requires canonical sealed compiler-owned layout");
+            }
+            if (state.initializer() != null && !(state.initializer() instanceof Ast.ObjectExpr)) {
+                throw new IllegalArgumentException("actor state initializer must be a closed key/value aggregate");
+            }
             Ast.TypeRef schema = keySchema(state);
             if (!schema.isRecordType()) {
                 throw new IllegalArgumentException("actor state schema must declare typed keys");
@@ -143,6 +161,13 @@ public final class ActorStateContract {
                     if (!keys.contains(def.name())) {
                         throw new IllegalArgumentException("unknown actor state default key '" + def.name() + "'");
                     }
+                    // Initialization is a runtime-owned exceptional write, not
+                    // a user critical-section lease. Deny calls/aliases/FFI,
+                    // and admit only freshly constructed literal aggregates.
+                    if (!sealedDefault(def.value())) {
+                        throw new IllegalArgumentException(
+                                "actor state default requires an owned constant expression: " + def.name());
+                    }
                 }
             }
         }
@@ -153,6 +178,31 @@ public final class ActorStateContract {
             visit(method.body(), klass.name(), keys, null, false,
                     !method.isStatic(), Ast.CriticalMode.NONE);
         }
+    }
+
+    private static boolean sealedDefault(Ast.Expr expression) {
+        if (expression instanceof Ast.LiteralExpr literal) {
+            Object value = literal.value();
+            return value == null || value instanceof String || value instanceof Boolean
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Double || value instanceof Float
+                    || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal;
+        }
+        if (expression instanceof Ast.UnaryExpr unary) {
+            return (unary.operator().equals("-") || unary.operator().equals("+"))
+                    && unary.operand() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Number;
+        }
+        if (expression instanceof Ast.ListExpr list)
+            return list.elements().stream().allMatch(ActorStateContract::sealedDefault);
+        if (expression instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().allMatch(ActorStateContract::sealedDefault);
+        if (expression instanceof Ast.ObjectExpr object)
+            return object.fields().stream().allMatch(field -> sealedDefault(field.value()));
+        // In particular no NameExpr, MemberExpr, CallExpr, NewExpr, alias,
+        // pointer, ownership intrinsic, coroutine or externally owned value.
+        return false;
     }
 
     private static void visit(Object node, String actor, Set<String> keys,
@@ -294,6 +344,11 @@ public final class ActorStateContract {
             throw new IllegalArgumentException(
                     "actor state-backed borrow/take/share cannot escape its lexical loan");
         }
+        if (node instanceof Map<?, ?> entries) {
+            for (Object value : entries.values())
+                visit(value, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
+            return;
+        }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) visit(item, actor, keys, activeAccess, nestedClosure, instanceMethod, accessMode);
             return;
@@ -320,6 +375,10 @@ public final class ActorStateContract {
             if (lambda.parameters().stream().anyMatch(p -> p.name().equals(access))) return false;
             return referencesAccess(lambda.expressionBody(), access)
                     || referencesAccess(lambda.blockBody(), access);
+        }
+        if (node instanceof Map<?, ?> entries) {
+            for (Object value : entries.values()) if (referencesAccess(value, access)) return true;
+            return false;
         }
         if (node instanceof Iterable<?> items) {
             for (Object item : items) if (referencesAccess(item, access)) return true;
