@@ -73,7 +73,7 @@ final class ActorCarrierQuiescenceTest {
              ActorRuntime foreign = new ActorRuntime()) {
             ActorRuntime.ActorRef<Integer> actor =
                     owner.spawnShared(() -> (message, context) -> { });
-            assertThrows(ActorInvalidReferenceException.class,
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
                     () -> foreign.quiesceAcceptedMessages(actor));
         }
     }
