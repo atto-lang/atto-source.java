@@ -598,6 +598,38 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                 or not isinstance(carrier_main.get("commit"), dict)
                 or valid_sha(carrier_main["commit"].get("sha")) != current_sha):
             raise Denied("private carrier main is not protected and pinned")
+        # A protected=true flag alone does not guarantee that the destination
+        # workflow definitions were independently reviewed. The carrier's
+        # inherited root .github/workflows can read the private source on a
+        # CI branch, so require an enforced two-party review boundary before
+        # reading or uploading even one private source byte.
+        carrier_rules = gh_api(f"repos/{repository}/branches/main/protection")
+        checks = carrier_rules.get("required_status_checks")
+        if (not isinstance(carrier_rules.get("enforce_admins"), dict)
+                or carrier_rules["enforce_admins"].get("enabled") is not True
+                or not isinstance(checks, dict)
+                or checks.get("strict") is not True
+                or not isinstance(checks.get("contexts"), list)
+                or not checks["contexts"]
+                or not all(isinstance(c, str) and c for c in checks["contexts"])):
+            raise Denied("private carrier main lacks enforced administrator and CI protections")
+        conversations = carrier_rules.get("required_conversation_resolution")
+        if (not isinstance(conversations, dict)
+                or conversations.get("enabled") is not True):
+            raise Denied("private carrier main must enforce resolved reviews")
+        carrier_reviews = gh_api(
+            f"repos/{repository}/branches/main/protection/required_pull_request_reviews")
+        approvals = carrier_reviews.get("required_approving_review_count")
+        if (type(approvals) is not int or approvals < 1
+                or carrier_reviews.get("require_code_owner_reviews") is not True
+                or carrier_reviews.get("dismiss_stale_reviews") is not True):
+            raise Denied("private carrier main lacks independent code-owner approval")
+        bypass = carrier_reviews.get("bypass_pull_request_allowances")
+        if bypass is not None:
+            if not isinstance(bypass, dict) or any(
+                    not isinstance(bypass.get(key, []), list) or bypass.get(key)
+                    for key in ("users", "teams", "apps")):
+                raise Denied("private carrier main allows review bypass")
         return current_sha
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
