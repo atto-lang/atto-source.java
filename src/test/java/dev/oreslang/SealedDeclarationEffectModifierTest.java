@@ -15,39 +15,46 @@ final class SealedDeclarationEffectModifierTest {
                 "unsupported declaration modifier must not be silently discarded");
     }
 
+    private static void rejectsWith(String source, String expectedDiagnostic) {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> Parser.parse(source));
+        assertTrue(failure.getMessage().contains(expectedDiagnostic),
+                "expected [" + expectedDiagnostic + "] but got " + failure.getMessage());
+    }
+
     @Test
     void classHeadersRejectSuspensionModifiers() {
-        rejects("define suspends final class Leaf as end");
-        rejects("""
+        rejectsWith("define suspends final class Leaf as end", "classes accept only");
+        rejectsWith("""
                 define suspends sealed class Root permits Leaf as end
                 define final class Leaf extends Root as end
-                """);
+                """, "classes accept only");
     }
 
     @Test
     void sealedInterfaceHeadersRejectTrapsAndSuspension() {
-        rejects("""
+        rejectsWith("""
                 define trap sealed interface Event permits Click as end
                 define final class Click implements Event as end
-                """);
-        rejects("""
+                """, "interfaces/traits accept only");
+        rejectsWith("""
                 define suspends sealed interface Event permits Click as end
                 define final class Click implements Event as end
-                """);
+                """, "interfaces/traits accept only");
     }
 
     @Test
     void actorStateFieldsRejectSuspendingOrTrappingModifiers() {
-        rejects("""
+        rejectsWith("""
                 define actor Worker as
                     suspends val int count = 0;
                 end
-                """);
-        rejects("""
+                """, "actor state fields do not accept");
+        rejectsWith("""
                 define actor Worker as
                     trap val int count = 0;
                 end
-                """);
+                """, "actor state fields do not accept");
     }
 
     @Test
@@ -75,7 +82,7 @@ final class SealedDeclarationEffectModifierTest {
 
     @Test
     void ordinaryVisibilityOnlyDeclarationsRejectSuspension() {
-        rejects("define suspends type Value = int;");
-        rejects("define suspends interface Shape as end");
+        rejectsWith("define suspends type Value = int;", "type aliases accept only");
+        rejectsWith("define suspends interface Shape as end", "interfaces/traits accept only");
     }
 }
