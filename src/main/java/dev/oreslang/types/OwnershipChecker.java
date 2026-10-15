@@ -1629,11 +1629,19 @@ public final class OwnershipChecker {
                 (mutable ? mutableLoans : immutableLoans).add(ownershipRoot(owner));
                 return;
             }
-            if (arg instanceof Ast.RuntimeCallExpr runtime
-                    && (runtime.operation().equals("unref") || runtime.operation().equals("deref"))) {
+            if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("unref")) {
+                // Unref consumes the pointer and returns an owned T, not a loan.
+                // Never install a borrow against a missing or consumed owner.
+                throw error(callable + " argument " + position
+                        + " cannot borrow consuming rt unref; bind the owned pointee first, then pass rt borrow value");
+            }
+            if (arg instanceof Ast.RuntimeCallExpr runtime && runtime.operation().equals("deref")) {
                 if (mutable) throw error("pointer dereference only supplies a read-only borrow");
                 ValueInfo view = checkExpr(arg, scope, false);
                 VarState owner = view.borrowSource;
+                if (!isBorrowValue(view) || owner == null) {
+                    throw error("rt deref must supply a compiler-tracked borrowed view");
+                }
                 beginPersistentBorrow(owner, false);
                 immutableLoans.add(ownershipRoot(owner));
                 return;
