@@ -104,3 +104,24 @@ stress/fuzz/race testing and backend conformance before exposing source APIs.
 Related work: Java PR #216 (soft carrier affinity), Java PR #301 (physical
 CPU lanes), Java issue #303 (NUMA topology), Java PR #674 (source ActorGroup),
 LLVM PR #203 (native four-domain scheduler), and GPU mapping PR #285.
+
+## Private CI provenance gate
+
+Before exporting *any* source files to a different GitHub repository, enforce
+the reviewed, protected-branch allowlist in
+`.github/private-ci-approved-repositories.txt`. This file currently has **no
+approved destinations**. A repo being private, writable, or in another
+organization with available Actions minutes is **insufficient authorization**.
+The checked-in `scripts/check-private-ci-destination.sh` and controlled
+publisher are the intended transfer path; do not substitute arbitrary GitHub
+connector writes or push a tree into a public temporary branch.
+
+The source repository's historical public-mirror exposure is tracked in issue
+#832. Deleting a branch cannot guarantee removal of already-written Git
+objects, workflow artifacts, caches, or logs. An explicit security-reviewed
+destination and verified private visibility are prerequisites, not things to
+work around when runners are unavailable.
+
+Local `javac` smoke tests may verify the immutable policy code but **cannot**
+substitute for exact-tree ActorRuntime JUnit, Graal or native CI. Keep this PR
+draft until those tests run under an approved mechanism.
