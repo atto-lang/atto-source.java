@@ -36,7 +36,7 @@ final class ActorMiddlewareValueSignatureTest {
                     receive(ActorMail<int> mail): void { return; }
                 end
                 define class Clean as
-                    async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<int> {
+                    async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<void> {
                         return null;
                     }
                 end
