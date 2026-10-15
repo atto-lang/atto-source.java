@@ -330,6 +330,40 @@ final class QuestionPropagationLanguageTest {
     }
 
     @Test
+    void resumedExpressionFailureDoesNotReplayCatchFinallyOrDefer() throws Exception {
+        String program = """
+                async fnc fetch_present(): Option<int> {
+                  return Some(3);
+                }
+
+                async fnc guarded(): Option<int> {
+                  defer stdio.stdout.write("outer:");
+                  try {
+                    val int value = (await fetch_present())?;
+                    val Array<int> empty = new Array<int>();
+                    val int invalid = empty.get(0);
+                    return Some(value + invalid);
+                  } catch (error) {
+                    stdio.stdout.write("caught:");
+                    return None;
+                  } finally {
+                    stdio.stdout.write("finally:");
+                  }
+                }
+
+                pub fnc main(): void {
+                  val Option<int> result = await guarded();
+                  stdio.stdout.write(result.is_none());
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        // Ordinary failures after a resumed expression do not re-deliver the
+        // earlier value or run the enclosing completion handlers twice.
+        assertEquals("caught:finally:outer:true", run(program));
+    }
+
+    @Test
     void asyncQuestionOnlyAcceptsDirectBindingInitializer() {
         reject("""
                 async fnc invalid(Option<int> input): Option<int> {
