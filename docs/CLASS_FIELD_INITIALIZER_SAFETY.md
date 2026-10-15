@@ -36,6 +36,16 @@ visiting only a member receiver is not sufficient. The only admitted direct
 value-name leaves are the constructor's checked scalar parameters. An eager
 unary borrow (`&` or `&mut`) cannot create a loan across construction.
 
+Runtime `is type` and `matches` predicates need their own eager effect
+proof, independently of evaluating their operands. Only direct primitive
+runtime tag checks (`int`, `bool`, `float`, `string`/`String`)
+and non-structural wildcard, literal or direct primitive type patterns
+are admitted. Structural, tuple, constructor, complement, union and
+user-defined nominal pattern/type tests may inspect nested object
+members or recursively evaluate type structure. Until they have a
+bounded effect and failure-cleanup proof, they are rejected in eager
+class initializers, but remain available in ordinary code.
+
 A verified zero-argument scalar helper may still be called, but its callable
 name must resolve to that function in the runtime lexical environment. A
 constructor parameter shadowing the callable, a same-named module that
