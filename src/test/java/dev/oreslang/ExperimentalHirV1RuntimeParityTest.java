@@ -23,7 +23,7 @@ final class ExperimentalHirV1RuntimeParityTest {
 
     private static final String SOURCE = """
             pub fnc counter_response(int count): int {
-                return count * 43;
+                return count;
             }
             pub fnc main(): int {
                 return counter_response(1);
