@@ -59,12 +59,19 @@ def gh_api(route, method="GET", payload=None):
     return data
 
 
-def checked_repo(repository):
+def checked_repo(repository, expected_id=None):
     result = gh_api("repos/" + repository)
+    # The slug is mutable. A repository may be renamed, deleted and recreated
+    # under the same owner/repo name while a large private snapshot is being
+    # transferred. Bind every subsequent write to the immutable numeric ID
+    # from the pre-upload admission check, never the slug alone.
+    repo_id = result.get("id")
     if (not isinstance(result.get("full_name"), str)
             or result["full_name"].casefold() != repository.casefold()
             or result.get("visibility") != "private"
-            or result.get("private") is not True):
+            or result.get("private") is not True
+            or type(repo_id) is not int or repo_id <= 0
+            or (expected_id is not None and repo_id != expected_id)):
         raise Denied("destination identity or private visibility changed")
     return result
 
@@ -260,6 +267,7 @@ def publish(repository, source, branch, trusted_root):
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
     base = checked_repo(repository)
+    destination_id = base["id"]
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
         raise Denied("destination default branch is invalid")
@@ -270,7 +278,7 @@ def publish(repository, source, branch, trusted_root):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        checked_repo(repository)
+        checked_repo(repository, expected_id=destination_id)
 
     elements = []
     for rel, data, mode in files:
