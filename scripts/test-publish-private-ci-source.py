@@ -48,6 +48,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         pinned = patch.dict(pub.PINNED_DESTINATION_IDS, {"trusted/ci": 123456789})
         pinned.start()
         self.addCleanup(pinned.stop)
+        self.real_preflight = pub.require_preflight
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
@@ -844,7 +845,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             with patch.object(pub.subprocess, "run",
                               side_effect=AssertionError("checkout code executed")) as run:
-                pub.require_preflight("trusted/ci", self.root)
+                self.real_preflight("trusted/ci", self.root)
                 run.assert_not_called()
         self.assertEqual([(method, route) for method, route, _ in self.route_calls],
                          [("GET", "repos/trusted/ci")])
@@ -855,7 +856,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with patch.object(pub.subprocess, "run",
                               side_effect=AssertionError("checkout code executed")) as run:
                 with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
-                    pub.require_preflight("trusted/ci", self.root)
+                    self.real_preflight("trusted/ci", self.root)
                 run.assert_not_called()
         self.assertEqual(self.route_calls, [])
 
@@ -865,7 +866,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with patch.object(pub.subprocess, "run",
                               side_effect=AssertionError("checkout code executed")) as run:
                 with self.assertRaisesRegex(pub.Denied, "numeric identity"):
-                    pub.require_preflight("trusted/ci", self.root)
+                    self.real_preflight("trusted/ci", self.root)
                 run.assert_not_called()
 
     def test_denied_preflight_halts_before_api(self):
