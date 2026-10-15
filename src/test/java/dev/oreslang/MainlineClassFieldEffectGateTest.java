@@ -81,6 +81,44 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectPotentiallyThrowingEagerShiftDistances() {
+        // Evaluator.shiftDistance rejects negative and >63 shift counts.
+        // These expressions are both well-typed integers; checking only
+        // their operands as side-effect-free is not a constructor proof.
+        for (String initializer : java.util.List.of(
+                "1 << -1",
+                "1 << 64",
+                "64 >> -1",
+                "64 >>> 64",
+                "1 + (1 << -1)",
+                "1 << seed")) {
+            String source = """
+                    define class Unsafe as
+                      final int first: 42;
+                      final int second: %s;
+                      constructor(int seed) { return; }
+                    end
+                    """.formatted(initializer);
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.checkTypes(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains(
+                            "without a proven transitive effect bound"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test
+    void retainSafeIntegerArithmeticWithoutShiftOrDivision() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Safe as
+                  pub final int answer: (seed + 1) * 2 - 1;
+                  constructor(int seed) { return; }
+                end
+                """)));
+    }
+
+    @Test
     void rejectEagerModuleMemberResolutionWithoutEffectProof() {
         // A MemberExpr is not proved effect-free merely because its receiver
         // is a simple name; module export resolution may evaluate user code.
