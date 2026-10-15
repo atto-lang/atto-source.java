@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -1181,6 +1182,70 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             sum((len(data) if text is not None else 40) + len(rel.encode("utf-8")) + 128
                 for rel, data, _, text in batch) <= pub.TREE_BATCH_MAX_BYTES
             for batch in batches if len(batch) > 1))
+
+    def test_escaped_json_source_is_bounded_before_git_tree_upload(self):
+        # Raw UTF-8 length can underestimate serialized JSON request size
+        # by sixfold. Neither a single escaped file nor a batch may bypass
+        # the 256-KiB request-size cap.
+        examples = (
+            bytes([1]) * 100000,
+            bytes([92]) * 100000,
+            bytes([34]) * 100000,
+            ("é" * 50000).encode("utf-8"),
+            ("🚀" * 25000).encode("utf-8"),
+        )
+        for hostile in examples:
+            with self.subTest(prefix=hostile[:12]):
+                files = [
+                    (f"nested/file-{i:02d}.ores",
+                     hostile if i == 0 else b"simple", "100644")
+                    for i in range(16)
+                ]
+                batches = pub.prepare_source_tree_batches(files)
+                self.assertEqual(sum(map(len, batches)), len(files))
+                for batch in batches:
+                    elements = []
+                    for rel, data, mode, as_text in batch:
+                        item = {"path": rel, "mode": mode, "type": "blob"}
+                        if as_text is None:
+                            item["sha"] = hashlib.sha1(
+                                b"blob " + str(len(data)).encode("ascii")
+                                + bytes([0]) + data).hexdigest()
+                        else:
+                            item["content"] = as_text
+                        elements.append(item)
+                    json_size = len(json.dumps({"tree": elements}).encode("utf-8"))
+                    self.assertLessEqual(json_size, pub.TREE_BATCH_MAX_BYTES)
+                    self.assertLessEqual(len(batch), pub.TREE_BATCH_MAX_ENTRIES)
+        large_control = [(f"f-{i:02d}",
+                          bytes([1]) * 100000 if i == 0 else b"x", "100644")
+                         for i in range(16)]
+        batches = pub.prepare_source_tree_batches(large_control)
+        self.assertIsNone(batches[0][0][3], "escaped content needs a verified blob")
+
+    def test_escape_heavy_text_uses_blob_and_preserves_api_budget(self):
+        for i in range(15):
+            (self.source / f"tiny-{i:02d}.ores").write_text("safe")
+        (self.source / "control.ores").write_bytes(bytes([1]) * 100000)
+        files = pub.collect_source(self.source, self.root)
+        self.expected_tree = pub.source_tree_sha(files)
+        self.set_reviewed_snapshot()
+        batches = pub.prepare_source_tree_batches(files)
+        self.assertEqual(sum(len(batch) for batch in batches), len(files))
+        self.assertEqual(sum(text is None for batch in batches
+                             for _, _, _, text in batch), 1)
+        self.api_core_remaining = 183
+        with self.assertRaisesRegex(pub.Denied, "insufficient GitHub core API budget"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.route_calls.clear()
+        self.api_core_remaining = 184
+        sha, count = self.publish()
+        self.assertEqual((sha, count), (C, len(files)))
+        uploads = [payload for method, route, payload in self.route_calls
+                   if method == "POST" and route.endswith("/git/blobs")]
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(base64.b64decode(uploads[0]["content"]), bytes([1]) * 100000)
 
     def test_many_file_snapshot_batches_reauthorize_and_match_pinned_tree(self):
         for i in range(140):
