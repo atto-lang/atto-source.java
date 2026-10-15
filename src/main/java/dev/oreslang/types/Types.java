@@ -240,7 +240,13 @@ public final class Types {
                 Type actual = source.members().get(required.getKey());
                 if (actual == null) return false;
                 if (target.readOnly()) {
-                    if (!isAssignable(actual, required.getValue())) return false;
+                    // An unresolved source type is not a proof that callers
+                    // may read a concrete target type. Keep exact generic
+                    // identity, but fail closed on Unknown or generic holes
+                    // before allowing covariant structural field reads.
+                    if (!actual.equals(required.getValue())
+                            && (containsUncertainType(actual)
+                                    || !isAssignable(actual, required.getValue()))) return false;
                 } else if (!actual.equals(required.getValue())) {
                     return false;
                 }
