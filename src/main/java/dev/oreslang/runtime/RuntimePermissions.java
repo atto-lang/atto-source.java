@@ -202,6 +202,7 @@ public final class RuntimePermissions {
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
         if (rule == null) return false;
+        if (permission == Permission.NET && (resource == null || resource.isBlank())) return false;
 
         // A malformed network resource must never turn a deny rule into an
         // accidental grant. Invalid policy scopes are rejected by Builder.
@@ -343,8 +344,8 @@ public final class RuntimePermissions {
             } catch (NumberFormatException invalid) {
                 throw new IllegalArgumentException("invalid network port", invalid);
             }
-            if (port == 0 || port > 65535)
-                throw new IllegalArgumentException("network port must be 1..65535");
+            if (port > 65535)
+                throw new IllegalArgumentException("network port must be 0..65535");
         }
         return new NetworkEndpoint(host, port);
     }
