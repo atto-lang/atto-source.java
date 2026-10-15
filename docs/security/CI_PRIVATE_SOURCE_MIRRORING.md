@@ -4,6 +4,35 @@ Never transfer private Oreslang source into a public or internal GitHub
 repository, including temporary refs, dangling Git objects, Actions artifacts,
 cache entries, and logs.
 
+## October 15, 2026 — immutable destination identity hardening
+
+The approved repository's **numeric GitHub repository ID** is now captured
+immediately after the reviewed policy guard passes, *before source files are
+read*. The publisher rejects missing, Boolean, negative, zero, or noninteger
+IDs. It verifies that the same immutable ID, private visibility, and
+full `owner/repo` name still apply before the initial upload and before
+**every subsequent GitHub API write**.
+
+The GitHub ref-creation response must identify the exact newly created
+commit SHA. The publisher then performs a final visibility/identity check
+before reporting success. A name-only approval would otherwise allow a
+deleted/recreated private repository to inherit the approved slug during a
+long private-source upload.
+
+New offline mocked regressions exercise malformed IDs, replacement after
+approval, replacement during blob/tree upload, incorrect created-ref targets,
+and visibility or identity changes after ref creation. **These tests are
+committed but are not yet an executed CI pass on PR #917:** the source-org
+Actions runs continue to fail before running any job steps.
+
+**Residual limits:** these nontransactional API checks cannot prevent a
+visibility or identity change *between* a check and its following POST,
+nor remove already-uploaded private Git blobs. The checked-in repository
+allowlist must still be approved on protected `main` before any
+cross-organization private transfer. Source snapshots are bounded directories,
+not automatically verified exact-root Git trees; an independent full-source
+Git tree hash check is mandatory before using them as exact-tree CI evidence.
+
 ## Destination approval
 
 The policy file `.github/private-ci-approved-repositories.txt` is **empty by
