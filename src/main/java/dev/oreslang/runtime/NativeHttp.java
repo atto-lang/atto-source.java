@@ -364,6 +364,9 @@ public final class NativeHttp implements AutoCloseable {
             List<Handler.Worker> workers = List.copyOf(pooledWorkers);
             pooledWorkers.clear();
             for (Handler.Worker worker : workers) worker.served.remove(this);
+            // An already-failed or cancelled drain does not need fresh
+            // timers or I/O jobs. The references above are still retired.
+            if (drained.isDone()) return;
             if (workers.isEmpty()) {
                 drained.completeFromRuntime(null);
                 return;
@@ -413,22 +416,33 @@ public final class NativeHttp implements AutoCloseable {
             pending.clear();
         }
         @Override public void close() {
-            stopAccepting(); transport.stop(0);
-            synchronized (this) { transportStopped = true; }
-            for (State state : active) state.abort(503);
-            // A concurrent forced context teardown must not falsely complete
-            // a guest shutdown Future whose pooled carrier proof is pending.
-            if (drained != null && !drained.isDone()) {
-                drained.failFromRuntime(new IllegalStateException(
-                        "HTTP runtime closed before pooled actor quiescence"));
+            stopAccepting();
+            // Fail the pending guest shutdown promise before transportStopped
+            // or active.remove can let concurrent request cleanup settle it
+            // successfully. A forced context close is not an idle guarantee.
+            synchronized (this) {
+                if (drained != null && !drained.isDone()) {
+                    drained.failFromRuntime(new IllegalStateException(
+                            "HTTP runtime closed before pooled actor quiescence"));
+                }
             }
-            // Context teardown must not leave reusable workers retaining dead
-            // server instances, regardless of whether guest awaited shutdown.
-            for (Handler.Worker worker : List.copyOf(pooledWorkers)) {
-                worker.served.remove(this);
+            try {
+                transport.stop(0);
+            } finally {
+                synchronized (this) { transportStopped = true; }
+                try {
+                    for (State state : active) state.abort(503);
+                } finally {
+                    // The listener must release its bidirectional references
+                    // even when stop or an abort fails exceptionally.
+                    for (Handler.Worker worker : List.copyOf(pooledWorkers)) {
+                        worker.served.remove(this);
+                    }
+                    pooledWorkers.clear();
+                    servers.remove(this);
+                    completeDrain();
+                }
             }
-            pooledWorkers.clear();
-            servers.remove(this); completeDrain();
         }
     }
 
