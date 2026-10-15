@@ -616,7 +616,9 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.actorReplyRole(),
+                        klass.actorTransport());
             }
             return declaration;
         }
