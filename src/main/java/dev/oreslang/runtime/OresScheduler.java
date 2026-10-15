@@ -141,6 +141,7 @@ public final class OresScheduler implements AutoCloseable {
     private final AtomicLong watchdogOverruns = new AtomicLong();
     /** Diagnostics for opt-in native source retirement failures. */
     private final AtomicLong nativeRetirementFailures = new AtomicLong();
+    private final AtomicLong nativeQuiescenceFailures = new AtomicLong();
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -320,6 +321,11 @@ public final class OresScheduler implements AutoCloseable {
         return nativeRetirementFailures.get();
     }
 
+    /** A trusted quiescence callback failed after native retirement. */
+    long nativeQuiescenceFailures() {
+        return nativeQuiescenceFailures.get();
+    }
+
     /**
      * VM-only retry after an external native cleanup-ticket barrier closes.
      * Terminal tasks retain their native identities on failed retirement;
@@ -335,10 +341,22 @@ public final class OresScheduler implements AutoCloseable {
         int retired = 0;
         RuntimeException failure = null;
         for (TaskRunner<?> task : Set.copyOf(tasks)) {
-            if (task.phase.get() != TaskRunner.TERMINAL
-                    || task.executing.get() || task.nativeRetirementConfirmed.get()) {
+            if (task.phase.get() != TaskRunner.TERMINAL || task.executing.get()) {
                 continue;
             }
+            Throwable callbackError = task.nativeQuiescenceCallbackFailure.get();
+            if (callbackError != null) {
+                // Native retirement succeeded, but the one-shot trusted
+                // onQuiescent hook failed. Re-running an arbitrary cleanup
+                // callback could double-release actor-owned resources.
+                var blocked = new IllegalStateException(
+                        "trusted native quiescence callback failed; manual recovery required",
+                        callbackError);
+                if (failure == null) failure = blocked;
+                else failure.addSuppressed(blocked);
+                continue;
+            }
+            if (task.nativeRetirementConfirmed.get()) continue;
             try {
                 task.retireWhenQuiescent();
                 task.publishTerminalIfReady();
@@ -682,6 +700,8 @@ public final class OresScheduler implements AutoCloseable {
         private final AtomicBoolean nativeRetirementConfirmed = new AtomicBoolean();
         /** Includes the trusted onQuiescent callback, not just C retirement. */
         private final AtomicBoolean nativeQuiescenceCallbackFinished = new AtomicBoolean();
+        private final AtomicReference<Throwable> nativeQuiescenceCallbackFailure =
+                new AtomicReference<>();
         private final AtomicBoolean quiescenceNotified = new AtomicBoolean();
         private final java.util.Map<String, dev.oreslang.interop.MixedInteropBridge.Invoker>
                 interopScope = dev.oreslang.interop.MixedInteropBridge.capture();
@@ -1136,6 +1156,12 @@ public final class OresScheduler implements AutoCloseable {
                 cancelWallDeadline();
                 try {
                     onQuiescent.run();
+                } catch (RuntimeException | Error callbackFailure) {
+                    if (nativeSource != null) {
+                        nativeQuiescenceCallbackFailure.compareAndSet(null, callbackFailure);
+                        nativeQuiescenceFailures.incrementAndGet();
+                    }
+                    throw callbackFailure;
                 } finally {
                     deadlineQuiescenceRetired.set(true);
                     releaseDeadlineSlotIfRetired();
