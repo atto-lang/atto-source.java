@@ -100,6 +100,51 @@ final class ActorGroupPlacementPolicyTest {
     }
 
     @Test
+    void placementCombinationMatrixNeverAdmitsAnUnenforcedPromise() {
+        int accepted = 0;
+        int rejected = 0;
+        for (var affinity : ActorGroupPlacementPolicy.CpuAffinity.values()) {
+            for (var accelerator : ActorGroupPlacementPolicy.Accelerator.values()) {
+                for (int parallelism : new int[] { 1, 4, Integer.MAX_VALUE }) {
+                    for (String device : new String[] { null, "gpu0", "../../invalid" }) {
+                        for (int inFlight : new int[] { 0, 1, Integer.MAX_VALUE }) {
+                            boolean validDevice = device == null || device.equals("gpu0");
+                            boolean validFields = validDevice && (
+                                    accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY
+                                            ? device == null && inFlight == 0
+                                            : device != null && inFlight > 0);
+                            if (!validFields) {
+                                assertThrows(IllegalArgumentException.class,
+                                        () -> new ActorGroupPlacementPolicy(
+                                                affinity, parallelism, accelerator, device, inFlight));
+                                rejected++;
+                                continue;
+                            }
+                            var policy = new ActorGroupPlacementPolicy(
+                                    affinity, parallelism, accelerator, device, inFlight);
+                            boolean unrestricted =
+                                    affinity == ActorGroupPlacementPolicy.CpuAffinity.ANY
+                                    && accelerator == ActorGroupPlacementPolicy.Accelerator.CPU_ONLY
+                                    && parallelism == Integer.MAX_VALUE;
+                            if (unrestricted) {
+                                assertDoesNotThrow(policy::requireSupported);
+                                accepted++;
+                            } else {
+                                assertThrows(UnsupportedOperationException.class,
+                                        policy::requireSupported);
+                                rejected++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(1, accepted,
+                "the sole admitted configuration is the legacy unrestricted policy");
+        assertEquals(242, rejected, "all other combinations must reject");
+    }
+
+    @Test
     void concurrentUnsupportedAdmissionsCannotConsumeAnyGroupSlots() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var forbidden = new ActorGroupPlacementPolicy(
