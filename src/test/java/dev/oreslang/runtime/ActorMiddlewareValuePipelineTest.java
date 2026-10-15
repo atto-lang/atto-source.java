@@ -67,6 +67,25 @@ final class ActorMiddlewareValuePipelineTest {
     }
 
     @Test
+    void requestContinuedWithResponseDraftPreservesStatusAndHeadersAtTerminal() {
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("status"), S,
+                        (input, draft) -> CompletableFuture.completedFuture(
+                                new ActorMiddlewareValuePipeline.Continue<>(
+                                        input, draft.withStatus(201)
+                                                .withHeader("Content-Type", "application/json"))),
+                        false)),
+                List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("pass"), A,
+                        (input, draft, next) -> next.proceed(input, draft), false)),
+                Set.of(), input -> CompletableFuture.completedFuture(42));
+        var result = (ActorMiddlewareValuePipeline.Reply<Integer>)
+                pipeline.invoke(req("x"), () -> false).toCompletableFuture().join();
+        assertEquals(42, result.value());
+        assertEquals(201, result.response().status());
+        assertEquals("application/json", result.response().headers().get("content-type"));
+    }
+
+    @Test
     void nextValContinueEnrichesAndReturnsTypedInt() {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("trim"), S,
