@@ -3529,6 +3529,14 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expected instanceof Borrow && expr instanceof Ast.RuntimeCallExpr runtime
+                && runtime.operation().equals("unref")) {
+            // An unwrap is a consuming move, never a temporary borrow.
+            // Diagnose this during type admission before generic argument
+            // assignment can hide the underlying ownership error.
+            throw new IllegalArgumentException(
+                    "cannot borrow consuming rt unref; bind its owned pointee first, then use rt borrow");
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
