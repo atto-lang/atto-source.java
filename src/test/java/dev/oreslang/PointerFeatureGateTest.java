@@ -40,6 +40,21 @@ final class PointerFeatureGateTest {
     }
 
     @Test
+    void reservedPointerCannotBeReintroducedByAliasesInterfacesOrModules() {
+        for (String source : new String[] {
+                "type Pointer = int;",
+                "define interface Pointer {}",
+                "define module Pointer as end"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(failure.getMessage().contains("reserved compiler-owned type"),
+                    failure::getMessage);
+        }
+    }
+
+    @Test
     void nominalPointerSignatureCannotBypassAdmissionGate() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
