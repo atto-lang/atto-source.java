@@ -21,9 +21,26 @@ final class CheckedI64SourceHeaderTest {
     void exactDirectiveAndUnmarkedCommentsRetainTheirMeaning() {
         assertTrue(CheckedI64SourceHeader.isEnabled(DIRECTIVE + MAIN));
         assertFalse(CheckedI64SourceHeader.isEnabled(MAIN));
-        assertFalse(CheckedI64SourceHeader.isEnabled(
-                "pub fnc main(): int { return 43; } // oreslang:checked-i64-v1\n"));
+        // A genuine inline line-comment directive after tokens is displaced.
+        rejected("pub fnc main(): int { return 43; } // oreslang:checked-i64-v1\n");
         assertFalse(CheckedI64SourceHeader.isEnabled("// unrelated\n" + MAIN));
+    }
+
+    @Test
+    void markerLookalikesInsideBlockCommentsMustNotOptInOrBeRejected() {
+        assertFalse(CheckedI64SourceHeader.isEnabled(
+                "/*\n// oreslang:checked-i64-v1\n*/\n" + MAIN));
+        assertFalse(CheckedI64SourceHeader.isEnabled(
+                "/* outer /* nested\n// oreslang:checked-i64-v2\n"
+                + "*/ still outer */\n" + MAIN));
+        assertFalse(CheckedI64SourceHeader.isEnabled(
+                MAIN + "/*\n  // oreslang:checked-i64-v1\n*/\n"));
+        assertTrue(CheckedI64SourceHeader.isEnabled(
+                DIRECTIVE + "/*\n// oreslang:checked-i64-v1\n*/\n" + MAIN));
+        assertFalse(CheckedI64SourceHeader.isEnabled(
+                "\"// oreslang:checked-i64-v1\"\n" + MAIN));
+        rejected("/* harmless */ // oreslang:checked-i64-v1\n");
+        rejected("/* harmless */\n// oreslang:checked-i64-v1\n");
     }
 
     @Test
