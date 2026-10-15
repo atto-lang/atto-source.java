@@ -932,7 +932,7 @@ public final class OresEvalRootNode extends RootNode {
                 // exception. Carry it through lexical defer/finally exactly
                 // like an explicit return, including after await/resumption.
                 // try/catch must never observe it as a recoverable failure.
-                if (failure instanceof ReturnSignal returned) {
+                if (failure instanceof ReturnSignal returned && returned.questionPropagation) {
                     return returning(returned.value);
                 }
                 return new SourceFlow(
@@ -3239,14 +3239,14 @@ public final class OresEvalRootNode extends RootNode {
                                     if (value instanceof OptionValue option) {
                                         if (!option.present()) {
                                             continuation.accept(t, null,
-                                                    new ReturnSignal(option));
+                                                    ReturnSignal.fromQuestion(option));
                                         } else {
                                             continuation.accept(t, option.value(), null);
                                         }
                                     } else if (value instanceof ResultValue result) {
                                         if (!result.ok()) {
                                             continuation.accept(t, null,
-                                                    new ReturnSignal(result));
+                                                    ReturnSignal.fromQuestion(result));
                                         } else {
                                             continuation.accept(t, result.value(), null);
                                         }
@@ -6290,11 +6290,11 @@ public final class OresEvalRootNode extends RootNode {
                     // Typed source checker restricts this v0 path to synchronous
                     // Result/Option frames. This is return control, not throw.
                     if (value instanceof OptionValue option) {
-                        if (!option.present()) throw new ReturnSignal(option);
+                        if (!option.present()) throw ReturnSignal.fromQuestion(option);
                         return option.value();
                     }
                     if (value instanceof ResultValue result) {
-                        if (!result.ok()) throw new ReturnSignal(result);
+                        if (!result.ok()) throw ReturnSignal.fromQuestion(result);
                         return result.value();
                     }
                     throw new IllegalStateException("postfix ? requires a checked Option/Result value");
@@ -9232,7 +9232,21 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class ReturnSignal extends RuntimeException {
         private final Object value;
-        private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
+        private final boolean questionPropagation;
+
+        private ReturnSignal(Object value) {
+            this(value, false);
+        }
+
+        private ReturnSignal(Object value, boolean questionPropagation) {
+            super(null, null, false, false);
+            this.value = value;
+            this.questionPropagation = questionPropagation;
+        }
+
+        private static ReturnSignal fromQuestion(Object failureValue) {
+            return new ReturnSignal(failureValue, true);
+        }
     }
 
     private static final class BreakSignal extends RuntimeException {
