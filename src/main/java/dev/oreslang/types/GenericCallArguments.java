@@ -2,7 +2,9 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -66,10 +68,28 @@ final class GenericCallArguments {
             if (value.name().equals("_") && value.arguments().isEmpty() && !value.inferArguments()) {
                 inferenceHoles.add(name);
             } else {
+                // Only a *whole* generic argument may be an inference hole.
+                // Nested '_' or synthetic '$infer$' markers must never reach
+                // the type checker as apparently concrete nominal types.
+                requireConcreteExplicitType(value, label);
                 types.put(name, value);
             }
         }
         return new Bound(types, inferenceHoles);
+    }
+
+    private static void requireConcreteExplicitType(Ast.TypeRef value, String label) {
+        Deque<Ast.TypeRef> pending = new ArrayDeque<>();
+        pending.add(value);
+        while (!pending.isEmpty()) {
+            Ast.TypeRef next = pending.removeLast();
+            if (next.name().equals("_") || next.name().equals("$infer$")) {
+                throw new IllegalArgumentException(label
+                        + " contains a nested inference hole; only a bare '_' call type argument "
+                        + "may request inference");
+            }
+            pending.addAll(next.arguments());
+        }
     }
 
     static List<String> canonicalStructuralNames(int arity) {
