@@ -16,6 +16,66 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @org.junit.jupiter.api.RepeatedTest(32)
+    @org.junit.jupiter.api.Timeout(10)
+    void abortDuringBlockedDispatchCannotReleaseAdmissionBeforeHandoff()
+            throws Exception {
+        // Drive the production State.release() admission predicate across a
+        // deterministic two-thread ordering: one thread owns dispatch, while
+        // another observes the transport abort. This tests the predicate's
+        // cross-thread contract; GraalVM guest execution is covered separately.
+        Object ownershipMonitor = new Object();
+        var dispatching = new java.util.concurrent.atomic.AtomicBoolean();
+        var transportClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        var selected = new CountDownLatch(1);
+        var finishHandoff = new CountDownLatch(1);
+        var releaseCount = new java.util.concurrent.atomic.AtomicInteger();
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> handoff = executor.submit(() -> {
+                synchronized (ownershipMonitor) {
+                    dispatching.set(true);
+                    selected.countDown();
+                }
+                try {
+                    if (!finishHandoff.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("dispatch handoff not released");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                } finally {
+                    synchronized (ownershipMonitor) {
+                        dispatching.set(false);
+                    }
+                }
+            });
+            try {
+                assertTrue(selected.await(5, TimeUnit.SECONDS));
+                synchronized (ownershipMonitor) {
+                    transportClosed.set(true); // request deadline/abort wins
+                    if (NativeHttp.canRetireRequest(
+                            transportClosed.get(), dispatching.get(), false)) {
+                        releaseCount.incrementAndGet();
+                    }
+                }
+                assertEquals(0, releaseCount.get(),
+                        "transport abort must not retire an in-flight actor dispatch");
+            } finally {
+                finishHandoff.countDown();
+            }
+            handoff.get(5, TimeUnit.SECONDS);
+            synchronized (ownershipMonitor) {
+                if (NativeHttp.canRetireRequest(
+                        transportClosed.get(), dispatching.get(), false)) {
+                    releaseCount.incrementAndGet();
+                }
+            }
+            assertEquals(1, releaseCount.get(),
+                    "completed dispatch must reclaim admission exactly once");
+        }
+    }
+
     @Test void dispatchLeasePreventsPrematureRequestRetirement() {
         // Exercise the same predicate used by State.release(), including
         // an abort that closes the socket while actor initialization or a
