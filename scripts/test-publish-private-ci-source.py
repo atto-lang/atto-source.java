@@ -370,6 +370,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" and route == "repos/trusted/ci/git/refs"
                              for method, route, _ in self.route_calls))
 
+    def test_malformed_rate_limit_response_is_sanitized(self):
+        for response in (None, [], {}, {"resources": []},
+                         {"resources": {"core": {"remaining": True}}}):
+            with self.subTest(response=response):
+                with patch.object(pub, "gh_api", return_value=response) as api:
+                    with self.assertRaisesRegex(pub.Denied, "API budget"):
+                        pub.require_private_ci_api_budget(1)
+                    api.assert_called_once_with("rate_limit")
+
     def test_core_api_budget_denies_before_creating_git_objects(self):
         for remaining in (0, 100, 143, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
