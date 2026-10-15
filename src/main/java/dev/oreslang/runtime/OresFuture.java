@@ -416,7 +416,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      *
      * <p>Callbacks registered here must be scheduler plumbing only: transition a
      * dependent Future, enqueue a continuation, or release runtime accounting.
-     * They must never execute Oreslang guest code directly.</p>
+     * They must never execute Oreslang guest code directly. A terminal
+     * Future may notify a newly registered runtime waiter on this very call
+     * stack (including an actor or producer thread). Therefore, this hook
+     * must remain strictly host-only: source continuations must be queued
+     * through an owning scheduler/actor mailbox, never invoked here.</p>
      */
     void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
         whenCompleteRuntimeCancellable(callback);
