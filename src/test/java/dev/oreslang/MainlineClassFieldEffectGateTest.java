@@ -212,6 +212,34 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void rejectImportedArrayAliasInEagerBuiltinConstructionShortcut() {
+        // The zero-argument Array exception is only for the built-in,
+        // not a symbol imported from another compilation unit. Do not
+        // assume its source-side constructor effects are known.
+        String source = """
+                import class Array from './collections';
+                define class Unsafe as
+                  final Array<int> first: [1];
+                  final Array<int> second: new Array<int>();
+                end
+                """;
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.checkTypes(Parser.parse(source)));
+        assertTrue(failure.getMessage().contains("without a proven transitive effect bound"),
+                failure.getMessage());
+    }
+
+    @Test
+    void retainUnshadowedBuiltinArrayConstruction() {
+        String source = """
+                define class Safe as
+                  pub final Array<int> values: new Array<int>();
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
