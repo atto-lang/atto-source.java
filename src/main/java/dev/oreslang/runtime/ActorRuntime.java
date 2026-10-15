@@ -1846,8 +1846,16 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || closed.get() || cell.forceRevoked) return false;
-        if (cell.stopped.get() && !cell.retainableCleanupContinuation(continuation))
-            return false;
+        synchronized (cell.lifecycleLock) {
+            // STOP sets stopped=true and then raises the cancellation
+            // injection fence under this same monitor. A lock-free read
+            // could observe stopped without seeing the new fence and reject
+            // an otherwise retainable source cleanup continuation.
+            if (cell.stopped.get()
+                    && !cell.retainableCleanupContinuation(continuation)) {
+                return false;
+            }
+        }
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
                     "actor internal continuation queue overflow for " + actorId));
@@ -6211,7 +6219,7 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean sourceHandoffRequested;
         private OresScheduler sourceScheduler;
         /** Prevent a queued continuation being dropped before STOP injects cancellation. */
-        private boolean sourceCancellationPending;
+        private volatile boolean sourceCancellationPending;
         /** self.end()/self.endWithCleanup(...) lifecycle state; guarded by lifecycleLock. */
         private boolean endRequested;
         private Runnable finalCleanup;
