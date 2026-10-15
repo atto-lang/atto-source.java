@@ -44,6 +44,19 @@ Use parentheses around adjacent `?` before infix operators:
 - General type inference, real tagged enums, Stream/Observable error
   frames, and LLVM lowering remain separate milestones.
 
+## SourceTask block-cleanup ownership
+
+The resumable statement walker now reports a `SourceFlow` to its
+enclosing `runBlock`. Only `runBlock` performs lexical defer execution
+and mutex-guard release for that block. This avoids double cleanup on
+normal completion, direct return, `?` early return, break/continue, and
+exceptional completion.
+
+Nested `try/finally` and `defer` tests exercise both `None` and
+`Some` after `await`; exact-once resource cleanup and cancellation
+must still be verified on hosted JDK 25 runs. No passing test claim is
+made for this branch.
+
 ## Review blocker
 
 For **synchronous** callables, the checker rejects `?` when the callable
