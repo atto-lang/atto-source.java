@@ -125,6 +125,34 @@ public final class ControlWakeRetryStandaloneStress {
                 "cross-carrier cancellation leaked or failed");
     }
 
+    private static void verifyFatalDeferredCleanup() {
+        // A fatal VM error must not leave another supervisor wake pinned in
+        // a pooled carrier's trampoline, or block the next legitimate wake.
+        for (int round = 0; round < 100; ++round) {
+            ControlWakeRetryQueue queue = new ControlWakeRetryQueue(3);
+            AtomicInteger invoked = new AtomicInteger();
+            long epoch = queue.epoch();
+            require(queue.register(() -> {
+                queue.slotReleased();
+                throw new InternalError("synthetic fatal host callback");
+            }, epoch), "fatal test outer registration");
+            require(queue.register(invoked::incrementAndGet, epoch),
+                    "fatal test deferred registration");
+            boolean fatal = false;
+            try { queue.slotReleased(); }
+            catch (InternalError expected) { fatal = true; }
+            require(fatal, "fatal VM error was swallowed");
+            require(invoked.get() == 0 && queue.pending() == 0
+                    && queue.callbacksFailed() == 0,
+                    "fatal VM effect replayed deferred wake or left retry state");
+            require(queue.register(invoked::incrementAndGet, queue.epoch()),
+                    "registration after fatal callback rejected");
+            queue.slotReleased();
+            require(invoked.get() == 1,
+                    "fatal callback poisoned subsequent carrier admission");
+        }
+    }
+
     private static void verifyDeepReentrantWakes() {
         final int chained = 20_000;
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(chained);
@@ -274,6 +302,7 @@ public final class ControlWakeRetryStandaloneStress {
         verifyLifecycleAndEpoch();
         verifyCrossCarrierDeferredCancellation();
         verifyDeepReentrantWakes();
+        verifyFatalDeferredCleanup();
         verifyOtherThreadDeferredCancellation();
         int delivered = verifyConcurrentRegistrations();
         System.out.println("PASS: 100,000 concurrent registrations, " + delivered
