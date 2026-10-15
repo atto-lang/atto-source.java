@@ -31,6 +31,11 @@ values, and malformed pinned ID inputs (including Python booleans). Valid
 metadata must affirmatively report `archived=false` and `disabled=false`
 for both the source and destination.
 
+Both read credentials are validated before any repository metadata fetch.
+Bearer headers accept only bounded ASCII token68 syntax; whitespace, control
+characters, injected CR/LF, and malformed or oversized credentials fail closed,
+with no token value reflected in diagnostic errors.
+
 **Integration limitation:** `scripts/ci_private_mirror_preflight.py` is a
 standalone verifier; its presence alone does not prove the actual snapshot
 publisher invokes it. Until issue #962's independently reviewed publisher
