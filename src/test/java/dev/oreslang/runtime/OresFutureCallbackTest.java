@@ -58,14 +58,20 @@ final class OresFutureCallbackTest {
                 var notified = new java.util.concurrent.atomic.AtomicInteger();
                 var seenSuccess = new java.util.concurrent.atomic.AtomicInteger();
                 var seenFailure = new java.util.concurrent.atomic.AtomicInteger();
+                var callbackFailure = new AtomicReference<Throwable>();
                 source.whenCompleteRuntime((value, failure) -> {
-                    notified.incrementAndGet();
-                    if (failure == null) {
-                        assertEquals(42, value);
-                        seenSuccess.incrementAndGet();
-                    } else {
-                        assertNull(value);
-                        seenFailure.incrementAndGet();
+                    try {
+                        if (failure == null) {
+                            assertEquals(42, value);
+                            seenSuccess.incrementAndGet();
+                        } else {
+                            assertNull(value);
+                            seenFailure.incrementAndGet();
+                        }
+                    } catch (Throwable problem) {
+                        callbackFailure.compareAndSet(null, problem);
+                    } finally {
+                        notified.incrementAndGet();
                     }
                 });
                 var ready = new java.util.concurrent.CountDownLatch(3);
@@ -95,6 +101,8 @@ final class OresFutureCallbackTest {
                 }
                 assertEquals(1, winners, "terminal CAS winner, round " + round);
                 assertEquals(1, notified.get(), "runtime waiter was invoked twice");
+                assertNull(callbackFailure.get(),
+                        () -> String.valueOf(callbackFailure.get()));
                 assertEquals(1, seenSuccess.get() + seenFailure.get());
                 assertTrue(source.isDone());
                 assertEquals(0, source.pendingRuntimeWaiterCount(),
@@ -126,9 +134,11 @@ final class OresFutureCallbackTest {
             }
         });
         var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        var observedFailure = new AtomicReference<Throwable>();
+        var observedValue = new AtomicReference<Object>();
         source.whenCompleteRuntime((value, failure) -> {
-            assertNull(value);
-            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            observedValue.set(value);
+            observedFailure.set(failure);
             notifications.incrementAndGet();
         });
         var workerFailure = new AtomicReference<Throwable>();
@@ -154,6 +164,9 @@ final class OresFutureCallbackTest {
         assertFalse(canceller.isAlive());
         assertNull(workerFailure.get(), () -> String.valueOf(workerFailure.get()));
         assertEquals(2, notifications.get());
+        assertNull(observedValue.get());
+        assertInstanceOf(java.util.concurrent.CancellationException.class,
+                observedFailure.get());
         assertEquals(0, source.pendingRuntimeWaiterCount());
     }
 
