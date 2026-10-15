@@ -245,6 +245,8 @@ final class NativeActorTurnKernel implements AutoCloseable {
 
     /** A native capability/barrier failure, not arbitrary guest Java failure. */
     static final class NativeStatusFailure extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
         NativeStatusFailure(int status) {
             super("native actor-turn status=" + status);
         }
