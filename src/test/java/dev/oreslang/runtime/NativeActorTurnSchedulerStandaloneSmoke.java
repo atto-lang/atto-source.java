@@ -266,6 +266,76 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
         }
     }
 
+    /**
+     * Full JNI/scheduler barrier path with test-host *simulated* terminal
+     * injection. Not a compiled guest cancellation-unwind demonstration.
+     * The Future must remain unpublished while the cleanup ticket OR its
+     * physical lease remains open, even after STOP rejects user resumption.
+     */
+    private static void stopCleanupTerminalReleaseOrdersNativeDone() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64);
+                OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                        1, Runnable::run, kernel)) {
+            var gate = new OresFuture<Integer>();
+            var source = new AtomicReference<NativeActorTurnKernel.SourceTask>();
+            var started = new CountDownLatch(1);
+            var steps = new AtomicInteger();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                steps.incrementAndGet();
+                source.set(sourceInCurrentTurn());
+                started.countDown();
+                return OresScheduler.<Integer>await(gate);
+            });
+            require(started.await(5, TimeUnit.SECONDS), "guest never entered");
+            awaitPhysicalSuspension(scheduler, 1);
+            var ticket = kernel.issueCleanup(source.get());
+            kernel.stop();
+            gate.completeFromRuntime(1);
+            waitFor(deadline(), () -> scheduler.nativeRetirementFailures() > 0);
+            require(!result.isDone(), "STOP published DONE with pending cleanup ticket");
+
+            var cleanup = kernel.claimCleanup(ticket);
+            try {
+                try {
+                    kernel.checkCleanupEffects(cleanup);
+                    throw new AssertionError("pre-injection cleanup acquired effects");
+                } catch (IllegalStateException expected) {
+                    // The host has not yet simulated the actual terminal injection.
+                }
+                kernel.terminalInjected(cleanup);
+                kernel.checkCleanupEffects(cleanup);
+                kernel.completeCleanup(cleanup);
+                try {
+                    kernel.checkCleanupEffects(cleanup);
+                    throw new AssertionError("completed cleanup kept effect authority");
+                } catch (IllegalStateException expected) {
+                    // Completion revokes cleanup effects on the same carrier.
+                }
+                try {
+                    scheduler.retryNativeQuiescentTasks();
+                    throw new AssertionError("active cleanup lease allowed DONE");
+                } catch (NativeActorTurnKernel.NativeStatusFailure expected) {
+                    require(!result.isDone(),
+                            "native terminal publication outran physical cleanup release");
+                }
+            } finally {
+                kernel.releaseCleanup(cleanup);
+            }
+            require(scheduler.retryNativeQuiescentTasks() == 1,
+                    "released cleanup lease did not permit native source retirement");
+            try {
+                result.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("STOP returned a successful user continuation");
+            } catch (ExecutionException expected) {
+                require(expected.getCause() instanceof IllegalStateException,
+                        "STOP terminal outcome did not report failed user continuation");
+            }
+            require(steps.get() == 1, "STOP resumed user code during cleanup");
+            require(scheduler.retryNativeQuiescentTasks() == 0,
+                    "completed cleanup still had native source lifetime");
+        }
+    }
+
     private static void closeInsideQuiescenceDoesNotClaimDone() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
@@ -326,6 +396,7 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
                 concurrentNativeSchedulerClaimsHaveOneWinner();
                 stopDeniesUserResumption();
                 pendingCleanupBlocksNativeDoneUntilTicketClosed();
+                stopCleanupTerminalReleaseOrdersNativeDone();
                 closeInsideQuiescenceDoesNotClaimDone();
             } catch (Exception | Error failure) {
                 throw new AssertionError(
@@ -335,6 +406,6 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
             }
         }
         System.out.println("NATIVE_ACTOR_TURN_REAL_SCHEDULER_JNI_OK iterations="
-                + iterations + " scenarios=" + (6 * iterations));
+                + iterations + " scenarios=" + (7 * iterations));
     }
 }
