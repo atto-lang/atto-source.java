@@ -71,7 +71,18 @@ The explorer enumerates every reachable transition of a finite abstract
 protocol, including concurrent readers, exclusive writers, suspension,
 release, STOP, restart, incarnation fences, and an append-only write receipt.
 It checks read/write exclusion, owner/epoch authenticity and that all
-modelled writes create a matching authorized write receipt.
+modelled writes create a matching authorized write receipt. The separate
+`authenticated_write_transition(before, after, owners)` check compares
+every reachable edge: mutations must be atomic, must extend the receipt
+ledger, and must originate while the owning turn holds the live exclusive
+write loan. A *coherent forged receipt* may pass the snapshot invariant,
+but fails this causal edge check when no write loan was admitted.
+
+This is an abstract transition-refinement obligation, not a cryptographic
+or runtime credential. A malicious native writer able to imitate an authorized
+transition cannot be distinguished by this abstract state alone. The JVM and
+LLVM implementations must enforce unforgeable gate acquisition and guarantee
+that no other store path exists.
 
 Observed locally:
 
