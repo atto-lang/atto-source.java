@@ -316,6 +316,11 @@ public final class NativeHttp implements AutoCloseable {
             supervisor();
             if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
             if (drained != null) return drained;
+            // Server.close() may have already completed forced teardown
+            // without a guest shutdown Future. Never resurrect shutdown
+            // work or claim a successful drain for that closed listener.
+            if (stopped) return OresFuture.failed(
+                    new IllegalStateException("HTTP listener already closed"));
             drained = new OresFuture<>(() -> false, () -> { });
             stopAccepting();
             try {
