@@ -46,6 +46,31 @@ declarations. This method does not itself authenticate the provider.
    dependency graph and fingerprints, then issues immutable, privately
    constructed `VerifiedScc` and `VerifiedGraph` results.
 
+## Audit hardening (October 14, 2026)
+
+`SccVerificationInputs.snapshot` now captures exact source-unit identities,
+compiler environment headers, and recursively copies the caller-supplied
+per-unit import-resolution **maps** before any staged linker or checker runs.
+Unknown/unused import selectors, noncanonical provider aliases, unknown target
+units, missing/extra compilation environments, empty graphs and excessive
+import counts fail before semantic admission. This prevents mutable caller
+map references from changing what the linker checks versus what is fingerprinted.
+
+The AST values themselves are **not deeply cloned**: `Ast.Program` and
+declaration list fields are immutable records/copies, but arbitrary
+caller-constructed literal payload objects may still be mutable. The verifier
+expects trusted, non-mutating compiler-created ASTs, and this mechanism must
+not authorize persistent object-code reuse from untrusted AST inputs.
+
+`LinkedFunctionContract.requireStableSignature` now checks both the
+originally imported declaration and the final verified provider against
+the **same strict effect-free primitive policy** and compares names,
+visibility, parameters, return types, effect flags, generics and annotations.
+A provider must not gain an annotation or effect during expansion while
+importers retain an older proof. Changes to an implementation body alone
+are intentionally ignored at the interface layer; they must invalidate
+implementation-sensitive optimized-code caches separately.
+
 `verifySingleScc` rejects a graph with more than one component. A token
 holds the complete verified source set and interface fingerprint. It is
 not serialized and there is no decoder that can manufacture a token.
@@ -78,7 +103,11 @@ Exact-source independent JDK 21 tests cover the primitive imported
 function contract, public interface binary codec, actual import graph,
 two-phase linker, SCC invalidation and randomized cyclic graphs.
 Those tests DO NOT compile the entire TypeChecker/OwnershipChecker
-integration or prove executable correctness.
+integration or prove executable correctness. The new independently compiled
+snapshot and provider-stability tests cover mutable source/override maps,
+noncanonical bindings, import budgets, changing parameters, renamed symbols,
+new annotations/effects and body-only stable ABI. Repository JUnit
+counterparts are committed but remain unverified by the full Maven suite.
 
 The full Maven/GraalVM suite, then an end-to-end compiled Oreslang program
 which calls imported functions, is the required next verification gate.
