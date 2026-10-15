@@ -206,7 +206,7 @@ def require_protected_main_policy(approved_policy):
             or branch.get("protected") is not True
             or not isinstance(branch.get("commit"), dict)):
         raise Denied("source main branch is not protected")
-    valid_sha(branch["commit"].get("sha"))
+    protected_main_sha = valid_sha(branch["commit"].get("sha"))
     reviews = gh_api(PROTECTED_REVIEWS_ROUTE)
     count = reviews.get("required_approving_review_count")
     if (type(count) is not int or count < 1
@@ -223,6 +223,48 @@ def require_protected_main_policy(approved_policy):
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):
         raise Denied("destination policy is not approved on protected source main")
+    return protected_main_sha
+
+def require_trusted_publisher_checkout(root, reviewed_main_sha):
+    """Enforce execution from the independently authenticated source main commit.
+
+    A developer's PR checkout cannot self-authorize its publisher or policy.
+    The untrusted test snapshot must be staged separately under this trusted
+    checkout and its complete bytes checked against the reviewed Git tree.
+    """
+    valid_sha(reviewed_main_sha)
+    base = Path(root).resolve(strict=True)
+    def git(*args):
+        try:
+            response = subprocess.run(["git", "-C", str(base), *args],
+                                      capture_output=True, text=True,
+                                      timeout=12, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise Denied("trusted source checkout Git proof unavailable") from exc
+        if response.returncode != 0:
+            raise Denied("trusted source checkout Git proof failed")
+        return response.stdout.strip()
+    if git("rev-parse", "--show-toplevel") != str(base):
+        raise Denied("publisher is not running from trusted source repository root")
+    if git("rev-parse", "HEAD") != reviewed_main_sha:
+        raise Denied("publisher is not executing reviewed protected-main commit")
+    protected_paths = (
+        "scripts/publish-private-ci-source.py",
+        "scripts/run-in-private-ci-destination.sh",
+        "scripts/check-private-ci-destination.sh",
+        ".github/private-ci-approved-repositories.txt",
+        ".github/private-ci-approved-source-snapshots.txt",
+    )
+    for rel in protected_paths:
+        # A tracked, unmodified file is required. Untracked replacement and
+        # staged/unstaged edits both fail before opening any private source.
+        tracked = git("ls-files", "--error-unmatch", "--", rel)
+        if tracked != rel:
+            raise Denied("reviewed publisher code or policy is not Git-tracked")
+    if git("status", "--porcelain", "--untracked-files=no", "--", *protected_paths):
+        raise Denied("reviewed publisher code or source policy was modified")
+    return reviewed_main_sha
+
 
 def verify_source_commit(expected_source_commit, expected_source_tree):
     """Bind the exact private source repository commit to its Git tree.
@@ -475,7 +517,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("destination numeric ID differs from reviewed approval policy")
     # A PR branch can contain an allowlist entry without security approval.
     # Require the exact policy Git blob to exist on protected source main.
-    require_protected_main_policy(approved_policy)
+    reviewed_main_sha = require_protected_main_policy(approved_policy)
+    require_trusted_publisher_checkout(trusted_root, reviewed_main_sha)
     reviewed_snapshot_sha = require_reviewed_source_snapshot(
         expected_source_commit, expected_source_tree, approved_destination_id)
     verify_source_commit(expected_source_commit, expected_source_tree)
@@ -499,7 +542,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
-        require_protected_main_policy(approved_policy)
+        if require_protected_main_policy(approved_policy) != reviewed_main_sha:
+            raise Denied("reviewed protected source main changed during transfer")
         require_reviewed_source_snapshot(expected_source_commit, expected_source_tree,
                                          approved_destination_id, reviewed_snapshot_sha)
         verify_source_commit(expected_source_commit, expected_source_tree)
