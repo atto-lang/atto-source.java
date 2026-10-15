@@ -100,4 +100,8 @@ final class ActorSealedStateAdmissionHardeningTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ActorStateContract.verify(replaceActor(parsed, rewritten)));
     }
+    @Test void rejectsOpenActorStateMap() {
+        Ast.Program p = Parser.parse("define actor A as state: Map<string,int>; end");
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(p));
+    }
 }
