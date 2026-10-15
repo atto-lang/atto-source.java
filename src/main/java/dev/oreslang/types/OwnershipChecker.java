@@ -3022,6 +3022,7 @@ public final class OwnershipChecker {
                 ref -> GenericCallArguments.containsUnresolvedAstGeneric(
                         ref, Set.copyOf(allGenericNames)),
                 "generic call");
+        GenericCallArguments.requireBound(explicitGenericNames, bindings, "generic call");
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),
