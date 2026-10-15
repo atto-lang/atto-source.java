@@ -29,7 +29,8 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --expected-source-tree '<trusted full 40-hex Git tree SHA>'
 ```
 
 The checked-in policy file must explicitly list the destination. The
@@ -44,6 +45,15 @@ in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
+
+The publisher requires a caller-pinned full Git-tree SHA as a mandatory
+argument. It reconstructs the Git tree hash from all source file paths, bytes
+and executable bits **before** any destination source blob write, then checks
+that GitHub's fresh source subtree SHA equals that same pinned value
+**before** creating the destination root commit or branch. Missing, invalid,
+partial or stale snapshots are rejected. Obtain the expected SHA from an
+independently verified immutable source commit, never by calculating it from
+untrusted post-change source inputs.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
