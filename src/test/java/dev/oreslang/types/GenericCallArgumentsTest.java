@@ -114,20 +114,18 @@ final class GenericCallArgumentsTest {
         java.util.Map<String, Ast.TypeRef> explicit = new java.util.HashMap<>();
         explicit.put("A", type("bool"));
         explicit.put("B", type("string"));
-        GenericCallArguments.applyDefaults(
-                slots, specs, explicit, java.util.Set.of("C"),
-                ref -> ref, GenericCallArgumentsTest::substitute,
-                ref -> GenericCallArguments.containsUnresolvedAstGeneric(ref, java.util.Set.copyOf(slots)),
-                "test function");
-        assertEquals(type("string"), explicit.get("B"));
-        assertFalse(explicit.containsKey("C"), "explicit inference holes must not receive defaults");
-        assertThrows(IllegalArgumentException.class,
+        // B stays explicit; C's requested inference must not use its default.
+        // D's dependent default therefore cannot resolve C and must fail.
+        IllegalArgumentException hole = assertThrows(IllegalArgumentException.class,
                 () -> GenericCallArguments.applyDefaults(
                         slots, specs, explicit, java.util.Set.of("C"),
                         ref -> ref, GenericCallArgumentsTest::substitute,
                         ref -> GenericCallArguments.containsUnresolvedAstGeneric(
                                 ref, java.util.Set.copyOf(slots)),
                         "test function"));
+        assertTrue(hole.getMessage().contains("cannot resolve dependent default"), hole.getMessage());
+        assertEquals(type("string"), explicit.get("B"));
+        assertFalse(explicit.containsKey("C"), "explicit inference holes must not receive defaults");
     }
 
     @Test
