@@ -316,6 +316,14 @@ final class ActorContinuationTeardownTest {
             assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
             assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS),
                     "source state retirement cannot wait forever for cleanup");
+            ActorRuntime.ActorCleanupTimeoutException timeout = assertInstanceOf(
+                    ActorRuntime.ActorCleanupTimeoutException.class,
+                    actor.failure().orElseThrow(),
+                    "get_done must report incomplete cleanup, not just cancellation");
+            assertEquals(actor.id(), timeout.actorId());
+            assertInstanceOf(ActorRuntime.ActorCancelledException.class,
+                    timeout.getCause(),
+                    "cleanup timeout must preserve the original structured cancellation");
             assertThrows(java.util.concurrent.CancellationException.class,
                     () -> taskFuture.get().get(5, TimeUnit.SECONDS));
             abandoned.get().resolve(9);
