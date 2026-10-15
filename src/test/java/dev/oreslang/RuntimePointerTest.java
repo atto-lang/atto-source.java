@@ -37,6 +37,17 @@ final class RuntimePointerTest {
         assertTrue(nested.getMessage().contains("nested Pointer<T>"), nested.getMessage());
     }
 
+    @Test void hostCannotManufacturePointerOwnershipForRuntimeCapabilities() {
+        for (Object capability : java.util.List.of(
+                new dev.oreslang.runtime.ChannelRuntime.Channel<>(1),
+                dev.oreslang.runtime.OresMutex.local(7),
+                new java.util.concurrent.CompletableFuture<Integer>())) {
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> new dev.oreslang.runtime.OresPointer(capability));
+            assertTrue(error.getMessage().contains("cannot own"), error.getMessage());
+        }
+    }
+
     @Test void namedAndFreshTargetsHaveCheckedRoundTrips() {
         for (String access : new String[] {"unref", "deref"}) {
             check("const Pointer<Box> p = rt ref new Box(); const Box view = rt " + access + " p; stdio.println(view.value);");
