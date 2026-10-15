@@ -544,9 +544,6 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         checked_source.relative_to(trusted)
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
-    if source_tree_sha(files) != expected_source_tree:
-        raise Denied("source snapshot Git tree differs from pinned expected SHA")
     base = checked_repo(repository, expected_id=approved_destination_id)
     # Never inherit a caller-selected or unreviewed carrier branch: inherited
     # workflow definitions execute with the destination repository's token.
@@ -564,6 +561,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = nested_sha(base_commit, "tree")
+    files = collect_source(source, trusted_root)
+    if source_tree_sha(files) != expected_source_tree:
+        raise Denied("source snapshot Git tree differs from pinned expected SHA")
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
