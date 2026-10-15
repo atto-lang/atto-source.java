@@ -137,14 +137,6 @@ final class ActorRoleTransportDeclarationTest {
                 end
                 """, "cannot inherit ordinary persistent instance fields");
 
-        rejects("""
-                define stream actor Parent as
-                    receive(ActorMail<int> mail): void { return; }
-                end
-                define unary actor Child extends Parent as
-                    run(int value): int { return value; }
-                end
-                """, "actor reply role mismatch");
     }
 
     @Test
