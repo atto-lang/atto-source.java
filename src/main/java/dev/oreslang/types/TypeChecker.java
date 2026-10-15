@@ -7329,13 +7329,9 @@ public final class TypeChecker {
                 this::substituteGenerics,
                 type -> containsGenericNamed(type, unique),
                 label);
+        GenericCallArguments.requireBound(genericNames, bindings, label);
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
-        if (!unbound.isEmpty()) {
-            throw new IllegalArgumentException("cannot infer generic parameter(s) "
-                    + unbound.stream().sorted().toList() + " for " + label
-                    + "; specify them explicitly or make them inferable from value arguments");
-        }
 
         for (int i = 0; i < expanded.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
