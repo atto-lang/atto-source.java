@@ -141,6 +141,34 @@ final class RecordWriteVarianceTest {
     }
 
     @Test
+    void readonlyNamedStructuralPatternRetainsMethodDispatch() {
+        // The match binding is now a readonly Record rather than a nominal
+        // alias. Ensure its shape still carries callable interface slots.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define trait Readable as
+                    bar: string;
+                    fnc show(string value) => void;
+                  end
+                  define class Base as end
+                  define class Candidate extends Base as
+                    pub val string bar = "ok";
+                    pub show(string value): void { return; }
+                  end
+                  fnc inspect(Base value): int {
+                    match value over
+                      on structural Readable view -> {
+                        view.show(view.bar);
+                        return 1;
+                      }
+                      on _ -> { return 0; }
+                    end
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void structuralParameterStillPermitsReadOnlyWidthSubtyping() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define interface Position
