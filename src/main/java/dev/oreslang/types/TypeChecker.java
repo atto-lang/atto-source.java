@@ -4994,11 +4994,22 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // Actor DATA is not a general-purpose host object transport.
+            // An unresolved nominal name might denote an imported resource,
+            // function table, FFI handle or a spoofed codec implementation.
+            // The transport cannot prove deep ownership from its spelling.
+            // ActorId/ActorKind and the compiler's Symbol marker are explicitly
+            // data-only built-ins; everything else needs a verified data shape
+            // or a separately admitted compiler-owned schema descriptor.
+            if (named.arguments().isEmpty()
+                    && Set.of("ActorId", "ActorKind", "$builtin$Symbol")
+                            .contains(named.name())) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " cannot transport unresolved nominal type '"
+                            + named.name() + "'; actor DATA requires an explicitly "
+                            + "verified, owned serialization shape");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
