@@ -632,8 +632,19 @@ public final class ActorRuntime implements AutoCloseable {
         if (parent == null) {
             throw new IllegalStateException("child failure notices require an actor turn");
         }
-        ArrayBlockingQueue<ActorFailureNotice> inbox = parent.childFailureControlInbox.get();
-        return inbox == null ? Optional.empty() : Optional.ofNullable(inbox.poll());
+        // Cancellation and manual CONTROL consumption must linearize on the
+        // same lifecycle gate as automatic onChildFailure dispatch. A turn
+        // already in progress may continue executing while another carrier
+        // requests cancellation; it must not consume a new supervisor notice.
+        synchronized (parent.lifecycleLock) {
+            if (parent.stopped.get() || parent.finalized || parent.forceKillFenced
+                    || closed.get()) {
+                return Optional.empty();
+            }
+            ArrayBlockingQueue<ActorFailureNotice> inbox =
+                    parent.childFailureControlInbox.get();
+            return inbox == null ? Optional.empty() : Optional.ofNullable(inbox.poll());
+        }
     }
 
     public long currentActorChildFailureNoticesDropped() {
