@@ -492,6 +492,64 @@ final class NativeActorTurnSchedulerJniTest {
         }
     }
 
+    /**
+     * Test-only VM assertion of terminal injection: native cleanup lease,
+     * actual JNI C barriers and the production TaskRunner terminal callback.
+     * This does not claim that a compiled Oreslang guest cleanup ran.
+     */
+    @Test
+    void stopTerminalInjectionAndCleanupLeaseMustPrecedeFutureDone() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64);
+                OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
+                        1, Runnable::run, kernel)) {
+            var gate = new OresFuture<Integer>();
+            var started = new CountDownLatch(1);
+            var source = new AtomicReference<NativeActorTurnKernel.SourceTask>();
+            var steps = new AtomicInteger();
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                steps.incrementAndGet();
+                source.set(currentNativeSourceForTest());
+                started.countDown();
+                return OresScheduler.<Integer>await(gate);
+            });
+            assertTrue(started.await(5, TimeUnit.SECONDS));
+            awaitSuspendedTasksForTest(scheduler, 1);
+            var ticket = kernel.issueCleanup(source.get());
+            kernel.stop();
+            gate.completeFromRuntime(1);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (scheduler.nativeRetirementFailures() == 0
+                    && System.nanoTime() < until) Thread.sleep(2);
+            assertTrue(scheduler.nativeRetirementFailures() > 0,
+                    "pending cleanup must block native terminal retirement");
+            assertFalse(result.isDone(), "Future published before cleanup ticket");
+
+            var cleanup = kernel.claimCleanup(ticket);
+            try {
+                assertThrows(IllegalStateException.class,
+                        () -> kernel.checkCleanupEffects(cleanup));
+                // The test host simulates a trusted VM's signal-injected witness.
+                kernel.terminalInjected(cleanup);
+                kernel.checkCleanupEffects(cleanup);
+                kernel.completeCleanup(cleanup);
+                assertThrows(IllegalStateException.class,
+                        () -> kernel.checkCleanupEffects(cleanup));
+                assertThrows(NativeActorTurnKernel.NativeStatusFailure.class,
+                        () -> scheduler.retryNativeQuiescentTasks());
+                assertFalse(result.isDone(),
+                        "physical cleanup lease still owned a native actor turn");
+            } finally {
+                kernel.releaseCleanup(cleanup);
+            }
+            assertEquals(1, scheduler.retryNativeQuiescentTasks());
+            ExecutionException failure = assertThrows(ExecutionException.class,
+                    () -> result.get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            assertEquals(1, steps.get(), "guest user callback ran after STOP");
+            assertEquals(0, scheduler.retryNativeQuiescentTasks());
+        }
+    }
+
     @Test
     void actualSchedulerSuspendsResumesAndRetiresOnlyAfterPhysicalExit() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
