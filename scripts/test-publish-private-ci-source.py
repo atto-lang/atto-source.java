@@ -286,21 +286,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(child["GH_PROMPT_DISABLED"], "1")
         self.assertEqual(child["GIT_CONFIG_GLOBAL"], "/dev/null")
 
-    def test_real_preflight_does_not_execute_inherited_bash_env_or_path(self):
-        # Exercise the actual guard launcher on a synthetic, non-sensitive
-        # fixture. No GitHub traffic or private source is needed.
+    def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
+        # Approval is now parsed strictly as data: even a script that
+        # explicitly writes a marker must never be invoked by the publisher.
         scripts = self.root / "scripts"
         scripts.mkdir()
         guard = scripts / "check-private-ci-destination.sh"
-        guard.write_text("exit 0\n")
         payload = self.root / "injected.sh"
         marker = self.root / "executed-untrusted"
+        guard.write_text("printf injected > " + str(marker) + "\n")
         payload.write_text("printf injected > " + str(marker) + "\n")
         fake_bash = self.root / "bash"
         fake_bash.write_text("#!/bin/sh\nprintf injected > " + str(marker) + "\n")
         fake_bash.chmod(0o755)
-        # setUp deliberately mocks require_preflight for the publisher suite.
-        # Temporarily restore the real launcher for this targeted test.
+        # setUp mocks require_preflight. Temporarily restore the real
+        # data-only verifier; no checkout-local executable is entered.
         self.preflight.stop()
         try:
             with patch.dict(os.environ, {"BASH_ENV": str(payload),
@@ -1541,7 +1541,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                               side_effect=AssertionError("source read before approval")):
                 with self.assertRaisesRegex(pub.Denied, "not approved"):
                     self.publish()
-        # Protected source-main metadata reads precede checkout-local guard.
+        # Protected source-main metadata reads precede data-only preflight.
         self.assertTrue(self.route_calls)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
