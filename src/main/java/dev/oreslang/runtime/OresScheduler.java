@@ -144,6 +144,8 @@ public final class OresScheduler implements AutoCloseable {
     private final AtomicLong nativeQuiescenceFailures = new AtomicLong();
     /** A repeated close must not claim success before the native sweep ends. */
     private final AtomicBoolean nativeCloseSweepFinished = new AtomicBoolean();
+    /** A native task may be removed from tasks before its final ack becomes visible. */
+    private final AtomicInteger nativeQuiescencePublicationsInFlight = new AtomicInteger();
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -661,7 +663,8 @@ public final class OresScheduler implements AutoCloseable {
         synchronized (taskAdmissionLock) {
             if (!closed.compareAndSet(false, true)) {
                 if (nativeTurnKernel != null
-                        && (!nativeCloseSweepFinished.get() || !tasks.isEmpty())) {
+                        && (!nativeCloseSweepFinished.get() || !tasks.isEmpty()
+                                || nativeQuiescencePublicationsInFlight.get() != 0)) {
                     throw new IllegalStateException(
                             "native actor scheduler close has unresolved SourceTasks or shutdown");
                 }
@@ -1233,8 +1236,16 @@ public final class OresScheduler implements AutoCloseable {
                 // trusted callback means no native-backed DONE publication.
                 // Remove from the live set BEFORE making DONE eligible.
                 if (nativeSource != null) {
-                    tasks.remove(this);
-                    nativeQuiescenceCallbackFinished.set(true);
+                    // A concurrent second close must not see an empty live
+                    // set before the final trusted Java acknowledgement is
+                    // visible. Count the remove-to-ack publication window.
+                    nativeQuiescencePublicationsInFlight.incrementAndGet();
+                    try {
+                        tasks.remove(this);
+                        nativeQuiescenceCallbackFinished.set(true);
+                    } finally {
+                        nativeQuiescencePublicationsInFlight.decrementAndGet();
+                    }
                 }
             }
         }
