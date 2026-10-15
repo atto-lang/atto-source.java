@@ -149,4 +149,28 @@ final class FutureSelectLateDetachBarrierTest {
         assertEquals(0, producer.pendingRuntimeWaiterCount());
         assertEquals(81, channel.tryRead().orElseThrow());
     }
+    @Test
+    void throwingTestDetachObserverStillReleasesWaiterBeforePublishing()
+            throws Exception {
+        var producer = new OresFuture<Integer>();
+        var channel = new ChannelRuntime.Channel<Integer>(1);
+        var observed = new AtomicReference<OresFuture<ChannelRuntime.SelectResult>>();
+        var failure = new IllegalStateException("detachment observer failed");
+        var thrown = assertThrows(IllegalStateException.class,
+                () -> ChannelRuntime.SelectSet.of(
+                        ChannelRuntime.await(producer), ChannelRuntime.read(channel))
+                        .selectAsyncForTesting(ChannelRuntime.SelectPolicy.PRIORITY,
+                                observed::set,
+                                () -> {
+                                    assertTrue(channel.tryWrite(93));
+                                    assertFalse(observed.get().isDone());
+                                },
+                                () -> { throw failure; }));
+        assertEquals(failure, thrown);
+        assertEquals(93, observed.get().get(5, TimeUnit.SECONDS).value());
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, channel.pendingRegistrations());
+        assertFalse(producer.isDone());
+    }
+
 }
