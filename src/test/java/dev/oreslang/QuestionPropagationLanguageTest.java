@@ -212,7 +212,7 @@ final class QuestionPropagationLanguageTest {
     void asyncQuestionOnlyAcceptsDirectBindingInitializer() {
         reject("""
                 async fnc invalid(Option<int> input): Option<int> {
-                  return Some(input? + 1);
+                  return Some((input?) + 1);
                 }
                 """, "direct binding initializer");
         reject("""
