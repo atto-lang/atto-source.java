@@ -410,9 +410,9 @@ class NativeHttpTest {
                 super.write(b, off, len);
                 if (ports.isDone()) return;
                 String text = toString(StandardCharsets.UTF_8);
-                int firstEnd = text.indexOf('\\n');
+                int firstEnd = text.indexOf('\n');
                 if (firstEnd < 0) return;
-                int secondEnd = text.indexOf('\\n', firstEnd + 1);
+                int secondEnd = text.indexOf('\n', firstEnd + 1);
                 if (secondEnd < 0) return;
                 try {
                     int first = Integer.parseInt(text.substring(0, firstEnd).trim());
