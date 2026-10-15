@@ -14,6 +14,7 @@
 struct ores_turn_lease {
     struct ores_turn_lease *next;
     struct ores_actor_cap *actor;
+    struct ores_source_task_cap *source; /* NULL for ordinary user turns */
     uint_fast64_t carrier_token;
     bool released;
 };
@@ -28,7 +29,7 @@ struct ores_source_task_cap {
     struct ores_source_task_cap *next;
     struct ores_actor_cap *actor;
     uint64_t task_id, generation;
-    bool retired, ticket_issued, ticket_closed;
+    bool retired, ticket_issued, ticket_closed, terminal_injected;
 };
 struct ores_cleanup_cap {
     struct ores_cleanup_cap *next;
@@ -347,6 +348,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
             else {
                 status = allocate_lease(vm, a, out);
                 if (status == ORES_TURN_OK) {
+                    (*out)->source = ticket->source;
                     ticket->consumed = true;
                     ticket->source->ticket_closed = true;
                     a->pending_tickets--;
@@ -373,6 +375,53 @@ ores_turn_status ores_turn_cancel_cleanup(ores_turn_vm *vm,
                 ticket->actor->pending_tickets--;
             }
         }
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
+/* A terminal signal may be acknowledged only once, by the exact native
+ * carrier holding the cleanup lease for this particular SourceTask.
+ * The trusted adapter MUST call this only after actual signal injection.
+ */
+ores_turn_status ores_turn_note_terminal_injected(ores_turn_vm *vm,
+                                                 ores_turn_lease *lease,
+                                                 ores_source_task_cap *source) {
+    if (!vm) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = ORES_TURN_INVALID;
+    if (known_lease(vm, lease) && known_source(vm, source)) {
+        status = require_live_source(vm, source);
+        if (status == ORES_TURN_OK) {
+            if (lease->released || lease->actor->active != lease
+                    || lease->source != source || !lease->actor->stopped
+                    || lease->actor->revoked || source->terminal_injected)
+                status = ORES_TURN_DENIED;
+            else if (current_carrier_token() != lease->carrier_token)
+                status = ORES_TURN_WRONG_CARRIER;
+            else source->terminal_injected = true;
+        }
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
+/* Advisory query to the VM adapter, never a guest-level permission.
+ * Physical single-flight ownership, STOP and revocation remain mandatory.
+ */
+ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
+                                                 ores_turn_lease *lease) {
+    if (!vm) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = ORES_TURN_INVALID;
+    if (known_lease(vm, lease)) {
+        if (lease->released || lease->actor->active != lease
+                || !lease->source || !lease->actor->stopped
+                || lease->actor->revoked || !lease->source->terminal_injected)
+            status = ORES_TURN_DENIED;
+        else if (current_carrier_token() != lease->carrier_token)
+            status = ORES_TURN_WRONG_CARRIER;
+        else status = ORES_TURN_OK;
     }
     pthread_mutex_unlock(&vm->mutex);
     return status;
