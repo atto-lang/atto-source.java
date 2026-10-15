@@ -33,6 +33,19 @@ final class SealedActorStateTest {
                             return null;
                         });
                     } else {
+                        // A declared empty state map is legal, but remains
+                        // fixed-schema; callbacks cannot invent keys.
+                        SealedActorState empty = new SealedActorState(
+                                ctx.self().id(), Map.of(), Map.of());
+                        assertTrue(empty.declaredKeys().isEmpty());
+                        assertEquals(7, empty.critical(false, s -> 7));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> empty.critical(false, s -> s.read("missing")));
+                        assertThrows(IllegalArgumentException.class,
+                                () -> empty.critical(true, s -> {
+                                    s.write("dynamic", 1L);
+                                    return null;
+                                }));
                         assertEquals(12L, ((Number) current.critical(s -> s.read("count"))).longValue());
                         assertEquals(true, current.critical(s -> s.read("enabled")));
                         current.critical(outer -> {
