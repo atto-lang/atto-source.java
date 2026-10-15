@@ -7,7 +7,7 @@ define module matrix as
     if left.size != right.size; do
       return Err("dot vector lengths must match");
     fi
-    if left.size > 262144; do
+    if left.size > 16384; do
       return Err("dot vector exceeds supported element budget");
     fi
     let decimal result = 0d;
@@ -18,8 +18,8 @@ define module matrix as
   }
 
   pub fnc add(int rows, int cols, Array<decimal> left, Array<decimal> right): Result<Array<decimal>, String> {
-    if rows <= 0 || cols <= 0 || rows > 512 || cols > 512; do
-      return Err("matrix dimensions must be within 1..512");
+    if rows <= 0 || cols <= 0 || rows > 128 || cols > 128; do
+      return Err("matrix dimensions must be within 1..128");
     fi
     if left.size != rows * cols || right.size != rows * cols; do
       return Err("matrix element count does not match dimensions");
@@ -32,8 +32,8 @@ define module matrix as
   }
 
   pub fnc transpose(int rows, int cols, Array<decimal> values): Result<Array<decimal>, String> {
-    if rows <= 0 || cols <= 0 || rows > 512 || cols > 512; do
-      return Err("matrix dimensions must be within 1..512");
+    if rows <= 0 || cols <= 0 || rows > 128 || cols > 128; do
+      return Err("matrix dimensions must be within 1..128");
     fi
     if values.size != rows * cols; do
       return Err("matrix element count does not match dimensions");
@@ -48,8 +48,8 @@ define module matrix as
   }
 
   pub fnc multiply(int rows, int shared, int cols, Array<decimal> left, Array<decimal> right): Result<Array<decimal>, String> {
-    if rows <= 0 || shared <= 0 || cols <= 0 || rows > 512 || shared > 512 || cols > 512; do
-      return Err("matrix dimensions must be within 1..512");
+    if rows <= 0 || shared <= 0 || cols <= 0 || rows > 128 || shared > 128 || cols > 128; do
+      return Err("matrix dimensions must be within 1..128");
     fi
     if left.size != rows * shared || right.size != shared * cols; do
       return Err("matrix element count does not match dimensions");
