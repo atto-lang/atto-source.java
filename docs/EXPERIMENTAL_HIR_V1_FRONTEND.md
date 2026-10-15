@@ -3,8 +3,8 @@
 **Non-production research path.** `ExperimentalHirV1Exporter` uses the
 real Java Oreslang parser **and** `OresCompiler.parseAndTypeCheck` (type and
 ownership admission), then exports the tiny shared
-`ores-hir/1.0.0-experimental` envelope. The normal Truffle/Graal compiler
-and runtime remain unchanged.
+`ores-hir/1.0.0-experimental` envelope. Unmarked Truffle/Graal source preserves existing runtime arithmetic; a strict
+source-unit checked-i64 opt-in is available for host-only experiments.
 
 The admitted surface is top-level, nongeneric synchronous `fnc` declarations,
 typed `int` or `bool` parameters/returns, one direct return expression,
@@ -42,20 +42,34 @@ the document before using it.
 JUnit tests: `src/test/java/dev/oreslang/ExperimentalHirV1ExporterTest.java`.
 Hosted exact-head tests are needed before merge; a missing runner is not success.
 
+### Checked-i64 source-unit execution (new opt-in)
 
-### Checked i64 admission (audit update)
+The experimental **host-only** checked integer mode is selected by the
+exact first source line (LF terminator):
 
-**Do not equate the experimental checked-i64 IR contract with the production
-integer runtime's wraparound behavior.** The actual Java/GraalVM and LLVM
-backends currently perform ordinary signed 64-bit addition/subtraction/
-multiplication without overflow traps. Both experimental exporters therefore
-run a conservative interval proof over each function's *entire* signed-i64
-parameter domain. A possible overflow, including `count * 43`, is rejected
-before exporting `checked-i64.v1`. Literals and genuinely safe operations
-such as `count * 1` and `40 + 3` remain admissible.
+```oreslang
+// oreslang:checked-i64-v1
+pub fnc scale(int count): int { return count * 43; }
+pub fnc main(): int { return scale(1); }
+```
 
-The test fixture `fixtures/ir-v1/checked-safe-counter.ores` is intended for
-source-to-HIR parity. A passing guest result on this fixture is a **smoke test**
-and not evidence that production runtimes trap overflow. Remove this
-restriction only after both backends implement verified checked arithmetic,
-or introduce a separate explicitly negotiated wrapping-i64 IR contract.
+Marked source executes signed-64-bit addition, subtraction, multiplication
+and unary negation with overflow detection. Java/GraalVM uses
+`Math.*Exact`; LLVM uses `llvm.sadd/ssub/smul.with.overflow.i64`, with
+checked negation lowered as zero-minus-operand. LLVM's experimental host
+failure path prints `ORES_I64_OVERFLOW` and exits with status 86; the
+GraalVM guest raises a failure carrying the same diagnostic marker. This
+is **not yet a unified guest `Error`/supervisor ABI**.
+
+Unmarked source units preserve ordinary runtime arithmetic, and their HIR
+exporters continue to reject expressions such as `count * 43` unless a
+conservative whole-domain interval proof establishes overflow freedom.
+Marked source can emit the same expression as `checked-i64.v1` only because
+its runtime now actually detects overflow. This opt-in does not enable
+actor-wide, embedded, Wasm or GraalVM native-image AOT checked arithmetic.
+
+The shared [experimental checked-i64 execution contract](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/feat/experimental-hir-mir-v1-20261014/docs/EXPERIMENTAL_CHECKED_I64_V1.md)
+defines the precise source directive, tested boundaries and remaining
+production error-policy limitations. Real compiler tests include safe
+arithmetic, runtime overflow, legacy wrapping, identical frontend HIR and
+reference MIR checks.
