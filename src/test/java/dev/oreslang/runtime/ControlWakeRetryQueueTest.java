@@ -259,6 +259,49 @@ final class ControlWakeRetryQueueTest {
         assertEquals(0, queue.pending());
     }
 
+    @Test void concurrentFailedWakeCallbacksSaturateWithoutQueueLeaks()
+            throws Exception {
+        final int workers = 8;
+        final int attempts = 1024;
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
+        queue.slotReleased();
+        long staleEpoch = queue.epoch() - 1;
+        java.lang.reflect.Field failures =
+                ControlWakeRetryQueue.class.getDeclaredField("callbacksFailed");
+        failures.setAccessible(true);
+        failures.setLong(queue, Long.MAX_VALUE - 17);
+
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(workers);
+        java.util.concurrent.CountDownLatch start =
+                new java.util.concurrent.CountDownLatch(1);
+        try {
+            java.util.List<java.util.concurrent.Future<?>> jobs =
+                    new java.util.ArrayList<>();
+            for (int t = 0; t < workers; t++) {
+                jobs.add(pool.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < attempts; i++) {
+                        assertTrue(queue.register(
+                                () -> { throw new IllegalStateException("retry rejection"); },
+                                staleEpoch),
+                                "a missed-epoch retry must not consume queue capacity");
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var job : jobs) job.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(Long.MAX_VALUE, queue.callbacksFailed(),
+                    "concurrent failed retry callbacks may not wrap telemetry");
+            assertEquals(0, queue.pending(),
+                    "an immediately retried callback cannot strand a queue slot");
+        } finally {
+            start.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     @Test void fatalVmErrorIsNeverSwallowedByControlRetryIsolation() {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(1);
         assertTrue(queue.register(() -> {
