@@ -127,6 +127,84 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
         }
     }
 
+
+    /**
+     * Two independent factory callers must race on one native actor-global
+     * ownership namespace. Exactly one may bind, and the rejected candidate
+     * must not revoke, stop, or strand the successfully bound scheduler.
+     */
+    private static void concurrentNativeSchedulerClaimsHaveOneWinner() throws Exception {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
+            var ready = new CountDownLatch(2);
+            var fire = new CountDownLatch(1);
+            OresScheduler[] acquired = new OresScheduler[2];
+            Throwable[] failures = new Throwable[2];
+            Thread[] callers = new Thread[2];
+            try {
+                for (int i = 0; i < callers.length; i++) {
+                    final int index = i;
+                    callers[i] = Thread.ofPlatform().name("native-actor-claim-" + index)
+                            .unstarted(() -> {
+                                ready.countDown();
+                                try {
+                                    require(fire.await(5, TimeUnit.SECONDS),
+                                            "concurrent native claim gate timed out");
+                                    acquired[index] = OresScheduler.managedWithNativeTurnWitness(
+                                            1, Runnable::run, kernel);
+                                } catch (Throwable failure) {
+                                    failures[index] = failure;
+                                }
+                            });
+                    callers[i].start();
+                }
+                require(ready.await(5, TimeUnit.SECONDS), "claim callers never rendezvoused");
+                fire.countDown();
+                for (Thread caller : callers) {
+                    caller.join(5_000);
+                    require(!caller.isAlive(), "native claim caller did not terminate");
+                }
+                int winners = 0;
+                int rejected = 0;
+                OresScheduler winner = null;
+                for (int i = 0; i < acquired.length; i++) {
+                    if (acquired[i] != null) {
+                        require(failures[i] == null, "winner also reported failure");
+                        winners++;
+                        winner = acquired[i];
+                    } else if (failures[i] instanceof IllegalStateException
+                            && failures[i].getMessage() != null
+                            && failures[i].getMessage().contains("already bound")) {
+                        rejected++;
+                    } else {
+                        throw new AssertionError("unexpected native claim outcome " + i,
+                                failures[i]);
+                    }
+                }
+                require(winners == 1 && rejected == 1,
+                        "native kernel must grant exactly one scheduler claim");
+                require(winner.start(resume -> OresScheduler.done(811))
+                                .get(5, TimeUnit.SECONDS) == 811,
+                        "losing concurrent factory disturbed the winning native scheduler");
+            } finally {
+                fire.countDown();
+                for (Thread caller : callers) {
+                    if (caller != null) caller.join(5_000);
+                }
+                for (OresScheduler scheduler : acquired) {
+                    if (scheduler != null) scheduler.close();
+                }
+            }
+            try {
+                OresScheduler.managedWithNativeTurnWitness(1, Runnable::run, kernel);
+                throw new AssertionError("concurrently claimed native kernel was rebound");
+            } catch (IllegalStateException expected) {
+                require(expected.getMessage().contains("already bound"),
+                        "wrong permanent-ownership refusal after concurrent claim");
+            }
+            kernel.stop();
+        }
+    }
+
     private static void stopDeniesUserResumption() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64);
                 OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
@@ -245,6 +323,7 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
             try {
                 ordinarySuspendResume();
                 rejectsSharedNativeSchedulerOwnership();
+                concurrentNativeSchedulerClaimsHaveOneWinner();
                 stopDeniesUserResumption();
                 pendingCleanupBlocksNativeDoneUntilTicketClosed();
                 closeInsideQuiescenceDoesNotClaimDone();
@@ -256,6 +335,6 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
             }
         }
         System.out.println("NATIVE_ACTOR_TURN_REAL_SCHEDULER_JNI_OK iterations="
-                + iterations + " scenarios=" + (5 * iterations));
+                + iterations + " scenarios=" + (6 * iterations));
     }
 }
