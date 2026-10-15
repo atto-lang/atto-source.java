@@ -29,8 +29,7 @@ final class ControlWakeRetryQueue {
         boolean active;
         final ArrayDeque<Runnable> later = new ArrayDeque<>();
     }
-    private final ThreadLocal<RetryDispatch> retryDispatch =
-            ThreadLocal.withInitial(RetryDispatch::new);
+    private final ThreadLocal<RetryDispatch> retryDispatch = new ThreadLocal<>();
     // Guarded by the queue monitor: bounded affinity preference over FIFO.
     private int consecutiveAffinityBypasses;
 
@@ -116,6 +115,12 @@ final class ControlWakeRetryQueue {
     synchronized void cancel(Runnable callback) {
         // Runnable identity is host-owned and one per parent actor.
         pending.removeIf(next -> next.callback() == callback);
+        // Reentrant slot releases can dequeue a callback but defer it on
+        // this same carrier thread. Cancel the deferred work as well.
+        RetryDispatch state = retryDispatch.get();
+        if (state != null && state.active) {
+            state.later.removeIf(next -> next == callback);
+        }
     }
 
     synchronized void close() {
@@ -134,6 +139,10 @@ final class ControlWakeRetryQueue {
     private void notifyRetry(Runnable ready) {
         if (ready == null) return;
         RetryDispatch state = retryDispatch.get();
+        if (state == null) {
+            state = new RetryDispatch();
+            retryDispatch.set(state);
+        }
         if (state.active) {
             // A host wake callback can synchronously release the next
             // physical slot. Queue it on this thread rather than recursing.
@@ -144,6 +153,12 @@ final class ControlWakeRetryQueue {
         try {
             Runnable next = ready;
             while (next != null) {
+                // A close() while a previous callback ran revokes nested
+                // wakeups that were queued but not yet invoked. A callback
+                // already executing remains in-flight.
+                synchronized (this) {
+                    if (closed) break;
+                }
                 try {
                     // The callback can only attempt scheduler admission; it
                     // must never run a guest actor handler on this carrier.
