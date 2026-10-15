@@ -61,6 +61,14 @@ final class ActorForceSourceCleanupRevocationTest {
             assertNotNull(taskRef.get());
             assertTrue(actor.cancel());
             assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            // The latch is signalled before armAwait registers its waiter.
+            // Wait for that distinct scheduler phase rather than racing it.
+            long registrationDeadline =
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (cleanupProducer.pendingRuntimeWaiterCount() == 0
+                    && System.nanoTime() < registrationDeadline) {
+                Thread.sleep(1);
+            }
             assertEquals(1, cleanupProducer.pendingRuntimeWaiterCount());
 
             runtime.setForceCancellationTreeHook(request -> {
