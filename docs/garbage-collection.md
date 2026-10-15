@@ -39,9 +39,13 @@ reference to its target, including when the operand is a fresh struct/class/arra
 It never stores an untracked numeric address. JVM and Native Image tracing see
 that reference directly; no weak cleanup-registry entry is used to own the target.
 
-`rt unref` and `rt deref` both expose a compiler-checked read-only view. Neither
-releases the handle, decrements a reference count, requests collection, or frees
-the target. The compiler prevents a view from outliving its owning pointer and
-blocks moves of that pointer while its views remain live. Collection timing is
+`rt deref` creates a compiler-checked read-only view; it never releases the
+handle, decrements a reference count, or requests collection. `rt unref` instead
+**consumes** an unborrowed unique pointer and transfers its owned pointee out;
+the wrapper is invalid afterward. Neither operation copies the pointee or frees
+it immediately in the current Java managed runtime. The compiler blocks unwraps
+or moves while live views exist and prevents views from outliving the pointer.
+The JVM evaluator currently allocates an `OresPointer` wrapper on `rt ref`;
+zero-copy must not be confused with zero-allocation. Collection timing is
 unspecified, and backend environments may retain values beyond their last use.
 External resources still require their own explicit close/release protocols.
