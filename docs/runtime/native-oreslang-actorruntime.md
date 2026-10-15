@@ -212,14 +212,23 @@ Claiming a cleanup turn is also **not** proof that the terminal signal was
 injected. `ores_turn_note_terminal_injected` requires the original physical
 carrier, matching cleanup lease and source handle, an active STOP and a
 non-revoked actor. The VM may acknowledge injection exactly once, only after
-it truly injected the cancellation signal. The private
-`ores_turn_check_cleanup_effects` returns DENIED until acknowledgement,
-and after lease release or force revocation. If a claimed cleanup lease
-releases **without** a terminal injection acknowledgement, the registered
-SourceTask remains a retirement barrier. Only an explicit VM force-revocation
-transition can record a terminal abort and discharge that logical barrier,
-and even then physical carrier leases must exit before actor retirement. Guest code may never invoke these
-intrinsics directly or pass naked pointers as handles.
+it truly injected the cancellation signal. **Injection does not prove cleanup
+completion.** A separate one-shot `ores_turn_complete_cleanup` call must be
+made by the original carrier after all guest cleanup has actually finished.
+It refuses un-injected, stale, mismatched, revoked, already completed or
+released leases. The private `ores_turn_check_cleanup_effects` returns
+DENIED before injection, after completion, after lease release, and after
+force revocation. It is a point-in-time check, **not** an atomic authorization
+for effects that run afterward; the live VM adapter must hold its physical
+turn ownership/epoch throughout any permitted guest work.
+
+If a claimed cleanup lease releases **without successfully completing**
+the guest cleanup, the registered SourceTask remains a retirement barrier,
+regardless of whether cancellation injection occurred. Only an explicit
+VM force-revocation transition can record a terminal abort and discharge
+that logical barrier. Even on force abort, physical carrier leases must
+exit before actor retirement. Guest code may never invoke these intrinsics
+directly or pass naked pointers as handles.
 
 **Important trust limitation:** the prototype can authenticate membership in
 *its own registry*, but it cannot prove that the caller registered an actual
@@ -230,9 +239,11 @@ wired to backend-managed task objects, cancellation and scheduler dispatch.
 
 The expanded C adversarial fixture includes forged/cross-VM SourceTask
 handles, duplicate or decreasing task generations, double issue, retirement
-barriers, replay after actor restart, wrong-carrier acknowledgement, and
-force-revocation effects rejection. **These new tests have not yet executed
-on a runner.** The most recent funded private CI attempt
+barriers, replay after actor restart, wrong-carrier acknowledgement,
+pre-injection completion refusal, injection-without-completion retirement
+refusal, repeated completion denial, no effects after completion and
+200 completion-vs-FORCE race iterations. **These new tests have not yet
+executed on a runner.** The most recent funded private CI attempt
 [#38658876999](https://github.com/canonical-cloud/canonical-e2e/actions/runs/38658876999)
 failed before executing any steps, so neither compilation nor test failure
 can be inferred from that run.
