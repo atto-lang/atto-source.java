@@ -7003,7 +7003,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, false, false);
                     };
-                    case "compose", "flatMap" -> (Invokable) args -> {
+                    case "compose", "flatMap", "flat_map", "and_then" -> (Invokable) args -> {
                         requireOne(args, "Future." + name);
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException(
@@ -7011,7 +7011,7 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         return chainFuture(future, callback, true, false);
                     };
-                    case "onSuccess" -> (Invokable) args -> {
+                    case "onSuccess", "on_success" -> (Invokable) args -> {
                         requireOne(args, "Future.onSuccess");
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException(
@@ -7284,7 +7284,7 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(args, "Option.unwrap_or");
                     return option.present() ? option.value() : args.getFirst();
                 };
-                case "map", "and_then" -> (Invokable) args -> {
+                case "map", "and_then", "flat_map" -> (Invokable) args -> {
                     Invokable callback = requireSumCompositionCallback(args, "Option." + name);
                     if (!option.present()) return option;
                     Object mapped = callback.call(List.of(option.value()));
@@ -7322,12 +7322,12 @@ public final class OresEvalRootNode extends RootNode {
                     requireOne(args, "Result.unwrap_or");
                     return result.ok() ? result.value() : args.getFirst();
                 };
-                case "map", "and_then", "map_err" -> (Invokable) args -> {
+                case "map", "and_then", "flat_map", "map_err" -> (Invokable) args -> {
                     Invokable callback = requireSumCompositionCallback(args, "Result." + name);
                     boolean runCallback = name.equals("map_err") ? !result.ok() : result.ok();
                     if (!runCallback) return result;
                     Object mapped = callback.call(List.of(result.value()));
-                    if (name.equals("and_then")) {
+                    if (name.equals("and_then") || name.equals("flat_map")) {
                         if (!(mapped instanceof ResultValue)) {
                             throw new IllegalArgumentException(
                                     "Result.and_then callback must return Result<U,E>");
