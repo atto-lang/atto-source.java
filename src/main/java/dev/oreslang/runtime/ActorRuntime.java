@@ -634,6 +634,16 @@ public final class ActorRuntime implements AutoCloseable {
         return parent.childFailureControlDropped.get();
     }
 
+    /** Failed automatic supervisor wake submissions; notices remain pollable. */
+    public long currentActorChildFailureWakesRejected() {
+        requireCallerRuntimeAffinity("inspect child CONTROL wake rejection");
+        ActorCell<?> parent = currentActor.get();
+        if (parent == null) {
+            throw new IllegalStateException("child failure wake counters require an actor turn");
+        }
+        return parent.childFailureWakeRejected.get();
+    }
+
     private void publishActorFailureNotice(ActorFailureNotice notice) {
         if (!actorFailureNotices.offer(notice)) {
             actorFailureNoticesDropped.incrementAndGet();
@@ -1347,6 +1357,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Opt-in, host-runtime supervisor callback. Invoked on the parent's own
+     * admitted actor carrier, never on the child's cleanup/exit thread.
+     * This does not expose source-language on_raise or recovery semantics.
+     */
+    public interface ChildFailureHandler<M> extends Behavior<M> {
+        void onChildFailure(ActorFailureNotice notice, ActorContext<M> context)
+                throws Exception;
+    }
+
+    /**
      * Compiler/interpreter callback for a one-shot source-level actor callable.
      * Guest code never receives this host callback object.
      */
@@ -1424,6 +1444,11 @@ public final class ActorRuntime implements AutoCloseable {
         /** Notices that could not fit in this actor's bounded CONTROL inbox. */
         default long childFailureNoticesDropped() {
             return runtime().currentActorChildFailureNoticesDropped();
+        }
+
+        /** Rejected CONTROL wake submissions; notices remain in the inbox. */
+        default long childFailureWakesRejected() {
+            return runtime().currentActorChildFailureWakesRejected();
         }
 
         /**
@@ -6709,10 +6734,17 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicReference<ArrayBlockingQueue<ActorFailureNotice>>
                 childFailureControlInbox = new AtomicReference<>();
         private final AtomicLong childFailureControlDropped = new AtomicLong();
+        private final AtomicLong childFailureWakeRejected = new AtomicLong();
+        private final AtomicBoolean childFailureWakeQueued = new AtomicBoolean();
 
         private boolean acceptDirectChildFailure(ActorFailureNotice notice) {
             if (!ref.id().equals(notice.supervisorId())) {
                 throw new IllegalArgumentException("child CONTROL notice has wrong parent");
+            }
+            // A retired parent cannot be revived or accumulate CONTROL data.
+            if (stopped.get() || finalized) {
+                childFailureControlDropped.incrementAndGet();
+                return false;
             }
             ArrayBlockingQueue<ActorFailureNotice> inbox =
                     childFailureControlInbox.get();
@@ -6728,6 +6760,26 @@ public final class ActorRuntime implements AutoCloseable {
             if (inbox.offer(notice)) return true;
             childFailureControlDropped.incrementAndGet();
             return false;
+        }
+
+        /**
+         * Submit an internal scheduling request to a pre-existing runtime
+         * dispatcher, never run guest code synchronously from child teardown.
+         * A rejected wake leaves the immutable notice available for polling.
+         */
+        private void wakeChildFailureHandler() {
+            if (!(behavior instanceof ChildFailureHandler<?>)
+                    || stopped.get() || closed.get()
+                    || !childFailureWakeQueued.compareAndSet(false, true)) return;
+            try {
+                dispatcherFor(kind).execute(() -> {
+                    childFailureWakeQueued.set(false);
+                    schedule();
+                });
+            } catch (RejectedExecutionException rejected) {
+                childFailureWakeQueued.set(false);
+                childFailureWakeRejected.incrementAndGet();
+            }
         }
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
@@ -6981,7 +7033,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            ArrayBlockingQueue<ActorFailureNotice> control = childFailureControlInbox.get();
+            boolean hasSupervisorWork = behavior instanceof ChildFailureHandler<?>
+                    && control != null && !control.isEmpty();
+            return hasSupervisorWork || !continuationMailbox.isEmpty()
+                    || (!sourceReceiveSuspended && !mailbox.isEmpty());
         }
 
         private OresScheduler sourceScheduler() {
@@ -7102,6 +7158,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             drainMailboxReservations();
+            ArrayBlockingQueue<ActorFailureNotice> retiredControl =
+                    childFailureControlInbox.getAndSet(null);
+            if (retiredControl != null) retiredControl.clear();
             staticSelectCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
@@ -7119,13 +7178,14 @@ public final class ActorRuntime implements AutoCloseable {
             // a supervisor can observe a terminal notice or restart the actor.
             // Offer is bounded and cannot invoke guest callbacks. Publication
             // precedes removal from actors and all termination observers.
+            boolean wakeParent = false;
             if (pendingControlNotice != null) {
                 // Only the structurally owning parent receives this CONTROL
                 // notice; never route by user-supplied ID or ActorRef.
                 // ArrayBlockingQueue.offer is nonblocking and has no guest
                 // callbacks, including while this child lifecycle lock is held.
                 if (parent != null) {
-                    parent.acceptDirectChildFailure(pendingControlNotice);
+                    wakeParent = parent.acceptDirectChildFailure(pendingControlNotice);
                 }
                 publishActorFailureNotice(pendingControlNotice);
                 pendingControlNotice = null;
@@ -7146,6 +7206,10 @@ public final class ActorRuntime implements AutoCloseable {
             else ref.doneFuture.failFromRuntime(terminal);
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
+            // Never execute or schedule guest code inline on the child
+            // finalizer. Queue a wake onto the VM's already-owned dispatcher.
+            // Child heap and exit hook are finished before this point.
+            if (wakeParent && parent != null) parent.wakeChildFailureHandler();
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -7516,6 +7580,27 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                    // Supervisor notices are independent of the user's mailbox
+                    // and are dispatched on the parent's admitted carrier.
+                    // A suspended source receive cannot hide CONTROL work, but
+                    // source actors do not yet implement on_raise dispatch.
+                    if (behavior instanceof ChildFailureHandler<?> handler) {
+                        ArrayBlockingQueue<ActorFailureNotice> control =
+                                childFailureControlInbox.get();
+                        ActorFailureNotice notice =
+                                control == null ? null : control.poll();
+                        if (notice != null) {
+                            @SuppressWarnings("unchecked")
+                            ChildFailureHandler<M> typedHandler =
+                                    (ChildFailureHandler<M>) handler;
+                            typedHandler.onChildFailure(notice, context);
+                            if (isPrivateKind(kind) && !trustedFactory) {
+                                validatePrivateBehaviorState(ref.id(), behavior);
+                            }
+                            processed++;
+                            continue;
+                        }
+                    }
                     MessageEnvelope envelope;
                     synchronized (lifecycleLock) {
                         // Stop closes the user mailbox under this same lock.
