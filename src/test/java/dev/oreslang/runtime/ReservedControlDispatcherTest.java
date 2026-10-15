@@ -83,6 +83,47 @@ final class ReservedControlDispatcherTest {
         dispatcher.shutdownNow();
     }
 
+    @Test
+    void throwingControlTurnReturnsAdmissionWithoutLeakingIntoOrdinaryBudget() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ReservedActorDispatcher dispatcher = new ReservedActorDispatcher(worker, 1, 1);
+        AtomicInteger ordinary = new AtomicInteger();
+        try {
+            dispatcher.executeControl(() -> { throw new IllegalStateException("control failure"); });
+            assertThrows(RejectedExecutionException.class,
+                    () -> dispatcher.executeControl(() -> {}));
+            assertThrows(IllegalStateException.class, worker::runNext);
+            dispatcher.executeControl(() -> {});
+            dispatcher.execute(ordinary::incrementAndGet);
+            worker.runNext();
+            worker.runNext();
+            assertEquals(1, ordinary.get());
+            assertEquals(0, worker.pending());
+        } finally {
+            dispatcher.shutdownNow();
+        }
+    }
+
+    @Test
+    void shutdownReturnsUnexecutedCommandsWithoutRunningTheirEffects() {
+        RecordingExecutor worker = new RecordingExecutor();
+        ReservedActorDispatcher dispatcher = new ReservedActorDispatcher(worker, 1, 1);
+        AtomicInteger calls = new AtomicInteger();
+        Runnable ordinary = calls::incrementAndGet;
+        Runnable control = calls::incrementAndGet;
+        dispatcher.execute(ordinary);
+        dispatcher.executeControl(control);
+        List<Runnable> abandoned = dispatcher.shutdownNow();
+        assertEquals(2, abandoned.size());
+        assertSame(ordinary, abandoned.get(0));
+        assertSame(control, abandoned.get(1));
+        assertEquals(0, calls.get());
+        assertEquals(0, worker.pending());
+        assertThrows(RejectedExecutionException.class, () -> dispatcher.execute(() -> {}));
+        assertThrows(RejectedExecutionException.class,
+                () -> dispatcher.executeControl(() -> {}));
+    }
+
     /**
      * Minimal deterministic executor. Never creates threads; submissions are
      * invoked explicitly, and shutdown returns queued unexecuted runnables.
