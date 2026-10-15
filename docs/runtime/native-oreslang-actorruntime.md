@@ -2,6 +2,60 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-14 continued audit: native-retirement does not mean callback completion
+
+**Finding A — zero retry count while cleanup still runs.**
+The experimental scheduler's `retryNativeQuiescentTasks()`
+previously skipped an already-native-retired SourceTask, even when
+its trusted `onQuiescent` callback had not yet completed. A return
+value of zero could therefore be misread by the VM owner as a
+fully quiescent actor. The retry method now checks both the native
+retirement and the Java trusted-callback acknowledgement; if the
+native task is retired but its callback is still in flight, it
+reports an unresolved busy/failure state rather than reporting idle.
+
+A deterministic opt-in JUnit test blocks `onQuiescent` on a latch,
+confirms a concurrent retry rejects the incomplete callback, and
+asserts normal DONE remains unpublished. It also checks that
+the retry never reenters the callback and that a later completed
+callback leads to exactly one successful terminal result.
+
+**Finding B — shutdown starvation on a Java callback exception.**
+Previous native-witness shutdown caught `NativeStatusFailure` but a
+trusted quiescence callback could throw an ordinary
+`IllegalStateException` or `Error`. Such an error could abort the
+revocation sweep before another admitted task was canceled. With
+native witness enabled, shutdown now aggregates these exceptions,
+continues revoking and notifying all admitted tasks, shuts down
+the executor, and rethrows the original error with any suppressed
+failures. Ordinary non-native `OresScheduler` behavior remains
+unchanged. An opt-in regression creates two *physically parked*
+SourceTasks, makes one trusted callback throw during shutdown, and
+checks that the other source is still canceled. Tests wait for the
+actual TaskRunner `WAITING` phase and `executing=false`, not merely
+for a latch reached while guest code is still on the carrier.
+
+**Finding C — JNI workflow JDK mismatch.**
+The native Actions job selected the JDK 21 toolchain in one run step,
+then invoked Maven in another run step, where step-local
+`JAVA_HOME`/`PATH` were not preserved. The workflow now publishes
+the selected JVM via `GITHUB_ENV` and `GITHUB_PATH`, prints both
+`java -version` and `javac -version` before the smoke and Maven
+steps, and gives the JNI/Maven verification job a 20-minute limit.
+
+**Evidence:** 11/11 exact-file source-structure checks passed on the
+new OresScheduler, JUnit and workflow blobs. These checks prove the
+expected guard/test/workflow edits are committed, **not** runtime
+correctness or Java/JNI execution. The new JUnit regressions still
+require an authorized Maven/JDK21+ runner. The source organization
+continues failing its Actions jobs before any job steps; the
+protected-branch cross-organization private-source allowlist
+is still empty. Keep production native actor enforcement OFF and
+PR #917 DRAFT until the JNI, compiled Oreslang guest STOP/cleanup/DONE,
+GraalVM Native Image, and LLVM parity tests execute successfully.
+
+
+
 ## Additional 2026-10-14 JNI/JVM hardening: strict compile and non-replayable cleanup failure
 
 **Confirmed Java build blocker fixed.** The new
