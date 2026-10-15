@@ -484,13 +484,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      * Allocation-free runtime observation used by scheduler await fast paths.
      *
      * <p>A non-null value is the Future's immutable terminal state object. A
-     * null result means the Future was still pending at the observation point.
-     * Callers that observe pending must still register normally, because
-     * settlement may race immediately after this load.</p>
+     * null result means settlement or cancellation revocation is still pending.
+     * Callers must register normally so cancellation cannot resume a guest
+     * continuation before its owning operation has been revoked.</p>
      */
     Object runtimeTerminalStateOrNull() {
         Object observed = state.get();
-        return observed == PENDING ? null : observed;
+        return observed == PENDING
+                || (observed instanceof Cancelled && !cancelRevocationComplete.get())
+                ? null : observed;
     }
 
     /**
