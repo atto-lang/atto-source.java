@@ -163,6 +163,55 @@ class NativeHttpTest {
                 "failed cleanup must still allow terminal failure publication");
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    @org.junit.jupiter.api.Timeout(10)
+    void lastRequestRemovalCannotFinishShutdownDuringCompletionPublication()
+            throws Exception {
+        // State.release removes a request from active before completing its
+        // OresFuture. Race that exact ordering against the production gate:
+        // active.isEmpty() is NOT permission to publish a drained listener.
+        var releasesInProgress = new java.util.concurrent.atomic.AtomicInteger();
+        var activeEmpty = new java.util.concurrent.atomic.AtomicBoolean();
+        var removedLastRequest = new CountDownLatch(1);
+        var allowCompletionToReturn = new CountDownLatch(1);
+
+        assertFalse(NativeHttp.readyForCarrierBarrier(false, true, 0));
+        assertFalse(NativeHttp.readyForCarrierBarrier(true, false, 0));
+        assertFalse(NativeHttp.readyForCarrierBarrier(true, true, 2));
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> release = executor.submit(() -> {
+                releasesInProgress.incrementAndGet();
+                try {
+                    activeEmpty.set(true);
+                    removedLastRequest.countDown();
+                    if (!allowCompletionToReturn.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("completion callback gate timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                } finally {
+                    releasesInProgress.decrementAndGet();
+                }
+            });
+            try {
+                assertTrue(removedLastRequest.await(5, TimeUnit.SECONDS));
+                assertTrue(activeEmpty.get(), "last request must already be removed");
+                assertFalse(NativeHttp.readyForCarrierBarrier(
+                                true, activeEmpty.get(), releasesInProgress.get()),
+                        "shutdown succeeded before request completion was published");
+            } finally {
+                allowCompletionToReturn.countDown();
+            }
+            release.get(5, TimeUnit.SECONDS);
+            assertEquals(0, releasesInProgress.get());
+            assertTrue(NativeHttp.readyForCarrierBarrier(
+                    true, activeEmpty.get(), releasesInProgress.get()),
+                    "the final completed request must unblock shutdown");
+        }
+    }
+
     @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
         var order = new java.util.ArrayList<String>();
         var closeFailure = new IllegalStateException("socket close failed");
