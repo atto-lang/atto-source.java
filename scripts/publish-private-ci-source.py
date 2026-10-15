@@ -169,6 +169,37 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
 
+def checked_source_main_protection():
+    """Require independently enforced source-main reviews before export.
+
+    A policy on an unprotected main branch is not an authorization boundary.
+    If the GitHub App lacks permission to inspect these rules, the API call
+    fails and publishing must stop rather than assuming protection.
+    """
+    branch = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main")
+    if branch.get("protected") is not True:
+        raise Denied("source main branch is not protected")
+    rules = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main/protection")
+    reviews = rules.get("required_pull_request_reviews")
+    checks = rules.get("required_status_checks")
+    admins = rules.get("enforce_admins")
+    if (not isinstance(reviews, dict) or not isinstance(checks, dict)
+            or not isinstance(admins, dict)
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or type(reviews.get("required_approving_review_count")) is not int
+            or reviews["required_approving_review_count"] < 1
+            or admins.get("enabled") is not True
+            or checks.get("strict") is not True
+            or not (isinstance(checks.get("contexts"), list) and checks["contexts"]
+                    or isinstance(checks.get("checks"), list) and checks["checks"])):
+        raise Denied("source main lacks mandatory independent security review and CI")
+    for setting in ("allow_force_pushes", "allow_deletions"):
+        entry = rules.get(setting)
+        if not isinstance(entry, dict) or entry.get("enabled") is not False:
+            raise Denied("source main permits unsafe history or deletion changes")
+
+
 def checked_protected_main_policy(local_fingerprint):
     """Deny approvals present only in an unreviewed local working tree/PR.
 
@@ -449,10 +480,11 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
-    checked_protected_main_policy(approved_policy)
-    # Check both original private source and approved carrier identities before
-    # accessing source bytes; neither the slug nor visibility alone is enough.
+    # Validate the pinned source and independently enforced source-main policy
+    # before touching any source bytes or creating Git objects.
     checked_source()
+    checked_source_main_protection()
+    checked_protected_main_policy(approved_policy)
     checked_repo(repository)
     trusted = trusted_root.resolve(strict=True)
     resolved_source = source.resolve(strict=True)
@@ -475,6 +507,7 @@ def publish(repository, source, branch, trusted_root):
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_source()
+        checked_source_main_protection()
         checked_protected_main_policy(approved_policy)
         checked_repo(repository)
 
