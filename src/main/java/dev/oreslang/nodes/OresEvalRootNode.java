@@ -8486,15 +8486,8 @@ public final class OresEvalRootNode extends RootNode {
             if (left instanceof Number a && right instanceof Number b) {
                 return numericValueEquals(a, b);
             }
-            if (left == right) return true;
-            if (left == null || right == null) return false;
-
-            if (left instanceof dev.oreslang.runtime.OresSymbol
-                    || right instanceof dev.oreslang.runtime.OresSymbol) {
-                return left instanceof dev.oreslang.runtime.OresSymbol
-                        && right instanceof dev.oreslang.runtime.OresSymbol
-                        && left.equals(right);
-            }
+            // Complex values, like real floats, must honor NaN != NaN even
+            // when the two operands reference the same immutable instance.
             if (left instanceof Complex || right instanceof Complex) {
                 try {
                     Complex a = asComplex(left);
@@ -8504,7 +8497,15 @@ public final class OresEvalRootNode extends RootNode {
                     return false;
                 }
             }
+            if (left == right) return true;
+            if (left == null || right == null) return false;
 
+            if (left instanceof dev.oreslang.runtime.OresSymbol
+                    || right instanceof dev.oreslang.runtime.OresSymbol) {
+                return left instanceof dev.oreslang.runtime.OresSymbol
+                        && right instanceof dev.oreslang.runtime.OresSymbol
+                        && left.equals(right);
+            }
             // Class/actor instances have identity equality by default.
             if (left instanceof OresObject || right instanceof OresObject) return false;
 
