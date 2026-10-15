@@ -43,6 +43,52 @@ final class ActorUnaryReplyBridgeTest {
     }
 
     @Test
+    void overlappingDispatchCallsEnterTheUnaryChainAtMostOnce() throws Exception {
+        var actor = ActorRuntime.ActorId.create();
+        var slot = new ActorUnaryReplySlot<ActorMiddlewareValuePipeline.Reply<Integer>>(
+                actor, 8, UUID.randomUUID());
+        var terminalCalls = new AtomicInteger();
+        var bridge = new ActorUnaryReplyBridge<>(new ActorMiddlewareValuePipeline<Integer>(
+                List.of(), List.of(), Set.of(), req -> {
+                    terminalCalls.incrementAndGet();
+                    return CompletableFuture.completedFuture(12);
+                }));
+        var ready = new java.util.concurrent.CountDownLatch(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        var accepted = new AtomicInteger();
+        var rejected = new AtomicInteger();
+        Runnable contestant = () -> {
+            ready.countDown();
+            try {
+                if (!start.await(2, java.util.concurrent.TimeUnit.SECONDS))
+                    throw new AssertionError("concurrent dispatch setup timed out");
+                try {
+                    bridge.dispatch(actor, 8, slot, req(), () -> false);
+                    accepted.incrementAndGet();
+                } catch (IllegalStateException alreadyClaimed) {
+                    rejected.incrementAndGet();
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        Thread a = new Thread(contestant);
+        Thread b = new Thread(contestant);
+        a.start();
+        b.start();
+        assertTrue(ready.await(2, java.util.concurrent.TimeUnit.SECONDS));
+        start.countDown();
+        a.join(2000);
+        b.join(2000);
+        assertFalse(a.isAlive());
+        assertFalse(b.isAlive());
+        assertEquals(1, accepted.get());
+        assertEquals(1, rejected.get());
+        assertEquals(1, terminalCalls.get());
+        assertEquals(ActorUnaryReplySlot.State.REPLIED, slot.state());
+    }
+
+    @Test
     void preCancelledRequestNeverInvokesMiddlewareTerminal() {
         var actor = ActorRuntime.ActorId.create();
         var slot = new ActorUnaryReplySlot<ActorMiddlewareValuePipeline.Reply<Integer>>(
