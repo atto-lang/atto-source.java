@@ -151,6 +151,10 @@ public final class ActorStateContract {
             if (state.initializer() != null && !(state.initializer() instanceof Ast.ObjectExpr)) {
                 throw new IllegalArgumentException("actor state initializer must be a closed key/value aggregate");
             }
+            if (state.type().name().equals("Map")) {
+                throw new IllegalArgumentException(
+                        "actor state requires statically known typed keys; unbounded dynamic Map is not sealed");
+            }
             Ast.TypeRef schema = keySchema(state);
             if (!schema.isRecordType()) {
                 throw new IllegalArgumentException("actor state schema must declare typed keys");
