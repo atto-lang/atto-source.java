@@ -39,11 +39,15 @@ expect_fail() {
 }
 expect_wrapper_reject() {
   rm -f "$MOCK_EXEC_LOG"
-  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test --expected-source-tree 0000000000000000000000000000000000000000 > "$work/out" 2>&1; then
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test --expected-source-tree 0000000000000000000000000000000000000000 --expected-source-commit 1111111111111111111111111111111111111111 > "$work/out" 2>&1; then
     echo 'Unsafe destination executed publishing' >&2; exit 1;
   fi
   test ! -e "$MOCK_EXEC_LOG"
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
+  if grep -q 'usage:' "$work/out"; then
+    echo 'Wrapper rejected obsolete arguments rather than exercising publisher admission' >&2
+    exit 1
+  fi
 }
 expect_ok trusted/ci
 export MOCK_REPOSITORY_ID=456

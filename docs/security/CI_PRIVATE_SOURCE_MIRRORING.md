@@ -60,8 +60,13 @@ PR-controlled environment.
 
 The publisher itself must run from an **unmodified Git checkout of the same
 protected source-main commit** reported by GitHub. It checks the actual Git
-repository root, `HEAD`, and tracked code/policy paths before reading private
-snapshot files. An untrusted compiler PR checkout cannot run an altered
+repository root and immutable `HEAD`, then performs descriptor-relative,
+no-symlink byte hashing of every trusted script and policy file against
+its exact `HEAD` Git blob and mode, before reading private snapshot files.
+Git `status --porcelain` is insufficient: `skip-worktree` and
+`assume-unchanged` index flags can make altered executable bytes appear
+clean. The verifier bypasses Git replace-object mappings and does not trust
+the index as proof of worktree contents. An untrusted compiler PR checkout cannot run an altered
 publisher or grant itself approval. Prepare the exact compiler PR snapshot as
 a separate, bounded directory **inside the trusted main checkout** (for example
 using a reviewed `git archive` of the independently authenticated commit).
@@ -148,9 +153,13 @@ Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
 before every API write, in addition to rechecking the destination's live
 private visibility. It does not print source contents in API failures.
-The Bash preflight and Python publisher both require the live destination's
-positive numeric repository ID to equal the **independently reviewed ID in the
-protected policy**, before reading private source or creating Git objects.
+The standalone Bash diagnostic and the Python publisher both require the live
+destination's positive numeric repository ID to equal the **independently
+reviewed ID in the protected policy**, before reading private source or
+creating Git objects. The production Python publisher **does not execute**
+a mutable checkout-local Bash guard: it instead performs its own no-follow,
+bounded policy read and authenticated live destination lookup, eliminating
+the pathname-swap window between guard attestation and interpretation.
 The publisher also pins this ID throughout each transfer, checking live name,
 numeric identity, private visibility, and active (non-archived, non-disabled)
 status before every Git object write. Missing status or an ID mismatch fails
@@ -193,3 +202,44 @@ Resetting branch references did **not** remove the Git objects: commits were
 still retrievable by SHA. Administrators must restrict public access and seek
 GitHub Support assistance for retained Git objects, Actions caches/logs, and
 other copies before resolving the incident.
+
+## CODEOWNERS coverage must be independently verified
+
+The publisher now reads `.github/CODEOWNERS` from authenticated source
+`main`, checks the returned Git blob SHA-1 and size against the actual
+base64-decoded file bytes, and requires a terminal block of exact
+`@ORESoftware` ownership entries for the CODEOWNERS file itself,
+destination and source-snapshot approval ledgers, export entry point,
+destination guard, audit tests and private-mirror CI workflow.
+
+The terminal ordering is intentional: in CODEOWNERS a later matching rule
+wins. An earlier security rule followed by an unreviewed wildcard or
+specific-file rule must not silently remove the review requirement.
+Missing, renamed, tampered, overridden or malformed ownership fails closed
+**before** the private compiler source snapshot is read.
+
+This is additional verification, not authorization by itself: protected
+source `main`, effective independent review enforcement, immutable source
+commit/tree approval, and numeric destination repository ID must also pass.
+Current `main` does not yet contain the proposed source-snapshot policy
+ownership line, and no private export is authorized. CODEOWNERS checks
+cannot prove that a repository owner configured GitHub permissions correctly,
+or that later users with administrative access cannot alter settings.
+
+The publisher also consults GitHub's protected-main
+`GET /repos/{owner}/{repo}/codeowners/errors?ref=main` endpoint and
+`GET /repos/{owner}/{repo}/collaborators/ORESoftware/permission`.
+The first must return an empty `errors` array; the second must identify
+the expected GitHub **User** with effective `write` or `admin` access.
+These checks must reject missing API permissions or unavailable endpoints,
+rather than accepting locally well-formed but GitHub-inactive owners.
+
+The exact CODEOWNERS validation function was exercised locally with
+**28/28 focused cases** and a matching source-text FNV-1a fingerprint
+(`37bd9d4b`, 2713 characters including the terminating newline).
+These are source-free mocked GitHub API checks, not the full checked-in
+Python/Bash publisher suite, Java/GraalVM tests, or a real source transfer.
+
+Security reviewers must separately verify GitHub's CODEOWNERS diagnostics
+and that a qualified **independent** reviewer can approve a change, rather
+than relying solely on a valid CODEOWNERS text entry.

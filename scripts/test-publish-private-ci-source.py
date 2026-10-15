@@ -32,6 +32,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             b"blob " + str(len(approved_bytes)).encode("ascii")
             + b"\0" + approved_bytes
         ).hexdigest()
+        self.codeowners_text = "\n".join(
+            path + " " + pub.REQUIRED_CODEOWNER
+            for path in pub.REQUIRED_CODEOWNER_PATHS
+        ) + "\n"
+        self.codeowners_fake_sha = None
+        self.codeowners_errors = []
+        self.codeowner_permission = "write"
+        self.codeowner_login = "ORESoftware"
+        self.codeowner_type = "User"
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         # Synthetic, local-only approval. Production main is deliberately empty.
@@ -106,6 +115,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     "require_code_owner_reviews": True,
                     "dismiss_stale_reviews": True,
                     "bypass_pull_request_allowances": {}}
+        if route == pub.CODEOWNERS_ROUTE:
+            raw = self.codeowners_text.encode("utf-8")
+            blob_sha = hashlib.sha1(
+                b"blob " + str(len(raw)).encode("ascii")
+                + bytes([0]) + raw
+            ).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.codeowners_fake_sha or blob_sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == pub.CODEOWNERS_ERRORS_ROUTE:
+            return {"errors": self.codeowners_errors}
+        if route == pub.CODEOWNER_PERMISSION_ROUTE:
+            return {"permission": self.codeowner_permission,
+                    "user": {"login": self.codeowner_login,
+                             "type": self.codeowner_type}}
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
@@ -326,21 +350,21 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(child["GH_PROMPT_DISABLED"], "1")
         self.assertEqual(child["GIT_CONFIG_GLOBAL"], "/dev/null")
 
-    def test_real_preflight_does_not_execute_inherited_bash_env_or_path(self):
-        # Exercise the actual guard launcher on a synthetic, non-sensitive
-        # fixture. No GitHub traffic or private source is needed.
+    def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
+        # Approval is now parsed strictly as data: even a script that
+        # explicitly writes a marker must never be invoked by the publisher.
         scripts = self.root / "scripts"
         scripts.mkdir()
         guard = scripts / "check-private-ci-destination.sh"
-        guard.write_text("exit 0\n")
         payload = self.root / "injected.sh"
         marker = self.root / "executed-untrusted"
+        guard.write_text("printf injected > " + str(marker) + "\n")
         payload.write_text("printf injected > " + str(marker) + "\n")
         fake_bash = self.root / "bash"
         fake_bash.write_text("#!/bin/sh\nprintf injected > " + str(marker) + "\n")
         fake_bash.chmod(0o755)
-        # setUp deliberately mocks require_preflight for the publisher suite.
-        # Temporarily restore the real launcher for this targeted test.
+        # setUp mocks require_preflight. Temporarily restore the real
+        # data-only verifier; no checkout-local executable is entered.
         self.preflight.stop()
         try:
             with patch.dict(os.environ, {"BASH_ENV": str(payload),
@@ -425,14 +449,42 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             commit = git("rev-parse", "HEAD")
             self.assertEqual(
                 self.real_publisher_checkout(root, commit), commit)
+            # A dirty file masked by either Git index flag must never pass
+            # the byte-level protected-publisher attestation.
+            for flag, undo in (("--skip-worktree", "--no-skip-worktree"),
+                               ("--assume-unchanged", "--no-assume-unchanged")):
+                guard = root / protected[2]
+                git("update-index", flag, "--", protected[2])
+                guard.write_text("unreviewed preflight guard")
+                self.assertEqual(
+                    git("-c", "core.fsmonitor=false", "status", "--porcelain",
+                        "--untracked-files=no", "--", protected[2]),
+                    "", "Git status must be bypassed for this regression")
+                with self.assertRaisesRegex(pub.Denied, "bytes differ from HEAD"):
+                    self.real_publisher_checkout(root, commit)
+                git("update-index", undo, "--", protected[2])
+                git("reset", "--hard", "HEAD")
+                self.assertEqual(self.real_publisher_checkout(root, commit), commit)
+            guard = root / protected[2]
+            guard.unlink()
+            guard.symlink_to(root / protected[0])
+            with self.assertRaisesRegex(pub.Denied, "cannot be opened without following links"):
+                self.real_publisher_checkout(root, commit)
+            guard.unlink()
+            git("checkout", "HEAD", "--", protected[2])
+            guard.chmod(0o755)
+            with self.assertRaisesRegex(pub.Denied, "permissions or size"):
+                self.real_publisher_checkout(root, commit)
+            guard.chmod(0o644)
+            self.assertEqual(self.real_publisher_checkout(root, commit), commit)
             with self.assertRaisesRegex(pub.Denied, "not executing reviewed"):
                 self.real_publisher_checkout(root, "0" * 40)
             script = root / protected[0]
             script.write_text("unreviewed mutation")
-            with self.assertRaisesRegex(pub.Denied, "modified"):
+            with self.assertRaisesRegex(pub.Denied, "bytes differ from HEAD"):
                 self.real_publisher_checkout(root, commit)
             git("add", protected[0])
-            with self.assertRaisesRegex(pub.Denied, "modified"):
+            with self.assertRaisesRegex(pub.Denied, "bytes differ from HEAD"):
                 self.real_publisher_checkout(root, commit)
             git("reset", "--hard", "HEAD")
             (root / protected[-1]).unlink()
@@ -645,6 +697,101 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaises(pub.Denied):
                         pub.publish("trusted/ci", self.source, "ci/oreslang-test",
                                     self.root, self.expected_tree, D)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_protected_codeowners_must_cover_export_and_source_snapshot_policy(self):
+        baseline = self.codeowners_text
+        cases = (
+            baseline.replace(
+                "/.github/private-ci-approved-source-snapshots.txt @ORESoftware\n", ""),
+            baseline.replace(
+                "/scripts/publish-private-ci-source.py @ORESoftware\n",
+                "/scripts/publish-private-ci-source.py @Unreviewed\n"),
+            baseline + "* @Unreviewed\n",
+            baseline + "/scripts/publish-private-ci-source.py @Unreviewed\n",
+            "# no reviewed owners\n",
+        )
+        for content in cases:
+            with self.subTest(content=content[-100:]):
+                self.route_calls.clear()
+                self.codeowners_text = content
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("unreviewed source read")):
+                    with self.assertRaisesRegex(pub.Denied, "CODEOWNER"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.codeowners_text = baseline
+
+    def test_protected_codeowners_digest_is_not_caller_controlled(self):
+        self.codeowners_fake_sha = "f" * 40
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("unreviewed source read")):
+            with self.assertRaisesRegex(pub.Denied, "CODEOWNERS digest"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_github_codeowners_validation_errors_fail_before_source_read(self):
+        invalid = [
+            {"line": 1, "kind": "Invalid owner",
+             "source": "/.github/CODEOWNERS @ORESoftware"},
+        ]
+        self.codeowners_errors = invalid
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read")):
+            with self.assertRaisesRegex(pub.Denied, "invalid according to GitHub"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_github_codeowners_error_list_must_be_valid(self):
+        self.codeowners_errors = None
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read")):
+            with self.assertRaisesRegex(pub.Denied, "invalid according to GitHub"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_security_owner_admin_role_is_accepted(self):
+        self.codeowner_permission = "admin"
+        self.publish()
+        self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_github_owner_admission_endpoints_must_be_available(self):
+        original = self.fake_api
+        for endpoint in (pub.CODEOWNERS_ERRORS_ROUTE,
+                         pub.CODEOWNER_PERMISSION_ROUTE):
+            with self.subTest(endpoint=endpoint):
+                self.route_calls.clear()
+                def missing_admission(request, method="GET", payload=None):
+                    if request == endpoint:
+                        raise pub.Denied("required GitHub owner metadata unavailable")
+                    return original(request, method, payload)
+                with patch.object(pub, "gh_api", side_effect=missing_admission):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("unauthorized source read")):
+                        with self.assertRaisesRegex(pub.Denied, "owner metadata unavailable"):
+                            pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                        self.root, self.expected_tree, D)
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_security_codeowner_requires_live_write_permission(self):
+        cases = [
+            ("read", "ORESoftware", "User"),
+            ("none", "ORESoftware", "User"),
+            ("triage", "ORESoftware", "User"),
+            ("write", "impostor", "User"),
+            ("write", "ORESoftware", "Organization"),
+            (None, "ORESoftware", "User"),
+        ]
+        for permission, login, owner_type in cases:
+            with self.subTest(permission=permission, login=login):
+                self.route_calls.clear()
+                self.codeowner_permission = permission
+                self.codeowner_login = login
+                self.codeowner_type = owner_type
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read")):
+                    with self.assertRaisesRegex(pub.Denied, "write access"):
+                        self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
@@ -1522,7 +1669,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                               side_effect=AssertionError("source read before approval")):
                 with self.assertRaisesRegex(pub.Denied, "not approved"):
                     self.publish()
-        # Protected source-main metadata reads precede checkout-local guard.
+        # Protected source-main metadata reads precede data-only preflight.
         self.assertTrue(self.route_calls)
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
