@@ -31,9 +31,12 @@ public final class ActorMiddlewareValuePipeline<T> {
         public static ResponseDraft defaults() { return new ResponseDraft(200, Map.of()); }
         public ResponseDraft withStatus(int value) { return new ResponseDraft(value, headers); }
         public ResponseDraft withHeader(String name, String value) {
-            var changed = new HashMap<>(headers);
-            changed.put(name, value);
-            return new ResponseDraft(status, changed);
+            // Normalize before replacement. A differently-cased spelling of
+            // the same header must replace its prior value, not create a
+            // duplicate key that is only rejected during construction.
+            var checked = new ActorMiddlewarePipeline.Envelope("", headers)
+                    .withHeader(name, value);
+            return new ResponseDraft(status, checked.headers());
         }
     }
 
@@ -237,6 +240,14 @@ public final class ActorMiddlewareValuePipeline<T> {
                 if (failure != null) throw new CompletionException(failure);
                 if (childFailure != null) throw new CompletionException(childFailure);
                 if (cancelled.getAsBoolean()) throw new IllegalStateException("request cancelled");
+                // A supervisor around hook is privileged policy, not the
+                // application actor. It may forward the *exact* actor Reply
+                // returned by its one-shot child, or reject; it cannot mint
+                // a new typed value, even if it invoked a child first.
+                if (privileged && outcome instanceof Reply<?> && outcome != ignored) {
+                    throw new SecurityException(
+                            "supervisor around middleware cannot manufacture actor's typed reply");
+                }
                 return Objects.requireNonNull(outcome, "null middleware outcome");
             });
         }).thenCompose(x -> x);
