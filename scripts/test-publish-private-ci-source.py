@@ -309,6 +309,31 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertTrue(swapped[0])
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_directory_replacement_between_stat_and_open_is_rejected(self):
+        # A non-symlink directory swap must not redirect reads to a new inode.
+        nested = self.source / "nested"
+        nested.mkdir()
+        (nested / "original.ores").write_text("original")
+        replacement = self.root / "replacement-dir"
+        replacement.mkdir()
+        (replacement / "other.ores").write_text("different")
+        moved = self.root / "moved-original-dir"
+        raw_open = pub.os.open
+        swapped = [False]
+
+        def replace_directory(name, flags, *args, **kwargs):
+            if name == "nested" and kwargs.get("dir_fd") is not None and not swapped[0]:
+                swapped[0] = True
+                nested.rename(moved)
+                replacement.rename(nested)
+            return raw_open(name, flags, *args, **kwargs)
+
+        with patch.object(pub.os, "open", side_effect=replace_directory):
+            with self.assertRaisesRegex(pub.Denied, "source directory changed"):
+                self.publish()
+        self.assertTrue(swapped[0])
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
     def test_regular_file_replacement_between_stat_and_open_is_rejected(self):
         # A regular-to-regular rename used to evade the previous type check:
         # the descriptor must match the exact inode seen by os.stat.
