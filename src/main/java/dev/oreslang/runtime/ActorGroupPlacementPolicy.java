@@ -79,10 +79,9 @@ public record ActorGroupPlacementPolicy(
             throw new UnsupportedOperationException(
                     "ActorGroup CPU affinity requires group-aware scheduler placement");
         }
-        if (maxParallelTurns != Integer.MAX_VALUE) {
-            throw new UnsupportedOperationException(
-                    "ActorGroup maxParallelTurns requires nonblocking scheduler permits");
-        }
+        // A bounded physical-turn permit gate is admitted by ActorRuntime.
+        // It never creates a group executor and holds the lease until after
+        // the physical TurnExecutor/guest-context exit.
         if (accelerator != Accelerator.CPU_ONLY) {
             throw new UnsupportedOperationException(
                     "ActorGroup GPU placement requires a resource-admitted device broker");
