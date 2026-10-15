@@ -251,6 +251,36 @@ final class RuntimePermissionsTest {
         }
     }
 
+    @Test
+    void serializedPermissionArgumentsRequireUniqueExplicitMarkerAndRules() {
+        String marker = "--ores-permission-explicit=true";
+        String grant = "--ores-permission-env-allow=PATH";
+        String deny = "--ores-permission-env-deny=SECRET";
+        IsolatePolicy host = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.ENVIRONMENT);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(new String[]{grant}, host),
+                "unmarked serialized grant must not be accepted");
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[]{marker, marker, grant}, host),
+                "duplicate explicit marker is ambiguous");
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[]{marker, grant, grant}, host),
+                "duplicate serialized allow rule is ambiguous");
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[]{marker, deny, deny}, host),
+                "duplicate serialized deny rule is ambiguous");
+
+        RuntimePermissions scoped = RuntimePermissions.fromApplicationArguments(
+                new String[]{marker, grant, deny}, host);
+        assertTrue(scoped.allows(RuntimePermissions.Permission.ENV, "PATH"));
+        assertFalse(scoped.allows(RuntimePermissions.Permission.ENV, "SECRET"));
+    }
+
     private static String escape(Path path) {
         return path.toString().replace("\\", "\\\\").replace("\"", "\\\"");
     }
