@@ -16,6 +16,9 @@ import subprocess
 import sys
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# An approved destination must include its stable numeric GitHub repository ID.
+# This closes name reuse between security review and the first transfer.
+POLICY_ENTRY = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]{0,19})$")
 BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
@@ -132,22 +135,26 @@ def checked_policy_fingerprint(root, repository):
         lines = contents.decode("utf-8").splitlines()
     except UnicodeDecodeError as exc:
         raise Denied("private CI approval policy cannot be decoded") from exc
-    approved = False
+    approved_id = None
     reviewed_names = set()
+    reviewed_ids = set()
     for line in lines:
         if not line or line.startswith("#"):
             continue
-        if not NAME.fullmatch(line):
-            raise Denied("private CI approval policy contains an invalid entry")
-        normalized = line.casefold()
-        if normalized in reviewed_names:
-            raise Denied("private CI approval policy contains duplicate destination entries")
+        entry = POLICY_ENTRY.fullmatch(line)
+        if entry is None:
+            raise Denied("private CI approval policy requires exact owner/repo and numeric repository ID")
+        name, repository_id = entry.groups()
+        normalized = name.casefold()
+        if normalized in reviewed_names or repository_id in reviewed_ids:
+            raise Denied("private CI approval policy contains duplicate repository names or IDs")
         reviewed_names.add(normalized)
+        reviewed_ids.add(repository_id)
         if normalized == repository.casefold():
-            approved = True
-    if not approved:
+            approved_id = int(repository_id)
+    if approved_id is None:
         raise Denied("destination approval was revoked or absent")
-    return hashlib.sha256(contents).digest()
+    return hashlib.sha256(contents).digest(), approved_id
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -266,6 +273,10 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     approved_destination_id = require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    # Policy is protected by review; live metadata cannot substitute for that
+    # approved identity, even if a name has been deleted and recreated.
+    if approved_policy[1] != approved_destination_id:
+        raise Denied("destination numeric ID differs from reviewed approval policy")
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
