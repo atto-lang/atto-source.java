@@ -8,8 +8,7 @@ cp "$original_script_dir/check-private-ci-destination.sh" "$work/fixture/scripts
 cp "$original_script_dir/run-in-private-ci-destination.sh" "$work/fixture/scripts/"
 cp "$original_script_dir/publish-private-ci-source.py" "$work/fixture/scripts/"
 script_dir="$work/fixture/scripts"
-# Only this disposable test copy accepts a synthetic pinned destination.
-# Production code continues to accept only the reviewed real repository ID.
+# Only the disposable test copy accepts a synthetic pinned destination.
 sed -i 's@chapter-publishing-test/zed-pkg-integration-e2e@trusted/ci@g; s@1344442382@123456789@g' "$script_dir/check-private-ci-destination.sh"
 policy="$work/fixture/.github/private-ci-approved-repositories.txt"
 printf '# Approved for this isolated test only\ntrusted/ci\n' > "$policy"
@@ -55,15 +54,15 @@ for id in 987654321 null false invalid; do
   expect_wrapper_reject trusted/ci
 done
 unset MOCK_ID
-for metadata in MOCK_ARCHIVED MOCK_DISABLED; do
-  export "$metadata"=true
+for field in MOCK_ARCHIVED MOCK_DISABLED; do
+  export "$field"=true
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
-  unset "$metadata"
-  export "$metadata"=null
+  unset "$field"
+  export "$field"=null
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
-  unset "$metadata"
+  unset "$field"
 done
 for visibility in public internal null; do
   export MOCK_VISIBILITY="$visibility"
@@ -109,7 +108,7 @@ mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
-printf 'PASS: pinned repository ID, private/nonarchived metadata, symlink and multiline rejection; child not executed\n'
+printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
 \n999999999\tspoofed/repo\tprivate\ttrue\tfalse\tfalse'
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
