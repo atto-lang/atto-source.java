@@ -56,6 +56,35 @@ final class FutureCompositionLanguageTest {
         assertEquals("seen:42:42:40", run(program));
     }
 
+    @Test
+    void snakeCaseFutureCompositionKeepsExistingSchedulerSemantics() throws Exception {
+        String program = """
+                async fnc initial(): int {
+                  return 2;
+                }
+
+                async fnc next(int value): int {
+                  return value + 3;
+                }
+
+                pub fnc main(): void {
+                  val Future<int> value = initial()
+                      .and_then(|int x| -> { return next(x); })
+                      .flat_map(|int x| -> { return next(x); })
+                      .on_success(|int x| -> {
+                        stdio.stdout.write("seen:");
+                        stdio.stdout.write(x);
+                        stdio.stdout.write(":");
+                        return;
+                      });
+                  stdio.stdout.write(await value);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("seen:8:8", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "future-compose.ores")
