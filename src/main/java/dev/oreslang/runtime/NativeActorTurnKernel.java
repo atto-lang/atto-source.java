@@ -243,8 +243,15 @@ final class NativeActorTurnKernel implements AutoCloseable {
         return handle;
     }
 
+    /** A native capability/barrier failure, not arbitrary guest Java failure. */
+    static final class NativeStatusFailure extends IllegalStateException {
+        NativeStatusFailure(int status) {
+            super("native actor-turn status=" + status);
+        }
+    }
+
     private static void check(int code) {
-        if (code != 0) throw new IllegalStateException("native actor-turn status=" + code);
+        if (code != 0) throw new NativeStatusFailure(code);
     }
 
     private static native long nIssueCleanup(long vm, long source);
