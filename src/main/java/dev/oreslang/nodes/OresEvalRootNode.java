@@ -3023,12 +3023,14 @@ public final class OresEvalRootNode extends RootNode {
             LinkedHashMap<String, Object> bindings =
                     new LinkedHashMap<>(left.bindings());
             for (Map.Entry<String, Object> entry : right.bindings().entrySet()) {
-                if (bindings.containsKey(entry.getKey())
-                        && bindings.get(entry.getKey()) != entry.getValue()) {
+                // A second lexical binding is invalid even if both payloads
+                // happen to be identical (or null). Identity must never
+                // decide whether a name collision is accepted.
+                if (bindings.containsKey(entry.getKey())) {
                     throw new IllegalStateException("condition pattern binds '"
                             + entry.getKey() + "' more than once");
                 }
-                bindings.putIfAbsent(entry.getKey(), entry.getValue());
+                bindings.put(entry.getKey(), entry.getValue());
             }
             return new ConditionResult(true, snapshotPatternBindings(bindings));
         }
