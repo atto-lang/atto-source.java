@@ -119,6 +119,35 @@ final class ActorRoleTransportDeclarationTest {
     }
 
     @Test
+    void inheritedSpecializationCannotDowngradeOrSmuggleFields() {
+        rejects("""
+                define stream actor Parent as
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                define actor Child extends Parent as
+                end
+                """, "explicitly preserve inherited actor reply role");
+
+        rejects("""
+                define actor Parent as
+                    let int secret;
+                end
+                define stream actor Child extends Parent as
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                """, "cannot inherit ordinary persistent instance fields");
+
+        rejects("""
+                define stream actor Parent as
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                define unary actor Child extends Parent as
+                    run(int value): int { return value; }
+                end
+                """, "actor reply role mismatch");
+    }
+
+    @Test
     void contextualKeywordsStayValidOrdinaryIdentifiers() {
         assertDoesNotThrow(() -> Parser.parse("""
                 pub fnc unary(int stream): int { return stream; }
