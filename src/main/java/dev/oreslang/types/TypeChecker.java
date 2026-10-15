@@ -151,6 +151,9 @@ public final class TypeChecker {
         for (Map.Entry<String, Ast.ClassDecl> entry : linkedClasses.entrySet()) {
             String name = entry.getKey();
             Ast.ClassDecl declaration = entry.getValue();
+            if ("Pointer".equals(name)) {
+                throw new IllegalArgumentException("Pointer is a reserved compiler-owned type");
+            }
             if (name == null || declaration == null || !name.equals(declaration.name())
                     || declaration.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("invalid linked public class: " + name);
@@ -187,7 +190,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
                 "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
-                "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
+                "Pointer", "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
@@ -227,6 +230,9 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("Pointer")) {
+                throw new IllegalArgumentException("Pointer is a reserved compiler-owned type");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 // Pointer<T> is a reserved compiler-owned type, not a class
