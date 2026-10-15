@@ -79,4 +79,34 @@ final class ExperimentalHirV1ExporterTest {
                 """));
     }
 
+
+    @Test
+    void checkedDirectiveNegotiationMatchesTheExecutableParser() {
+        String ordinary = "pub fnc main(): int { return 43; }\n";
+        String directive = "// oreslang:checked-i64-v1\n";
+        assertDoesNotThrow(() -> ExperimentalHirV1Exporter.fromSource(ordinary),
+                "ordinary universally safe scalar code remains exportable");
+        assertDoesNotThrow(() -> ExperimentalHirV1Exporter.fromSource(directive + ordinary),
+                "the exact v1 directive remains accepted");
+
+        String[] malformed = {
+                "\n" + directive + ordinary,
+                " " + directive + ordinary,
+                "\t" + directive + ordinary,
+                "\uFEFF" + directive + ordinary,
+                "// oreslang:checked-i64-v1\r\n" + ordinary,
+                "// oreslang:checked-i64-v2\n" + ordinary,
+                "// oreslang:checked-i64-v1 trailing\n" + ordinary,
+                directive + directive + ordinary,
+                ordinary + directive
+        };
+        for (String source : malformed) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> ExperimentalHirV1Exporter.fromSource(source),
+                    "malformed checked directive must never fall back to unmarked HIR");
+            assertTrue(failure.getMessage().contains("checked-i64-v1"),
+                    "diagnostic must identify the rejected checked profile");
+        }
+    }
+
 }
