@@ -43,6 +43,35 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
         return System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
     }
 
+    /**
+     * Reaching a guest latch does not prove the guest has returned Await.
+     * Wait for the real TaskRunner WAITING phase and physical carrier exit
+     * before triggering deterministic STOP or native cleanup races.
+     */
+    private static void awaitPhysicalSuspension(OresScheduler scheduler, int count)
+            throws Exception {
+        Field tasksField = OresScheduler.class.getDeclaredField("tasks");
+        tasksField.setAccessible(true);
+        long until = deadline();
+        while (System.nanoTime() < until) {
+            var live = (java.util.Set<?>) tasksField.get(scheduler);
+            int parked = 0;
+            for (Object runner : live) {
+                Field phaseField = runner.getClass().getDeclaredField("phase");
+                Field executingField = runner.getClass().getDeclaredField("executing");
+                phaseField.setAccessible(true);
+                executingField.setAccessible(true);
+                var phase = (java.util.concurrent.atomic.AtomicInteger) phaseField.get(runner);
+                var executing = (java.util.concurrent.atomic.AtomicBoolean)
+                        executingField.get(runner);
+                if (phase.get() == 3 && !executing.get()) parked++;
+            }
+            if (live.size() == count && parked == count) return;
+            Thread.sleep(2);
+        }
+        throw new AssertionError("logical SourceTask did not park and release its carrier");
+    }
+
     private static void ordinarySuspendResume() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64);
                 OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
@@ -61,6 +90,7 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
                 return OresScheduler.done(42);
             });
             require(started.await(5, TimeUnit.SECONDS), "guest never entered");
+            awaitPhysicalSuspension(scheduler, 1);
             awaited.completeFromRuntime(1);
             require(terminal.get(5, TimeUnit.SECONDS) == 42,
                     "suspended guest result incorrect");
@@ -82,6 +112,7 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
                 return OresScheduler.<Integer>await(awaited);
             });
             require(started.await(5, TimeUnit.SECONDS), "guest never entered");
+            awaitPhysicalSuspension(scheduler, 1);
             kernel.stop();
             awaited.completeFromRuntime(1);
             try {
@@ -112,6 +143,7 @@ public final class NativeActorTurnSchedulerStandaloneSmoke {
                 return OresScheduler.done(91);
             });
             require(started.await(5, TimeUnit.SECONDS), "guest never entered");
+            awaitPhysicalSuspension(scheduler, 1);
             var cleanup = kernel.issueCleanup(source.get());
             awaited.completeFromRuntime(1);
             waitFor(deadline(), () -> scheduler.nativeRetirementFailures() > 0);
