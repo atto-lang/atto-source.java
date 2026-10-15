@@ -336,3 +336,12 @@ backoff, durable restart state across parent failures, `one_for_all`/
 `rest_for_one`, or LLVM guest restart parity. Keep the PR draft until full
 compiler/runtime, AOT and lifecycle regression tests execute successfully.
 
+## Incarnation authority and identity collision audit (October 14, 2026)
+
+The Java actor runtime now treats the **exact registered `ActorRef` object plus generation** as the incarnation capability for ref-based operations, instead of trusting an `ActorId` lookup alone. `send`, `stop`, `cancel`, force cancellation, `gracefulStop`, `drain`, readiness, host placement/code-image/mailbox introspection, and parent/child enumeration reject or ignore a stale or forged reference, even if its ID and numeric generation match a live actor. A revoked older reference cannot operate on a replacement actor.
+
+Actor registration now uses `putIfAbsent` rather than `put` for every root/child path. A generated UUID collision must fail closed and roll back its actor slot rather than overwrite an existing live cell; for inherited ActorGroups, the runtime claims the actor identity **before** publishing the managed worker, and uses `putIfAbsent` there too. The existing rollback removes only entries that match the new cell/ref.
+
+`ActorIncarnationIdentityTest` uses host-test-only reflection to create detached references that carry an identical ActorId and either an older or equal generation; neither can send, cancel, stop or inspect the live incarnation. The original actor remains operable. The test is included in `scripts/verify_actor_exception_jvm.sh`. This regression is **committed, not yet executed successfully** in the project JUnit/JDK25/GraalVM test suite.
+
+The existing reservation/CONTROL retry/one-for-one restart code remains draft; no source-language `on_raise` recovery, full LLVM guest execution, formal lifecycle model proof, or successful exact-head CI is claimed.
