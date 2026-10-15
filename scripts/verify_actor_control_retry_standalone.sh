@@ -28,5 +28,7 @@ if [[ -n "${ORESLANG_EXPECTED_RETRY_BLOB_SHA:-}" ]]; then
 fi
 work="$(mktemp -d "${TMPDIR:-/tmp}/oreslang-retry.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
-javac -encoding UTF-8 -d "$work" "$source_file" "$test_file"
-java -cp "$work" dev.oreslang.runtime.ControlWakeRetryStandaloneStress
+# Fail the gate on compiler warnings as well as invalid source. The stress
+# runner and the production class use only Java 17 language facilities.
+javac -encoding UTF-8 -Xlint:all -Werror -d "$work" "$source_file" "$test_file"
+java -Xss512k -ea -cp "$work" dev.oreslang.runtime.ControlWakeRetryStandaloneStress
