@@ -520,17 +520,21 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
-    # Approval comes before reading potentially sensitive source files.
-    approved_destination_id = require_preflight(repository, trusted_root)
+    # This function previously ran the checkout-local Bash preflight BEFORE
+    # authenticating the checkout. A modified PR checkout could execute an
+    # attacker-controlled guard even though source export would later deny.
+    # Read policy strictly as data and authenticate the protected source first.
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
-    # Policy is protected by review; live metadata cannot substitute for that
-    # approved identity, even if a name has been deleted and recreated.
-    if approved_policy[1] != approved_destination_id:
-        raise Denied("destination numeric ID differs from reviewed approval policy")
     # A PR branch can contain an allowlist entry without security approval.
     # Require the exact policy Git blob to exist on protected source main.
     reviewed_main_sha = require_protected_main_policy(approved_policy)
     require_trusted_publisher_checkout(trusted_root, reviewed_main_sha)
+    # Only a pinned, clean protected-main checkout may execute its own guard.
+    # All failures above occur before launching any checkout-local code,
+    # inspecting private source files, or writing destination Git objects.
+    approved_destination_id = require_preflight(repository, trusted_root)
+    if approved_policy[1] != approved_destination_id:
+        raise Denied("destination numeric ID differs from reviewed approval policy")
     reviewed_snapshot_sha = require_reviewed_source_snapshot(
         expected_source_commit, expected_source_tree, approved_destination_id)
     verify_source_commit(expected_source_commit, expected_source_tree)
