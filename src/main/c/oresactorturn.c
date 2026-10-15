@@ -5,6 +5,8 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 /* An intentionally small native VM admission kernel. This is not the
  * implementation of the Oreslang scheduling policy; that remains in .ores.
@@ -40,6 +42,7 @@ struct ores_cleanup_cap {
 };
 struct ores_turn_vm {
     pthread_mutex_t mutex;
+    pid_t process_id;
     size_t max_objects, used_objects;
     struct ores_actor_cap *actors;
     struct ores_source_task_cap *sources;
@@ -69,6 +72,14 @@ static uint_fast64_t current_carrier_token(void) {
         }
     }
     return 0;
+}
+
+/* Fork copies VM memory and a calling thread's TLS carrier identity.
+ * Reject foreign-process access BEFORE touching inherited pthread mutexes.
+ * A copied mutex may remain locked by a vanished parent thread.
+ */
+static bool same_process(const ores_turn_vm *vm) {
+    return vm && vm->process_id == getpid();
 }
 
 static bool known_actor(const ores_turn_vm *vm, const ores_actor_cap *actor) {
@@ -144,11 +155,12 @@ ores_turn_vm *ores_turn_vm_new(size_t max_objects) {
         return NULL;
     }
     vm->max_objects = max_objects;
+    vm->process_id = getpid();
     return vm;
 }
 
 ores_turn_status ores_turn_vm_destroy(ores_turn_vm *vm) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     for (const ores_actor_cap *a = vm->actors; a; a = a->next) {
         /* VM teardown must not bypass STOP, unresolved cleanup tickets,
@@ -179,7 +191,8 @@ ores_turn_status ores_turn_register(ores_turn_vm *vm,
                                    uint64_t hi, uint64_t lo, uint64_t incarnation,
                                    ores_actor_cap **out) {
     if (out) *out = NULL;
-    if (!vm || !out || (!hi && !lo) || incarnation == 0) return ORES_TURN_INVALID;
+    if (!same_process(vm) || !out || (!hi && !lo) || incarnation == 0)
+        return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     for (const ores_actor_cap *a = vm->actors; a; a = a->next) {
         if (a->hi == hi && a->lo == lo) {
@@ -220,7 +233,8 @@ ores_turn_status ores_turn_register_source_task(ores_turn_vm *vm,
                                                uint64_t generation,
                                                ores_source_task_cap **out) {
     if (out) *out = NULL;
-    if (!vm || !out || task_id == 0 || generation == 0) return ORES_TURN_INVALID;
+    if (!same_process(vm) || !out || task_id == 0 || generation == 0)
+        return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_current(vm, actor);
     if (status == ORES_TURN_OK) {
@@ -262,7 +276,7 @@ ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
                                          ores_source_task_cap *source,
                                          ores_cleanup_cap **out) {
     if (out) *out = NULL;
-    if (!vm || !out) return ORES_TURN_INVALID;
+    if (!same_process(vm) || !out) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
@@ -291,7 +305,7 @@ ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
 
 ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
                                               ores_source_task_cap *source) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
@@ -313,7 +327,7 @@ ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
 ores_turn_status ores_turn_claim_user(ores_turn_vm *vm, ores_actor_cap *actor,
                                      ores_turn_lease **out) {
     if (out) *out = NULL;
-    if (!vm || !out) return ORES_TURN_INVALID;
+    if (!same_process(vm) || !out) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_current(vm, actor);
     if (status == ORES_TURN_OK) {
@@ -325,7 +339,7 @@ ores_turn_status ores_turn_claim_user(ores_turn_vm *vm, ores_actor_cap *actor,
 }
 
 ores_turn_status ores_turn_stop(ores_turn_vm *vm, ores_actor_cap *actor) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_current(vm, actor);
     if (status == ORES_TURN_OK) {
@@ -340,7 +354,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                                         ores_cleanup_cap *ticket,
                                         ores_turn_lease **out) {
     if (out) *out = NULL;
-    if (!vm || !out) return ORES_TURN_INVALID;
+    if (!same_process(vm) || !out) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_ticket(vm, ticket)) {
@@ -367,7 +381,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
 
 ores_turn_status ores_turn_cancel_cleanup(ores_turn_vm *vm,
                                           ores_cleanup_cap *ticket) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_ticket(vm, ticket)) {
@@ -392,7 +406,7 @@ ores_turn_status ores_turn_cancel_cleanup(ores_turn_vm *vm,
 ores_turn_status ores_turn_note_terminal_injected(ores_turn_vm *vm,
                                                  ores_turn_lease *lease,
                                                  ores_source_task_cap *source) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_lease(vm, lease) && known_source(vm, source)) {
@@ -416,7 +430,7 @@ ores_turn_status ores_turn_note_terminal_injected(ores_turn_vm *vm,
  */
 ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
                                                  ores_turn_lease *lease) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_lease(vm, lease)) {
@@ -441,7 +455,7 @@ ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
 ores_turn_status ores_turn_complete_cleanup(ores_turn_vm *vm,
                                              ores_turn_lease *lease,
                                              ores_source_task_cap *source) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_lease(vm, lease) && known_source(vm, source)) {
@@ -462,7 +476,7 @@ ores_turn_status ores_turn_complete_cleanup(ores_turn_vm *vm,
 }
 
 ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm, ores_actor_cap *actor) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_current(vm, actor);
     if (status == ORES_TURN_OK) {
@@ -493,7 +507,7 @@ ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm, ores_actor_cap *actor)
 }
 
 ores_turn_status ores_turn_release(ores_turn_vm *vm, ores_turn_lease *lease) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = ORES_TURN_INVALID;
     if (known_lease(vm, lease)) {
@@ -511,7 +525,7 @@ ores_turn_status ores_turn_release(ores_turn_vm *vm, ores_turn_lease *lease) {
 }
 
 ores_turn_status ores_turn_retire(ores_turn_vm *vm, ores_actor_cap *actor) {
-    if (!vm) return ORES_TURN_INVALID;
+    if (!same_process(vm)) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
     ores_turn_status status = require_current(vm, actor);
     if (status == ORES_TURN_OK) {
