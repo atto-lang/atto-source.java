@@ -455,23 +455,40 @@ public final class NativeHttp implements AutoCloseable {
                 timeout = timers.schedule(() -> drained.failFromRuntime(
                         new TimeoutException("HTTP pooled actor carrier did not quiesce")),
                         waitMillis, TimeUnit.MILLISECONDS);
-                drained.whenCompleteRuntime((ignored, failure) -> timeout.cancel(false));
+                // The actor's physical-quiescence Future may outlive a timed-
+                // out listener indefinitely. Detach its runtime callbacks as
+                // soon as the listener's drain settles, so stalled actors
+                // cannot retain server shutdown closures or old listeners.
+                var subscriptions = new ConcurrentLinkedQueue<
+                        OresFuture.RuntimeWaiterRegistration<Void>>();
+                drained.whenCompleteRuntime((ignored, failure) -> {
+                    timeout.cancel(false);
+                    for (var registration : subscriptions) registration.detach();
+                    subscriptions.clear();
+                });
                 io.execute(() -> {
                     AtomicInteger pending = new AtomicInteger(workers.size());
                     AtomicReference<Throwable> firstError = new AtomicReference<>();
                     for (Handler.Worker worker : workers) {
+                        if (drained.isDone()) break;
                         try {
-                            context.actors().quiesceAcceptedMessages(worker.actor)
-                                    .whenCompleteRuntime((ignored, failure) -> {
-                                if (failure != null) {
-                                    firstError.compareAndSet(null, OresFuture.unwrap(failure));
-                                }
-                                if (pending.decrementAndGet() == 0) {
-                                    Throwable error = firstError.get();
-                                    if (error == null) drained.completeFromRuntime(null);
-                                    else drained.failFromRuntime(error);
-                                }
-                            });
+                            OresFuture<Void> quiescence =
+                                    context.actors().quiesceAcceptedMessages(worker.actor);
+                            var registration = quiescence.whenCompleteRuntimeCancellable(
+                                    (ignored, failure) -> {
+                                        if (failure != null) {
+                                            firstError.compareAndSet(null, OresFuture.unwrap(failure));
+                                        }
+                                        if (pending.decrementAndGet() == 0) {
+                                            Throwable error = firstError.get();
+                                            if (error == null) drained.completeFromRuntime(null);
+                                            else drained.failFromRuntime(error);
+                                        }
+                                    });
+                            subscriptions.add(registration);
+                            // Covers settlement between the drain callback's
+                            // iteration and this new registration's enqueue.
+                            if (drained.isDone()) registration.detach();
                         } catch (RuntimeException failure) {
                             firstError.compareAndSet(null, failure);
                             if (pending.decrementAndGet() == 0) {
