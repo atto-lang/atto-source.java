@@ -139,15 +139,16 @@ public final class NominalEnumOverloads {
      */
     public static Map<String, String> eligibleEnumSymbols(Ast.Program program) {
         Map<String, String> names = new HashMap<>();
+        Map<String, String> shortNameOwners = new HashMap<>();
         Set<String> ambiguous = new java.util.HashSet<>();
-        // Reject repeated canonical enum declarations even when the same
-        // spelling would otherwise cause putIfAbsent to return the same ID.
+        // Register ALL enum declarations before filtering by payload eligibility:
+        // otherwise an ineligible enum can hide a duplicate declaration or
+        // leave an apparently unique short-name alias for a different owner.
         // The policy helper is public and must not trust AST provenance.
         Set<String> seenQualifiedSymbols = new java.util.HashSet<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
-                if (!(decl instanceof Ast.EnumDecl enumeration)
-                        || !eligibleDiscriminator(enumeration)) continue;
+                if (!(decl instanceof Ast.EnumDecl enumeration)) continue;
                 // Namespace is part of nominal identity. Cross-code-unit imports
                 // need a linker-assigned symbol ID before overloads can be enabled.
                 String prefix = program.namespace() == null || program.namespace().isBlank()
@@ -157,11 +158,14 @@ public final class NominalEnumOverloads {
                     throw new IllegalArgumentException(
                             "duplicate nominal enum overload declaration: " + symbol);
                 }
-                String previous = names.putIfAbsent(enumeration.name(), symbol);
+                String previous = shortNameOwners.putIfAbsent(enumeration.name(), symbol);
                 if (previous != null && !previous.equals(symbol)) {
                     ambiguous.add(enumeration.name());
                 }
-                names.put(symbol, symbol);
+                if (eligibleDiscriminator(enumeration)) {
+                    names.put(symbol, symbol);
+                    names.putIfAbsent(enumeration.name(), symbol);
+                }
             }
         }
         for (String duplicate : ambiguous) names.remove(duplicate);
