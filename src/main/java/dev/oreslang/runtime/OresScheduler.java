@@ -245,7 +245,7 @@ public final class OresScheduler implements AutoCloseable {
      * the turn executor owns the entered language/context boundary.
      *
      * <p>This separation is critical for await completion publication:
-     * {@link TaskRunner#afterCarrierTurn()} runs after {@code turnExecutor}
+     * {@link TaskRunner#afterCarrierTurn(boolean, boolean)} runs after {@code turnExecutor}
      * returns, so a terminal Future cannot become externally visible until the
      * guest turn has completely left its Truffle context.</p>
      */
