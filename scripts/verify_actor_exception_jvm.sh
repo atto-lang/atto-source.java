@@ -66,5 +66,5 @@ fi
 
 exec mvn -B -ntp \
     '-Dores.runtime.carriers=native' \
-    '-Dtest=ActorTypedEffectControlTest,SourceActorTypedEffectExecutionTest,SourceActorOnThrowExecutionTest,TypedExceptionalEffectAdmissionTest,GuestThrowSuppressionAuditTest,ReservedControlDispatcherTest,ControlWakeRetryQueueTest,ActorIncarnationIdentityTest,ActorCrossRuntimeRestartAuthorityTest,NativeGuestErrorRootTest,TrapFailurePolicyTest' \
+    '-Dtest=ActorTypedEffectControlTest,SourceActorTypedEffectExecutionTest,SourceActorOnThrowExecutionTest,TypedExceptionalEffectAdmissionTest,GuestThrowSuppressionAuditTest,ReservedControlDispatcherTest,ControlWakeRetryQueueTest,ActorIncarnationIdentityTest,ActorCrossRuntimeRestartAuthorityTest,NativeGuestErrorRootTest,SaturatingAtomicCounterTest,TrapFailurePolicyTest' \
     test
