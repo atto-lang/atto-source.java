@@ -136,61 +136,98 @@ public final class NativeHttp implements AutoCloseable {
             Worker(ActorRuntime.ActorRef<Object> actor) { this.actor = actor; }
         }
         public void dispatch(Exchange exchange) {
+            if (ActorRuntime.inActorExecution()) {
+                throw new SecurityException("HTTP dispatch belongs to supervisor");
+            }
+            State state = exchange.state;
+            // Retain this request's admission through worker selection/spawn.
+            // The transport may time out while spawning; without this lease,
+            // State.release() could remove the last active request and allow
+            // shutdown to dispose the polyglot Context before the newly
+            // admitted actor's physical carrier exits.
+            synchronized (state) {
+                exchange.checkOwner();
+                if (state.dispatchInProgress) {
+                    throw new IllegalStateException("HTTP exchange already dispatching");
+                }
+                state.dispatchInProgress = true;
+                state.spawnNanos = System.nanoTime();
+            }
             long perf = CorePerf.start();
-            if (ActorRuntime.inActorExecution()) throw new SecurityException("HTTP dispatch belongs to supervisor");
-            synchronized (exchange.state) { exchange.checkOwner(); exchange.state.spawnNanos = System.nanoTime(); }
-            if (workers != null) {
+            try {
+                if (workers != null) {
+                    try {
+                        Worker worker = worker();
+                        synchronized (state) {
+                            // Track the worker even if a concurrent timeout
+                            // already invalidated this exchange during worker().
+                            // Final dispatch-lease release keeps the request
+                            // active until the server sees this incarnation.
+                            state.poolWorker = worker;
+                            worker.requests.add(state);
+                            state.server.pooledWorkers.add(worker);
+                            worker.served.add(state.server);
+                            exchange.checkOwner();
+                            state.readyNanos = state.spawnNanos;
+                            worker.actor.send(exchange.moveTo(worker.actor));
+                            if (worker.actor.done().isDone()) {
+                                state.server.pooledWorkers.remove(worker);
+                                worker.served.remove(state.server);
+                            }
+                        }
+                    } catch (RuntimeException failure) {
+                        state.abort(500, false);
+                    }
+                    return;
+                }
+                ActorRuntime.ActorRef<Object> actor = null;
                 try {
-                    Worker worker = worker();
-                    synchronized (exchange.state) {
-                        // An abort may have revoked the transfer between the
-                        // initial dispatch preflight and worker selection.
-                        // Recheck, track the actor, move the ticket and admit
-                        // the mailbox message under one ownership lock. A
-                        // concurrent State.release cannot make shutdown
-                        // observe an empty active set before this send.
-                        exchange.checkOwner();
-                        exchange.state.poolWorker = worker;
-                        worker.requests.add(exchange.state);
-                        exchange.state.server.pooledWorkers.add(worker);
-                        worker.served.add(exchange.state.server);
-                        // Reused workers have no per-request startup. Do not retain
-                        // one actor.done callback per completed request.
-                        exchange.state.readyNanos = exchange.state.spawnNanos;
-                        worker.actor.send(exchange.moveTo(worker.actor));
-                        if (worker.actor.done().isDone()) {
-                            exchange.state.server.pooledWorkers.remove(worker);
-                            worker.served.remove(exchange.state.server);
+                    long spawnPerf = CorePerf.start();
+                    try {
+                        actor = context.actors().spawnCodeActor(kind, code, type);
+                    } finally {
+                        CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
+                    }
+                    ActorRuntime.ActorRef<Object> spawned = actor;
+                    actor.ready().whenCompleteRuntime((ignored, failure) -> {
+                        long spawn;
+                        long ready;
+                        synchronized (state) {
+                            state.readyNanos = System.nanoTime();
+                            spawn = state.spawnNanos;
+                            ready = state.readyNanos;
+                        }
+                        CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
+                    });
+                    synchronized (state) {
+                        // Attach the new actor BEFORE checking the ticket.
+                        // If timeout won during spawn, its finalization still
+                        // fences State.release and therefore server shutdown.
+                        state.actor = spawned;
+                        boolean moved = false;
+                        try {
+                            String token = exchange.moveTo(spawned);
+                            moved = true; // moveTo installed actor.done callback
+                            spawned.send(token);
+                        } catch (RuntimeException failure) {
+                            if (!moved) {
+                                spawned.done().whenCompleteRuntime(
+                                        (ignored, terminal) -> state.abort(500));
+                            }
+                            throw failure;
                         }
                     }
                 } catch (RuntimeException failure) {
-                    exchange.state.abort(500, false);
-                } finally {
-                    CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
+                    if (actor != null) actor.cancel();
+                    state.abort(500);
                 }
-                return;
-            }
-            ActorRuntime.ActorRef<Object> actor = null;
-            try {
-                long spawnPerf = CorePerf.start();
-                actor = context.actors().spawnCodeActor(kind, code, type);
-                CorePerf.end(CorePerf.ACTOR_SPAWN, spawnPerf);
-                actor.ready().whenCompleteRuntime((ignored, failure) -> {
-                    long spawn;
-                    long ready;
-                    synchronized (exchange.state) {
-                        exchange.state.readyNanos = System.nanoTime();
-                        spawn = exchange.state.spawnNanos;
-                        ready = exchange.state.readyNanos;
-                    }
-                    CorePerf.elapsed(CorePerf.ACTOR_READY, spawn, ready);
-                });
-                actor.send(exchange.moveTo(actor));
-            } catch (RuntimeException failure) {
-                if (actor != null) actor.cancel();
-                exchange.state.abort(500);
             } finally {
-                CorePerf.end(CorePerf.HTTP_DISPATCH, perf);
+                synchronized (state) { state.dispatchInProgress = false; }
+                // May retire the request ONLY after worker/actor association
+                // has become visible. A timed-out unpooled actor additionally
+                // waits for its physical finalization before release.
+                try { state.release(); }
+                finally { CorePerf.end(CorePerf.HTTP_DISPATCH, perf); }
             }
         }
     }
@@ -484,6 +521,8 @@ public final class NativeHttp implements AutoCloseable {
         ScheduledFuture<?> deadline;
         ActorRuntime.ActorRef<?> actor;
         Handler.Worker poolWorker;
+        /** Dispatch owns admission until actor selection, registration and send finish. */
+        boolean dispatchInProgress;
         State(Server server, HttpExchange raw) {
             this.server = server; this.raw = raw; this.path = segments(raw.getRequestURI().getRawPath()); this.owner = context;
         }
@@ -523,7 +562,8 @@ public final class NativeHttp implements AutoCloseable {
             // pools bound worker count separately and release closed exchanges;
             // subsequent mail still waits for the current receive to finish.
             synchronized (this) {
-                if (!transportClosed || (poolWorker == null && actor != null && !actor.done().isDone())) return;
+                if (!transportClosed || dispatchInProgress
+                        || (poolWorker == null && actor != null && !actor.done().isDone())) return;
                 if (ticket != null) { transfers.remove(ticket); ticket = null; }
                 if (deadline != null) deadline.cancel(false);
             }
