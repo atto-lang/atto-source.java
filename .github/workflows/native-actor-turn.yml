@@ -100,6 +100,11 @@ jobs:
         run: |
           java -version
           javac -version
-          mvn -B -q -Dtest=NativeActorTurnSchedulerJniTest \
+          mvn -B -q -Dsurefire.failIfNoSpecifiedTests=true -Dtest=NativeActorTurnSchedulerJniTest \
             -DargLine="-Djava.library.path=$PWD/target/native-jni/lib -Dores.native.actor.turn.experimental=true" \
+            test
+      - name: Compile real Oreslang policy and run Java actor migration baselines
+        run: |
+          mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
+            -Dtest=NativeActorRuntimePolicyTest,ActorEndCleanupTest,ActorAsyncFinalizationBarrierTest,ActorReadinessLifecycleTest,ActorStructuredCancellationTest,ActorStopMailboxRaceTest \
             test
