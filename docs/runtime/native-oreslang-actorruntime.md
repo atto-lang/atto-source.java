@@ -44,8 +44,13 @@ Added opt-in regressions check pending cleanup preventing Future
 publication, later ticket cancellation plus idempotent retirement,
 other SourceTasks being canceled despite a failed native witness, and
 a blocked `onQuiescent` callback preventing normal terminal result
-publication. The standalone JNI smoke also exercises direct
-ticket-closure settlement retry.
+publication. Native-backed tasks now remain in the scheduler's **live
+set** until that trusted callback completes and the deadline barrier
+has been released; the earlier non-native task order is unchanged.
+The standalone JNI smoke also exercises direct ticket-closure
+settlement retry. The opt-in native actor witness rejects
+`parallelism != 1`: multiple logical SourceTasks are allowed, but
+one native actor can have only one physical execution lane.
 
 **Verification boundary:** exact GitHub source blobs passed 13/13
 source-structure/invariant checks during this audit. **These are
