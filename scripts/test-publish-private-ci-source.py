@@ -697,7 +697,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if os.name != "posix":
             self.skipTest("requires POSIX raw-byte file names")
         encoded_dir = os.fsencode(self.source)
-        bad_file = os.path.join(encoded_dir, b"bad-\\xff.ores")
+        bad_file = os.path.join(encoded_dir, b"bad-\xff.ores")
         fd = os.open(bad_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
         with self.assertRaisesRegex(pub.Denied, "non-UTF-8 name"):
