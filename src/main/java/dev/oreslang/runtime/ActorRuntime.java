@@ -213,8 +213,18 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ForceCancellationHook {
         /**
          * Returning true means every target was atomically revoked and is no
-         * longer capable of executing guest code. Returning false or throwing
-         * means no logical force-cancellation is published.
+         * longer capable of executing guest code. This is a physical isolation
+         * guarantee, not a scheduler fence or a synthetic test acknowledgement:
+         * a currently running native/JVM guest turn must also be unable to
+         * execute further guest instructions. A merely requested interruption
+         * or logical STOP is insufficient.
+         *
+         * <p>Returning false or throwing must leave isolation unchanged; the
+         * runtime clears the temporary admission fence and preserves any
+         * structured cancellation/lexical cleanup already in progress.
+         * Returning true irreversibly suppresses guest finally/defer in
+         * exchange for physical revocation. Test fakes may only establish
+         * host-side bookkeeping, never this execution guarantee.</p>
          */
         boolean revoke(ForceCancellationRequest request);
     }
@@ -1771,13 +1781,15 @@ public final class ActorRuntime implements AutoCloseable {
     private boolean ownFuture(
             ActorCell<?> cell,
             OresFuture<?> future) {
-        if (cell.stopped.get() || cell.finalized || closed.get()) {
+        if (cell.stopped.get() || cell.forceRevoked
+                || cell.finalized || closed.get()) {
             future.cancel(false);
             return false;
         }
 
         cell.pendingOperations.add(future);
-        if (cell.stopped.get() || cell.finalized || closed.get()) {
+        if (cell.stopped.get() || cell.forceRevoked
+                || cell.finalized || closed.get()) {
             cell.pendingOperations.remove(future);
             future.cancel(false);
             return false;
