@@ -20,6 +20,48 @@ final class ActorUnaryReplyBridgeTest {
     }
 
     @Test
+    void duplicateDispatchIsRejectedBeforeExecutingTerminalTwice() {
+        var actor = ActorRuntime.ActorId.create();
+        var slot = new ActorUnaryReplySlot<ActorMiddlewareValuePipeline.Reply<Integer>>(
+                actor, 3, UUID.randomUUID());
+        var pending = new CompletableFuture<Integer>();
+        var terminalCalls = new AtomicInteger();
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(), List.of(), Set.of(), req -> {
+                    terminalCalls.incrementAndGet();
+                    return pending;
+                });
+        var bridge = new ActorUnaryReplyBridge<>(pipeline);
+        var first = bridge.dispatch(actor, 3, slot, req(), () -> false);
+        assertEquals(1, terminalCalls.get());
+        assertThrows(IllegalStateException.class,
+                () -> bridge.dispatch(actor, 3, slot, req(), () -> false));
+        assertEquals(1, terminalCalls.get());
+        pending.complete(19);
+        assertEquals(19, first.toCompletableFuture().join().value());
+        assertEquals(ActorUnaryReplySlot.State.REPLIED, slot.state());
+    }
+
+    @Test
+    void preCancelledRequestNeverInvokesMiddlewareTerminal() {
+        var actor = ActorRuntime.ActorId.create();
+        var slot = new ActorUnaryReplySlot<ActorMiddlewareValuePipeline.Reply<Integer>>(
+                actor, 4, UUID.randomUUID());
+        var terminalCalls = new AtomicInteger();
+        var pipeline = new ActorMiddlewareValuePipeline<Integer>(
+                List.of(), List.of(), Set.of(), request -> {
+                    terminalCalls.incrementAndGet();
+                    return CompletableFuture.completedFuture(8);
+                });
+        var bridge = new ActorUnaryReplyBridge<>(pipeline);
+        var response = bridge.dispatch(actor, 4, slot, req(), () -> true);
+        assertEquals(0, terminalCalls.get());
+        assertEquals(ActorUnaryReplySlot.State.CANCELLED, slot.state());
+        assertThrows(RuntimeException.class,
+                () -> response.toCompletableFuture().join());
+    }
+
+    @Test
     void typedContinueSettlesSingleTicketWithResponseMetadata() {
         var owner = ActorRuntime.ActorId.create();
         var id = UUID.randomUUID();
