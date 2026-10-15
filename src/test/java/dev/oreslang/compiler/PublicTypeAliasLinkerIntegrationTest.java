@@ -370,4 +370,41 @@ final class PublicTypeAliasLinkerIntegrationTest {
         assertTrue(compiler.compile(sources).rebuiltUnits().isEmpty(),
                 "a failed build must retain the previous complete cache snapshot");
     }
+
+    @Test
+    void importedAliasCannotHideBorrowInItsDefiningLayout() {
+        var library = dev.oreslang.parser.Parser.parse("""
+                define module products as
+                    define pub type alias HiddenLoan as Tuple[&int];
+                end
+                """);
+        var app = dev.oreslang.parser.Parser.parse("""
+                import type HiddenLoan from "./library.ores";
+                fnc use(HiddenLoan x): void { return; }
+                """);
+        var e = assertThrows(IllegalArgumentException.class,
+                () -> PublicTypeAliasLinker.link("app.ores", app,
+                        Map.of("app.ores", app, "library.ores", library), Map.of()));
+        assertTrue(e.getMessage().contains("borrowed ownership"), e.getMessage());
+    }
+
+    @Test
+    void importedGenericAliasCannotConcealNestedBorrowArguments() {
+        for (String argument : new String[]{"&int", "Option<&int>", "Tuple[&int]"}) {
+            var source = Map.of(
+                    "library.ores", """
+                            define module products as
+                                define pub type alias Wrap<T> as Tuple[T];
+                            end
+                            """,
+                    "app.ores", """
+                            import type Wrap from "./library.ores";
+                            fnc read(Wrap<%s> value): void { return; }
+                            """.formatted(argument));
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> new IncrementalCompiler().compile(source));
+            assertTrue(error.getMessage().contains("borrowed generic arguments"),
+                    error.getMessage());
+        }
+    }
 }
