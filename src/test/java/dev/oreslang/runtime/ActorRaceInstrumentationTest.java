@@ -187,7 +187,10 @@ final class ActorRaceInstrumentationTest {
         probe.retireActor(actor);
         probe.retireMemoryDomain(memory);
         // A fresh incarnation must reestablish its own clock and physical lease.
-        probe.enterActor(new Object());
+        Object newIncarnation = new Object();
+        probe.enterActor(newIncarnation);
+        probe.exitActor(newIncarnation);
+        probe.retireActor(newIncarnation);
         assertEquals(1, probe.snapshot().actorOverlapViolations());
     }
 
