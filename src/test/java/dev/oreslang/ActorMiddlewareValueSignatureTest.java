@@ -69,7 +69,7 @@ final class ActorMiddlewareValueSignatureTest {
                     async next_val(MiddlewareContext req, MiddlewareResponseDraft res): MiddlewareDecision<int> {
                         return null;
                     }
-                    async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<int> {
+                    async next(MiddlewareContext req, MiddlewareResponseDraft res, MiddlewareNext next): MiddlewareOutcome<void> {
                         return null;
                     }
                 end
