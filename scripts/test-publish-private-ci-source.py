@@ -366,6 +366,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 check=True, capture_output=True, text=True).stdout.strip()
             self.assertEqual(actual, expected)
 
+            # GIT_DIR and GIT_WORK_TREE are caller-controlled. They must not
+            # redirect provenance to a different repository's HEAD.
+            with tempfile.TemporaryDirectory() as fake_root:
+                bogus = Path(fake_root)
+                subprocess.run(["git", "init", "-q", str(bogus)],
+                               check=True, capture_output=True)
+                with patch.dict("os.environ", {
+                        "GIT_DIR": str(bogus / ".git"),
+                        "GIT_WORK_TREE": str(bogus)}):
+                    self.assertEqual(self.real_tree_gate(root, root, files),
+                                     (source_commit, expected))
+
             (root / "nested" / "data.ores").write_bytes(b"changed\n")
             dirty = pub.collect_source(root, root, omit_checkout_metadata=True)
             with self.assertRaisesRegex(pub.Denied, "differs"):
