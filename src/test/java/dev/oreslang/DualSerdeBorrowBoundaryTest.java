@@ -99,6 +99,17 @@ final class DualSerdeBorrowBoundaryTest {
     }
 
     @Test
+    void qualifiedSharedMutexCannotBypassIsolatedActorRestriction() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define isoactor Worker as
+                          receive(ActorMail<RuntimeBox.SharedMutex<int>> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("SharedMutex"));
+    }
+
+    @Test
     void qualifiedRuntimeHandlesAreRejectedAsActorData() {
         for (String type : new String[] {
                 "RuntimeBox.TcpConnection",
