@@ -206,8 +206,16 @@ public final class ActorStateContract {
             return list.elements().stream().allMatch(ActorStateContract::sealedDefault);
         if (expression instanceof Ast.TupleExpr tuple)
             return tuple.elements().stream().allMatch(ActorStateContract::sealedDefault);
-        if (expression instanceof Ast.ObjectExpr object)
-            return object.fields().stream().allMatch(field -> sealedDefault(field.value()));
+        if (expression instanceof Ast.ObjectExpr object) {
+            // A compiler-generated nested default must not silently overwrite
+            // another key, even if every individual value is a fresh literal.
+            Set<String> names = new java.util.HashSet<>();
+            for (Ast.ObjectField field : object.fields()) {
+                if (!names.add(field.name()) || !sealedDefault(field.value()))
+                    return false;
+            }
+            return true;
+        }
         // In particular no NameExpr, MemberExpr, CallExpr, NewExpr, alias,
         // pointer, ownership intrinsic, coroutine or externally owned value.
         return false;
