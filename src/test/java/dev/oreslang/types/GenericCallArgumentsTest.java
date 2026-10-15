@@ -69,12 +69,25 @@ final class GenericCallArgumentsTest {
     }
 
     @Test
-    void nestedUnderscoreIsNotAnInferenceHole() {
+    void nestedInferenceHoleIsRejectedRatherThanAcceptedAsNominalType() {
         Ast.TypeRef nested = new Ast.TypeRef("Array", List.of(type("_")), false);
-        GenericCallArguments.Bound bound = GenericCallArguments.bind(
-                List.of("A"), List.of(nested), "foo");
-        assertEquals(nested, bound.explicitTypes().get("A"));
-        assertTrue(bound.inferenceHoles().isEmpty());
+        Ast.TypeRef deeplyNested = new Ast.TypeRef(
+                "Option", List.of(new Ast.TypeRef("Array", List.of(type("_")), false)), false);
+        Ast.TypeRef synthetic = new Ast.TypeRef(
+                "Result", List.of(type("int"), Ast.TypeRef.inferred()), false);
+        for (Ast.TypeRef value : List.of(nested, deeplyNested, synthetic)) {
+            for (Ast.TypeRef argument : List.of(value, Ast.TypeRef.namedParameter("A", value))) {
+                IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                        () -> GenericCallArguments.bind(
+                                List.of("A"), List.of(argument), "foo"));
+                assertTrue(error.getMessage().contains("nested inference hole"), error.getMessage());
+            }
+        }
+        // The legitimate top-level hole still requests inference.
+        GenericCallArguments.Bound bare = GenericCallArguments.bind(
+                List.of("A"), List.of(type("_")), "foo");
+        assertEquals(java.util.Set.of("A"), bare.inferenceHoles());
+        assertTrue(bare.explicitTypes().isEmpty());
     }
 
     @Test
