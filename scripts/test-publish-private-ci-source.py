@@ -137,7 +137,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_non_utf8_source_name_rejected_without_digest_or_traceback(self):
         with self.assertRaisesRegex(pub.Denied, "non-UTF-8"):
-            pub.snapshot_tree_sha([("bad\\udcff", b"safe", "100644")])
+            pub.snapshot_tree_sha([("bad\udcff", b"safe", "100644")])
 
     def test_invalid_tree_sha_pin_rejects_without_any_upload(self):
         for invalid in ("not-a-sha", "A" * 40, 17, "", "0" * 39):
