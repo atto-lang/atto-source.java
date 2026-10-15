@@ -404,6 +404,30 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
     })
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    if valid_sha(created.get("object", {}).get("sha")) != commit_sha:
+        raise Denied("created CI branch does not reference the expected commit")
+
+    # The create response is not evidence that the branch resolves to the
+    # intended source. Read back the ref and its committed tree before
+    # reporting success. Destination workflows independently check the
+    # subtree SHA again before executing any private source.
+    verified_ref = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    if valid_sha(verified_ref.get("object", {}).get("sha")) != commit_sha:
+        raise Denied("CI branch readback points to a different commit")
+    verified_commit = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    if valid_sha(verified_commit.get("tree", {}).get("sha")) != new_tree_sha:
+        raise Denied("CI branch commit tree differs from published snapshot")
+    verified_tree = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
+    tree_items = verified_tree.get("tree")
+    if (not isinstance(tree_items, list)
+            or sum(item.get("path") == PREFIX for item in tree_items
+                   if isinstance(item, dict)) != 1
+            or not any(isinstance(item, dict) and item.get("path") == PREFIX
+                       and item.get("type") == "tree"
+                       and item.get("mode") in ("040000", "40000")
+                       and item.get("sha") == expected_source_tree
+                       for item in tree_items)):
+        raise Denied("committed CI source subtree differs from pinned source SHA")
     return commit_sha, len(files)
 
 
