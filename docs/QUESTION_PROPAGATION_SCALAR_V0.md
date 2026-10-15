@@ -64,6 +64,19 @@ Nested `try/finally` and `defer` tests exercise both `None` and
 must still be verified on hosted JDK 25 runs. No passing test claim is
 made for this branch.
 
+## Exactly-once SourceTask completion
+
+Each suspendable expression and statement now guards its completion callback
+before handing off to downstream continuations. Any exception raised by a
+downstream consumer *after* delivery is not reinterpreted as a second
+expression or statement failure, which would otherwise replay the same
+completion or cleanup path. A second attempted delivery fails explicitly.
+
+Regression fixtures cover a resumed `Option` expression failure and a
+terminal failure following `Result?`, including LIFO deferred cleanup and
+caller-side exception handling. These are pending execution on JDK 25;
+structural presence alone is not passing runtime evidence.
+
 ## Review blocker
 
 The checker also mirrors the evaluator's conservative import rule:
