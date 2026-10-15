@@ -113,6 +113,16 @@ final class NativeActorTurnSchedulerJniTest {
     }
 
     @Test
+    void nativeActorWitnessRejectsMultiplePhysicalSchedulerLanes() {
+        try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(16)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresScheduler.managedWithNativeTurnWitness(
+                            2, Runnable::run, kernel));
+            kernel.stop();
+        }
+    }
+
+    @Test
     void nativeTerminalPublicationWaitsForTrustedQuiescenceCallback() throws Exception {
         try (NativeActorTurnKernel kernel = NativeActorTurnKernel.open(64)) {
             try (OresScheduler scheduler = OresScheduler.managedWithNativeTurnWitness(
