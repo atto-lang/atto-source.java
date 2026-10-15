@@ -9296,7 +9296,11 @@ public final class OresEvalRootNode extends RootNode {
                     imaginaryNumerator.divide(denominator, context).doubleValue());
         }
 
-        @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
+        @Override public String toString() {
+            String imaginaryText = Double.toString(imaginary);
+            // Comparing with < 0 fails for IEEE negative zero.
+            return real + (imaginaryText.startsWith("-") ? "" : "+") + imaginaryText + "i";
+        }
     }
 
     /**
