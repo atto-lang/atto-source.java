@@ -89,6 +89,11 @@ public final class NominalInheritedMethodSlots {
         private final IdentityHashMap<Ast.ClassDecl, String> qualifiedNames = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> moduleNames = new IdentityHashMap<>();
         private final Map<String, String> enums;
+        // One Planner handles exactly one name/arity/domain. Memoization
+        // prevents exponential re-walks through repeated diamond ancestry.
+        private final IdentityHashMap<Ast.ClassDecl, Map<Slot, Target>> memo =
+                new IdentityHashMap<>();
+        private static final int MAX_INHERITANCE_DEPTH = 128;
 
         private Planner(Ast.Program program) {
             enums = NominalEnumOverloads.eligibleEnumSymbols(program);
@@ -139,6 +144,11 @@ public final class NominalInheritedMethodSlots {
         private Map<Slot, Target> collect(
                 Ast.ClassDecl owner, Domain domain, String name, int arity,
                 Set<Ast.ClassDecl> visiting) {
+            Map<Slot, Target> cached = memo.get(owner);
+            if (cached != null) return cached;
+            if (visiting.size() >= MAX_INHERITANCE_DEPTH) {
+                throw new IllegalArgumentException("nominal method ancestry depth bound exceeded");
+            }
             if (!visiting.add(owner)) {
                 throw new IllegalArgumentException("inheritance cycle in nominal method proof");
             }
@@ -219,7 +229,9 @@ public final class NominalInheritedMethodSlots {
                         }
                     }
                 }
-                return Map.copyOf(effective);
+                Map<Slot, Target> proved = Map.copyOf(effective);
+                memo.put(owner, proved);
+                return proved;
             } finally {
                 visiting.remove(owner);
             }
