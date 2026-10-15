@@ -378,4 +378,52 @@ final class MatchProjectionBindingKindsTest {
         assertEquals("49", outputOf(source));
     }
 
+    @Test
+    void objectRestFromMutableStructIsStaticallyReadonly() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checks("""
+                    fnc invalid(): int {
+                      const {first, ...remaining} =
+                          struct{first: int, value: int}{first: 1, value: 2};
+                      remaining.value = 99;
+                      return remaining.value;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("readonly")
+                        || failure.getMessage().contains("mutate"), failure.getMessage());
+    }
+
+    @Test
+    void nestedObjectRestRemainsProjectableAsRecord() throws Exception {
+        String source = """
+                pub routine main(): void {
+                  const {a, ...tail} = struct{a: int, b: int, c: int}{a: 2, b: 3, c: 4};
+                  const {b, ...remaining} = tail;
+                  do match Some(remaining) over
+                    on Some as {c} -> { stdio.stdout.write(a + b + c); }
+                    on None -> { stdio.stdout.write(0); }
+                  end
+                  return;
+                }
+                """;
+        assertEquals("9", outputOf(source));
+    }
+
+    @Test
+    void objectRestWithMoveOnlyChannelFieldStillFailsClosed() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checks("""
+                    fnc consume(Channel<{first: int, items: List<int>}> ch): void {
+                      do select {
+                        when readch ch: const {first, ...remaining} -> {
+                          stdio.println(first);
+                        }
+                      }
+                      return;
+                    }
+                    """));
+        assertTrue(failure.getMessage().contains("non-Copy select read projection"),
+                failure.getMessage());
+    }
+
 }

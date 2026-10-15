@@ -3649,7 +3649,7 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 Object built = object.explicitStruct()
-                        ? result
+                        ? new MutableRecordValue(result)
                         : new ReadonlyRecordValue(result);
                 continuation.accept(task, built, null);
                 return;
@@ -4673,6 +4673,13 @@ public final class OresEvalRootNode extends RootNode {
                         fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
                     }
                     return new ReadonlyRecordValue(fields);
+                }
+                if (value instanceof MutableRecordValue mutable) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> entry : mutable.entrySet()) {
+                        fields.put(entry.getKey(), detachAsyncValue(entry.getValue(), visiting));
+                    }
+                    return new MutableRecordValue(fields);
                 }
                 if (value instanceof OptionValue option) {
                     return option.present()
@@ -6365,7 +6372,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("duplicate struct field " + key);
                     }
                 }
-                if (object.explicitStruct()) return result;
+                if (object.explicitStruct()) return new MutableRecordValue(result);
                 return new ReadonlyRecordValue(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
@@ -8062,15 +8069,14 @@ public final class OresEvalRootNode extends RootNode {
                 return true;
             }
             if (pattern instanceof Ast.RecordPattern projection) {
-                if (!(value instanceof Map<?, ?> record)
-                        || !(value instanceof ReadonlyRecordValue
-                            || value.getClass() == LinkedHashMap.class
-                            || value.getClass().getName().startsWith("java.util.ImmutableCollections$")
-                            // object-rest creates an immutable snapshot through
-                            // Collections.unmodifiableMap; it is still a record.
-                            || value.getClass().getName().equals("java.util.Collections$UnmodifiableMap"))) {
+                // Only Oreslang-created closed records carry projection rights.
+                // Java Map implementations supplied by a host (including an
+                // unmodifiable wrapper) are not structural constructor payloads.
+                if (!(value instanceof MutableRecordValue
+                        || value instanceof ReadonlyRecordValue)) {
                     return false;
                 }
+                Map<?, ?> record = (Map<?, ?>) value;
                 // Stage all required fields before introducing any bound name.
                 // A failed field projection can never partially bind an arm.
                 LinkedHashMap<String, Object> staged = new LinkedHashMap<>();
@@ -8911,7 +8917,9 @@ public final class OresEvalRootNode extends RootNode {
                         remainder.put(key, entry.getValue());
                     }
                 }
-                return snapshotPatternBindings(remainder);
+                // An object-rest binding is a fresh closed readonly record,
+                // not a condition-binding map and not a mutable alias.
+                return new ReadonlyRecordValue(remainder);
             }
             throw new IllegalArgumentException(
                     "object rest destructuring requires a statically known record value");
@@ -9233,10 +9241,18 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
+    /** Runtime provenance for explicit mutable struct values. */
+    private static final class MutableRecordValue extends LinkedHashMap<String, Object> {
+        private static final long serialVersionUID = 1L;
+        private MutableRecordValue(Map<String, Object> initial) {
+            super(initial);
+        }
+    }
+
     /**
-     * Runtime provenance for infer struct. It behaves as a Map for existing
-     * structural operations while remaining immutable across aliases and async
-     * detachment/copy boundaries.
+     * Runtime provenance for infer struct and object-rest snapshots. It behaves
+     * as a Map for structural operations while remaining immutable across
+     * aliases and async detachment/copy boundaries.
      */
     private static final class ReadonlyRecordValue
             extends java.util.AbstractMap<String, Object>

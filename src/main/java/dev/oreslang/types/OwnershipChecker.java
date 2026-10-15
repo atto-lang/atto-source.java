@@ -378,9 +378,19 @@ public final class OwnershipChecker {
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
+                Ast.TypeRef inferred = destructureBindingType(
+                        destructure, source.type, i, binding.name());
                 Ast.TypeRef bindingType = binding.declaredType() != null
-                        ? binding.declaredType()
-                        : destructureBindingType(destructure, source.type, i, binding.name());
+                        ? binding.declaredType() : inferred;
+                if (binding.rest() && destructure.kind() == Ast.DestructureKind.OBJECT
+                        && inferred.isReadonlyRecordType()) {
+                    if (binding.mutableReferent()) {
+                        throw error("object-rest snapshot cannot grant mutable referent access");
+                    }
+                    if (bindingType.isRecordType() && !bindingType.isReadonlyRecordType()) {
+                        bindingType = Ast.TypeRef.readonlyRecordType(bindingType.recordMembers());
+                    }
+                }
                 ValueKind bindingKind = bindingType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
                         : kindOfType(bindingType);
@@ -647,14 +657,33 @@ public final class OwnershipChecker {
                                                     element, j, binding.name());
                             Ast.TypeRef projected = binding.declaredType() != null
                                     ? binding.declaredType() : sourceField;
+                            boolean readonlyObjectRest = binding.rest()
+                                    && arm.destructureKind() == Ast.DestructureKind.OBJECT
+                                    && sourceField.isReadonlyRecordType();
+                            if (readonlyObjectRest) {
+                                if (binding.mutableReferent()) {
+                                    throw error("object-rest snapshot cannot grant mutable referent access");
+                                }
+                                if (projected.isRecordType() && !projected.isReadonlyRecordType()) {
+                                    projected = Ast.TypeRef.readonlyRecordType(projected.recordMembers());
+                                }
+                            }
                             // A winning channel read transfers one aggregate.
                             // Its subfields do not become independently owned
                             // move-only values merely by binding new names.
                             // Until projection leases/move-from-field lowering
                             // is implemented, fail closed instead of allowing
                             // a non-Copy field to escape as an untracked owner.
-                            if (kindOfType(sourceField) != ValueKind.COPY
-                                    || kindOfType(projected) != ValueKind.COPY) {
+                            // Rest is a newly allocated record, not a borrowed
+                            // subfield. It can own a snapshot if every captured
+                            // value is Copy; nested/move-only fields still need
+                            // explicit ownership transfer lowering.
+                            boolean safeRestSnapshot = readonlyObjectRest
+                                    && projected.isReadonlyRecordType()
+                                    && sourceField.recordMembers().values().stream().allMatch(this::isCopyType);
+                            if (!safeRestSnapshot
+                                    && (kindOfType(sourceField) != ValueKind.COPY
+                                        || kindOfType(projected) != ValueKind.COPY)) {
                                 throw error("non-Copy select read projection '" + binding.name()
                                         + "' requires explicit owned-field transfer/loan lowering");
                             }
@@ -3555,9 +3584,9 @@ public final class OwnershipChecker {
         for (Ast.DestructureBinding binding : bindings) {
             if (!binding.rest() && !binding.isDiscard()) remainder.remove(binding.name());
         }
-        return concrete.isReadonlyRecordType()
-                ? Ast.TypeRef.readonlyRecordType(remainder)
-                : Ast.TypeRef.recordType(remainder);
+        // Runtime constructs a fresh immutable snapshot, independent of
+        // whether the incoming struct permits field mutation.
+        return Ast.TypeRef.readonlyRecordType(remainder);
     }
 
     private Ast.TypeRef objectMemberBindingType(Ast.TypeRef concrete, String name) {

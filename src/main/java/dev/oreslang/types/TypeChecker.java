@@ -4461,7 +4461,9 @@ public final class TypeChecker {
                     remainder.put(member.getKey(), member.getValue());
                 }
             }
-            return new Record(remainder, record.readOnly());
+            // Rest always constructs a new immutable record snapshot, even
+            // when the source is an explicitly mutable struct.
+            return new Record(remainder, true);
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
