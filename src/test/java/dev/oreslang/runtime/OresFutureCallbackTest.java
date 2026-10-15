@@ -45,6 +45,119 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void competingSuccessFailureAndCancellationDeliverExactlyOneRuntimeNotification()
+            throws Exception {
+        // This is the underlying atomic waiter contract used by ActorRuntime's
+        // continuation mailbox. A second per-registration completion gate is
+        // redundant only if terminal arbitration and notification both stay
+        // single-shot, including a racing consumer cancellation.
+        final int rounds = 128;
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(3)) {
+            for (int round = 0; round < rounds; round++) {
+                var source = new OresFuture<Integer>();
+                var notified = new java.util.concurrent.atomic.AtomicInteger();
+                var seenSuccess = new java.util.concurrent.atomic.AtomicInteger();
+                var seenFailure = new java.util.concurrent.atomic.AtomicInteger();
+                source.whenCompleteRuntime((value, failure) -> {
+                    notified.incrementAndGet();
+                    if (failure == null) {
+                        assertEquals(42, value);
+                        seenSuccess.incrementAndGet();
+                    } else {
+                        assertNull(value);
+                        seenFailure.incrementAndGet();
+                    }
+                });
+                var ready = new java.util.concurrent.CountDownLatch(3);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                java.util.List<java.util.concurrent.Callable<Boolean>> contenders =
+                        java.util.List.of(
+                                () -> source.completeFromRuntime(42),
+                                () -> source.failFromRuntime(
+                                        new IllegalStateException("competing failure")),
+                                () -> source.cancel(false));
+                java.util.List<java.util.concurrent.Future<Boolean>> results =
+                        new java.util.ArrayList<>();
+                for (var contender : contenders) {
+                    results.add(pool.submit(() -> {
+                        ready.countDown();
+                        if (!start.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("settlement race barrier expired");
+                        }
+                        return contender.call();
+                    }));
+                }
+                assertTrue(ready.await(5, TimeUnit.SECONDS));
+                start.countDown();
+                int winners = 0;
+                for (var result : results) {
+                    if (result.get(5, TimeUnit.SECONDS)) winners++;
+                }
+                assertEquals(1, winners, "terminal CAS winner, round " + round);
+                assertEquals(1, notified.get(), "runtime waiter was invoked twice");
+                assertEquals(1, seenSuccess.get() + seenFailure.get());
+                assertTrue(source.isDone());
+                assertEquals(0, source.pendingRuntimeWaiterCount(),
+                        "a settled future must not retain the actor's waiter");
+
+                // Late registrations are notified once, synchronously as
+                // host-only scheduler plumbing, and do not retain a node.
+                source.whenCompleteRuntime((value, failure) ->
+                        notified.incrementAndGet());
+                assertEquals(2, notified.get());
+                assertEquals(0, source.pendingRuntimeWaiterCount());
+            }
+        }
+    }
+
+    @Test
+    void cancelledWaiterDoesNotPublishBeforeRevocationReturns() throws Exception {
+        var cancelEntered = new java.util.concurrent.CountDownLatch(1);
+        var permitRevocation = new java.util.concurrent.CountDownLatch(1);
+        var source = new OresFuture<Integer>(() -> {
+            cancelEntered.countDown();
+            try {
+                if (!permitRevocation.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("revocation gate expired");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(interrupted);
+            }
+        });
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        source.whenCompleteRuntime((value, failure) -> {
+            assertNull(value);
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure);
+            notifications.incrementAndGet();
+        });
+        var workerFailure = new AtomicReference<Throwable>();
+        Thread canceller = Thread.startVirtualThread(() -> {
+            try {
+                assertTrue(source.cancel(false));
+            } catch (Throwable failure) {
+                workerFailure.set(failure);
+            }
+        });
+        try {
+            assertTrue(cancelEntered.await(5, TimeUnit.SECONDS));
+            assertTrue(source.isCancelled(),
+                    "terminal CAS must become visible before revocation returns");
+            source.whenCompleteRuntime((value, failure) ->
+                    notifications.incrementAndGet());
+            assertEquals(0, notifications.get(),
+                    "late observers must not run while cancellation revocation is pending");
+        } finally {
+            permitRevocation.countDown();
+        }
+        canceller.join(5_000);
+        assertFalse(canceller.isAlive());
+        assertNull(workerFailure.get(), () -> String.valueOf(workerFailure.get()));
+        assertEquals(2, notifications.get());
+        assertEquals(0, source.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void concurrentTerminalRegistrationAndDetachmentReclaimsClaimedWaiters()
             throws Exception {
         for (int round = 0; round < 64; round++) {
