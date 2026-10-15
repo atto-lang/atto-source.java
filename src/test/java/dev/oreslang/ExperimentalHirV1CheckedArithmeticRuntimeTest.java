@@ -197,6 +197,7 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
             HEADER + "pub fnc main(): int { return 43 / 1; }",
             HEADER + "pub fnc main(): int { return 40.0 + 3.0; }",
             HEADER + "pub fnc main(): int { return -43.0; }",
+            HEADER + "pub fnc main(): int { return \"forty\" + \"three\"; }",
         };
         for (String source : unsupported) {
             assertThrows(RuntimeException.class, () -> exit(source),
