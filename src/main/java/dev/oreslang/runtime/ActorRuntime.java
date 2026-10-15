@@ -7160,8 +7160,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
                 lexicalCleanup = List.copyOf(sourceCleanupTasks);
+                // A temporary force fence suspends execution but cannot
+                // suppress the STOP cancellation-injection barrier.
                 sourceCancellationPending = !lexicalCleanup.isEmpty()
-                        && !forceKillFenced && !forceRevoked && !closed.get();
+                        && !forceRevoked && !closed.get();
                 if (!sourceCancellationPending) {
                     continuationMailbox.close(cause);
                     drainMailboxReservations();
@@ -7190,14 +7192,16 @@ public final class ActorRuntime implements AutoCloseable {
                 for (OresFuture<?> future : lexicalCleanup) future.cancel(false);
             } finally {
                 boolean cleanupActive;
+                boolean outstandingCleanup;
                 synchronized (lifecycleLock) {
                     sourceCancellationPending = false;
                     cleanupActive = hasSourceCleanup();
+                    outstandingCleanup = hasUnretiredSourceCleanup();
                     finalizeStopLocked();
                     lifecycleLock.notifyAll();
                 }
-                if (cleanupActive) {
-                    schedule();
+                if (cleanupActive) schedule();
+                if (outstandingCleanup) {
                     CompletableFuture.delayedExecutor(
                             ACTOR_CLEANUP_GRACE_MILLIS, TimeUnit.MILLISECONDS)
                             .execute(this::expireSourceCleanup);
