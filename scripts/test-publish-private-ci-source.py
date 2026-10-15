@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import subprocess
@@ -165,6 +166,53 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "carrier main is not protected"):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_child_environment_strips_shell_git_and_loader_injection(self):
+        suspicious = {
+            "PATH": str(self.root),
+            "BASH_ENV": str(self.root / "untrusted-startup.sh"),
+            "ENV": str(self.root / "untrusted-startup.sh"),
+            "BASH_FUNC_gh%%": "() { exit 0; }",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_DIR": str(self.root),
+            "LD_PRELOAD": str(self.root / "payload.so"),
+            "PYTHONPATH": str(self.root),
+            "GH_HOST": "attacker.invalid",
+        }
+        with patch.dict(os.environ, suspicious):
+            child = pub.verified_child_env()
+        for key in suspicious:
+            if key not in ("PATH", "GH_HOST"):
+                self.assertNotIn(key, child)
+        self.assertEqual(child["PATH"], pub.SAFE_EXEC_PATH)
+        self.assertEqual(child["GH_HOST"], "github.com")
+        self.assertEqual(child["GH_PROMPT_DISABLED"], "1")
+        self.assertEqual(child["GIT_CONFIG_GLOBAL"], "/dev/null")
+
+    def test_real_preflight_does_not_execute_inherited_bash_env_or_path(self):
+        # Exercise the actual guard launcher on a synthetic, non-sensitive
+        # fixture. No GitHub traffic or private source is needed.
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        guard = scripts / "check-private-ci-destination.sh"
+        guard.write_text("exit 0\n")
+        payload = self.root / "injected.sh"
+        marker = self.root / "executed-untrusted"
+        payload.write_text("printf injected > " + str(marker) + "\n")
+        fake_bash = self.root / "bash"
+        fake_bash.write_text("#!/bin/sh\nprintf injected > " + str(marker) + "\n")
+        fake_bash.chmod(0o755)
+        # setUp deliberately mocks require_preflight for the publisher suite.
+        # Temporarily restore the real launcher for this targeted test.
+        self.preflight.stop()
+        try:
+            with patch.dict(os.environ, {"BASH_ENV": str(payload),
+                                      "PATH": str(self.root) + ":/usr/bin:/bin"}):
+                with patch.object(pub, "checked_repo", return_value={"id": 123}):
+                    self.assertEqual(pub.require_preflight("trusted/ci", self.root), 123)
+            self.assertFalse(marker.exists(), "untrusted shell startup executed")
+        finally:
+            self.preflight.start()
 
     def test_carrier_default_branch_must_be_trusted_main_before_source_read(self):
         self.carrier_default_branches = ["unreviewed-feature"] * 100
