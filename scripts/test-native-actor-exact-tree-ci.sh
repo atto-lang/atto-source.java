@@ -38,11 +38,24 @@ if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
   exit 1
 fi
 
+# Porcelain status intentionally omits .gitignore/git-info/exclude matches.
+# Never let ignored .mvn config, compiler overlays, or stale native objects
+# silently enter a supposedly immutable exact-tree checkout. This gate is
+# intentionally for fresh isolated checkouts, not developer work directories.
+if [ -n "$(git ls-files --others --ignored --exclude-standard)" ]; then
+  echo "CI source checkout has ignored untracked inputs" >&2
+  exit 1
+fi
+
 echo "ORES_NATIVE_ACTOR_CI_SOURCE_VERIFIED commit=$actual_commit tree=$actual_tree"
 if [ "$(uname -s)" != Linux ]; then
   echo "native JNI exact-tree gate requires isolated x64 Linux" >&2
   exit 1
 fi
+case "$(uname -m)" in
+  x86_64|amd64) ;;
+  *) echo "native JNI exact-tree gate requires x86_64 Linux" >&2; exit 1 ;;
+esac
 if ! command -v mvn >/dev/null 2>&1; then
   echo "Maven is required to run the complete JNI JUnit gate" >&2
   exit 1
