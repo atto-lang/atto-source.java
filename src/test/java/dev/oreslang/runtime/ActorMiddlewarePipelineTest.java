@@ -94,6 +94,70 @@ final class ActorMiddlewarePipelineTest {
     }
 
     @Test
+    void laterSupervisorMutationInvalidatesOtherwiseValidSkipProof() {
+        var actorCalls = new AtomicInteger();
+        var key = new ActorMiddlewarePipeline.Key("Normalize", "v1");
+        var pipeline = new ActorMiddlewarePipeline(
+                List.of(
+                        stage("Normalize", ActorMiddlewarePipeline.Phase.SUPERVISOR, false,
+                                (req, next) -> next.proceed(req.withMessage(req.message().strip()))),
+                        stage("Rewrite", ActorMiddlewarePipeline.Phase.SUPERVISOR, false,
+                                (req, next) -> next.proceed(req.withMessage("changed")))),
+                List.of(stage("Normalize", ActorMiddlewarePipeline.Phase.ACTOR, true,
+                        (req, next) -> { actorCalls.incrementAndGet(); return next.proceed(req); })),
+                Set.of(key),
+                req -> CompletableFuture.completedFuture(
+                        new ActorMiddlewarePipeline.Outcome(200, req.message())));
+        assertEquals("changed", pipeline.invoke(
+                new ActorMiddlewarePipeline.Envelope("  ok  ", Map.of()), () -> false)
+                .toCompletableFuture().join().body());
+        assertEquals(1, actorCalls.get());
+    }
+
+    @Test
+    void middlewareFailureAfterForwardingCannotSettleBeforeDownstream() {
+        var pendingTerminal = new CompletableFuture<ActorMiddlewarePipeline.Outcome>();
+        var pipeline = new ActorMiddlewarePipeline(List.of(),
+                List.of(stage("ThrowAfterNext", ActorMiddlewarePipeline.Phase.ACTOR, false,
+                        (req, next) -> {
+                            next.proceed(req);
+                            throw new IllegalStateException("boom");
+                        })),
+                Set.of(), req -> pendingTerminal);
+        var result = pipeline.invoke(
+                new ActorMiddlewarePipeline.Envelope("ok", Map.of()), () -> false)
+                .toCompletableFuture();
+        assertFalse(result.isDone(), "downstream must drain before early failure is visible");
+        pendingTerminal.complete(new ActorMiddlewarePipeline.Outcome(200, "ok"));
+        assertThrows(CompletionException.class, result::join);
+    }
+
+    @Test
+    void lateNextAfterShortCircuitCannotEnterActor() {
+        var captured = new java.util.concurrent.atomic.AtomicReference<ActorMiddlewarePipeline.Next>();
+        var invoked = new AtomicInteger();
+        var pipeline = new ActorMiddlewarePipeline(
+                List.of(stage("Block", ActorMiddlewarePipeline.Phase.SUPERVISOR, false,
+                        (req, next) -> {
+                            captured.set(next);
+                            return CompletableFuture.completedFuture(
+                                    new ActorMiddlewarePipeline.Outcome(403, "stop"));
+                        })),
+                List.of(), Set.of(), req -> {
+                    invoked.incrementAndGet();
+                    return CompletableFuture.completedFuture(
+                            new ActorMiddlewarePipeline.Outcome(200, "unexpected"));
+                });
+        assertEquals(403, pipeline.invoke(
+                new ActorMiddlewarePipeline.Envelope("ok", Map.of()), () -> false)
+                .toCompletableFuture().join().status());
+        assertThrows(CompletionException.class, () -> captured.get()
+                .proceed(new ActorMiddlewarePipeline.Envelope("ok", Map.of()))
+                .toCompletableFuture().join());
+        assertEquals(0, invoked.get());
+    }
+
+    @Test
     void noAllowlistMeansNoSkipEvenIfBothStagesHaveSameId() {
         var actor = new AtomicInteger();
         var pipeline = new ActorMiddlewarePipeline(
