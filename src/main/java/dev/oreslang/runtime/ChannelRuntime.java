@@ -598,7 +598,8 @@ public final class ChannelRuntime {
     private static final class SelectRegistration {
         private final SelectSet set;
         private final SelectPolicy policy;
-        private final int[] order;
+        /** Sampled only while COORDINATOR holds admission, after preceding commits. */
+        private int[] order;
         private final ArrayList<CaseRegistration> registrations =
                 new ArrayList<>();
         // Direct, lock-owned lookup prevents quadratic scans over 256 arms
@@ -615,7 +616,6 @@ public final class ChannelRuntime {
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
             this.set = set;
             this.policy = policy;
-            this.order = set.initialOrder(policy);
             this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
             int foundDefault = -1;
@@ -652,6 +652,10 @@ public final class ChannelRuntime {
             ArrayList<Runnable> completions = new ArrayList<>();
             COORDINATOR.lock();
             try {
+                // Sampling outside this lock lets overlapping FAIR selections
+                // capture the same cursor even after a prior winner commits.
+                // Keep cursor snapshot, registration and arbitration atomic.
+                order = set.initialOrder(policy);
                 registerLocked(this);
                 pumpLocked(completions);
 
