@@ -1,0 +1,166 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.NominalEnumOverloads;
+import dev.oreslang.types.NominalMethodSlots;
+import dev.oreslang.types.NominalMethodSlots.Domain;
+import dev.oreslang.types.NominalMethodSlots.Slot;
+import org.junit.jupiter.api.Test;
+
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class NominalMethodSlotsTest {
+    private static final String ENUMS = """
+            define enum Color as
+                Red
+                Blue
+            end
+            define enum Mode as
+                Red
+                Blue
+            end
+            """;
+
+    private static Ast.ClassDecl owner(Ast.Program parsed) {
+        return parsed.modules().stream().flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+    }
+
+    private static Map<Slot, Ast.MethodDecl> prove(String classes) {
+        Ast.Program parsed = Parser.parse(ENUMS + classes);
+        return NominalMethodSlots.proveLocalSameArityFamilies(owner(parsed),
+                NominalEnumOverloads.eligibleEnumSymbols(parsed));
+    }
+
+    @Test
+    void equalShapedEnumValuesStillCreateDistinctStaticMethodSlots() {
+        var slots = prove("""
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                    pub static fnc choose(Color value): int { return 3; }
+                    pub static fnc choose(Mode value): int { return 4; }
+                end
+                """);
+        assertEquals(4, slots.size());
+        assertEquals(2, slots.keySet().stream().filter(k -> k.domain() == Domain.INSTANCE).count());
+        assertEquals(2, slots.keySet().stream().filter(k -> k.domain() == Domain.STATIC).count());
+        assertEquals(4, slots.keySet().stream()
+                .map(slot -> slot.linkSymbol("root.Picker")).distinct().count());
+        assertThrows(UnsupportedOperationException.class, slots::clear);
+    }
+
+    @Test
+    void distinctArityAndDistinctMethodNamesDoNotEnterTypedProof() {
+        assertTrue(prove("""
+                define class Picker as
+                    pub choose(): int { return 1; }
+                    pub choose(Color value): int { return 2; }
+                    pub other(Mode value): int { return 3; }
+                end
+                """).isEmpty());
+    }
+
+    @Test
+    void primitiveOnlyAndMixedPrimitiveDifferencesAreNeverDiscriminators() {
+        for (String methods : List.of(
+                """
+                pub choose(int value): int { return 1; }
+                pub choose(string value): int { return 2; }
+                """,
+                """
+                pub choose(Color value, int count): int { return 1; }
+                pub choose(Mode value, string count): int { return 2; }
+                """,
+                """
+                pub static fnc choose(int value): int { return 1; }
+                pub static fnc choose(bool value): int { return 2; }
+                """)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> prove("define class Picker as\n" + methods + "end\n"));
+        }
+    }
+
+    @Test
+    void sameEnumTypeWithDifferentCasesAndReturnTypesCannotOverload() {
+        assertThrows(IllegalArgumentException.class, () -> prove("""
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Color other): string { return "two"; }
+                end
+                """));
+    }
+
+    @Test
+    void genericOwnerAndUnresolvedGenericMethodsFailClosed() {
+        assertThrows(IllegalArgumentException.class, () -> prove("""
+                define class Picker<T> as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """));
+        assertThrows(IllegalArgumentException.class, () -> prove("""
+                define class Picker as
+                    pub choose<T>(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """));
+    }
+
+    @Test
+    void declarationOrderCannotChangeAnyLinkSymbol() {
+        var first = prove("""
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """);
+        var reversed = prove("""
+                define class Picker as
+                    pub choose(Mode value): int { return 2; }
+                    pub choose(Color value): int { return 1; }
+                end
+                """);
+        assertEquals(first.keySet(), reversed.keySet());
+        assertEquals(first.keySet().stream().map(s -> s.linkSymbol("root.Picker")).collect(java.util.stream.Collectors.toSet()),
+                reversed.keySet().stream().map(s -> s.linkSymbol("root.Picker")).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    @Test
+    void forgedOrMalformedSlotNamesDoNotProduceCollidingAbiSymbols() {
+        var color = new NominalEnumOverloads.Position(
+                NominalEnumOverloads.Kind.ENUM, "root::Color");
+        Slot a = new Slot(Domain.INSTANCE, "get", List.of(color));
+        Slot b = new Slot(Domain.STATIC, "get", List.of(color));
+        assertNotEquals(a.linkSymbol("root.Picker"), b.linkSymbol("root.Picker"));
+        assertNotEquals(a.linkSymbol("root.Picker"), a.linkSymbol("root.Other"));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(Domain.INSTANCE, " ", List.of(color)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(Domain.INSTANCE, "bad" + (char) 0xD800, List.of(color)));
+        assertThrows(IllegalArgumentException.class, () ->
+                a.linkSymbol("bad" + (char) 0xDFFF));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(Domain.INSTANCE, "oversize", java.util.Collections.nCopies(
+                        NominalEnumOverloads.MAX_OVERLOAD_ARITY + 1, color)));
+    }
+
+    @Test
+    void sourceCompilerStillRejectsSameArityEnumMethodsUntilVtablesAreBound() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Picker as
+                    pub choose(Color value): int { return 1; }
+                    pub choose(Mode value): int { return 2; }
+                end
+                """);
+        assertEquals(2, NominalMethodSlots.proveLocalSameArityFamilies(owner(program),
+                NominalEnumOverloads.eligibleEnumSymbols(program)).size());
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(program));
+    }
+}
