@@ -43,6 +43,23 @@ REVIEWED_SNAPSHOTS_ROUTE = (
 )
 SOURCE_SNAPSHOT_ENTRY = re.compile(r"^([a-f0-9]{40}) ([a-f0-9]{40}) ([1-9][0-9]{0,19})$")
 PROTECTED_REVIEWS_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection/required_pull_request_reviews"
+CODEOWNERS_ROUTE = SOURCE_METADATA_ROUTE + "/contents/.github/CODEOWNERS?ref=main"
+# The last matching CODEOWNERS entry wins. Require a terminal set of exact
+# entries so a later wildcard or missing entry cannot silently undo ownership.
+REQUIRED_CODEOWNER_PATHS = (
+    "/.github/CODEOWNERS",
+    "/.github/private-ci-approved-repositories.txt",
+    "/.github/private-ci-approved-source-snapshots.txt",
+    "/scripts/check-private-ci-destination.sh",
+    "/scripts/run-in-private-ci-destination.sh",
+    "/scripts/test-private-ci-destination.sh",
+    "/.github/workflows/private-ci-mirror-preflight.yml",
+    "/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md",
+    "/scripts/publish-private-ci-source.py",
+    "/scripts/test-publish-private-ci-source.py",
+)
+REQUIRED_CODEOWNER = "@ORESoftware"
+
 PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
 
@@ -209,6 +226,42 @@ def checked_policy_fingerprint(root, repository):
     return hashlib.sha256(contents).digest(), approved_id, git_blob_sha
 
 
+def require_protected_source_codeowners():
+    """Require terminal, exact security owners from the source's protected main.
+
+    GitHub's require_code_owner_reviews=true is insufficient when no
+    CODEOWNERS entry matches the private exporter or the snapshot policy.
+    A final explicitly owned entry overrides any earlier wildcard.
+    """
+    metadata = gh_api(CODEOWNERS_ROUTE)
+    if (metadata.get("type") != "file" or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or metadata["size"] > 16 * 1024):
+        raise Denied("protected source CODEOWNERS metadata unavailable")
+    try:
+        raw = base64.b64decode("".join(metadata["content"].splitlines()),
+                               validate=True)
+        text = raw.decode("utf-8")
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("protected source CODEOWNERS content invalid") from exc
+    if (len(raw) != metadata["size"] or b"\\x00" in raw
+            or hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                            + b"\\0" + raw).hexdigest()
+            != valid_sha(metadata.get("sha"))):
+        raise Denied("protected source CODEOWNERS digest or size mismatch")
+    effective = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            effective.append(stripped)
+    required = [path + " " + REQUIRED_CODEOWNER
+                for path in REQUIRED_CODEOWNER_PATHS]
+    if effective[-len(required):] != required:
+        raise Denied("private CI publisher and policies lack terminal CODEOWNER coverage")
+
+
 def require_protected_main_policy(approved_policy):
     """Require a known private source and protected main, not just its blob.
 
@@ -261,6 +314,7 @@ def require_protected_main_policy(approved_policy):
                 not isinstance(allowances.get(key, []), list)
                 or allowances.get(key) for key in ("users", "teams", "apps")):
             raise Denied("branch review bypass allowances are not permitted")
+    require_protected_source_codeowners()
     metadata = gh_api(PROTECTED_POLICY_ROUTE)
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):
