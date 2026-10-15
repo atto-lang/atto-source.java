@@ -6768,6 +6768,12 @@ public final class ActorRuntime implements AutoCloseable {
                 childFailureControlInbox = new AtomicReference<>();
         private final AtomicLong childFailureControlDropped = new AtomicLong();
         private final AtomicLong childFailureWakeRejected = new AtomicLong();
+        /** One outstanding retry registration per parent; no per-failure tasks. */
+        private final AtomicBoolean childFailureRetryRegistered = new AtomicBoolean();
+        private final Runnable childFailureRetry = () -> {
+            childFailureRetryRegistered.set(false);
+            wakeChildFailureHandler();
+        };
 
         private boolean acceptDirectChildFailure(
                 ActorCell<?> child, ActorFailureNotice notice) {
@@ -6810,14 +6816,32 @@ public final class ActorRuntime implements AutoCloseable {
         private void wakeChildFailureHandler() {
             synchronized (lifecycleLock) {
                 if (!(behavior instanceof ChildFailureHandler<?>)
-                        || stopped.get() || finalized || closed.get()) return;
+                        || stopped.get() || finalized || closed.get()
+                        || childFailureRetryRegistered.get()) return;
             }
+            ExecutorService dispatcher = dispatcherFor(kind);
+            // Observe the release epoch *before* submitting the wake. A slot
+            // freed between rejection and registration must cause an
+            // immediate retry, not leave the supervisor stranded.
+            long epoch = dispatcher instanceof ActorAffinityDispatcher lanes
+                    ? lanes.controlRetryEpoch()
+                    : dispatcher instanceof ReservedActorDispatcher reserved
+                            ? reserved.controlRetryEpoch() : 0L;
             try {
-                schedule(false);
+                if (schedule(false)) return;
+                if (!childFailureRetryRegistered.compareAndSet(false, true)) return;
+                boolean enrolled = dispatcher instanceof ActorAffinityDispatcher lanes
+                        ? lanes.registerControlRetry(childFailureRetry, epoch)
+                        : dispatcher instanceof ReservedActorDispatcher reserved
+                                && reserved.registerControlRetry(childFailureRetry, epoch);
+                if (!enrolled) {
+                    childFailureRetryRegistered.set(false);
+                    // Fail visibly; immutable notice stays in the parent
+                    // queue and in the separate host audit channel.
+                    childFailureWakeRejected.incrementAndGet();
+                }
             } catch (RuntimeException failedWake) {
-                // Failure notification must never make the already-finalized
-                // child fail to settle. Preserve the notice for manual polling
-                // and report this unexpected dispatcher failure separately.
+                childFailureRetryRegistered.set(false);
                 childFailureWakeRejected.incrementAndGet();
             }
         }
@@ -7187,6 +7211,13 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+            ExecutorService dispatcher = dispatcherFor(kind);
+            if (dispatcher instanceof ActorAffinityDispatcher lanes) {
+                lanes.cancelControlRetry(childFailureRetry);
+            } else if (dispatcher instanceof ReservedActorDispatcher reserved) {
+                reserved.cancelControlRetry(childFailureRetry);
+            }
+            childFailureRetryRegistered.set(false);
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -7407,10 +7438,13 @@ public final class ActorRuntime implements AutoCloseable {
          * notice is already admitted, so saturation must not destroy the
          * parent actor or convert a child failure into its cancellation.
          */
-        private void schedule(boolean fatalOnRejection) {
+        private boolean schedule(boolean fatalOnRejection) {
             final Object dispatchTicket;
             synchronized (lifecycleLock) {
-                if (stopped.get() || forceKillFenced || closed.get() || scheduled.get()) return;
+                // An existing ticket already guarantees the parent gets an
+                // actor turn; no second CONTROL wake is needed.
+                if (scheduled.get()) return true;
+                if (stopped.get() || forceKillFenced || closed.get()) return true;
                 // Atomically claim the actor lane and publish a fresh identity.
                 dispatchTicket = new Object();
                 scheduledDispatchToken = dispatchTicket;
@@ -7456,11 +7490,13 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 if (!fatalOnRejection) {
                     childFailureWakeRejected.incrementAndGet();
-                    return;
+                    return false;
                 }
                 stop();
                 if (!closed.get()) throw submissionFailure;
+                return false;
             }
+            return true;
         }
 
         private void runBatch(Object dispatchTicket) {
@@ -7586,7 +7622,10 @@ public final class ActorRuntime implements AutoCloseable {
                 // Keep a supervisor's queued CONTROL notices eligible for
                 // the independent reserved admission budget at every yield,
                 // not only on the child's first notification.
-                if (reschedule) schedule(!rescheduleControl);
+                if (reschedule) {
+                    if (rescheduleControl) wakeChildFailureHandler();
+                    else schedule();
+                }
             }
         }
 
