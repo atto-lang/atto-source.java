@@ -911,10 +911,30 @@ public final class NativeHttp implements AutoCloseable {
         try { raw.sendResponseHeaders(status, -1); } catch (IOException ignored) { } finally { raw.close(); }
     }
     @Override public synchronized void close() {
+        if (closed) return;
         closed = true;
-        for (Server server : List.copyOf(servers)) server.close();
-        for (Handler pool : pools) pool.stopPool();
-        pools.clear();
-        timers.shutdownNow(); io.shutdownNow(); transfers.clear();
+        RuntimeException failure = null;
+        try {
+            // Context teardown must not stop after one listener or actor pool
+            // throws during cleanup. Otherwise other transports and actors
+            // remain live while the surrounding polyglot Context is closing.
+            RuntimeException serverFailure = abortEveryAccepted(
+                    List.copyOf(servers), Server::close);
+            RuntimeException poolFailure = abortEveryAccepted(
+                    List.copyOf(pools), Handler::stopPool);
+            failure = serverFailure != null ? serverFailure : poolFailure;
+            if (serverFailure != null && poolFailure != null
+                    && serverFailure != poolFailure) {
+                serverFailure.addSuppressed(poolFailure);
+            }
+        } finally {
+            // Always release host executors and capability tables even if
+            // a transport or actor cancellation unexpectedly failed.
+            pools.clear();
+            timers.shutdownNow();
+            io.shutdownNow();
+            transfers.clear();
+        }
+        if (failure != null) throw failure;
     }
 }
