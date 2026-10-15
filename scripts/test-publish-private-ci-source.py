@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -38,6 +39,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Earlier identity/policy tests use a synthetic, uncommitted fixture.
+        # Keep the existing write-contract tests independent of Git checkout,
+        # and separately exercise the REAL exact-tree provenance gate below.
+        self.real_tree_gate = pub.require_source_tree_match
+        self.tree_gate = patch.object(pub, "require_source_tree_match", return_value=D)
+        self.tree_gate.start()
+        self.addCleanup(self.tree_gate.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -176,6 +184,65 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
                 self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_destination_subtree_mismatch_cannot_publish_ci_ref(self):
+        original = self.fake_api
+
+        def wrong_tree(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/trees"
+                    and method == "POST" and "base_tree" not in payload):
+                self.route_calls.append((method, route, payload))
+                return {"sha": C}
+            return original(route, method, payload)
+
+        with patch.object(pub, "gh_api", side_effect=wrong_tree):
+            with self.assertRaisesRegex(pub.Denied, "subtree differs"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        writes = [r for m, r, _ in self.route_calls if m == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs",
+                                  "repos/trusted/ci/git/trees"])
+        self.assertFalse(any(r.endswith("/git/refs") for r in writes))
+
+    def test_actual_git_tree_matches_committed_nested_snapshot(self):
+        # Independent fixture: do not fake Git's HEAD^{tree}, proving the
+        # in-memory snapshot uses Git's directory, mode and blob hashing.
+        with tempfile.TemporaryDirectory() as root_text:
+            root = Path(root_text)
+            (root / "nested").mkdir()
+            (root / "nested" / "data.ores").write_bytes(b"nested\n")
+            (root / "run.sh").write_bytes(b"#!/bin/sh\nexit 0\n")
+            (root / "run.sh").chmod(0o755)
+            subprocess.run(["git", "init", "-q", str(root)],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root), "add", "--all"],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(root),
+                            "-c", "user.name=CI",
+                            "-c", "user.email=ci@example.invalid",
+                            "commit", "-qm", "fixture"],
+                           check=True, capture_output=True)
+            files = pub.collect_source(root, root)
+            actual = self.real_tree_gate(root, root, files)
+            expected = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD^{tree}"],
+                check=True, capture_output=True, text=True).stdout.strip()
+            self.assertEqual(actual, expected)
+
+            (root / "nested" / "data.ores").write_bytes(b"changed\n")
+            dirty = pub.collect_source(root, root)
+            with self.assertRaisesRegex(pub.Denied, "differs"):
+                self.real_tree_gate(root, root, dirty)
+
+            # Restoring the tracked file but adding an untracked file is
+            # likewise rejected instead of exporting unrelated private bytes.
+            (root / "nested" / "data.ores").write_bytes(b"nested\n")
+            (root / "extra-secret.txt").write_text("untracked")
+            dirty = pub.collect_source(root, root)
+            with self.assertRaisesRegex(pub.Denied, "differs"):
+                self.real_tree_gate(root, root, dirty)
+
+            with self.assertRaisesRegex(pub.Denied, "checkout root"):
+                self.real_tree_gate(root / "nested", root, files)
 
     def test_public_visibility_aborts_before_any_write(self):
         self.visibility = ["public"]
