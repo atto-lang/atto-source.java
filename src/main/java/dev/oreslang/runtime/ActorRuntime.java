@@ -7220,6 +7220,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (ownerId != null) {
                 ActorGroup owner = actorGroups.get(ownerId);
                 if (owner != null) gate = owner.turnGate;
+                else {
+                    // Never bypass a vanished lifecycle owner's placement.
+                    synchronized (lifecycleLock) {
+                        if (scheduledDispatchToken == dispatchTicket) {
+                            scheduledDispatchToken = null;
+                            scheduled.set(false);
+                        }
+                    }
+                    stop();
+                    return;
+                }
             }
             try {
                 if (gate == null) {
