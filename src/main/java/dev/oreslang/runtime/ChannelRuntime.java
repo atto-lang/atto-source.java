@@ -461,10 +461,20 @@ public final class ChannelRuntime {
                 SelectPolicy policy,
                 java.util.function.Consumer<OresFuture<SelectResult>> onCreated,
                 Runnable afterWaiterAttached) {
+            return selectAsyncForTesting(policy, onCreated, afterWaiterAttached, null);
+        }
+
+        /** Opt-in observer for the critical decision-to-late-detach window. */
+        OresFuture<SelectResult> selectAsyncForTesting(
+                SelectPolicy policy,
+                java.util.function.Consumer<OresFuture<SelectResult>> onCreated,
+                Runnable afterWaiterAttached,
+                Runnable beforeLateWaiterDetached) {
             SelectRegistration registration =
                     new SelectRegistration(this,
                             Objects.requireNonNull(policy, "policy"),
-                            Objects.requireNonNull(afterWaiterAttached, "afterWaiterAttached"));
+                            Objects.requireNonNull(afterWaiterAttached, "afterWaiterAttached"),
+                            beforeLateWaiterDetached);
             Objects.requireNonNull(onCreated, "onCreated").accept(registration.future);
             registration.start(false);
             return registration.future;
@@ -633,6 +643,7 @@ public final class ChannelRuntime {
         private final int defaultIndex;
         private final OresFuture<SelectResult> future;
         private final Runnable afterWaiterAttachedForTesting;
+        private final Runnable beforeLateWaiterDetachedForTesting;
         private boolean decided;
         private boolean registered;
         /** Registrations that can still return after a selection was committed. */
@@ -641,14 +652,16 @@ public final class ChannelRuntime {
         private final ArrayList<Runnable> deferredPublication = new ArrayList<>();
 
         private SelectRegistration(SelectSet set, SelectPolicy policy) {
-            this(set, policy, null);
+            this(set, policy, null, null);
         }
 
         private SelectRegistration(SelectSet set, SelectPolicy policy,
-                Runnable afterWaiterAttachedForTesting) {
+                Runnable afterWaiterAttachedForTesting,
+                Runnable beforeLateWaiterDetachedForTesting) {
             this.set = set;
             this.policy = policy;
             this.afterWaiterAttachedForTesting = afterWaiterAttachedForTesting;
+            this.beforeLateWaiterDetachedForTesting = beforeLateWaiterDetachedForTesting;
             this.registeredByIndex = new CaseRegistration[set.cases.size()];
 
             int foundDefault = -1;
@@ -772,7 +785,16 @@ public final class ChannelRuntime {
                         // Leave the attachment claim live until AFTER removal:
                         // a concurrent publisher must not observe count == 0
                         // while this losing registration remains linked.
-                        if (lost && waiter != null) waiter.detach();
+                        if (lost && waiter != null) {
+                            try {
+                                if (beforeLateWaiterDetachedForTesting != null) {
+                                    beforeLateWaiterDetachedForTesting.run();
+                                }
+                            } finally {
+                                // Even a throwing test hook cannot retain a late handle.
+                                waiter.detach();
+                            }
+                        }
                     } finally {
                         COORDINATOR.lock();
                         try {
