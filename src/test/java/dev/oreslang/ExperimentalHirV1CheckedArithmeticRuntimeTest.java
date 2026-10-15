@@ -332,7 +332,10 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
             "// oreslang:checked-i64-v1\r\n" + program,
             "\n// oreslang:checked-i64-v1\n" + program,
             " // oreslang:checked-i64-v1\n" + program,
-            "// oreslang:checked-i64-v2\n" + program
+            "// oreslang:checked-i64-v2\n" + program,
+            "/* note */ // oreslang:checked-i64-v1\n" + program,
+            "pub fnc helper(): int { return 1; } // oreslang:checked-i64-v1\n" + program,
+            "/* outer /* nested */ final */ // oreslang:checked-i64-v2\n" + program
         };
         for (String source : malformed) {
             var parsed = assertThrows(IllegalArgumentException.class,
@@ -344,4 +347,15 @@ final class ExperimentalHirV1CheckedArithmeticRuntimeTest {
             assertTrue(diagnostic.getMessage().contains("checked-i64-v1"));
         }
     }
+    @Test
+    void quotedCheckedProfileMarkerDoesNotRejectUnmarkedSource() {
+        String source = "pub fnc message(): string { "
+                + "return \"// oreslang:checked-i64-v1\"; }\n";
+        assertFalse(dev.oreslang.parser.CheckedI64SourceHeader.isEnabled(source));
+        assertFalse(dev.oreslang.parser.CheckedI64SourceHeader.isEnabled(
+                "pub fnc main(): int { return 43; }\n"));
+        assertTrue(dev.oreslang.parser.CheckedI64SourceHeader.isEnabled(
+                HEADER + "pub fnc main(): int { return 43; }\n"));
+    }
+
 }
