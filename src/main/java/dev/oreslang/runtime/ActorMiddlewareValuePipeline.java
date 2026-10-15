@@ -136,12 +136,15 @@ public final class ActorMiddlewareValuePipeline<T> {
             ActorMiddlewarePipeline.Envelope request, BooleanSupplier cancelled) {
         Objects.requireNonNull(request);
         Objects.requireNonNull(cancelled);
-        return dispatch(0, request, cancelled, new ConcurrentHashMap<>());
+        return dispatch(0, request, ResponseDraft.defaults(), cancelled, new ConcurrentHashMap<>());
     }
 
+    private record Receipt(ActorMiddlewarePipeline.Envelope request, ResponseDraft response) {}
+
     private CompletionStage<Outcome<T>> dispatch(int slot,
-            ActorMiddlewarePipeline.Envelope request, BooleanSupplier cancelled,
-            Map<ActorMiddlewarePipeline.Key, ActorMiddlewarePipeline.Envelope> receipts) {
+            ActorMiddlewarePipeline.Envelope request, ResponseDraft response,
+            BooleanSupplier cancelled,
+            Map<ActorMiddlewarePipeline.Key, Receipt> receipts) {
         if (cancelled.getAsBoolean())
             return CompletableFuture.failedFuture(new IllegalStateException("request cancelled"));
         int superCount = supervisor.size();
@@ -159,12 +162,14 @@ public final class ActorMiddlewareValuePipeline<T> {
         // reconstructed headers. Mutate-then-revert invalidates the receipt.
         if (!privileged && stage.skipIfEquivalent()
                 && trustedEquivalent.contains(stage.key())
-                && receipts.get(stage.key()) == request)
-            return dispatch(slot + 1, request, cancelled, receipts);
+                && receipts.get(stage.key()) != null
+                && receipts.get(stage.key()).request() == request
+                && receipts.get(stage.key()).response() == response)
+            return dispatch(slot + 1, request, response, cancelled, receipts);
         AtomicBoolean advanced = new AtomicBoolean();
         AtomicBoolean settled = new AtomicBoolean();
         AtomicReference<CompletionStage<Outcome<T>>> forwarded = new AtomicReference<>();
-        Next<T> next = updated -> {
+        Next<T> next = (updated, draft) -> {
             if (settled.get()) return CompletableFuture.failedFuture(
                     new IllegalStateException("next after middleware completion"));
             if (!advanced.compareAndSet(false, true)) return CompletableFuture.failedFuture(
@@ -172,19 +177,21 @@ public final class ActorMiddlewareValuePipeline<T> {
             if (cancelled.getAsBoolean()) return CompletableFuture.failedFuture(
                     new IllegalStateException("request cancelled"));
             ActorMiddlewarePipeline.Envelope checked = Objects.requireNonNull(updated);
+            ResponseDraft checkedDraft = Objects.requireNonNull(draft);
             if (privileged && trustedEquivalent.contains(stage.key()))
-                receipts.put(stage.key(), checked);
-            CompletionStage<Outcome<T>> down = dispatch(slot + 1, checked, cancelled, receipts);
+                receipts.put(stage.key(), new Receipt(checked, checkedDraft));
+            CompletionStage<Outcome<T>> down = dispatch(
+                    slot + 1, checked, checkedDraft, cancelled, receipts);
             forwarded.set(down);
             return down;
         };
         CompletionStage<Outcome<T>> current;
         try {
             if (stage.valueHook() != null) {
-                current = Objects.requireNonNull(stage.valueHook().nextVal(request))
+                current = Objects.requireNonNull(stage.valueHook().nextVal(request, response))
                         .thenCompose(decision -> {
                             if (decision instanceof Continue<?> pass)
-                                return next.proceed(pass.request());
+                                return next.proceed(pass.request(), pass.response());
                             if (decision instanceof Reply<?> reply) {
                                 if (privileged) return CompletableFuture.failedFuture(
                                         new SecurityException("supervisor cannot return actor's typed value"));
@@ -198,7 +205,7 @@ public final class ActorMiddlewareValuePipeline<T> {
                             return CompletableFuture.failedFuture(
                                     new IllegalStateException("invalid next_val decision"));
                         });
-            } else current = Objects.requireNonNull(stage.aroundHook().next(request, next));
+            } else current = Objects.requireNonNull(stage.aroundHook().next(request, response, next));
         } catch (Throwable error) { current = CompletableFuture.failedFuture(error); }
 
         // One observable terminal result, even if around-stage code fails
