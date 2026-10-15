@@ -284,7 +284,13 @@ def snapshot_tree_sha(files):
     def digest(node):
         records = []
         for name, item in node.items():
-            name_bytes = name.encode("utf-8")
+            try:
+                name_bytes = name.encode("utf-8", "strict")
+            except UnicodeEncodeError as exc:
+                # Git stores path bytes; rejecting an undecodable local
+                # filename is safer than emitting a traceback with private
+                # source path fragments or hashing a lossy replacement.
+                raise Denied("source snapshot contains a non-UTF-8 filename") from exc
             if isinstance(item, dict):
                 git_mode, object_id, sort_key = b"40000", digest(item), name_bytes + b"/"
             else:
