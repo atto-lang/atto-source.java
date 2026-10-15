@@ -1085,7 +1085,13 @@ public final class Ast {
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
+    /**
+     * Callable modifiers are retained in the AST even before their execution
+     * lowering is admitted. In particular, a qualified lambda must never be
+     * silently evaluated as an ordinary synchronous lambda.
+     */
+    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                             boolean nonLexical, boolean async, boolean suspends) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
@@ -1093,9 +1099,16 @@ public final class Ast {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
+            if (async && suspends) {
+                throw new IllegalArgumentException("lambda cannot be both async and suspends");
+            }
+        }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                          boolean nonLexical) {
+            this(parameters, expressionBody, blockBody, nonLexical, false, false);
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
-            this(parameters, expressionBody, blockBody, false);
+            this(parameters, expressionBody, blockBody, false, false, false);
         }
     }
 }
