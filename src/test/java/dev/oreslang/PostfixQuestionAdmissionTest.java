@@ -53,7 +53,7 @@ final class PostfixQuestionAdmissionTest {
                 "fnc wrong(Future<int> v): Result<int, String> { return Ok(v?); }",
                 "fnc wrong(Result<int, int> v): Result<int, String> { return Ok(v?); }",
                 "async fnc wrong(Result<int, String> v): Result<int, String> { return Ok(v?); }",
-                "fnc wrong(): Result<int, String> { val Result<int, String> a = Ok(1); return Ok((a?) + 1); }"
+                "fnc direct(): Result<int, String> { return Ok(1); } fnc wrong(): Result<int, String> { val int n = direct()?; return Ok(n); }"
         }) {
             assertThrows(IllegalArgumentException.class,
                     () -> OresCompiler.parseAndTypeCheck(source), source);
