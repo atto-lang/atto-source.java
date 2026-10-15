@@ -121,9 +121,12 @@ final class DualSerdeBorrowBoundaryTest {
                 "RuntimeBox.ProxyActor",
                 "Option<RuntimeBox.ActorRef<int>>"
         }) {
-            assertThrows(IllegalArgumentException.class,
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
                             "actor fnc bad(" + type + " value): void { return; }")), type);
+            assertTrue(failure.getMessage().contains("cannot transport")
+                            || failure.getMessage().contains("cannot use"),
+                    () -> type + ": " + failure.getMessage());
         }
     }
 
