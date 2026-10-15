@@ -99,6 +99,56 @@ class NativeHttpTest {
                 "a closed transport with no dispatch or actor lease can retire");
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    @org.junit.jupiter.api.Timeout(10)
+    void shutdownCannotPublishSuccessUntilAllAbortCleanupHasRun() throws Exception {
+        var cleanupEntered = new CountDownLatch(1);
+        var allowCleanup = new CountDownLatch(1);
+        var stoppedPublished = new CountDownLatch(1);
+        var successfulDrain = new java.util.concurrent.atomic.AtomicBoolean();
+
+        try (ExecutorService carrier = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> stop = carrier.submit(() -> NativeHttp.finishShutdownCleanup(
+                    () -> {
+                        cleanupEntered.countDown();
+                        try {
+                            if (!allowCleanup.await(5, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("abort cleanup gate expired");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                    }, () -> {
+                        stoppedPublished.countDown();
+                        successfulDrain.set(true);
+                    }));
+            try {
+                assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+                assertEquals(1L, stoppedPublished.getCount(),
+                        "transport stop became visible before abort cleanup finished");
+                assertFalse(successfulDrain.get(),
+                        "a concurrent request release could falsely succeed here");
+            } finally {
+                allowCleanup.countDown();
+            }
+            stop.get(5, TimeUnit.SECONDS);
+            assertEquals(0L, stoppedPublished.getCount());
+            assertTrue(successfulDrain.get());
+        }
+    }
+
+    @Test void shutdownPublishesTerminalStateEvenWhenAbortCleanupThrows() {
+        var publication = new java.util.concurrent.atomic.AtomicInteger();
+        var aborted = new IllegalStateException("abort failed");
+        assertSame(aborted, assertThrows(IllegalStateException.class,
+                () -> NativeHttp.finishShutdownCleanup(
+                        () -> { throw aborted; },
+                        publication::incrementAndGet)));
+        assertEquals(1, publication.get(),
+                "failed cleanup must still allow terminal failure publication");
+    }
+
     @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
         var order = new java.util.ArrayList<String>();
         var closeFailure = new IllegalStateException("socket close failed");
