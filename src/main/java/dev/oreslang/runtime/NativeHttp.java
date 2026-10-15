@@ -471,7 +471,19 @@ public final class NativeHttp implements AutoCloseable {
             if (actor != null && cancelOwner) actor.cancel();
             if (alreadyClosed) { release(); return; }
             try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) { release(); }
+            catch (RejectedExecutionException closed) {
+                // No I/O worker remains to close this aborted transport.
+                // Merely invoking release() here is ineffective because it
+                // refuses to reclaim an exchange with transportClosed=false.
+                // Close as an emergency host fallback, always retire the
+                // admission slot, and never leave server.shutdown() waiting
+                // forever for an impossible executor task.
+                try { raw.close(); }
+                finally {
+                    synchronized (this) { transportClosed = true; }
+                    release();
+                }
+            }
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
