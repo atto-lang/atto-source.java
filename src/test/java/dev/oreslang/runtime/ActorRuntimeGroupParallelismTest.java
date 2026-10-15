@@ -238,6 +238,58 @@ final class ActorRuntimeGroupParallelismTest {
     }
 
     @Test
+    void promotedTurnRejectedByStoppedDispatcherTerminatesRemainingQueuedActors()
+            throws Exception {
+        CountDownLatch firstEntered = new CountDownLatch(1);
+        CountDownLatch allowFirstExit = new CountDownLatch(1);
+        AtomicInteger unsafeExecutions = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8, 8))) {
+            var group = runtime.createActorGroup(limit(1));
+            var first = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(), factory -> (message, ctx) -> {
+                        firstEntered.countDown();
+                        try {
+                            allowFirstExit.await(5, TimeUnit.SECONDS);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }));
+            var second = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(), factory -> (message, ctx) ->
+                            unsafeExecutions.incrementAndGet()));
+            var third = group.manageWorker(runtime.spawnSharedTrusted(
+                    IsolatePolicy.developer(), factory -> (message, ctx) ->
+                            unsafeExecutions.incrementAndGet()));
+            try {
+                first.send(1);
+                assertTrue(firstEntered.await(5, TimeUnit.SECONDS));
+                second.send(1);
+                third.send(1);
+                // Fault injection in the trusted host harness: simulate a
+                // dead underlying VM domain executor while gate work waits.
+                var field = ActorRuntime.class.getDeclaredField("sharedDispatcher");
+                field.setAccessible(true);
+                var dispatcher = (java.util.concurrent.ExecutorService) field.get(runtime);
+                dispatcher.shutdownNow();
+                allowFirstExit.countDown();
+                assertTrue(second.awaitTermination(5, TimeUnit.SECONDS),
+                        "rejected promoted actor must terminate rather than hang");
+                assertTrue(third.awaitTermination(5, TimeUnit.SECONDS),
+                        "gate-close cancellation must stop all remaining waiters");
+                assertEquals(0, unsafeExecutions.get());
+            } finally {
+                allowFirstExit.countDown();
+                first.stop();
+                group.close();
+            }
+        } finally {
+            allowFirstExit.countDown();
+        }
+    }
+
+    @Test
     void activeActorCannotBeRetrofittedIntoBoundedGroupAndTransferFailsClosed()
             throws Exception {
         CountDownLatch seen = new CountDownLatch(1);
