@@ -226,6 +226,20 @@ ownership line, and no private export is authorized. CODEOWNERS checks
 cannot prove that a repository owner configured GitHub permissions correctly,
 or that later users with administrative access cannot alter settings.
 
-The targeted new function was locally checked against 14 isolated cases
-with an exact-function fingerprint match; the full checked-in Python/Bash
-suite still requires an executing authorized runner.
+The publisher also consults GitHub's protected-main
+`GET /repos/{owner}/{repo}/codeowners/errors?ref=main` endpoint and
+`GET /repos/{owner}/{repo}/collaborators/ORESoftware/permission`.
+The first must return an empty `errors` array; the second must identify
+the expected GitHub **User** with effective `write` or `admin` access.
+These checks must reject missing API permissions or unavailable endpoints,
+rather than accepting locally well-formed but GitHub-inactive owners.
+
+The exact CODEOWNERS validation function was exercised locally with
+**28/28 focused cases** and a matching source-text FNV-1a fingerprint
+(`37bd9d4b`, 2713 characters including the terminating newline).
+These are source-free mocked GitHub API checks, not the full checked-in
+Python/Bash publisher suite, Java/GraalVM tests, or a real source transfer.
+
+Security reviewers must separately verify GitHub's CODEOWNERS diagnostics
+and that a qualified **independent** reviewer can approve a change, rather
+than relying solely on a valid CODEOWNERS text entry.
