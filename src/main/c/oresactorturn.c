@@ -21,18 +21,26 @@ struct ores_actor_cap {
     struct ores_actor_cap *next;
     uint64_t hi, lo, incarnation;
     struct ores_turn_lease *active;
-    size_t pending_tickets;
+    size_t pending_tickets, pending_sources;
     bool stopped, revoked, retired;
+};
+struct ores_source_task_cap {
+    struct ores_source_task_cap *next;
+    struct ores_actor_cap *actor;
+    uint64_t task_id, generation;
+    bool retired, ticket_issued, ticket_closed;
 };
 struct ores_cleanup_cap {
     struct ores_cleanup_cap *next;
     struct ores_actor_cap *actor;
+    struct ores_source_task_cap *source;
     bool consumed, cancelled;
 };
 struct ores_turn_vm {
     pthread_mutex_t mutex;
     size_t max_objects, used_objects;
     struct ores_actor_cap *actors;
+    struct ores_source_task_cap *sources;
     struct ores_cleanup_cap *tickets;
     struct ores_turn_lease *leases;
 };
@@ -73,6 +81,20 @@ static bool current_actor(const ores_turn_vm *vm, const ores_actor_cap *actor) {
         if (p->hi == actor->hi && p->lo == actor->lo) return p == actor;
     }
     return false;
+}
+static bool known_source(const ores_turn_vm *vm,
+                         const ores_source_task_cap *source) {
+    for (const ores_source_task_cap *p = vm->sources; p; p = p->next) {
+        if (p == source) return true;
+    }
+    return false;
+}
+static ores_turn_status require_live_source(ores_turn_vm *vm,
+                                            ores_source_task_cap *source) {
+    if (!known_source(vm, source)) return ORES_TURN_INVALID;
+    ores_turn_status status = require_current(vm, source->actor);
+    if (status != ORES_TURN_OK) return status;
+    return source->retired ? ORES_TURN_STALE : ORES_TURN_OK;
 }
 static bool known_ticket(const ores_turn_vm *vm, const ores_cleanup_cap *ticket) {
     for (const ores_cleanup_cap *p = vm->tickets; p; p = p->next) {
@@ -129,7 +151,7 @@ ores_turn_status ores_turn_vm_destroy(ores_turn_vm *vm) {
          * physical turn quiescence, or final state retirement. Other host
          * threads must already be fenced before the caller attempts destroy.
          */
-        if (!a->retired || a->active || a->pending_tickets) {
+        if (!a->retired || a->active || a->pending_tickets || a->pending_sources) {
             pthread_mutex_unlock(&vm->mutex);
             return ORES_TURN_BUSY;
         }
@@ -137,6 +159,8 @@ ores_turn_status ores_turn_vm_destroy(ores_turn_vm *vm) {
     /* Caller must have fenced all other host threads before teardown. */
     ores_actor_cap *a = vm->actors;
     while (a) { ores_actor_cap *next = a->next; free(a); a = next; }
+    ores_source_task_cap *s = vm->sources;
+    while (s) { ores_source_task_cap *next = s->next; free(s); s = next; }
     ores_cleanup_cap *t = vm->tickets;
     while (t) { ores_cleanup_cap *next = t->next; free(t); t = next; }
     ores_turn_lease *l = vm->leases;
@@ -186,27 +210,93 @@ ores_turn_status ores_turn_register(ores_turn_vm *vm,
     return ORES_TURN_OK;
 }
 
+ores_turn_status ores_turn_register_source_task(ores_turn_vm *vm,
+                                               ores_actor_cap *actor,
+                                               uint64_t task_id,
+                                               uint64_t generation,
+                                               ores_source_task_cap **out) {
+    if (out) *out = NULL;
+    if (!vm || !out || task_id == 0 || generation == 0) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = require_current(vm, actor);
+    if (status == ORES_TURN_OK) {
+        if (actor->stopped || actor->revoked || actor->retired)
+            status = ORES_TURN_DENIED;
+        else {
+            for (const ores_source_task_cap *s = vm->sources; s; s = s->next) {
+                if (s->actor == actor && s->task_id == task_id) {
+                    if (generation <= s->generation) status = ORES_TURN_STALE;
+                    else if (!s->retired) status = ORES_TURN_BUSY;
+                    if (status != ORES_TURN_OK) break;
+                }
+            }
+            if (status == ORES_TURN_OK) {
+                if (vm->used_objects == vm->max_objects)
+                    status = ORES_TURN_EXHAUSTED;
+                else {
+                    ores_source_task_cap *s = calloc(1, sizeof(*s));
+                    if (!s) status = ORES_TURN_EXHAUSTED;
+                    else {
+                        s->actor = actor;
+                        s->task_id = task_id;
+                        s->generation = generation;
+                        s->next = vm->sources;
+                        vm->sources = s;
+                        vm->used_objects++;
+                        actor->pending_sources++;
+                        *out = s;
+                    }
+                }
+            }
+        }
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
 ores_turn_status ores_turn_issue_cleanup(ores_turn_vm *vm,
-                                         ores_actor_cap *actor,
+                                         ores_source_task_cap *source,
                                          ores_cleanup_cap **out) {
     if (out) *out = NULL;
     if (!vm || !out) return ORES_TURN_INVALID;
     pthread_mutex_lock(&vm->mutex);
-    ores_turn_status status = require_current(vm, actor);
+    ores_turn_status status = require_live_source(vm, source);
     if (status == ORES_TURN_OK) {
-        if (actor->stopped || actor->revoked || actor->retired) status = ORES_TURN_DENIED;
+        ores_actor_cap *actor = source->actor;
+        if (actor->stopped || actor->revoked || actor->retired
+                || source->ticket_issued) status = ORES_TURN_DENIED;
         else if (vm->used_objects == vm->max_objects) status = ORES_TURN_EXHAUSTED;
         else {
             ores_cleanup_cap *ticket = calloc(1, sizeof(*ticket));
             if (!ticket) status = ORES_TURN_EXHAUSTED;
             else {
                 ticket->actor = actor;
+                ticket->source = source;
                 ticket->next = vm->tickets;
                 vm->tickets = ticket;
                 vm->used_objects++;
                 actor->pending_tickets++;
+                source->ticket_issued = true;
                 *out = ticket;
             }
+        }
+    }
+    pthread_mutex_unlock(&vm->mutex);
+    return status;
+}
+
+ores_turn_status ores_turn_retire_source_task(ores_turn_vm *vm,
+                                              ores_source_task_cap *source) {
+    if (!vm) return ORES_TURN_INVALID;
+    pthread_mutex_lock(&vm->mutex);
+    ores_turn_status status = require_live_source(vm, source);
+    if (status == ORES_TURN_OK) {
+        if (source->actor->active || (source->ticket_issued
+                                         && !source->ticket_closed))
+            status = ORES_TURN_BUSY;
+        else {
+            source->retired = true;
+            source->actor->pending_sources--;
         }
     }
     pthread_mutex_unlock(&vm->mutex);
@@ -256,6 +346,7 @@ ores_turn_status ores_turn_claim_cleanup(ores_turn_vm *vm,
                 status = allocate_lease(vm, a, out);
                 if (status == ORES_TURN_OK) {
                     ticket->consumed = true;
+                    ticket->source->ticket_closed = true;
                     a->pending_tickets--;
                 }
             }
@@ -276,6 +367,7 @@ ores_turn_status ores_turn_cancel_cleanup(ores_turn_vm *vm,
             if (ticket->cancelled || ticket->consumed) status = ORES_TURN_DENIED;
             else {
                 ticket->cancelled = true;
+                ticket->source->ticket_closed = true;
                 ticket->actor->pending_tickets--;
             }
         }
@@ -296,6 +388,7 @@ ores_turn_status ores_turn_force_revoke(ores_turn_vm *vm, ores_actor_cap *actor)
             for (ores_cleanup_cap *t = vm->tickets; t; t = t->next) {
                 if (t->actor == actor && !t->consumed && !t->cancelled) {
                     t->cancelled = true;
+                    t->source->ticket_closed = true;
                     actor->pending_tickets--;
                 }
             }
@@ -329,7 +422,8 @@ ores_turn_status ores_turn_retire(ores_turn_vm *vm, ores_actor_cap *actor) {
     ores_turn_status status = require_current(vm, actor);
     if (status == ORES_TURN_OK) {
         if (actor->retired || !actor->stopped) status = ORES_TURN_DENIED;
-        else if (actor->active || actor->pending_tickets) status = ORES_TURN_BUSY;
+        else if (actor->active || actor->pending_tickets || actor->pending_sources)
+            status = ORES_TURN_BUSY;
         else actor->retired = true;
     }
     pthread_mutex_unlock(&vm->mutex);
