@@ -6695,7 +6695,7 @@ public final class ActorRuntime implements AutoCloseable {
         // Terminal observers must NOT publish callbacks from finalizeStopLocked:
         // Future runtime listeners execute synchronously on the completing thread.
         // Child finalization can also nest parent and child lifecycle monitors.
-        private final ArrayList<OresFuture<Void>> finalizedCarrierNotifications = new ArrayList<>();
+        private List<OresFuture<Void>> finalizedCarrierNotifications;
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -7094,9 +7094,15 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // Finalization is authoritative even when cancellation prevented
             // previously admitted messages from running.
-            List<OresFuture<Void>> quiesced = new ArrayList<>();
-            collectCarrierQuiescenceLocked(quiesced);
-            finalizedCarrierNotifications.addAll(quiesced);
+            if (!pendingCarrierQuiescence.isEmpty()) {
+                // Zero allocation for actors without HTTP carrier observers.
+                // Terminal finalization runs once, so the collected list is
+                // published by the outer caller, never shared with live turns.
+                List<OresFuture<Void>> quiesced =
+                        new ArrayList<>(pendingCarrierQuiescence.size());
+                collectCarrierQuiescenceLocked(quiesced);
+                finalizedCarrierNotifications = quiesced;
+            }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
             Throwable terminal = ref.terminationCause.get();
@@ -7125,11 +7131,14 @@ public final class ActorRuntime implements AutoCloseable {
             for (ActorCell<?> cell = this; cell != null; cell = cell.parent) {
                 List<OresFuture<Void>> ready;
                 synchronized (cell.lifecycleLock) {
-                    if (cell.finalizedCarrierNotifications.isEmpty()) continue;
-                    ready = List.copyOf(cell.finalizedCarrierNotifications);
-                    cell.finalizedCarrierNotifications.clear();
+                    ready = cell.finalizedCarrierNotifications;
+                    cell.finalizedCarrierNotifications = null;
                 }
-                for (OresFuture<Void> waiter : ready) waiter.completeFromRuntime(null);
+                if (ready != null) {
+                    for (OresFuture<Void> waiter : ready) {
+                        waiter.completeFromRuntime(null);
+                    }
+                }
             }
         }
 
