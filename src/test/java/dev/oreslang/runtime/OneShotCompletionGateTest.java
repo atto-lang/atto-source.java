@@ -68,6 +68,52 @@ final class OneShotCompletionGateTest {
     }
 
     @Test
+    void nullCallbacksAreRejectedWithoutConsumingTheCompletion() {
+        OneShotCompletionGate gate = new OneShotCompletionGate();
+        assertThrows(NullPointerException.class, () -> gate.deliver(null));
+        assertFalse(gate.delivered());
+        assertTrue(gate.deliver(() -> { }));
+        assertThrows(NullPointerException.class, () -> gate.deliver(null));
+        assertTrue(gate.delivered());
+    }
+
+    @Test
+    void repeatedContendedClaimsAlwaysHaveOneWinner() throws Exception {
+        // Reuse workers but create a fresh gate for every round. A successful
+        // first delivery must publish its result before any other callback runs.
+        final int attempts = 16;
+        final int rounds = 64;
+        try (var pool = Executors.newFixedThreadPool(attempts)) {
+            for (int round = 0; round < rounds; round++) {
+                OneShotCompletionGate gate = new OneShotCompletionGate();
+                AtomicInteger callbacks = new AtomicInteger();
+                CountDownLatch ready = new CountDownLatch(attempts);
+                CountDownLatch start = new CountDownLatch(1);
+                List<java.util.concurrent.Future<Boolean>> claims = new ArrayList<>();
+                for (int i = 0; i < attempts; i++) {
+                    claims.add(pool.submit(() -> {
+                        ready.countDown();
+                        if (!start.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("race barrier timed out");
+                        }
+                        return gate.deliver(callbacks::incrementAndGet);
+                    }));
+                }
+                assertTrue(ready.await(5, TimeUnit.SECONDS),
+                        "all workers must reach barrier for round " + round);
+                start.countDown();
+                int winners = 0;
+                for (var claim : claims) {
+                    if (claim.get(10, TimeUnit.SECONDS)) winners++;
+                }
+                assertEquals(1, winners, "round " + round);
+                assertEquals(1, callbacks.get(), "round " + round);
+                assertTrue(gate.delivered());
+            }
+        }
+    }
+
+    @Test
     void concurrentCompletionsRunConsumerAtMostOnce() throws Exception {
         OneShotCompletionGate gate = new OneShotCompletionGate();
         AtomicInteger callbacks = new AtomicInteger();
