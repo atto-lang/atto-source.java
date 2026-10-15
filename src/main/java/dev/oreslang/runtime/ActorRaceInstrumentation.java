@@ -58,6 +58,15 @@ public final class ActorRaceInstrumentation {
         private final Clock released = new Clock();
     }
 
+    private final long accessEpochCapacity;
+    private ActorRaceInstrumentation() { this(MAX_ACCESS_EPOCHS); }
+    private ActorRaceInstrumentation(long accessEpochCapacity) {
+        if (accessEpochCapacity <= 0 || accessEpochCapacity > MAX_ACCESS_EPOCHS) {
+            throw new IllegalArgumentException("invalid access epoch capacity");
+        }
+        this.accessEpochCapacity = accessEpochCapacity;
+    }
+
     private final IdentityHashMap<Thread, Clock> clocks = new IdentityHashMap<>();
     private final IdentityHashMap<Object, ActorLane> lanes = new IdentityHashMap<>();
     private final IdentityHashMap<Object, Map<String, Location>> memory = new IdentityHashMap<>();
@@ -77,6 +86,11 @@ public final class ActorRaceInstrumentation {
     /** Independent opt-in monitor for deterministic host-level conformance tests. */
     public static ActorRaceInstrumentation forTesting() {
         return new ActorRaceInstrumentation();
+    }
+
+    /** Package-private small-capacity seam for deterministic fail-closed tests. */
+    static ActorRaceInstrumentation forTestingWithEpochLimit(long limit) {
+        return new ActorRaceInstrumentation(limit);
     }
 
     private Clock currentClock() {
@@ -211,7 +225,7 @@ public final class ActorRaceInstrumentation {
         boolean firstEpoch = write
                 ? !location.writes.containsKey(thread)
                 : !location.reads.containsKey(thread);
-        if (firstEpoch && trackedAccessEpochs >= MAX_ACCESS_EPOCHS) {
+        if (firstEpoch && trackedAccessEpochs >= accessEpochCapacity) {
             throw new IllegalStateException("race monitor access epoch capacity exceeded");
         }
         if (firstEpoch) trackedAccessEpochs++;
