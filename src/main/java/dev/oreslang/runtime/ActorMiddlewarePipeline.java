@@ -210,7 +210,14 @@ public final class ActorMiddlewarePipeline {
             return run(position + 1, request, cancelled, supervisorReceipts);
         }
         AtomicBoolean advanced = new AtomicBoolean();
+        AtomicBoolean settled = new AtomicBoolean();
+        java.util.concurrent.atomic.AtomicReference<CompletionStage<Outcome>> downstream =
+                new java.util.concurrent.atomic.AtomicReference<>();
         Next next = updated -> {
+            if (settled.get()) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("middleware next after completion"));
+            }
             if (!advanced.compareAndSet(false, true)) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("middleware next is single-use"));
@@ -223,15 +230,29 @@ public final class ActorMiddlewarePipeline {
                 // middleware reaches its continuation, not at admission.
                 supervisorReceipts.add(stage.key());
             }
-            return run(position + 1, Objects.requireNonNull(updated), cancelled, supervisorReceipts);
+            CompletionStage<Outcome> invoked = run(
+                    position + 1, Objects.requireNonNull(updated), cancelled, supervisorReceipts);
+            downstream.set(invoked);
+            return invoked;
         };
         try {
             CompletionStage<Outcome> result = Objects.requireNonNull(
                     stage.middleware().next(request, next), "null middleware completion");
-            return result.thenCompose(value -> cancelled.getAsBoolean()
-                    ? CompletableFuture.failedFuture(new IllegalStateException("middleware request cancelled"))
-                    : CompletableFuture.completedFuture(Objects.requireNonNull(value)));
+            return result.thenCompose(value -> {
+                settled.set(true);
+                if (cancelled.getAsBoolean()) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("middleware request cancelled"));
+                }
+                Outcome outcome = Objects.requireNonNull(value);
+                CompletionStage<Outcome> forwarded = downstream.get();
+                if (forwarded == null) return CompletableFuture.completedFuture(outcome);
+                // A middleware that calls next must not commit an independent
+                // early response while the downstream handler is still active.
+                return forwarded.thenApply(ignored -> outcome);
+            }).whenComplete((ignored, failure) -> settled.set(true));
         } catch (Throwable error) {
+            settled.set(true);
             return CompletableFuture.failedFuture(error);
         }
     }
