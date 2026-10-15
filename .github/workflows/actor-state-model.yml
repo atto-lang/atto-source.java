@@ -5,6 +5,8 @@ on:
       - "formal/check_sealed_actor_state.py"
       - "formal/ACTOR_STATE_PROOF_OBLIGATIONS.md"
       - ".github/workflows/actor-state-model.yml"
+      - "src/main/java/dev/oreslang/types/ActorStateContract.java"
+      - "src/test/java/dev/oreslang/ActorSealedStateAdmissionHardeningTest.java"
   workflow_dispatch:
 permissions:
   contents: read
