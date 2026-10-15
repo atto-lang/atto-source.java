@@ -89,6 +89,38 @@ final class DecimalMatrixReferenceTest {
     }
 
     @Test
+    void rejectsAggregateInputDigitBudget() {
+        String[] values = new String[256];
+        java.util.Arrays.fill(values, "9".repeat(4096));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> DecimalMatrix.fromStrings(256, 1, values));
+        assertTrue(error.getMessage().contains("significant-digit budget"));
+    }
+
+    @Test
+    void aggregateOutputFailureKeepsEveryDestinationCellUnmodified() {
+        String[] values = new String[256];
+        java.util.Arrays.fill(values, "9".repeat(2048));
+        DecimalMatrix left = DecimalMatrix.fromStrings(256, 1, values);
+        DecimalMatrix right = DecimalMatrix.fromStrings(1, 2,
+                "9".repeat(2048), "9".repeat(2048));
+        DecimalMatrix output = DecimalMatrix.zeros(256, 2);
+        assertThrows(IllegalArgumentException.class, () ->
+                DecimalMatrix.multiplyInto(output, left, right, MathContext.UNLIMITED));
+        equalDecimal("0", output.get(0, 0));
+        equalDecimal("0", output.get(255, 1));
+    }
+
+    @Test
+    void invalidInnerDimensionDetectedBeforeOutputAllocation() {
+        DecimalMatrix left = DecimalMatrix.zeros(1000, 0);
+        DecimalMatrix right = DecimalMatrix.zeros(1, 1000);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> DecimalMatrix.multiply(left, right, MathContext.UNLIMITED));
+        assertTrue(error.getMessage().contains("shape mismatch"));
+    }
+
+    @Test
     void rejectMismatchesAliasesAndUnboundedAllocations() {
         DecimalMatrix left = DecimalMatrix.fromStrings(1, 2, "1", "2");
         DecimalMatrix wrong = DecimalMatrix.fromStrings(1, 2, "3", "4");
