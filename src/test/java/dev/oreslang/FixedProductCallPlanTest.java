@@ -130,7 +130,7 @@ final class FixedProductCallPlanTest {
                 }
                 assertEquals(arity, plan.abiToSource().size());
                 for (int i = 0; i < arity; i++) {
-                    assertEquals(oracle[i], plan.abiToSource().get(i),
+                    assertEquals(oracle[i], plan.abiToSource().get(i).intValue(),
                             "arity=" + arity + " round=" + round + " ABI index=" + i);
                 }
                 assertEquals(plan, FixedProductCallPlan.bind(names, inputs));
