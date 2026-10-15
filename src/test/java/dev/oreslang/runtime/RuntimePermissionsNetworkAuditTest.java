@@ -220,4 +220,87 @@ final class RuntimePermissionsNetworkAuditTest {
         assertTrue(restored.allows(RuntimePermissions.Permission.NET, "api.example.com:80"));
         assertFalse(restored.allows(RuntimePermissions.Permission.WRITE, "/tmp/out"));
     }
+
+    @Test
+    void malformedResourceStringsNeverPassUnrestrictedPermissions() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.values());
+
+        String loneHighSurrogate = String.valueOf((char) 0xd800);
+        String loneLowSurrogate = String.valueOf((char) 0xdc00);
+        for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+            for (String malformed : new String[] {
+                    null, "", " ", "\t", "broken\u0000scope",
+                    "line\nbreak", loneHighSurrogate, loneLowSurrogate
+            }) {
+                assertFalse(policy.allows(permission, malformed),
+                        "malformed resource admitted by " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.denyAll().withAllowed(permission, malformed),
+                        "malformed allow scope accepted by " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> RuntimePermissions.denyAll().withDenied(permission, malformed),
+                        "malformed deny scope accepted by " + permission);
+            }
+        }
+    }
+
+    @Test
+    void malformedLaterNetworkCsvScopeCannotLeaveEarlierGrantInBuilder() {
+        RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allowCsv(RuntimePermissions.Permission.NET,
+                        "api.example.com:443,api.example.com:0"));
+        assertFalse(builder.build().allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"), "failed CSV parse must be transactional");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allowCsv(RuntimePermissions.Permission.NET,
+                        "api.example.com:443,not.valid.example:65536"));
+        assertFalse(builder.build().allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"));
+    }
+
+    @Test
+    void malformedLaterFileCsvScopeCannotLeaveEarlierGrantInBuilder() throws Exception {
+        String root = java.nio.file.Files.createTempDirectory("ores-permission-csv-")
+                .toAbsolutePath().toString();
+        RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allowCsv(RuntimePermissions.Permission.READ,
+                        root + ",path\u0000injection"));
+        assertFalse(builder.build().allows(RuntimePermissions.Permission.READ,
+                root), "invalid CSV must not leave an earlier filesystem grant");
+    }
+
+    @Test
+    void duplicateSerializedAuthorityEntriesFailClosed() {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK);
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[] {
+                                "--ores-permission-explicit=true",
+                                "--ores-permission-explicit=true"
+                        }, policy));
+        assertThrows(IllegalArgumentException.class,
+                () -> RuntimePermissions.fromApplicationArguments(
+                        new String[] {
+                                "--ores-permission-explicit=true",
+                                "--ores-permission-net-allow=api.example.com:443",
+                                "--ores-permission-net-allow=api.example.com:443"
+                        }, policy));
+
+        RuntimePermissions valid = RuntimePermissions.fromApplicationArguments(
+                new String[] {
+                        "--ores-permission-explicit=true",
+                        "--ores-permission-net-allow=api.example.com:443",
+                        "--ores-permission-net-allow=api.example.net:443",
+                        "--ores-permission-net-deny=api.example.net:443"
+                }, policy);
+        assertTrue(valid.allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"));
+        assertFalse(valid.allows(RuntimePermissions.Permission.NET,
+                "api.example.net:443"));
+    }
 }
