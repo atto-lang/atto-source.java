@@ -59,7 +59,8 @@ public final class SccAstShapeGuard {
                     || value instanceof Float || value instanceof Double
                     || value instanceof Character
                     || value instanceof BigInteger || value instanceof BigDecimal
-                    || value instanceof Ast.Imaginary) {
+                    || value instanceof Ast.Imaginary
+                    || value instanceof dev.oreslang.runtime.OresSymbol) {
                 return;
             }
             throw new IllegalArgumentException(
