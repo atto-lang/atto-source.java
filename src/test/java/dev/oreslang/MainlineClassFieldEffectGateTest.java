@@ -263,6 +263,32 @@ final class MainlineClassFieldEffectGateTest {
     }
 
     @Test
+    void retainUnshadowedLocalStaticScalarHelper() {
+        String source = """
+                define class Utility as
+                  pub static fnc forty(): int { return 40; }
+                end
+                define class Safe as
+                  pub final int answer: Utility.forty() + 2;
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
+    void retainCtorlessLocalLiteralOnlyNestedClass() {
+        String source = """
+                define class Inner as
+                  pub final int value: 42;
+                end
+                define class Outer as
+                  pub final Inner child: new Inner();
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+    }
+
+    @Test
     void rejectUnknownTransitiveCall() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse("""
