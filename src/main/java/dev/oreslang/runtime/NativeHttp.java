@@ -23,7 +23,7 @@ public final class NativeHttp implements AutoCloseable {
     private final ScheduledThreadPoolExecutor timers = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
-    private boolean closed;
+    private volatile boolean closed;
     private final Set<Handler> pools = ConcurrentHashMap.newKeySet();
 
     public NativeHttp(OresContext context) {
@@ -101,6 +101,7 @@ public final class NativeHttp implements AutoCloseable {
         public synchronized long created() { supervisor(); return created; }
         public synchronized long reused() { supervisor(); return reused; }
         private synchronized Worker worker() {
+            if (closed) throw new IllegalStateException("HTTP runtime closed");
             int slot = cursor;
             cursor = (cursor + 1) % workers.length;
             Worker worker = workers[slot];
@@ -158,6 +159,9 @@ public final class NativeHttp implements AutoCloseable {
             // shutdown to dispose the polyglot Context before the newly
             // admitted actor's physical carrier exits.
             synchronized (state) {
+                if (!mayBeginDispatch(closed, state.server.stopped)) {
+                    throw new IllegalStateException("HTTP runtime or listener is closing");
+                }
                 exchange.checkOwner();
                 if (state.dispatchInProgress) {
                     throw new IllegalStateException("HTTP exchange already dispatching");
@@ -180,6 +184,9 @@ public final class NativeHttp implements AutoCloseable {
                             state.server.pooledWorkers.add(worker);
                             worker.served.add(state.server);
                             try {
+                                if (!mayBeginDispatch(closed, state.server.stopped)) {
+                                    throw new IllegalStateException("HTTP listener closed during dispatch");
+                                }
                                 exchange.checkOwner();
                                 state.readyNanos = state.spawnNanos;
                                 worker.actor.send(exchange.moveTo(worker.actor));
@@ -280,7 +287,8 @@ public final class NativeHttp implements AutoCloseable {
         private final Set<State> active = ConcurrentHashMap.newKeySet();
         private final Set<Handler.Worker> pooledWorkers = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
-        private boolean stopped, transportStopped, pooledBarrierStarted;
+        private volatile boolean stopped;
+        private boolean transportStopped, pooledBarrierStarted;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
 
@@ -613,6 +621,9 @@ public final class NativeHttp implements AutoCloseable {
         }
         public String moveTo(ActorRuntime.ActorRef<?> destination) {
             synchronized (state) {
+                if (!mayBeginDispatch(closed, state.server.stopped)) {
+                    throw new IllegalStateException("HTTP runtime or listener is closing");
+                }
                 checkOwner();
                 if (ActorRuntime.inActorExecution()) throw new SecurityException("only the supervisor may dispatch an HTTP exchange");
                 if (state.busy || state.committed) throw new IllegalStateException("cannot move an active HTTP exchange");
@@ -801,6 +812,11 @@ public final class NativeHttp implements AutoCloseable {
             } catch (RuntimeException failure) { state.abort(500); result.failFromRuntime(failure); }
             return result;
         }
+    }
+
+    /** Only an active runtime/listener can admit a new actor transfer. */
+    static boolean mayBeginDispatch(boolean runtimeClosed, boolean listenerStopping) {
+        return !runtimeClosed && !listenerStopping;
     }
 
     /**
