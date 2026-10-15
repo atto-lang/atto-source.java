@@ -71,6 +71,29 @@ the runtime may apply the language's eventual actor-reentrancy policy. Automatic
 preemption itself is stricter: once its continuation is ready, it resumes ahead
 of later mailbox mutations.
 
+### CPU preemption never implies same-actor callback admission
+
+Normal synchronous work has no implicit logical suspension. Automatic
+reduction-budget cooperation may save its continuation and free the **physical
+carrier** for other actors, but MUST NOT release logical admission so that an
+unrelated callback of the same actor can enter before the continuation
+finishes. This includes checkpoints on loop back-edges and assignment/call
+boundaries; neither source lines nor individual assignments are implicitly
+atomic or reentrant.
+
+Deliberately synchronous callbacks (such as `map`, `filter` and synchronous
+event emitters) may run inline as part of the same continuation. Deferred
+callbacks require explicit scheduling through an authorized runtime lane.
+Explicit `await`, blocking `select`, blocking channel I/O, and declared
+`suspends` calls are distinct *logical* suspension boundaries. Even there,
+actor reentrancy is controlled by the actor's configured admission contract
+and cannot bypass ownership, state loans, cancellation or single-flight
+physical execution.
+
+An infinite synchronous loop without explicit suspension must still expose
+bounded CPU-fairness and cancellation safepoints when continuation lowering
+permits it: keeping logical ownership does **not** mean monopolizing a carrier.
+
 ## Safe automatic preemption
 
 Automatic quantum/budget preemption is valid only at a point whose execution
