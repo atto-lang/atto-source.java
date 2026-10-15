@@ -106,10 +106,12 @@ final class ControlWakeRetryQueue {
             // The callback can only attempt a scheduler submission; it cannot
             // execute a guest handler on this carrier.
             ready.run();
-        } catch (RuntimeException failedSubmission) {
+        } catch (RuntimeException | AssertionError failedSubmission) {
+            // A nonfatal host retry bug must not abort the *unrelated*
+            // admitted turn whose physical queue slot just became free.
+            // Do not catch VirtualMachineError or ThreadDeath: process-fatal
+            // conditions must retain their normal emergency semantics.
             synchronized (this) { ++callbacksFailed; }
-            // Never let a host callback prevent the current carrier's task
-            // from running after its queue permit was released.
         }
     }
 }
