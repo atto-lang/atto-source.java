@@ -650,6 +650,80 @@ final class ActorTypedEffectControlTest {
         }
     }
 
+    @Test void automaticChildControlWaitsForDoneObserverAndParentUnlink()
+            throws Exception {
+        CountDownLatch childSpawned = new CountDownLatch(1);
+        CountDownLatch observerEntered = new CountDownLatch(1);
+        CountDownLatch releaseObserver = new CountDownLatch(1);
+        CountDownLatch controlDelivered = new CountDownLatch(1);
+        AtomicReference<ActorRuntime.ActorHandle<String>> child = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+
+        try (ActorRuntime actors = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> parent = actors.spawnShared(
+                    () -> new ActorRuntime.ChildFailureHandler<String>() {
+                        @Override public void onMessage(
+                                String message, ActorRuntime.ActorContext<String> context) {
+                            ActorRuntime.ActorHandle<String> next = actors.spawnChildShared(
+                                    childContext -> (mail, ignored) -> {
+                                        throw GuestActorEffectSignal.raise();
+                                    });
+                            child.set(next);
+                            childSpawned.countDown();
+                        }
+
+                        @Override public void onChildFailure(
+                                ActorRuntime.ActorFailureNotice notice,
+                                ActorRuntime.ActorContext<String> context) {
+                            try {
+                                assertEquals(child.get().id(), notice.actorId());
+                                assertEquals(parentId(context), notice.supervisorId());
+                                assertEquals(0L, releaseObserver.getCount(),
+                                        "parent cannot receive child CONTROL while done observer is blocked");
+                                assertTrue(child.get().ref().done().isDone());
+                            } catch (Throwable failure) {
+                                callbackFailure.set(failure);
+                            } finally {
+                                controlDelivered.countDown();
+                            }
+                        }
+
+                        private ActorRuntime.ActorId parentId(
+                                ActorRuntime.ActorContext<String> context) {
+                            return context.self().id();
+                        }
+                    });
+            parent.send("spawn");
+            assertTrue(childSpawned.await(3, TimeUnit.SECONDS));
+            ActorRuntime.ActorHandle<String> failed = child.get();
+            assertNotNull(failed);
+            failed.ref().done().whenCompleteRuntime((value, failure) -> {
+                observerEntered.countDown();
+                try {
+                    if (!releaseObserver.await(3, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("done observer gate expired");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try {
+                failed.send("fail");
+                assertTrue(observerEntered.await(3, TimeUnit.SECONDS));
+                assertFalse(controlDelivered.await(100, TimeUnit.MILLISECONDS),
+                        "a child CONTROL notice overtook done/parent unlink barriers");
+            } finally {
+                releaseObserver.countDown();
+            }
+            assertTrue(controlDelivered.await(3, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get(),
+                    () -> "premature CONTROL publication: " + callbackFailure.get());
+            assertTrue(failed.ref().awaitTermination(3, TimeUnit.SECONDS));
+            parent.stop();
+            assertTrue(parent.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void automaticChildControlHandlerWaitsForExitHookBarrier()
             throws Exception {
         CountDownLatch exitHookEntered = new CountDownLatch(1);
