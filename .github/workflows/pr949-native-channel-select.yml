@@ -12,7 +12,10 @@ concurrency:
 jobs:
   syntax-and-guest:
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
-    runs-on: ubuntu-24.04
+    # Admin opt-in: enable ONLY after registering a disposable, repo-scoped
+    # ephemeral Linux x64 runner labeled oreslang-private-ephemeral.
+    # Without approval/configuration continue using GitHub-hosted runners.
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -39,7 +42,10 @@ jobs:
   native-compiled-guest:
     needs: syntax-and-guest
     if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-runtime-current-main-20261014' }}
-    runs-on: ubuntu-24.04
+    # Admin opt-in: enable ONLY after registering a disposable, repo-scoped
+    # ephemeral Linux x64 runner labeled oreslang-private-ephemeral.
+    # Without approval/configuration continue using GitHub-hosted runners.
+    runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
