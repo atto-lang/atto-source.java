@@ -7384,7 +7384,12 @@ public final class TypeChecker {
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
                     substitutions.put(alias.genericParameters().get(i), ref.arguments().get(i));
                 }
-                return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
+                Type expanded = resolve(substituteAliasType(alias.target(), substitutions),
+                        generics, self, allowNullMarker);
+                if (linkedImportedAliasNames.contains(ref.name())) {
+                    rejectBorrowedResolvedForeignAlias(expanded);
+                }
+                return expanded;
             } finally {
                 aliasResolutionDepth--;
                 active.remove(ref.arguments());
@@ -7545,6 +7550,40 @@ public final class TypeChecker {
             }
             Ast.TypeRef ref = stack.removeLast();
             for (Ast.TypeRef child : ref.arguments()) stack.addLast(child);
+        }
+    }
+
+    private static void rejectBorrowedResolvedForeignAlias(Type type) {
+        java.util.ArrayDeque<Type> pending = new java.util.ArrayDeque<>();
+        pending.add(type);
+        int seen = 0;
+        while (!pending.isEmpty()) {
+            if (++seen > MAX_ALIAS_EXPANSION_NODES) {
+                throw new IllegalArgumentException("resolved imported alias exceeds "
+                        + MAX_ALIAS_EXPANSION_NODES + " ownership nodes");
+            }
+            Type current = pending.removeLast();
+            if (current instanceof Borrow) {
+                throw new IllegalArgumentException(
+                        "imported type alias expands to borrowed ownership; "
+                        + "foreign ownership proof is required");
+            }
+            if (current instanceof Record record) {
+                pending.addAll(record.members().values());
+            } else if (current instanceof Tuple tuple) {
+                pending.addAll(tuple.elements());
+            } else if (current instanceof Union union) {
+                pending.addAll(union.options());
+            } else if (current instanceof Named named) {
+                pending.addAll(named.arguments());
+            } else if (current instanceof ListType list) {
+                pending.add(list.element());
+            } else if (current instanceof Function function) {
+                pending.addAll(function.parameters());
+                pending.add(function.result());
+            } else if (current instanceof SelfType selfType) {
+                pending.add(selfType.bound());
+            }
         }
     }
 
