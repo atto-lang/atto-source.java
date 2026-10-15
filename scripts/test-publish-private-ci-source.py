@@ -37,6 +37,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             for path in pub.REQUIRED_CODEOWNER_PATHS
         ) + "\n"
         self.codeowners_fake_sha = None
+        self.codeowners_errors = []
+        self.codeowner_permission = "write"
+        self.codeowner_login = "ORESoftware"
+        self.codeowner_type = "User"
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         # Synthetic, local-only approval. Production main is deliberately empty.
@@ -114,6 +118,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.codeowners_fake_sha or blob_sha,
                     "content": base64.b64encode(raw).decode("ascii")}
+        if route == pub.CODEOWNERS_ERRORS_ROUTE:
+            return {"errors": self.codeowners_errors}
+        if route == pub.CODEOWNER_PERMISSION_ROUTE:
+            return {"permission": self.codeowner_permission,
+                    "user": {"login": self.codeowner_login,
+                             "type": self.codeowner_type}}
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == pub.REVIEWED_SNAPSHOTS_ROUTE:
@@ -665,6 +675,47 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "CODEOWNERS digest"):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_github_codeowners_validation_errors_fail_before_source_read(self):
+        invalid = [
+            {"line": 1, "kind": "Invalid owner",
+             "source": "/.github/CODEOWNERS @ORESoftware"},
+        ]
+        self.codeowners_errors = invalid
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read")):
+            with self.assertRaisesRegex(pub.Denied, "invalid according to GitHub"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_github_codeowners_error_list_must_be_valid(self):
+        self.codeowners_errors = None
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("private source read")):
+            with self.assertRaisesRegex(pub.Denied, "invalid according to GitHub"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_security_codeowner_requires_live_write_permission(self):
+        cases = [
+            ("read", "ORESoftware", "User"),
+            ("none", "ORESoftware", "User"),
+            ("triage", "ORESoftware", "User"),
+            ("write", "impostor", "User"),
+            ("write", "ORESoftware", "Organization"),
+            (None, "ORESoftware", "User"),
+        ]
+        for permission, login, owner_type in cases:
+            with self.subTest(permission=permission, login=login):
+                self.route_calls.clear()
+                self.codeowner_permission = permission
+                self.codeowner_login = login
+                self.codeowner_type = owner_type
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("private source read")):
+                    with self.assertRaisesRegex(pub.Denied, "write access"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_source_review_enforcement_requires_codeowners_and_no_bypass(self):
         overrides = (
