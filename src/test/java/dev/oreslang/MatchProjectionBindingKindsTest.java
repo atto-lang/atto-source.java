@@ -239,6 +239,22 @@ final class MatchProjectionBindingKindsTest {
     }
 
     @Test
+    void conditionConjunctionRejectsDuplicateProjectionNames() {
+        String source = """
+                fnc choose(Option<{v: int}> item): int {
+                  if item matches Some as {v} && item matches Some as {v} then
+                    return v;
+                  fi
+                  return 0;
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> checks(source));
+        assertTrue(failure.getMessage().contains("duplicate binding"),
+                failure.getMessage());
+    }
+
+    @Test
     void inlineTupleScrutineePreservesCopyOwnership() throws Exception {
         String source = """
                 pub routine main(): void {
