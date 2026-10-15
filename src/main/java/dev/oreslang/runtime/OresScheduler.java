@@ -845,13 +845,15 @@ public final class OresScheduler implements AutoCloseable {
             }
             ActorTurnWatchdog.Lease lease = watchdogLease;
             watchdogLease = null;
-            if (lease != null) lease.close();
-            if (nativeEntered) {
-                // This happens AFTER turnExecutor and the guest interop scope
-                // have both returned, on the original native carrier.
-                // On JNI release failure, keep executing=true and fail
-                // closed: never publish DONE while the native VM says BUSY.
-                nativeTurnKernel.exit(nativeSource);
+            try {
+                if (lease != null) lease.close();
+            } finally {
+                if (nativeEntered) {
+                    // Always release after the guest/interop context unwinds,
+                    // even if watchdog.close() fails during physical teardown.
+                    // Failed JNI release keeps executing=true, blocking DONE.
+                    nativeTurnKernel.exit(nativeSource);
+                }
             }
             executing.set(false);
             // After the guest turn has unwound, release its lifecycle
