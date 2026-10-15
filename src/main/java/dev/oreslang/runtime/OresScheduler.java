@@ -298,8 +298,19 @@ public final class OresScheduler implements AutoCloseable {
             throw new IllegalArgumentException(
                     "one native actor witness requires scheduler parallelism=1");
         }
-        return new OresScheduler(parallelism, DEFAULT_QUEUE_CAPACITY,
-                turnExecutor, Objects.requireNonNull(witness, "witness"));
+        Objects.requireNonNull(witness, "witness");
+        // Create the private carrier pool before claiming the native VM.
+        // If the witness is already bound/stopped, terminate the unused pool
+        // immediately so a rejected second scheduler leaves no workers.
+        OresScheduler candidate = new OresScheduler(
+                parallelism, DEFAULT_QUEUE_CAPACITY, turnExecutor, witness);
+        try {
+            witness.claimSchedulerWitness();
+            return candidate;
+        } catch (RuntimeException | Error failure) {
+            candidate.ownedExecutor.shutdownNow();
+            throw failure;
+        }
     }
 
     /** True only on private carriers owned by user-created OresSchedulers. */
