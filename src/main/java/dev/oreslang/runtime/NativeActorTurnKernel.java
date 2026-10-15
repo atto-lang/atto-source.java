@@ -15,6 +15,23 @@ final class NativeActorTurnKernel implements AutoCloseable {
     private long vm;
     private long actor;
     private boolean stopped;
+    /** One native actor/VM has only one physical scheduler lane and ID space. */
+    private boolean schedulerBound;
+
+    /**
+     * A SourceTask ID is meaningful within this kernel's single actor, not
+     * within one arbitrary Java scheduler. Two Java schedulers each start at
+     * ID 1 and own independent physical carriers; sharing one kernel would
+     * collide IDs and bypass Java-side single-flight admission. Bind once.
+     */
+    synchronized void claimSchedulerWitness() {
+        ensureOpen();
+        if (stopped || schedulerBound) {
+            throw new IllegalStateException(
+                    "native actor-turn kernel is stopped or already bound to a scheduler");
+        }
+        schedulerBound = true;
+    }
 
     static synchronized NativeActorTurnKernel open(long maxObjects) {
         if (!Boolean.getBoolean(OPT_IN)) {
