@@ -812,6 +812,8 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         return current_sha
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
+    if base_commit.get("sha") != base_sha:
+        raise Denied("private carrier main commit identity differs from pinned ref")
     base_tree = nested_sha(base_commit, "tree")
     files = collect_source(source, trusted_root)
     if source_tree_sha(files) != expected_source_tree:
@@ -901,12 +903,20 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     # reporting success. Destination workflows independently check the
     # subtree SHA again before executing any private source.
     verified_ref = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    if (verified_ref.get("ref") != "refs/heads/" + branch
+            or not isinstance(verified_ref.get("object"), dict)
+            or verified_ref["object"].get("type") != "commit"):
+        raise Denied("CI branch readback identity or object type is invalid")
     if nested_sha(verified_ref, "object") != commit_sha:
         raise Denied("CI branch readback points to a different commit")
     verified_commit = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    if verified_commit.get("sha") != commit_sha:
+        raise Denied("CI branch commit readback identity is invalid")
     if nested_sha(verified_commit, "tree") != new_tree_sha:
         raise Denied("CI branch commit tree differs from published snapshot")
     verified_tree = gh_api(f"repos/{repository}/git/trees/{new_tree_sha}")
+    if verified_tree.get("sha") != new_tree_sha:
+        raise Denied("committed CI root tree readback identity is invalid")
     tree_items = verified_tree.get("tree")
     if (verified_tree.get("truncated") is not False
             or not isinstance(tree_items, list)
