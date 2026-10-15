@@ -9,6 +9,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
@@ -65,6 +66,25 @@ final class DenoCliDefaultPermissionsTest {
         RuntimePermissions.Builder deny = new RuntimePermissions.Builder();
         assertThrows(IllegalArgumentException.class,
                 () -> deny.denyCsv(RuntimePermissions.Permission.ENV, "PATH,"));
+    }
+
+    @Test
+    void invalidPathScopeCannotPartiallyCommitEarlierGrantsOrDenials() {
+        String invalidPath = "/invalid" + (char) 0 + "path";
+        RuntimePermissions.Builder allow = new RuntimePermissions.Builder();
+        assertThrows(IllegalArgumentException.class,
+                () -> allow.allowCsv(RuntimePermissions.Permission.READ,
+                        temp.resolve("safe").toString() + "," + invalidPath));
+        assertFalse(allow.build().allows(RuntimePermissions.Permission.READ,
+                temp.resolve("safe").toString()));
+
+        RuntimePermissions.Builder deny = new RuntimePermissions.Builder()
+                .allowAll(RuntimePermissions.Permission.READ);
+        assertThrows(IllegalArgumentException.class,
+                () -> deny.denyCsv(RuntimePermissions.Permission.READ,
+                        temp.resolve("safe").toString() + "," + invalidPath));
+        assertTrue(deny.build().allows(RuntimePermissions.Permission.READ,
+                temp.resolve("safe").toString()));
     }
 
     private Path sourceReadingEnvironment() throws Exception {
