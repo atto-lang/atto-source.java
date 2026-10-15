@@ -45,6 +45,24 @@ class PrivateCIMirrorGateTests(unittest.TestCase):
         with self.assertRaisesRegex(MirrorPolicyError, "cannot read"):
             read_approved_repositories(self.manifest)
 
+    def test_cli_rejects_unreviewed_allowlist_override(self):
+        # Internal unit tests may inject a temporary manifest, but the CLI
+        # must never accept one supplied by the caller.
+        import contextlib
+        import io
+        from scripts.check_private_ci_destination import main
+
+        self.allow("test-org/private\n")
+        with contextlib.redirect_stderr(io.StringIO()) as diagnostics:
+            with self.assertRaises(SystemExit) as exited:
+                main([
+                    "--source", "owner/source",
+                    "--destination", "test-org/private",
+                    "--allowlist", str(self.manifest),
+                ])
+        self.assertEqual(2, exited.exception.code)
+        self.assertIn("unrecognized arguments", diagnostics.getvalue())
+
     def test_self_destination_is_denied(self):
         self.allow("owner/source\n")
         with self.assertRaisesRegex(MirrorPolicyError, "different repository"):
