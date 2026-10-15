@@ -1481,7 +1481,10 @@ public final class TypeChecker {
             Type previousQuestionReturn = questionPropagationReturn;
             boolean previousQuestionSeen = questionSeenInCallable;
             questionSeenInCallable = false;
-            questionPropagationReturn = method.suspends()
+            // Method async-context state has its own admission path.
+            // Keep method-level ? disabled until its callable-local
+            // SourceTask/cancellation integration is separately exercised.
+            questionPropagationReturn = method.async() || method.suspends()
                     || currentActorKind != Ast.ActorKind.NONE ? null : returns;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
