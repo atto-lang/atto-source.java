@@ -116,16 +116,33 @@ final class GenericCallArguments {
         if (!specs.stream().map(Ast.GenericParameter::name).toList().equals(genericNames)) {
             throw new IllegalArgumentException(label + " has inconsistent generic declarations");
         }
+        // Atomicity matters for callers that retain the original binding map:
+        // a late unresolved dependency cannot publish earlier partial defaults.
+        Map<String, T> staged = new LinkedHashMap<>(bindings);
         for (Ast.GenericParameter spec : specs) {
             if (spec.defaultType() == null
-                    || bindings.containsKey(spec.name())
+                    || staged.containsKey(spec.name())
                     || inferenceHoles.contains(spec.name())) continue;
-            T concrete = substitute.apply(resolve.apply(spec.defaultType()), bindings);
-            if (unresolved.test(concrete)) {
+            T concrete = substitute.apply(resolve.apply(spec.defaultType()), Map.copyOf(staged));
+            if (concrete == null || unresolved.test(concrete)) {
                 throw new IllegalArgumentException("cannot resolve dependent default for generic '"
                         + spec.name() + "' in " + label);
             }
-            bindings.put(spec.name(), concrete);
+            staged.put(spec.name(), concrete);
+        }
+        bindings.putAll(staged);
+    }
+
+    /** Fail closed after inference/defaults in both TypeChecker and OwnershipChecker. */
+    static void requireBound(
+            List<String> genericNames, Map<String, ?> bindings, String label) {
+        List<String> missing = genericNames.stream()
+                .filter(name -> !bindings.containsKey(name) || bindings.get(name) == null)
+                .distinct().sorted().toList();
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException("cannot infer generic parameter(s) "
+                    + missing + " for " + label
+                    + "; specify them explicitly or make them inferable from value arguments");
         }
     }
 
