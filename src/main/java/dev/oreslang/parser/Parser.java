@@ -9,6 +9,10 @@ import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
     public static final String ROOT_MODULE = "__root__";
+    // Keep declaration parsing bounded before type-checker and match lowering
+    // allocate per-case tables. Match/enum limits must share one upper bound.
+    private static final int MAX_STAGED_ENUM_CASES = 4096;
+    private static final int MAX_STAGED_PATTERN_ALTERNATIVES = 4096;
 
     public record SyntaxWarning(int line, int column, String message) { }
 
@@ -533,6 +537,9 @@ public final class Parser {
         java.util.Set<Integer> tags = new java.util.HashSet<>();
         int nextTag = 1;
         while (!check(END) && !check(EOF)) {
+            if (cases.size() >= MAX_STAGED_ENUM_CASES) {
+                throw error(peek(), "enum case declaration limit exceeded");
+            }
             Token start = consume(IDENT, "expected enum case name");
             if (!names.add(start.lexeme())) throw error(start, "duplicate enum case " + start.lexeme());
             Ast.TypeRef payload = match(COLON) ? parseTypeRef() : null;
@@ -573,6 +580,9 @@ public final class Parser {
         List<String> alternatives = new ArrayList<>();
         java.util.Set<String> names = new java.util.HashSet<>();
         while (!check(END) && !check(EOF)) {
+            if (alternatives.size() >= MAX_STAGED_PATTERN_ALTERNATIVES) {
+                throw error(peek(), "named pattern alternative limit exceeded");
+            }
             Token start = peek();
             String alternative;
             if (match(ELLIPSIS)) {
