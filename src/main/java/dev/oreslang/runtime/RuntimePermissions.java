@@ -352,12 +352,17 @@ public final class RuntimePermissions {
         }
 
         public Builder allowCsv(Permission permission, String scopes) {
-            // Parse and validate the complete list before changing authority.
-            // Java split(",") otherwise drops trailing empty entries, while
-            // filtering also masks doubled/leading comma mistakes.
-            for (String value : strictCsvScopes(permission, scopes)) {
-                allow(permission, value);
+            // Stage all normalized scopes before touching live authority:
+            // invalid path syntax or malformed CSV must not partially grant.
+            List<String> values = normalizedCsvScopes(permission, scopes);
+            MutableRule current = rules.get(permission);
+            MutableRule staged = current == null
+                    ? new MutableRule() : new MutableRule(current.freeze());
+            for (String value : values) {
+                if ("*".equals(value)) staged.allowAll = true;
+                else staged.allowed.add(value);
             }
+            rules.put(permission, staged);
             return this;
         }
 
@@ -379,13 +384,19 @@ public final class RuntimePermissions {
         }
 
         public Builder denyCsv(Permission permission, String scopes) {
-            for (String value : strictCsvScopes(permission, scopes)) {
-                deny(permission, value);
+            List<String> values = normalizedCsvScopes(permission, scopes);
+            MutableRule current = rules.get(permission);
+            MutableRule staged = current == null
+                    ? new MutableRule() : new MutableRule(current.freeze());
+            for (String value : values) {
+                if ("*".equals(value)) staged.denyAll = true;
+                else staged.denied.add(value);
             }
+            rules.put(permission, staged);
             return this;
         }
 
-        private static List<String> strictCsvScopes(Permission permission, String scopes) {
+        private static List<String> normalizedCsvScopes(Permission permission, String scopes) {
             if (scopes == null || scopes.isBlank()) {
                 throw new IllegalArgumentException("empty scope list for " + permission);
             }
@@ -397,7 +408,7 @@ public final class RuntimePermissions {
                     throw new IllegalArgumentException(
                             "empty comma-separated scope for " + permission);
                 }
-                values.add(value);
+                values.add("*".equals(value) ? "*" : normalize(permission, value));
             }
             return values;
         }
