@@ -367,4 +367,71 @@ final class NominalInheritedMethodSlotsTest {
         assertTrue(rejected.getMessage().contains("unresolved abstract"),
                 rejected::getMessage);
     }
+
+    @Test
+    void broadShallowInheritanceIsBoundedWithoutStackOverflow() {
+        // Build typed AST directly to avoid relying on a giant source parser
+        // fixture: this checks the proof itself, not the parser's limits.
+        java.util.List<Ast.Decl> declarations = new java.util.ArrayList<>();
+        java.util.List<Ast.TypeRef> parentTypes = new java.util.ArrayList<>();
+        for (int i = 0; i < 1025; i++) {
+            String name = "Base" + i;
+            declarations.add(new Ast.ClassDecl(name, false, Ast.ActorKind.NONE,
+                    List.of(), List.of(), List.of(), List.of(), List.of()));
+            parentTypes.add(Ast.TypeRef.simple(name));
+        }
+        declarations.add(new Ast.ClassDecl("Root", false, Ast.ActorKind.NONE,
+                List.of(), parentTypes, List.of(), List.of(), List.of()));
+        Ast.Program program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("root", declarations)));
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.prove(
+                        program, "Root", Domain.INSTANCE, "pick", 0));
+        assertTrue(rejected.getMessage().contains("class-count bound"),
+                rejected::getMessage);
+    }
+
+    @Test
+    void forgedStructuralMethodCannotEnterNominalProof() {
+        Ast.Program parsed = Parser.parse(ENUMS + """
+                define class Root as
+                    pub pick(Color x): int { return 1; }
+                end
+                """);
+        Ast.ModuleDecl root = parsed.modules().stream()
+                .filter(module -> module.declarations().stream()
+                        .anyMatch(Ast.ClassDecl.class::isInstance))
+                .findFirst().orElseThrow();
+        Ast.ClassDecl original = root.declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast).findFirst().orElseThrow();
+        Ast.MethodDecl method = original.methods().getFirst();
+        Ast.MethodDecl structural = new Ast.MethodDecl(
+                method.name(), method.visibility(), method.isStatic(),
+                method.isAbstract(), method.async(), method.suspends(),
+                true, method.explicitReceiverType(),
+                method.genericParameters(), method.parameters(),
+                method.returnType(), method.annotations(), method.body());
+        Ast.ClassDecl forged = new Ast.ClassDecl(
+                original.name(), original.visibility(), original.isAbstract(),
+                original.actorKind(), original.genericParameters(),
+                original.parents(), original.interfaces(), original.fields(),
+                original.constructor(), List.of(structural));
+        java.util.List<Ast.ModuleDecl> modules = new java.util.ArrayList<>();
+        for (Ast.ModuleDecl module : parsed.modules()) {
+            java.util.List<Ast.Decl> declarations = new java.util.ArrayList<>();
+            for (Ast.Decl decl : module.declarations()) {
+                declarations.add(decl == original ? forged : decl);
+            }
+            modules.add(new Ast.ModuleDecl(module.name(),
+                    module.annotations(), module.contracts(), declarations));
+        }
+        Ast.Program mutated = new Ast.Program(parsed.namespace(),
+                parsed.imports(), modules);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.prove(
+                        mutated, "Root", Domain.INSTANCE, "pick", 1));
+        assertTrue(rejected.getMessage().contains("structural methods"),
+                rejected::getMessage);
+    }
 }
