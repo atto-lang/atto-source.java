@@ -65,3 +65,77 @@ ownership, sendability, mutation, actor state loans and cancellation fencing.
 This initial change intentionally rejects execution of qualified lambdas
 until these requirements are fulfilled, rather than silently treating
 `async |...|` as `|...|`.
+
+## Callback-parameter delivery contracts (admitted syntax)
+
+Callback delivery is now stored per parameter without changing ordinary `Fnc`
+type identity. This is *declaration metadata*, not a proof of a function
+implementation's runtime behavior:
+
+```ores
+pub fnc map_now(@callback(inline) Fnc<int, void> cb): void {
+    cb(1);
+    return;
+}
+
+pub fnc register(@callback(deferred) Fnc<int, void> cb): void {
+    // Future scheduler-backed event registration will live here.
+    return;
+}
+
+pub fnc adapt_legacy(@callback(maybe_inline) Fnc<int, void> cb): void {
+    return;
+}
+```
+
+The compiler checks that annotated parameters have callable types and rejects
+structural/mutable callback parameters. Unknown/duplicate delivery modes are
+parser errors. For public functions and public methods, unannotated callable
+parameters produce compiler diagnostic **W-CB001**, available through
+`OresCompiler.parseAndTypeCheckWithDiagnostics`.
+
+**Proof boundary:** the compiler does not yet perform complete callback
+invocation/escape effect inference. Until it does, a `deferred` annotation
+must not be treated as verified proof that a specific user implementation
+never invokes its callback inline. APIs offering a hard guarantee need
+verified runtime-backed implementations and corresponding conformance tests.
+
+## Borrow-checker protection
+
+The ownership checker already checks lexical lambda captures and forbids a
+borrowed value or `MutexGuard` from escaping into a closure. Move-only
+captures transfer ownership, and reading the old owner afterwards fails.
+The new delivery-contract tests pin these rules for
+`@callback(deferred)` APIs. The annotation cannot grant permission to
+share mutable state or bypass actor-local execution lanes.
+
+Actor state still requires actor-owned `state` capabilities and mailbox
+admission. An async callback has no privilege to retain a mutable loan
+across await/select/preemption. Cross-actor execution requires detached
+owned/sendable data rather than a shared writable reference.
+
+## Strict suspension migration
+
+Existing `suspends fnc` and `async fnc` modifiers continue to determine
+declared suspension permissions, and ordinary direct calls to `suspends`
+callables are already rejected in non-suspending contexts.
+
+`@StrictSuspension` is an **opt-in, argument-free migration marker** that
+additionally rejects direct `await`, blocking `select`, blocking
+`readch`, and blocking `writech` inside an ordinary `fnc` or method.
+The corresponding `async`/`suspends` declaration is allowed.
+
+This is not yet global effect inference: legacy unannotated bodies, imported
+unknown function effects, dynamic callable dispatch, and potentially
+suspending callbacks still require hardening before enforcing this across
+every Oreslang source file.
+
+## CPU fairness is not logical suspension
+
+Automatic reduction-budget preemption is a carrier handoff, **not** an
+implicit actor callback-admission point. The synchronous continuation
+retains logical ownership and priority over unrelated callbacks; it may
+move to a new carrier. Explicit suspension may permit actor-local
+interleaving only under the actor's configured admission/ownership
+rules. A source assignment or function call is not automatically a safe
+reentrancy point.
