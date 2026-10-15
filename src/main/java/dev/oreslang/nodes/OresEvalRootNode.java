@@ -3201,10 +3201,11 @@ public final class OresEvalRootNode extends RootNode {
                                                                     : null,
                                                             failure2));
                                 } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(
-                                            t,
-                                            null,
-                                            failure2);
+                                    // Catch only local select setup / settlement.
+                                    // A consumer that has already received the result
+                                    // owns its exception; never swallow and re-deliver.
+                                    if (delivery.delivered()) throw failure2;
+                                    continuation.accept(t, null, failure2);
                                 }
                             });
                     return;
@@ -3930,22 +3931,18 @@ public final class OresEvalRootNode extends RootNode {
                                 == Ast.ChannelOperation.READ) {
                             if (operation.mode()
                                     == Ast.WaitMode.IMMEDIATE) {
+                                final java.util.Optional<Object> result;
                                 try {
-                                    java.util.Optional<Object> result =
-                                            channel.tryRead();
-                                    continuation.accept(
-                                            t,
-                                            result.isPresent()
-                                                    ? new OptionValue(
-                                                            true,
-                                                            result.get())
-                                                    : new OptionValue(
-                                                            false,
-                                                            null),
-                                            null);
-                                } catch (RuntimeException | Error failure) {
-                                    continuation.accept(t, null, failure);
+                                    result = channel.tryRead();
+                                } catch (RuntimeException | Error readFailure) {
+                                    continuation.accept(t, null, readFailure);
+                                    return;
                                 }
+                                continuation.accept(t,
+                                        result.isPresent()
+                                                ? new OptionValue(true, result.get())
+                                                : new OptionValue(false, null),
+                                        null);
                                 return;
                             }
 
@@ -3973,14 +3970,14 @@ public final class OresEvalRootNode extends RootNode {
                             }
 
                             if (future.isDone()) {
+                                final Object completed;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            future.join(),
-                                            null);
-                                } catch (RuntimeException | Error failure) {
-                                    continuation.accept(t, null, failure);
+                                    completed = future.join();
+                                } catch (RuntimeException | Error completionFailure) {
+                                    continuation.accept(t, null, completionFailure);
+                                    return;
                                 }
+                                continuation.accept(t, completed, null);
                             } else {
                                 t.suspend(
                                         future,
@@ -4037,29 +4034,24 @@ public final class OresEvalRootNode extends RootNode {
                                                             }
                                                         }
                                                     });
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
-                                        } catch (RuntimeException | Error failure) {
-                                            continuation.accept(t2, null, failure);
+                                        } catch (RuntimeException | Error registrationFailure) {
+                                            continuation.accept(t2, null, registrationFailure);
+                                            return;
                                         }
+                                        continuation.accept(t2, null, null);
                                         return;
                                     }
 
                                     if (operation.mode()
                                             == Ast.WaitMode.IMMEDIATE) {
+                                        final boolean written;
                                         try {
-                                            continuation.accept(
-                                                    t2,
-                                                    channel.tryWrite(value),
-                                                    null);
-                                        } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                            written = channel.tryWrite(value);
+                                        } catch (RuntimeException | Error writeFailure) {
+                                            continuation.accept(t2, null, writeFailure);
+                                            return;
                                         }
+                                        continuation.accept(t2, written, null);
                                         return;
                                     }
 
@@ -4089,16 +4081,11 @@ public final class OresEvalRootNode extends RootNode {
                                     if (future.isDone()) {
                                         try {
                                             future.join();
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    null);
-                                        } catch (RuntimeException | Error failure) {
-                                            continuation.accept(
-                                                    t2,
-                                                    null,
-                                                    failure);
+                                        } catch (RuntimeException | Error completionFailure) {
+                                            continuation.accept(t2, null, completionFailure);
+                                            return;
                                         }
+                                        continuation.accept(t2, null, null);
                                     } else {
                                         t2.suspend(
                                                 future,
