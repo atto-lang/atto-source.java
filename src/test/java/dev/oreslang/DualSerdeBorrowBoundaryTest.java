@@ -99,6 +99,29 @@ final class DualSerdeBorrowBoundaryTest {
     }
 
     @Test
+    void moduleQualifiedCodecCannotBeReceivedAsSupervisorActorData() {
+        for (String type : new String[]{
+                "CodecBox.NetworkCodec<int>",
+                "CodecBox.ActorMessageCodec<int>",
+                "Option<CodecBox.NetworkCodec<int>>"
+        }) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("""
+                            define module CodecBox as
+                              pub define interface NetworkCodec<T> as end
+                              pub define interface ActorMessageCodec<T> as end
+                            end
+                            define actor Worker as
+                              receive(ActorMail<%s> mail): void { return; }
+                            end
+                            """.formatted(type))), type);
+            assertTrue(failure.getMessage().contains("cannot transport"),
+                    () -> type + ": " + failure.getMessage());
+        }
+    }
+
+    @Test
     void supervisorToActorMailboxDeclCannotCarryCodecOrPointer() {
         for (String type : new String[]{
                 "NetworkCodec<int>", "ActorMessageCodec<int>",
