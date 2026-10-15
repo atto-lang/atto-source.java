@@ -61,6 +61,24 @@ final class PostfixQuestionAdmissionTest {
     }
 
     @Test
+    void enclosingFunctionQuestionContextCannotLeakIntoLambdaCallback() {
+        String source = """
+                fnc make_callback(): Result<int, String> {
+                  val Fnc<int, Result<int, String>> callback = |int n| -> {
+                    val Result<int, String> local = Err("bad");
+                    val int value = local?;
+                    return Ok(value + n);
+                  };
+                  return Ok(1);
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        assertTrue(failure.getMessage().contains("postfix '?'"), failure::getMessage);
+    }
+
+    @Test
     void postfixDoesNotBecomeImplicitOptionalMemberLookup() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
