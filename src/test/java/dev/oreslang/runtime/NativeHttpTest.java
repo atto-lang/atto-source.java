@@ -16,6 +16,37 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 class NativeHttpTest {
+    @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
+        var order = new java.util.ArrayList<String>();
+        var closeFailure = new IllegalStateException("socket close failed");
+        assertSame(closeFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.retireRejectedAbort(
+                        () -> { order.add("close"); throw closeFailure; },
+                        () -> order.add("release"))));
+        assertEquals(List.of("close", "release"), order);
+        order.clear();
+        NativeHttp.retireRejectedAbort(
+                () -> order.add("close"),
+                () -> order.add("release"));
+        assertEquals(List.of("close", "release"), order);
+    }
+
+    @Test void shutdownVisitsEveryAcceptedStateAfterEarlierAbortFailures() {
+        var visited = new java.util.ArrayList<Integer>();
+        var first = new IllegalArgumentException("first failed abort");
+        var second = new IllegalStateException("third failed abort");
+        var result = NativeHttp.abortEveryAccepted(List.of(0, 1, 2, 3, 4), state -> {
+            visited.add(state);
+            if (state == 0) throw first;
+            if (state == 2) throw second;
+        });
+        assertSame(first, result, "first failure must win");
+        assertEquals(List.of(0, 1, 2, 3, 4), visited,
+                "a failed abort must not skip later accepted exchanges");
+        assertArrayEquals(new Throwable[] { second }, result.getSuppressed());
+        assertNull(NativeHttp.abortEveryAccepted(List.of(1, 2), ignored -> { }));
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
         for (String kind : List.of("actor", "isoactor")) {
