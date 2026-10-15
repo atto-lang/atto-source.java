@@ -155,3 +155,56 @@ underlying carrier oversubscription across domains, exercise cancellation
 under native Thread/Truffle context exit, measure fairness under sustained
 hot actors, and prove cross-backend LLVM parity. Device placement, soft core
 affinity and guest-source lowering are still rejected.
+
+## Race audit and verification addendum — 2026-10-15
+
+The nonparking gate and its runtime integration received a dedicated
+cancellation, shutdown and dispatcher-failure audit:
+
+- The actor's pending gate ticket is now published while holding
+  `ActorCell.lifecycleLock`. This closes the stop-vs-enqueue window in which a
+  WAITING ticket could be missed and leave an actor permanently scheduled.
+  The lock is **not** held for guest execution: the gate only submits a
+  runnable to the preexisting VM-owned domain executor.
+- If the underlying dispatcher rejects a GRANTED or newly promoted ticket,
+  fail the entire gate closed before returning a physical permit. Stop both
+  the rejected actor and all WAITING actors, instead of recursively promoting
+  10,000 failing tickets and overflowing the Java stack.
+- `shutdownNow()` can remove already-GRANTED dispatcher work without ever
+  invoking its runnable. The runtime's existing scheduled-bit shutdown path
+  now cancels any waiting ticket, or idempotently returns the discarded
+  granted lease outside `lifecycleLock`.
+- Closing a group now continues membership revocation, managed-worker
+  cancellation, event-bus/Mailman teardown and registry removal even if a
+  gate cancellation observer throws. A cancelled ticket can be reconciled
+  without accidentally releasing a still-GRANTED physical execution lease.
+- Regression cases were added for queued stop while another actor occupies the
+  only permit, gate-close observer failures, abandoned granted turns,
+  dispatcher-shutdown promotion, and a bounded parallel-turn contract.
+
+### Verification available without Actions minutes
+
+Run from the *actual pinned PR checkout*:
+
+```bash
+bash scripts/verify-actorgroup-turn-gate.sh
+```
+
+This test compiles the exact local `ActorGroupTurnGate.java` with `javac`
+and executes FIFO, bounded queue, simultaneous cancellation/release, an
+injected dispatcher failure with 20,000 WAITING tickets, broken-callback
+reclamation and 12,000 turns through eight OS threads. It uses no credentials,
+Maven, JUnit, network, GPU, or new repository mirror.
+
+The standalone gate does **not** prove that ActorRuntime's cross-lock order,
+Graal context handoffs, cancellation propagation, source lowering or JVM/native
+shutdown work correctly. Run the exact-head JUnit tests
+`ActorGroupTurnGateTest`, `ActorRuntimeGroupParallelismTest`,
+`ActorGroupPlacementPolicyTest`, existing
+`ActorGroupMultiMembershipTest`, and broader Graal/native suites before
+promoting either stacked PR. Pay special attention to actor-creator retirement
+holding a lifecycle lock during group-close callbacks; complete differential
+and fault-injection verification is still required.
+
+The repository's protected cross-org CI approval allowlist remains empty.
+Never export this private tree to an unapproved destination.
