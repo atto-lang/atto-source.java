@@ -10,6 +10,9 @@ fixture="$temp/fixture"
 mkdir -p "$fixture/scripts" "$temp/min-path"
 cp scripts/test-native-actor-exact-tree-ci.sh "$fixture/scripts/"
 git init -q "$fixture"
+# Only tracked tree configuration is authoritative. Untracked ignored inputs
+# must be rejected even though git status --porcelain hides them.
+printf 'ignored-compiler-overlay\n' > "$fixture/.gitignore"
 git -C "$fixture" config user.name "Native CI Fixture"
 git -C "$fixture" config user.email "ci-fixture@example.invalid"
 git -C "$fixture" add scripts
@@ -75,7 +78,13 @@ deny untracked-project-input "modified or untracked inputs" \
       ORES_CI_EXPECTED_TREE_SHA="$tree" sh "$gate"
 rm "$fixture/.mvn-injected"
 
+printf 'ignored but executable Maven/Compiler override\n' > "$fixture/ignored-compiler-overlay"
+deny ignored-project-input "CI source checkout has ignored untracked inputs" \
+  env ORES_CI_EXPECTED_COMMIT_SHA="$sha" \
+      ORES_CI_EXPECTED_TREE_SHA="$tree" sh "$gate"
+rm "$fixture/ignored-compiler-overlay"
+
 deny absent-maven "Maven is required" \
   env PATH="$temp/min-path" ORES_CI_EXPECTED_COMMIT_SHA="$sha" \
       ORES_CI_EXPECTED_TREE_SHA="$tree" /bin/sh "$gate"
-echo "NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=8"
+echo "NATIVE_ACTOR_CI_PREFLIGHT_NEGATIVE_TESTS_OK cases=9"
