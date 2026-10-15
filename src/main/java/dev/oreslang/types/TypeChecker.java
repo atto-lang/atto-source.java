@@ -70,6 +70,8 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     /** TYPE/TYPES imports are not structural witnesses until the trusted linker supplies them. */
     private final Set<String> unlinkedImportedTypes = new HashSet<>();
+    /** Imported aliases have verified type shapes, but not foreign ownership layouts. */
+    private final Set<String> linkedImportedAliasNames = new HashSet<>();
     // Track concrete instantiations, not declaration identity alone:
     // Alias<Alias<int>> is finite, while Alias<int> -> Alias<int> is a cycle.
     private final IdentityHashMap<Ast.TypeAliasDecl, Set<List<Ast.TypeRef>>> resolvingAliases =
@@ -203,6 +205,7 @@ public final class TypeChecker {
                         "linked public type alias was not uniquely imported: " + name);
             }
             checker.typeAliases.put(name, alias);
+            checker.linkedImportedAliasNames.add(name);
         }
         checker.validate(program);
         return program;
@@ -7349,6 +7352,14 @@ public final class TypeChecker {
         Ast.TypeAliasDecl alias = resolvingLinkedFieldAliases.get(ref.name());
         if (alias == null) alias = findTypeAlias(ref.name());
         if (alias != null) {
+            if (linkedImportedAliasNames.contains(ref.name())) {
+                // OwnershipChecker currently does not resolve imported alias
+                // generic arguments. Reject borrowed parameters here rather
+                // than allowing an alias to hide a loan in an actor payload.
+                for (Ast.TypeRef arg : ref.arguments()) {
+                    rejectBorrowedForeignAliasArgument(arg);
+                }
+            }
             if (alias.genericParameters().size() != ref.arguments().size()) {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
@@ -7534,6 +7545,25 @@ public final class TypeChecker {
             }
             Ast.TypeRef ref = stack.removeLast();
             for (Ast.TypeRef child : ref.arguments()) stack.addLast(child);
+        }
+    }
+
+    private static void rejectBorrowedForeignAliasArgument(Ast.TypeRef argument) {
+        java.util.ArrayDeque<Ast.TypeRef> pending = new java.util.ArrayDeque<>();
+        pending.add(argument);
+        int visits = 0;
+        while (!pending.isEmpty()) {
+            if (++visits > MAX_ALIAS_EXPANSION_NODES) {
+                throw new IllegalArgumentException("imported alias generic arguments exceed "
+                        + MAX_ALIAS_EXPANSION_NODES + " nodes");
+            }
+            Ast.TypeRef node = pending.removeLast();
+            if (node.isBorrow()) {
+                throw new IllegalArgumentException(
+                        "borrowed generic arguments cannot be used with an imported "
+                        + "type alias until foreign ownership proof is available");
+            }
+            for (Ast.TypeRef child : node.arguments()) pending.addLast(child);
         }
     }
 
