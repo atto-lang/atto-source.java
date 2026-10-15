@@ -484,6 +484,73 @@ final class NoZalgoCallbackDispatchTest {
     }
 
     @Test
+    void failedInternalContinuationEnqueueFailsActorInsteadOfLosingNotification()
+            throws Exception {
+        AtomicReference<OresFuture<Integer>> sourceRef = new AtomicReference<>();
+        AtomicReference<Throwable> receiveFailure = new AtomicReference<>();
+        AtomicInteger guestCallbacks = new AtomicInteger();
+        CountDownLatch registered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                try {
+                    var source = new OresFuture<Integer>();
+                    runtime.enqueueOnCompletion(source,
+                            runtime.captureCurrentContinuationTarget(),
+                            (value, failure) -> guestCallbacks.incrementAndGet());
+                    sourceRef.set(source);
+                    registered.countDown();
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("fault injection release timed out");
+                    }
+                } catch (Throwable failure) {
+                    receiveFailure.compareAndSet(null, failure);
+                }
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("register");
+            try {
+                assertTrue(registered.await(5, TimeUnit.SECONDS));
+                // Model a broken internal channel after admission but before
+                // publication. A runtime waiter exception alone would be
+                // swallowed by OresFuture.notifyWaiter. ActorRuntime must
+                // terminate the actor instead of losing a guest continuation.
+                var actorsField = ActorRuntime.class.getDeclaredField("actors");
+                actorsField.setAccessible(true);
+                java.util.Map<?, ?> cells =
+                        (java.util.Map<?, ?>) actorsField.get(runtime);
+                Object cell = cells.get(actor.id());
+                assertNotNull(cell);
+                var continuationField =
+                        cell.getClass().getDeclaredField("continuationMailbox");
+                continuationField.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                ChannelRuntime.Channel<Object> channel =
+                        (ChannelRuntime.Channel<Object>) continuationField.get(cell);
+                channel.close(new IllegalStateException("injected channel fault"));
+
+                assertTrue(sourceRef.get().completeFromRuntime(42),
+                        "producer terminal result must remain authoritative");
+                assertEquals(0, guestCallbacks.get(),
+                        "failed enqueue must not run guest code inline");
+            } finally {
+                release.countDown();
+            }
+            var failed = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> actor.done().get(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, failed.getCause());
+            assertTrue(failed.getCause().getMessage().contains(
+                            "continuation mailbox capacity invariant violated"),
+                    () -> String.valueOf(failed.getCause()));
+            assertNull(receiveFailure.get(),
+                    () -> String.valueOf(receiveFailure.get()));
+            assertEquals(0, guestCallbacks.get());
+            assertEquals(0, sourceRef.get().pendingRuntimeWaiterCount(),
+                    "failed notification retained a Future waiter");
+        }
+    }
+
+    @Test
     void actorCancellationRevokesPendingCompletionAndDropsLateProducer()
             throws Exception {
         AtomicReference<OresFuture<Integer>> pending = new AtomicReference<>();
