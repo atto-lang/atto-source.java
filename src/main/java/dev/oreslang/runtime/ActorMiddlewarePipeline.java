@@ -237,25 +237,33 @@ public final class ActorMiddlewarePipeline {
             downstream.set(invoked);
             return invoked;
         };
+        CompletionStage<Outcome> result;
         try {
-            CompletionStage<Outcome> result = Objects.requireNonNull(
+            result = Objects.requireNonNull(
                     stage.middleware().next(request, next), "null middleware completion");
-            return result.thenCompose(value -> {
-                settled.set(true);
-                if (cancelled.getAsBoolean()) {
-                    return CompletableFuture.failedFuture(
-                            new IllegalStateException("middleware request cancelled"));
-                }
-                Outcome outcome = Objects.requireNonNull(value);
-                CompletionStage<Outcome> forwarded = downstream.get();
-                if (forwarded == null) return CompletableFuture.completedFuture(outcome);
-                // A middleware that calls next must not commit an independent
-                // early response while the downstream handler is still active.
-                return forwarded.thenApply(ignored -> outcome);
-            }).whenComplete((ignored, failure) -> settled.set(true));
         } catch (Throwable error) {
-            settled.set(true);
-            return CompletableFuture.failedFuture(error);
+            result = CompletableFuture.failedFuture(error);
         }
+        // Even if middleware fails after calling next, the outer response
+        // must not settle before downstream finishes (or is cancelled by its
+        // trusted owner). Otherwise a late handler can write after rejection.
+        return result.handle((value, failure) -> {
+            settled.set(true);
+            CompletionStage<Outcome> forwarded = downstream.get();
+            CompletionStage<Outcome> drain = forwarded == null
+                    ? CompletableFuture.completedFuture(null) : forwarded;
+            return drain.handle((ignored, downstreamFailure) -> {
+                if (failure != null) {
+                    throw new java.util.concurrent.CompletionException(failure);
+                }
+                if (downstreamFailure != null) {
+                    throw new java.util.concurrent.CompletionException(downstreamFailure);
+                }
+                if (cancelled.getAsBoolean()) {
+                    throw new IllegalStateException("middleware request cancelled");
+                }
+                return Objects.requireNonNull(value, "null middleware outcome");
+            });
+        }).thenCompose(completion -> completion);
     }
 }
