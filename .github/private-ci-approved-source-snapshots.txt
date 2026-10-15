@@ -1,0 +1,5 @@
+# Immutable private source snapshots authorized for external private-only CI.
+# Empty by default: no source revision is approved for transfer.
+# Each approved entry must be security-reviewed on protected source main.
+# Format: <40-hex source commit> <40-hex source root tree> <numeric destination repo ID>
+# Approving a destination alone never approves an arbitrary PR/source revision.
