@@ -199,8 +199,22 @@ public final class RuntimePermissions {
         if (rule == null) return false;
 
         // Invalid endpoint spellings must not match a broad network grant.
-        if (permission == Permission.NET && parseNetworkScope(resource, false) == null)
-            return false;
+        if (permission == Permission.NET) {
+            NetworkScope endpoint = parseNetworkScope(resource, false);
+            if (endpoint == null) return false;
+            if (endpoint.port() == null) {
+                // A portless authorization request cannot prove it excludes
+                // a denied port on the same host. Do not let a broad allow
+                // turn this missing detail into an authorization bypass.
+                for (String denied : rule.denied()) {
+                    NetworkScope blocked = parseNetworkScope(denied, true);
+                    if (blocked != null && blocked.port() != null
+                            && networkHostMatches(endpoint, blocked)) {
+                        return false;
+                    }
+                }
+            }
+        }
         String normalized = normalize(permission, resource);
         if (rule.denyAll() || matchesAny(permission, normalized, rule.denied())) return false;
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
@@ -255,6 +269,10 @@ public final class RuntimePermissions {
         NetworkScope rule = parseNetworkScope(scope, true);
         if (target == null || rule == null) return false;
         if (rule.port() != null && !rule.port().equals(target.port())) return false;
+        return networkHostMatches(target, rule);
+    }
+
+    private static boolean networkHostMatches(NetworkScope target, NetworkScope rule) {
         if (rule.host().startsWith("*.")) {
             String suffix = rule.host().substring(1);
             return target.host().endsWith(suffix)
