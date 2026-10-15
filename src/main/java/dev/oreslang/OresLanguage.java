@@ -99,6 +99,9 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             throw new IllegalArgumentException("checked-i64-v1 rejects namespace/import boundaries");
         }
         Map<String, Set<Integer>> signatures = new HashMap<>();
+        Set<String> declaredNames = new HashSet<>();
+        int functionCount = 0;
+        boolean hasMain = false;
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.FunctionDecl fn)
@@ -118,10 +121,24 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                             "checked-i64-v1 requires synchronous scalar functions; "
                             + "actor, class, import and effect lowering are unsupported");
                 }
+                if (++functionCount > 32 || !declaredNames.add(fn.name())) {
+                    throw new IllegalArgumentException(
+                            "checked-i64-v1 rejects overloaded or duplicate functions and modules over 32 callables");
+                }
+                if ("main".equals(fn.name())) {
+                    if (!fn.parameters().isEmpty()) {
+                        throw new IllegalArgumentException("checked-i64-v1 main requires zero arguments");
+                    }
+                    hasMain = true;
+                }
                 signatures.computeIfAbsent(fn.name(), ignored -> new HashSet<>())
                         .add(fn.parameters().size());
             }
         }
+        if (!hasMain) {
+            throw new IllegalArgumentException("checked-i64-v1 requires a scalar main entrypoint");
+        }
+        Map<String, Set<String>> edges = new HashMap<>();
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 Ast.FunctionDecl fn = (Ast.FunctionDecl) declaration;
@@ -130,9 +147,30 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
                     parameters.add(parameter.name());
                 }
                 Ast.ReturnStmt ret = (Ast.ReturnStmt) fn.body().getFirst();
-                checkExperimentalCheckedI64Expr(ret.value(), parameters, signatures, 0);
+                Set<String> directCalls = new HashSet<>();
+                checkExperimentalCheckedI64Expr(ret.value(), parameters,
+                        signatures, directCalls, new int[]{0}, 0);
+                edges.put(fn.name(), directCalls);
             }
         }
+        Set<String> active = new HashSet<>();
+        Set<String> completed = new HashSet<>();
+        for (String name : edges.keySet()) {
+            checkExperimentalCheckedI64Calls(name, edges, active, completed);
+        }
+    }
+
+    private static void checkExperimentalCheckedI64Calls(String name,
+            Map<String, Set<String>> edges, Set<String> active, Set<String> completed) {
+        if (completed.contains(name)) return;
+        if (!active.add(name)) {
+            throw new IllegalArgumentException("checked-i64-v1 recursive call graph is unsupported");
+        }
+        for (String target : edges.getOrDefault(name, Set.of())) {
+            checkExperimentalCheckedI64Calls(target, edges, active, completed);
+        }
+        active.remove(name);
+        completed.add(name);
     }
 
     /**
@@ -142,9 +180,10 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      * the top-level signature guard. Limit depth before recursive descent.
      */
     private static void checkExperimentalCheckedI64Expr(Ast.Expr expr,
-            Set<String> parameters, Map<String, Set<Integer>> signatures, int depth) {
-        if (expr == null || depth >= 128) {
-            throw new IllegalArgumentException("checked-i64-v1 expression depth or null operand");
+            Set<String> parameters, Map<String, Set<Integer>> signatures,
+            Set<String> directCalls, int[] visited, int depth) {
+        if (expr == null || depth > 48 || ++visited[0] > 2048) {
+            throw new IllegalArgumentException("checked-i64-v1 expression depth/size or null operand");
         }
         if (expr instanceof Ast.LiteralExpr literal) {
             if (literal.value() instanceof Long || literal.value() instanceof Integer
@@ -154,26 +193,34 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         } else if (expr instanceof Ast.BinaryExpr binary) {
             if (Set.of("+", "-", "*", "<", "<=", ">", ">=", "==", "!=",
                     "&&", "||", "eq", "neq").contains(binary.operator())) {
-                checkExperimentalCheckedI64Expr(binary.left(), parameters, signatures, depth + 1);
-                checkExperimentalCheckedI64Expr(binary.right(), parameters, signatures, depth + 1);
+                checkExperimentalCheckedI64Expr(binary.left(), parameters, signatures,
+                        directCalls, visited, depth + 1);
+                checkExperimentalCheckedI64Expr(binary.right(), parameters, signatures,
+                        directCalls, visited, depth + 1);
                 return;
             }
         } else if (expr instanceof Ast.UnaryExpr unary) {
             if ("-".equals(unary.operator()) || "!".equals(unary.operator())) {
-                checkExperimentalCheckedI64Expr(unary.operand(), parameters, signatures, depth + 1);
+                checkExperimentalCheckedI64Expr(unary.operand(), parameters, signatures,
+                        directCalls, visited, depth + 1);
                 return;
             }
         } else if (expr instanceof Ast.ConditionalExpr conditional) {
-            checkExperimentalCheckedI64Expr(conditional.condition(), parameters, signatures, depth + 1);
-            checkExperimentalCheckedI64Expr(conditional.whenTrue(), parameters, signatures, depth + 1);
-            checkExperimentalCheckedI64Expr(conditional.whenFalse(), parameters, signatures, depth + 1);
+            checkExperimentalCheckedI64Expr(conditional.condition(), parameters, signatures,
+                    directCalls, visited, depth + 1);
+            checkExperimentalCheckedI64Expr(conditional.whenTrue(), parameters, signatures,
+                    directCalls, visited, depth + 1);
+            checkExperimentalCheckedI64Expr(conditional.whenFalse(), parameters, signatures,
+                    directCalls, visited, depth + 1);
             return;
         } else if (expr instanceof Ast.CallExpr call) {
             if (!call.typeArgumentsPresent() && call.typeArguments().isEmpty()
                     && call.callee() instanceof Ast.NameExpr target
                     && signatures.getOrDefault(target.name(), Set.of()).contains(call.arguments().size())) {
+                directCalls.add(target.name());
                 for (Ast.Expr argument : call.arguments()) {
-                    checkExperimentalCheckedI64Expr(argument, parameters, signatures, depth + 1);
+                    checkExperimentalCheckedI64Expr(argument, parameters, signatures,
+                            directCalls, visited, depth + 1);
                 }
                 return;
             }
