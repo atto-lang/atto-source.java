@@ -37,6 +37,20 @@ public final class SccAstShapeGuard {
         private int seenNodes;
         private final IdentityHashMap<Object, Boolean> visiting = new IdentityHashMap<>();
 
+        private static void requireFrozenLiteral(Object value) {
+            if (value == null || value instanceof String || value instanceof Boolean
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double
+                    || value instanceof Character
+                    || value instanceof BigInteger || value instanceof BigDecimal
+                    || value instanceof Ast.Imaginary) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    "untrusted or mutable AST literal payload must be lowered before admission");
+        }
+
         private void visit(Object node, int depth) {
             if (node == null) return;
             if (++seenNodes > MAX_NODES || depth > MAX_DEPTH) {
@@ -50,6 +64,14 @@ public final class SccAstShapeGuard {
                     || node instanceof Character
                     || node instanceof BigInteger || node instanceof BigDecimal
                     || node instanceof Enum<?>) {
+                return;
+            }
+            if (node instanceof Ast.LiteralExpr literal) {
+                requireFrozenLiteral(literal.value());
+                return;
+            }
+            if (node instanceof Ast.LiteralPattern literal) {
+                requireFrozenLiteral(literal.value());
                 return;
             }
             if (visiting.put(node, Boolean.TRUE) != null) {
