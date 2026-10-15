@@ -684,14 +684,30 @@ def source_tree_sha(files):
     """Compute the exact Git SHA-1 tree for the frozen source bytes and modes."""
     root = {}
     for relative, data, mode in files:
+        # This helper also has direct callers in tests and tooling. Refuse
+        # impossible file/directory aliasing regardless of input order:
+        # silently replacing a directory with a file loses snapshot bytes.
+        if (not isinstance(relative, str)
+                or not relative
+                or any(part in ("", ".", "..", ".git")
+                       for part in relative.split("/"))
+                or not isinstance(data, bytes)
+                or mode not in ("100644", "100755")):
+            raise Denied("source snapshot contains invalid Git tree entry")
         parts = relative.split("/")
         node = root
         for part in parts[:-1]:
-            node = node.setdefault(part, {})
+            existing = node.get(part)
+            if existing is None:
+                existing = {}
+                node[part] = existing
+            if not isinstance(existing, dict):
+                raise Denied("source snapshot contains conflicting file/directory names")
+            node = existing
+        if parts[-1] in node:
+            raise Denied("source snapshot contains conflicting file/directory names")
         blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
                             + b"\0" + data).digest()
-        if parts[-1] in node:
-            raise Denied("source snapshot contains conflicting file names")
         node[parts[-1]] = (mode, blob)
 
     def hash_directory(directory):
