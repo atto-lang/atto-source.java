@@ -139,6 +139,39 @@ final class FixedProductCallPlanTest {
     }
 
     @Test
+    void binderSnapshotsParameterNamesBeforeAdversarialInputTraversal() {
+        // An input collection can mutate the caller's declaration list while
+        // it is being read. The duplicate diagnostic must refer to the
+        // original snapshotted declaration, not to the later tampered list.
+        var names = new java.util.ArrayList<>(List.of("a", "b"));
+        List<FixedProductCallPlan.InputSlot> inputs = new java.util.AbstractList<>() {
+            @Override public int size() { return 2; }
+            @Override public FixedProductCallPlan.InputSlot get(int index) {
+                if (index == 0) names.set(1, "tampered");
+                return named("b");
+            }
+        };
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> FixedProductCallPlan.bind(names, inputs));
+        assertTrue(failure.getMessage().contains("'b'"), failure.getMessage());
+        assertFalse(failure.getMessage().contains("tampered"), failure.getMessage());
+        assertEquals(List.of("a", "tampered"), names,
+                "mutation must have occurred to prove the snapshot boundary");
+    }
+
+    @Test
+    void callerInputMutationCannotAlterAnAlreadyBoundPlan() {
+        var names = new java.util.ArrayList<>(List.of("a", "b"));
+        var slots = new java.util.ArrayList<>(List.of(named("b"), named("a")));
+        var plan = FixedProductCallPlan.bind(names, slots);
+        names.set(0, "other");
+        slots.set(0, positional());
+        assertEquals(List.of(1, 0), plan.abiToSource());
+        assertEquals("b", plan.sourceOrder().getFirst().label());
+        assertEquals("a", plan.sourceOrder().getLast().label());
+    }
+
+    @Test
     void labelComparisonIsCaseSensitive() {
         assertRejected("unknown", List.of(named("A"), named("b"), named("c")));
     }
