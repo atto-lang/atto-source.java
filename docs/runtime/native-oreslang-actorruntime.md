@@ -2,6 +2,43 @@
 
 Status: **implementation in progress — NOT yet the live actor runtime**.
 
+## 2026-10-15 — one native actor kernel, one Java scheduler owner
+
+**Found and fixed a real SourceTask namespace/carry-lane mismatch.**
+The experimental `managedWithNativeTurnWitness(..., kernel)`
+factory previously accepted an *already-used* `NativeActorTurnKernel`.
+Every Java scheduler allocates SourceTask IDs from its own counter,
+starting at 1, but the C kernel registers them in a single native
+actor-wide namespace and permits only one physical lease at a time.
+Two schedulers using the same kernel could collide on `(task_id=1,
+generation=1)` and accidentally run concurrent independent pools
+against one actor's native single-flight lock.
+
+`NativeActorTurnKernel.claimSchedulerWitness()` now synchronously
+claims **exclusive, permanent scheduler ownership** of that native
+actor VM and refuses a second factory call, even after the original
+scheduler closes. The factory terminates the unused second candidate
+carrier pool if binding fails; it never returns an unbound scheduler.
+A fresh kernel VM is required for another scheduler identity. This
+does not affect ordinary default-off non-native scheduler factories.
+
+Both the opt-in `NativeActorTurnSchedulerJniTest` and the Maven-free
+real-scheduler/JNI smoke now exercise duplicate-owner refusal, continued
+successful operation of the original owner, and refusal to silently
+reassign a previously bound kernel. With the new regression, the
+standalone smoke defines **five scenarios per native VM iteration**,
+12 iterations by default (60 executions *when the suite runs*). 
+These tests are committed but have **not** been executed on the
+current full Java/native source tree.
+
+**Release/CI:** the source organization is still reporting zero-step
+GitHub Actions job failures. The protected-main private CI destination
+allowlist is empty and no private blobs were mirrored to another
+organization. Keep the feature disabled and PR #917 draft pending
+executable validation and compiled actor STOP/cleanup/DONE semantics.
+
+
+
 ## 2026-10-15 — source-local exact-tree CI recovery gate
 
 A direct source-repository runner can execute all targeted actor-turn
