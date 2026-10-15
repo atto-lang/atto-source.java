@@ -135,6 +135,43 @@ static void test_stop_forbids_source_turn_resume(void) {
     OK(ores_turn_vm_destroy(vm));
 }
 
+/* Foreign native carrier cannot release someone else's SourceTask turn.
+ * An actor/source must remain BUSY until its original native carrier exits.
+ */
+struct wrong_source_carrier_args {
+    ores_turn_vm *vm;
+    ores_turn_lease *lease;
+    ores_turn_status release;
+};
+static void *try_foreign_source_release(void *opaque) {
+    struct wrong_source_carrier_args *a = opaque;
+    a->release = ores_turn_release(a->vm, a->lease);
+    return NULL;
+}
+static void test_source_turn_carrier_identity(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(16);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *source = NULL;
+    ores_turn_lease *lease = NULL;
+    OK(ores_turn_register(vm, 19, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 1, 1, &source));
+    OK(ores_turn_claim_source(vm, source, &lease));
+    struct wrong_source_carrier_args args = {vm, lease, ORES_TURN_INVALID};
+    pthread_t foreign;
+    assert(pthread_create(&foreign, NULL, try_foreign_source_release,
+                          &args) == 0);
+    assert(pthread_join(foreign, NULL) == 0);
+    IS(args.release, ORES_TURN_WRONG_CARRIER);
+    IS(ores_turn_note_source_settled(vm, source), ORES_TURN_BUSY);
+    OK(ores_turn_stop(vm, actor));
+    OK(ores_turn_release(vm, lease));
+    OK(ores_turn_note_source_settled(vm, source));
+    OK(ores_turn_retire_source_task(vm, source));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
 static void test_cleanup_completes_after_injection(void) {
     ores_turn_vm *vm = ores_turn_vm_new(32);
     assert(vm);
@@ -282,6 +319,7 @@ int main(void) {
     test_suspended_task_retirement_barrier();
     test_per_source_physical_turn_and_retirement();
     test_stop_forbids_source_turn_resume();
+    test_source_turn_carrier_identity();
     test_settled_task_generation_reuse();
     test_cleanup_completes_after_injection();
     test_incomplete_cleanup_requires_force_abort();
