@@ -33,6 +33,40 @@ public final class CheckedI64SourceHeader {
             if (end < 0) break;
             pos = end + 1;
         }
+        // A checked marker following source tokens or a closed block comment
+        // must not silently select wrapping arithmetic. Inspect only real
+        // line comments, not marker-like text in strings or nested comments.
+        int blockDepth = 0;
+        char quote = 0;
+        for (int i = 0; i < text.length();) {
+            char ch = text.charAt(i);
+            char next = i + 1 < text.length() ? text.charAt(i + 1) : 0;
+            if (quote != 0) {
+                if (ch == '\\' && i + 1 < text.length()) { i += 2; continue; }
+                if (ch == quote) quote = 0;
+                ++i;
+                continue;
+            }
+            if (blockDepth != 0) {
+                if (ch == '/' && next == '*') { ++blockDepth; i += 2; continue; }
+                if (ch == '*' && next == '/') { --blockDepth; i += 2; continue; }
+                ++i;
+                continue;
+            }
+            if (ch == '"' || ch == '\'') { quote = ch; ++i; continue; }
+            if (ch == '/' && next == '*') { blockDepth = 1; i += 2; continue; }
+            if (ch == '/' && next == '/') {
+                if (i != 0 && text.startsWith(prefix, i)) {
+                    throw new IllegalArgumentException(
+                        "checked-i64-v1: displaced directive after source tokens");
+                }
+                int end = text.indexOf('\n', i);
+                i = end < 0 ? text.length() : end + 1;
+                continue;
+            }
+            ++i;
+        }
+
         return enabled;
     }
 
