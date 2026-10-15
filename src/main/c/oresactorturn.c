@@ -422,7 +422,9 @@ ores_turn_status ores_turn_check_cleanup_effects(ores_turn_vm *vm,
     if (known_lease(vm, lease)) {
         if (lease->released || lease->actor->active != lease
                 || !lease->source || !lease->actor->stopped
-                || lease->actor->revoked || !lease->source->terminal_injected)
+                || lease->actor->revoked || !lease->source->terminal_injected
+                || lease->source->cleanup_completed
+                || lease->source->terminal_aborted)
             status = ORES_TURN_DENIED;
         else if (current_carrier_token() != lease->carrier_token)
             status = ORES_TURN_WRONG_CARRIER;
