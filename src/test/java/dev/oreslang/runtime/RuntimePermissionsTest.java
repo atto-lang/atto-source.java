@@ -186,6 +186,71 @@ final class RuntimePermissionsTest {
         assertFalse(permissions.allows(RuntimePermissions.Permission.WRITE, escape.resolve("new.txt").toString()));
     }
 
+    @Test
+    void deniedNetworkHostCannotBeReachedUsingEquivalentDnsOrIpv4Spelling() {
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET)
+                .withDenied(RuntimePermissions.Permission.NET, "EXAMPLE.COM")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "example.com.:443"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "EXAMPLE.COM:80"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "127.1:80"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "127.000.000.001:80"));
+        assertTrue(permissions.allows(RuntimePermissions.Permission.NET, "other.example.com:443"));
+    }
+
+    @Test
+    void scopedIpv6PortAndWildcardNetworkPermissionsAreConsistent() {
+        RuntimePermissions permissions = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]")
+                .withAllowed(RuntimePermissions.Permission.NET, "*.example.com:443")
+                .withDenied(RuntimePermissions.Permission.NET, "[0:0:0:0:0:0:0:1]:22");
+
+        assertTrue(permissions.allows(RuntimePermissions.Permission.NET, "[::1]:443"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "[::1]:22"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "[::2]:443"));
+        assertTrue(permissions.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "api.example.com:80"));
+        assertFalse(permissions.allows(RuntimePermissions.Permission.NET, "example.com:443"));
+        assertEquals(RuntimePermissions.networkEndpoint("::1", 443),
+                RuntimePermissions.networkEndpoint("[0:0:0:0:0:0:0:1]", 443));
+        assertEquals("example.com:0", RuntimePermissions.networkEndpoint("EXAMPLE.COM.", 0));
+    }
+
+    @Test
+    void malformedNetworkScopesAndResourcesFailClosed() {
+        for (String invalid : new String[]{
+                "http://example.com", "example.com:xyz", "example.com:65536",
+                "example.com:", "[::gg]:443", "::1:443", "example.com:443/path"
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> RuntimePermissions.denyAll()
+                            .withAllowed(RuntimePermissions.Permission.NET, invalid), invalid);
+            assertFalse(RuntimePermissions.denyAll()
+                    .allowAll(RuntimePermissions.Permission.NET)
+                    .allows(RuntimePermissions.Permission.NET, invalid), invalid);
+        }
+        assertFalse(RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET)
+                .allows(RuntimePermissions.Permission.NET, null));
+    }
+
+    @Test
+    void commaSeparatedPermissionScopesNeverDiscardEmptyDenials() {
+        for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+            for (String malformed : new String[]{",", "alpha,", ",alpha", "alpha, ,beta", " "}) {
+                RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.allowCsv(permission, malformed), permission + " / " + malformed);
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.denyCsv(permission, malformed), permission + " / " + malformed);
+                assertFalse(builder.build().grantsAnything(permission),
+                        "failed parsing cannot partially grant " + permission);
+            }
+        }
+    }
+
     private static String escape(Path path) {
         return path.toString().replace("\\", "\\\\").replace("\"", "\\\"");
     }
