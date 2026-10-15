@@ -1171,6 +1171,12 @@ public final class TypeChecker {
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
             }
             if (resolvedParent != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                if (resolvedParent.actorReplyRole() != Ast.ActorReplyRole.INFER
+                        && klass.actorReplyRole() == Ast.ActorReplyRole.INFER) {
+                    throw new IllegalArgumentException("actor '" + klass.name()
+                            + "' must explicitly preserve inherited actor reply role "
+                            + resolvedParent.actorReplyRole());
+                }
                 if (klass.actorReplyRole() != Ast.ActorReplyRole.INFER
                         && resolvedParent.actorReplyRole() != Ast.ActorReplyRole.INFER
                         && klass.actorReplyRole() != resolvedParent.actorReplyRole()) {
