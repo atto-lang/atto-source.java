@@ -908,11 +908,19 @@ public final class OresEvalRootNode extends RootNode {
         private record DirectArguments(List<Object> values,
                                        List<FixedProductCallPlan.InputSlot> inputs) {
             private DirectArguments {
-                values = List.copyOf(values);
+                // Guest/host payloads may contain null. List.copyOf rejects
+                // them, turning a completed argument evaluation into an
+                // uncaught NullPointerException before the call can proceed.
+                // Snapshot without permitting subsequent mutation.
+                values = immutableValuesAllowingNull(values);
                 inputs = List.copyOf(inputs);
                 if (values.size() != inputs.size()) {
                     throw new IllegalArgumentException("direct product values/labels out of sync");
                 }
+            }
+
+            private static List<Object> immutableValuesAllowingNull(List<Object> source) {
+                return java.util.Collections.unmodifiableList(new ArrayList<>(source));
             }
 
             private List<Object> inAbiOrder(Ast.FunctionDecl fn) {
@@ -921,7 +929,7 @@ public final class OresEvalRootNode extends RootNode {
                         fn.parameters().stream().map(Ast.Param::name).toList(), inputs);
                 ArrayList<Object> ordered = new ArrayList<>(values.size());
                 for (int source : plan.abiToSource()) ordered.add(values.get(source));
-                return List.copyOf(ordered);
+                return immutableValuesAllowingNull(ordered);
             }
         }
 
