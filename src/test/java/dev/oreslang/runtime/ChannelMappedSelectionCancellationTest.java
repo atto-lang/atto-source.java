@@ -82,6 +82,40 @@ final class ChannelMappedSelectionCancellationTest {
     }
 
     @Test
+    void pendingReadAndWriteCancellationReleaseTheirChannelRegistrations() {
+        ChannelRuntime.Channel<Integer> rendezvous = new ChannelRuntime.Channel<>(0);
+        OresFuture<Integer> reading = rendezvous.readAsync();
+        assertEquals(1, rendezvous.pendingRegistrations());
+        assertTrue(reading.cancel(false));
+        assertEquals(0, rendezvous.pendingRegistrations(),
+                "canceled pending read must not retain a read arm");
+
+        OresFuture<Void> writing = rendezvous.writeAsync(97);
+        assertEquals(1, rendezvous.pendingRegistrations());
+        assertTrue(writing.cancel(false));
+        assertEquals(0, rendezvous.pendingRegistrations(),
+                "canceled pending write must not retain a write arm");
+        assertTrue(rendezvous.tryRead().isEmpty());
+        assertFalse(rendezvous.tryWrite(98),
+                "canceled read cannot rendezvous with a later producer");
+    }
+
+    @Test
+    void committedBufferedReadAndWriteRefuseCancellationAndPreserveValue()
+            throws Exception {
+        ChannelRuntime.Channel<Integer> buffered = new ChannelRuntime.Channel<>(1);
+        OresFuture<Void> sent = buffered.writeAsync(57);
+        assertFalse(sent.cancel(false), "completed write cannot be canceled");
+        assertNull(sent.get(5, TimeUnit.SECONDS));
+        assertEquals(1, buffered.size(), "committed write must remain in buffer");
+
+        OresFuture<Integer> read = buffered.readAsync();
+        assertFalse(read.cancel(false), "completed read cannot be canceled");
+        assertEquals(57, read.get(5, TimeUnit.SECONDS));
+        assertEquals(0, buffered.size());
+    }
+
+    @Test
     @Timeout(15)
     void committedSelectionFailureCannotBeHiddenByLateCancellation()
             throws Exception {
