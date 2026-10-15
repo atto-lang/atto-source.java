@@ -154,8 +154,15 @@ final class ActorCarrierQuiescenceTest {
                 actor.cancel();
                 assertFalse(observer.isDone(),
                         "logical stop is not physical termination");
+                // A new observer after stop must also remain pending until
+                // physical finalization and cannot cancel the actor's own
+                // internal finalizedFuture.
+                OresFuture<Void> stoppedObserver = runtime.quiesceAcceptedMessages(actor);
+                assertFalse(stoppedObserver.isDone());
+                assertFalse(stoppedObserver.cancel(false));
                 release.countDown();
                 observer.get(5, TimeUnit.SECONDS);
+                stoppedObserver.get(5, TimeUnit.SECONDS);
                 assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
             } finally {
                 release.countDown();
