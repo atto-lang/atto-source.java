@@ -8577,7 +8577,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean numericValueEquals(Number left, Number right) {
-            if (isNonFinite(left) || isNonFinite(right)) return false;
+            // IEEE equality: NaN is unequal to everything, but infinities compare by sign.
+            if (Double.isNaN(left.doubleValue()) || Double.isNaN(right.doubleValue())) return false;
+            if (isNonFinite(left) || isNonFinite(right))
+                return left.doubleValue() == right.doubleValue();
             // Compare actual binary floating-point values, not rounded decimal
             // printouts. In particular, a float 0.1 is not exact decimal 0.1.
             return exactDecimal(left).compareTo(exactDecimal(right)) == 0;
