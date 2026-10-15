@@ -60,6 +60,18 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void sameComplexInstanceContainingNaNIsNotEqualToItself() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val complex invalid = 0.0i / 0.0i;
+                      return !(invalid eq invalid);
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void mixedInt64AndBinary64ComparisonsKeepExactIntegerOrder() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
