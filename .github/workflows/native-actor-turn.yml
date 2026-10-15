@@ -3,26 +3,49 @@ on:
   pull_request:
     paths:
       - 'src/main/c/oresactorturn.*'
-      - 'src/test/c/oresactorturn_test.c'
+      - 'src/test/c/oresactorturn*_test.c'
       - 'scripts/test-native-actor-turn.sh'
       - '.github/workflows/native-actor-turn.yml'
   push:
     branches: [main]
     paths:
       - 'src/main/c/oresactorturn.*'
-      - 'src/test/c/oresactorturn_test.c'
+      - 'src/test/c/oresactorturn*_test.c'
       - 'scripts/test-native-actor-turn.sh'
 permissions:
   contents: read
 jobs:
   native-turn-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        sanitizer: [plain, asan-ubsan]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      CC: ${{ matrix.cc }}
+      ORES_NATIVE_SANITIZE: ${{ matrix.sanitizer == 'asan-ubsan' && '1' || '0' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - name: Native actor turn contract O0 and O2
+      - name: Record exact full-tree and native source identities
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+          git hash-object src/main/c/oresactorturn.c src/main/c/oresactorturn.h src/test/c/oresactorturn_test.c src/test/c/oresactorturn_scheduler_boundary_test.c
+      - name: Full native suites at O0 and O2
         run: sh scripts/test-native-actor-turn.sh
-      - name: Address and undefined-behavior sanitizer proof
-        env:
-          ORES_NATIVE_SANITIZE: '1'
+  native-turn-tsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CC: gcc
+      ORES_NATIVE_TSAN: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Record exact full-tree identity
+        run: |
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
+      - name: ThreadSanitizer — both original and scheduler-boundary suites
         run: sh scripts/test-native-actor-turn.sh
