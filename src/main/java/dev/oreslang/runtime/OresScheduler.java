@@ -356,7 +356,18 @@ public final class OresScheduler implements AutoCloseable {
                 else failure.addSuppressed(blocked);
                 continue;
             }
-            if (task.nativeRetirementConfirmed.get()) continue;
+            if (task.nativeRetirementConfirmed.get()) {
+                // C retirement alone does not finish trusted Java cleanup.
+                // A zero retry count must NEVER imply that an in-flight
+                // onQuiescent callback (or its deadline release) is done.
+                if (!task.nativeQuiescenceCallbackFinished.get()) {
+                    var blocked = new IllegalStateException(
+                            "native SourceTask retired but trusted quiescence is still running");
+                    if (failure == null) failure = blocked;
+                    else failure.addSuppressed(blocked);
+                }
+                continue;
+            }
             try {
                 task.retireWhenQuiescent();
                 task.publishTerminalIfReady();
