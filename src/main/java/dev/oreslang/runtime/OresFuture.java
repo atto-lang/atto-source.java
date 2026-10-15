@@ -107,6 +107,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
     private final boolean deferredCancellation;
     private final AtomicReference<CancellationException> cancellationRequest =
             new AtomicReference<>();
+    /** Accepted deferred cancel must finish revocation before notifying any waiter. */
+    private final AtomicBoolean deferredCancelHookFinished = new AtomicBoolean();
+    /** Exactly one caller drains subscribers and releases notification accounting. */
+    private final AtomicBoolean terminalWaiterDrainClaimed = new AtomicBoolean();
     /**
      * A subscriber registering after the cancellation CAS must not run its
      * callback before the internal revoker. Deferring such a subscriber to
@@ -458,7 +462,10 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         Object observed = state.get();
         if (observed != PENDING
                 && (!(observed instanceof Cancelled)
-                        || cancelRevocationComplete.get())) {
+                        || cancelRevocationComplete.get())
+                && (!deferredCancellation
+                        || cancellationRequest.get() == null
+                        || deferredCancelHookFinished.get())) {
             // Cancellation state is visible immediately at CAS, but ordinary
             // runtime subscribers must not run until internal revocation.
             // If revocation is still underway, leave this registration in
@@ -490,8 +497,17 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                     return false;
                 cancellationRequest.set(cancelled);
             }
-            // The cancellation caller never executes guest cleanup.
-            invokeCancelHook();
+            // The cancellation caller never executes guest cleanup. A
+            // concurrent completion can claim terminal state during this
+            // hook, but it cannot invoke subscribers or release notification
+            // permits until revocation has finished.
+            try {
+                invokeCancelHook();
+            } finally {
+                deferredCancelHookFinished.set(true);
+                Object terminal = state.get();
+                if (terminal != PENDING) drainSettledTerminal(terminal, () -> { });
+            }
             return true;
         }
         // Default channel/select cancellation retains synchronous revocation
@@ -652,11 +668,22 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             }
         } else if (!state.compareAndSet(PENDING, published)) return false;
 
+        // Deferred cancellation is a two-party handshake: the terminal CAS
+        // may beat the cancellation revoker, but only the hook-completing
+        // caller can release subscribers and notification accounting in that
+        // case. Do not block the scheduler carrier waiting for the hook.
+        if (!deferredCancellation || cancellationRequest.get() == null
+                || deferredCancelHookFinished.get()) {
+            drainSettledTerminal(published, afterStateClaimed);
+        }
+        return true;
+    }
+
+    private void drainSettledTerminal(Object published, Runnable afterStateClaimed) {
+        if (!terminalWaiterDrainClaimed.compareAndSet(false, true)) return;
         try {
-            // The winning cancellation claim runs its internal revoker before
-            // notifying potentially blocking synchronous host subscribers.
-            // Publish revocation completion BEFORE draining registrations:
-            // later registrations can then notify directly without waiting.
+            // A cancellation revoker must have completed before runtime
+            // waiters can resume actor work or publish a terminal observer.
             if (published instanceof Cancelled) {
                 try {
                     afterStateClaimed.run();
@@ -670,11 +697,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             while ((waiter = waiters.poll()) != null) {
                 notifyWaiter(waiter, published);
             }
-            return true;
         } finally {
-            // Terminal state can be visible long before a synchronous waiter
-            // returns. A bounded host notification permit cannot be reused
-            // just because isDone() became true during a blocked callback.
+            // Callback drain owns notification permits, not terminal CAS.
             onNotificationDrained.run();
         }
     }
