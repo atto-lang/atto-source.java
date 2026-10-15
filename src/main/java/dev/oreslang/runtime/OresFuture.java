@@ -581,10 +581,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
      */
     CompletionStage<T> asCompletionStage() {
         CompletableFuture<T> bridge = new CompletableFuture<>();
-        whenCompleteRuntime((value, failure) -> {
-            if (failure == null) bridge.complete(value);
-            else bridge.completeExceptionally(failure);
-        });
+        RuntimeWaiterRegistration<T> waiter =
+                whenCompleteRuntimeCancellable((value, failure) -> {
+                    if (failure == null) bridge.complete(value);
+                    else bridge.completeExceptionally(failure);
+                });
+        // The bridge is only an observation adapter: cancelling it must
+        // release the producer listener, never cancel the producer itself.
+        // Registering after the producer subscription also covers a source
+        // that has already settled synchronously.
+        bridge.whenComplete((ignored, failure) -> waiter.detach());
         return bridge;
     }
 
