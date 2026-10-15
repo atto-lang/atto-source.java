@@ -5378,28 +5378,24 @@ public final class TypeChecker {
      */
     private boolean literalPatternRuntimeEquals(Object left, Object right) {
         if (left instanceof Number a && right instanceof Number b) {
-            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
-                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
-                try {
-                    return new java.math.BigDecimal(a.toString())
-                            .compareTo(new java.math.BigDecimal(b.toString())) == 0;
-                } catch (NumberFormatException ignored) {
-                    return a.doubleValue() == b.doubleValue();
-                }
-            }
-            boolean integralA = isRuntimeIntegralNumber(a);
-            boolean integralB = isRuntimeIntegralNumber(b);
-            if (integralA && integralB) return a.longValue() == b.longValue();
-            if (integralA != integralB) {
-                Number integer = integralA ? a : b;
-                Number floating = integralA ? b : a;
-                if (!Double.isFinite(floating.doubleValue())) return false;
-                return java.math.BigDecimal.valueOf(integer.longValue())
-                        .compareTo(java.math.BigDecimal.valueOf(floating.doubleValue())) == 0;
-            }
-            return a.doubleValue() == b.doubleValue();
+            if (Double.isNaN(a.doubleValue()) || Double.isNaN(b.doubleValue())) return false;
+            boolean nonFiniteA = (a instanceof Float || a instanceof Double)
+                    && !Double.isFinite(a.doubleValue());
+            boolean nonFiniteB = (b instanceof Float || b instanceof Double)
+                    && !Double.isFinite(b.doubleValue());
+            if (nonFiniteA || nonFiniteB)
+                return nonFiniteA && nonFiniteB && a.doubleValue() == b.doubleValue();
+            return exactLiteralDecimal(a).compareTo(exactLiteralDecimal(b)) == 0;
         }
         return java.util.Objects.equals(left, right);
+    }
+
+    private java.math.BigDecimal exactLiteralDecimal(Number number) {
+        if (number instanceof java.math.BigDecimal decimal) return decimal;
+        if (number instanceof java.math.BigInteger bigint) return new java.math.BigDecimal(bigint);
+        if (isRuntimeIntegralNumber(number)) return java.math.BigDecimal.valueOf(number.longValue());
+        if (number instanceof Float || number instanceof Double) return new java.math.BigDecimal(number.doubleValue());
+        throw new IllegalArgumentException("unknown numeric literal representation");
     }
 
     private boolean isRuntimeIntegralNumber(Number value) {
