@@ -87,10 +87,11 @@ class RaceTraceRecorderTest {
         Path file = temporary.resolve("closed.jsonl");
         RaceTraceRecorder out = RaceTraceRecorder.open(file, "closed", "graal");
         out.task("a");
+        out.access("a", "heap:test", true);
         out.close();
         out.close();
         assertThrows(IOException.class, () -> out.access("a", "heap:test", true));
-        assertEquals(3, Files.readAllLines(file).size());
+        assertEquals(4, Files.readAllLines(file).size());
     }
     private void assertUnsealed(Path path) throws Exception {
         assertFalse(Files.readString(path).contains("\"op\":\"end\""),
@@ -164,6 +165,15 @@ class RaceTraceRecorderTest {
             out.access("a", "heap:v", true);
         }
         assertUnsealed(locked);
+    }
+
+    @Test void noObservedAccessCannotSealTrace() throws Exception {
+        Path empty = temporary.resolve("no-access.jsonl");
+        try (RaceTraceRecorder out = RaceTraceRecorder.open(empty, "none", "graal")) {
+            out.task("a");
+            out.send("a", "m1");
+        }
+        assertUnsealed(empty);
     }
 
     @Test void taskMustBeRegisteredAndAlive() throws Exception {
