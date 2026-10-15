@@ -1737,6 +1737,44 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.publish(repo, branch)
         self.assertEqual(self.route_calls, [])
 
+    def test_git_invalid_branch_names_deny_before_policy_or_private_reads(self):
+        # This regex is deliberately narrower than Git check-ref-format.
+        # A trailing .lock, a trailing period and two adjacent periods would
+        # fail only at POST /git/refs without an up-front rejection.
+        invalid = (
+            "ci/oreslang-a..b",
+            "ci/oreslang-a.lock",
+            "ci/oreslang-a.",
+            "ci/oreslang-a..",
+            "ci/oreslang-a/b",
+            "ci/oreslang-.lock",
+        )
+        for branch in invalid:
+            with self.subTest(branch=branch):
+                self.route_calls.clear()
+                with patch.object(pub, "checked_policy_fingerprint",
+                                  side_effect=AssertionError("policy read too early")):
+                    with patch.object(pub, "collect_source",
+                                      side_effect=AssertionError("private source read too early")):
+                        with self.assertRaisesRegex(
+                                pub.Denied, "invalid destination or isolated CI branch"):
+                            self.publish(branch=branch)
+                self.assertEqual(self.route_calls, [])
+
+    def test_git_valid_isolated_branch_names_pass_syntax_validation(self):
+        # Don't accidentally exclude ordinary approved isolated refs.
+        # Force a denial at the *next* authorization stage, proving the
+        # local branch syntax was accepted without any Git object writes.
+        for branch in ("ci/oreslang-safe", "ci/oreslang-v1.2",
+                       "ci/oreslang-feature_test-123"):
+            with self.subTest(branch=branch):
+                self.route_calls.clear()
+                with patch.object(pub, "checked_policy_fingerprint",
+                                  side_effect=pub.Denied("synthetic policy denied")):
+                    with self.assertRaisesRegex(pub.Denied, "synthetic policy denied"):
+                        self.publish(branch=branch)
+                self.assertEqual(self.route_calls, [])
+
     def test_symlinked_source_rejected_before_upload(self):
         (self.source / "secret").symlink_to(self.root)
         with self.assertRaises(pub.Denied):
