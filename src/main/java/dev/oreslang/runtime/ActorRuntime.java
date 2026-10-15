@@ -4436,6 +4436,12 @@ public final class ActorRuntime implements AutoCloseable {
         // leave another revoked child with live scheduler state or a pending
         // source-cleanup Future. Reconcile every cell independently while the
         // entire subtree is still force-fenced.
+        // The transient force-kill fence will be cleared once teardown exits.
+        // Persistently revoke guest execution rights before publishing STOP:
+        // no final-cleanup callback may run on a delayed carrier afterward.
+        for (ActorCell<?> revokedCell : attempt.cells) {
+            revokedCell.forceRevoked = true;
+        }
         Throwable teardownFailure = null;
         try {
             try {
@@ -4735,6 +4741,9 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new ActorCancellationSignal("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
+        if (cell != null && cell.forceRevoked) {
+            throw new ActorCancellationSignal("actor execution was force-revoked");
+        }
         if (cell != null && cell.stopped.get() && !cell.endRequested
                 && !OresScheduler.currentTaskInCleanup()) {
             throw new ActorCancellationSignal("actor execution stopped");
@@ -6121,6 +6130,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private volatile boolean forceKillFenced;
+        /** Irreversible, host-confirmed isolation revocation (not structured STOP). */
+        private volatile boolean forceRevoked;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
         private long nextOutputSequence;
@@ -6316,7 +6327,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean authorizedCleanupContinuation(Runnable command) {
-            return !forceKillFenced && !closed.get() && !finalized
+            return !forceKillFenced && !forceRevoked && !closed.get() && !finalized
                     && !sourceCleanupTasks.isEmpty()
                     && command instanceof OresScheduler.CleanupTurn turn
                     && turn.authorizedBy(sourceScheduler);
@@ -6324,7 +6335,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean hasSourceCleanup() {
             return !sourceCancellationPending && !sourceCleanupTasks.isEmpty()
-                    && !forceKillFenced && !closed.get();
+                    && !forceKillFenced && !forceRevoked && !closed.get();
         }
 
         private OresScheduler sourceScheduler() {
@@ -6351,7 +6362,7 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean beginTurn() {
             synchronized (lifecycleLock) {
                 if ((stopped.get() && !hasSourceCleanup())
-                        || forceKillFenced || finalized) return false;
+                        || forceKillFenced || forceRevoked || finalized) return false;
                 if (activeTurns != 0) {
                     throw new IllegalStateException(
                             "actor single-writer execution lease violation for " + ref.id()
@@ -6382,7 +6393,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void runFinalCleanupIfNeeded() {
             Runnable cleanup;
             synchronized (lifecycleLock) {
-                if (!endRequested
+                if (forceRevoked || !endRequested
                         || finalCleanupStarted
                         || finalCleanup == null) return;
                 finalCleanupStarted = true;
