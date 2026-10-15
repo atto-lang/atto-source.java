@@ -1015,8 +1015,21 @@ public final class TypeChecker {
             // failure cleanup is not proven, so reject indexing by default.
             return true;
         }
-        if (expr instanceof Ast.TypeTestExpr test) return fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
-        if (expr instanceof Ast.PatternTestExpr test) return fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
+        if (expr instanceof Ast.TypeTestExpr test) {
+            // A runtime type test is not just an operand read. Structural,
+            // union, complement and nominal type tests can recursively
+            // inspect object shape/type metadata. Admit only a direct
+            // primitive tag check until constructor-time matching effects
+            // and failure cleanup are established.
+            return !constructorSafePrimitiveTypeTest(test.targetType())
+                    || fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
+        }
+        if (expr instanceof Ast.PatternTestExpr test) {
+            // Structural/tuple/constructor patterns may recursively inspect
+            // user values. A safe operand alone does not prove their effect.
+            return !constructorSafeScalarPattern(test.pattern())
+                    || fieldInitializerMaySuspend(test.value(), scalarInitializerArgs);
+        }
         if (expr instanceof Ast.CastExpr) {
             // Checked casts can fail independently of their source expression;
             // permitting one could unwind a partially constructed instance.
@@ -1045,6 +1058,31 @@ public final class TypeChecker {
             return scalarInitializerArgs.lookup(name.name()) == null;
         }
         return !(expr instanceof Ast.LiteralExpr || expr instanceof Ast.LambdaExpr);
+    }
+
+    /** Only direct primitive runtime tag checks are bounded during initialization. */
+    private boolean constructorSafePrimitiveTypeTest(Ast.TypeRef target) {
+        return !target.isRecordType() && !target.isTupleType()
+                && !target.isUnion() && !target.isComplement()
+                && !target.inferArguments() && !target.isBorrow()
+                && target.arguments().isEmpty()
+                && (target.name().equals("int")
+                        || target.name().equals("bool")
+                        || target.name().equals("float")
+                        || target.name().equals("string")
+                        || target.name().equals("String"));
+    }
+
+    /**
+     * The only admitted pattern predicates are identity-free scalar checks.
+     * Reject recursive, structural and constructor patterns: they may walk
+     * nested values and lack a transitive constructor-time failure proof.
+     */
+    private boolean constructorSafeScalarPattern(Ast.Pattern pattern) {
+        return pattern instanceof Ast.WildcardPattern
+                || pattern instanceof Ast.LiteralPattern
+                || pattern instanceof Ast.TypePattern typed
+                        && constructorSafePrimitiveTypeTest(typed.type());
     }
 
     /**
