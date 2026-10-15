@@ -527,6 +527,16 @@ final class ActorTypedEffectControlTest {
             assertThrows(IllegalArgumentException.class,
                     () -> new ActorRuntime.ActorFailureNotice(
                             actor.id(), null, GuestActorEffectSignal.Kind.PANIC, wrongKindLabel));
+
+            // A forged parent ID equal to the child violates structural
+            // supervision even if every other envelope field is canonical.
+            var selfParent = new ActorErrorCatalog.Envelope(
+                    ActorErrorCatalog.Kind.ACTOR_SUPERVISION,
+                    "actor raised a typed Error", id, id);
+            assertThrows(IllegalArgumentException.class,
+                    () -> new ActorRuntime.ActorFailureNotice(
+                            actor.id(), actor.id(),
+                            GuestActorEffectSignal.Kind.RAISE, selfParent));
         }
     }
 
