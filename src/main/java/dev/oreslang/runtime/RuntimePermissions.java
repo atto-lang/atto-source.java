@@ -94,13 +94,23 @@ public final class RuntimePermissions {
             IsolatePolicy isolatePolicy) {
         Builder builder = new Builder();
         boolean sawPermissionArgument = false;
+        boolean sawExplicitMarker = false;
+        Set<String> seenSerializedRules = new LinkedHashSet<>();
 
         for (String arg : args) {
             if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
             sawPermissionArgument = true;
-            // Even a deny-all policy has zero grant rules. Preserve its explicit
-            // presence or fromCapabilities() would silently grant broad I/O.
-            if (arg.equals(ARG_PREFIX + "explicit=true")) continue;
+            // Even deny-all must stay explicit. Duplicated markers and exact
+            // rule arguments are ambiguous/corrupted serialized policies,
+            // not an opportunity to silently reinterpret caller authority.
+            if (arg.equals(ARG_PREFIX + "explicit=true")) {
+                if (sawExplicitMarker)
+                    throw new IllegalArgumentException("duplicate Oreslang permission marker");
+                sawExplicitMarker = true;
+                continue;
+            }
+            if (!seenSerializedRules.add(arg))
+                throw new IllegalArgumentException("duplicate Oreslang permission argument");
             String remainder = arg.substring(ARG_PREFIX.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
