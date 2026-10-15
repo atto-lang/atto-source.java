@@ -3810,6 +3810,13 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(retiredChild, "retiredChild");
         Objects.requireNonNull(replacementFactory, "replacementFactory");
         ActorCell<?> supervisor = currentActor.get();
+        // A terminated ActorId alone does not prove this handle originated
+        // in the current runtime. Reject cross-runtime/forged capabilities
+        // before consulting their identity, policy or termination futures.
+        if (!retiredChild.ownedBy(this) || !retiredChild.ref.ownedBy(this)) {
+            throw new SecurityException(
+                    "one-for-one restart requires a child capability owned by this ActorRuntime");
+        }
         if (supervisor == null
                 || supervisor.activeChildFailureNotice != notice
                 || supervisor.activeChildRestartConsumed
