@@ -153,6 +153,39 @@ public final class ControlWakeRetryStandaloneStress {
         }
     }
 
+    private static void verifyRetainedAdmissionUnderReentry() {
+        // A callback can fill the ordinary pending queue, immediately
+        // dequeue itself onto the same carrier's deferred trampoline, then
+        // repeat. The pending queue looks empty between iterations but the
+        // total retained scheduler authority must remain bounded.
+        for (boolean staleEpoch : new boolean[]{false, true}) {
+            final int capacity = 4;
+            final int attempts = 100_000;
+            ControlWakeRetryQueue queue = new ControlWakeRetryQueue(capacity);
+            AtomicInteger admitted = new AtomicInteger();
+            AtomicInteger delivered = new AtomicInteger();
+            require(queue.register(() -> {
+                for (int i = 0; i < attempts; ++i) {
+                    long observed = queue.epoch();
+                    if (staleEpoch) --observed;
+                    if (queue.register(delivered::incrementAndGet, observed)) {
+                        admitted.incrementAndGet();
+                        if (!staleEpoch) queue.slotReleased();
+                    }
+                    require(queue.retained() >= 0 && queue.retained() <= capacity,
+                            "CONTROL retained callbacks exceeded admission budget");
+                }
+                require(queue.retained() == capacity && queue.pending() == 0,
+                        "deferred callbacks did not retain their admission slots");
+            }, queue.epoch()), "initial retry trampoline registration");
+            queue.slotReleased();
+            require(admitted.get() == capacity && delivered.get() == capacity,
+                    "fresh/stale nested CONTROL registration bypassed budget");
+            require(queue.pending() == 0 && queue.retained() == 0,
+                    "deferred CONTROL retry capacity was not recovered");
+        }
+    }
+
     private static void verifyDeepReentrantWakes() {
         final int chained = 20_000;
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(chained);
@@ -301,6 +334,7 @@ public final class ControlWakeRetryStandaloneStress {
         verifyFairnessAndCapacity();
         verifyLifecycleAndEpoch();
         verifyCrossCarrierDeferredCancellation();
+        verifyRetainedAdmissionUnderReentry();
         verifyDeepReentrantWakes();
         verifyFatalDeferredCleanup();
         verifyOtherThreadDeferredCancellation();
