@@ -163,3 +163,25 @@ callbacks into a retired parent, and explicit accounting for notices discarded
 when a non-handling parent stops. All new tests remain **unverified** while
 GitHub Actions cannot execute jobs. Do not merge based solely on source review.
 
+## Single-hop CONTROL wake and teardown audit (October 14, 2026)
+
+Automatic host `ChildFailureHandler` notifications now submit **one** scheduling
+ticket directly to the parent's existing actor dispatcher. The old two-hop
+wake submitted a separate dispatcher job whose second submission could reject
+and stop the parent. CONTROL-specific scheduling instead releases an
+unadmitted dispatch ticket on rejection, preserves the parent actor and its
+queued immutable notice, and increments `childFailureWakesRejected`. Ordinary
+user-message dispatch continues using fail-closed rejection policy.
+
+An unexpected runtime exception from the parent wake path is isolated from
+the child's finalized lifecycle and is counted as a failed wake; process-fatal
+errors are not swallowed. This is still best-effort notification when the
+dispatcher is saturated, not a guaranteed CONTROL lane. The parent remains
+eligible for later scheduling and manual polling.
+
+Added a regression test with a blocked child exit hook: no automatic parent
+handler is allowed to observe a notice until the child hook finishes; the
+handler must then run on the parent's serialized actor execution lease.
+Tests have **not** been executed successfully on this branch while GitHub
+Actions jobs fail before reporting steps.
+
