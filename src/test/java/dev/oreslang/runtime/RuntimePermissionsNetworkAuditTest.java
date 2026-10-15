@@ -25,6 +25,26 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void omittedPortCannotBypassPortSpecificDenials() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "*.example.com:443")
+                .withDenied(RuntimePermissions.Permission.NET, "[::1]:8443");
+
+        // Without a port, the caller cannot prove it is not requesting 443.
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "api.example.com"));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "API.EXAMPLE.COM."));
+        assertFalse(policy.allows(RuntimePermissions.Permission.NET, "[::1]"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "api.example.com:444"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "[::1]:8080"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "other.example.net"));
+
+        // Neither a sibling hostname nor the apex matches the wildcard.
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "example.com"));
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET, "badexample.com"));
+    }
+
+    @Test
     void wildcardPortAllowOnlyGrantsMatchingSubdomainAndPort() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*.example.com:443");
