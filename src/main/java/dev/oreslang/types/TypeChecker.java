@@ -100,6 +100,9 @@ public final class TypeChecker {
     private boolean currentGenerator;
     private boolean currentAsyncCallable;
     private boolean currentMaySuspend;
+    // Exact innermost synchronous fnc return context for Result/Option postfix ?.
+    // Never inherited by methods, lambdas, detached arms or source tasks.
+    private Type currentQuestionReturn;
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -668,9 +671,14 @@ public final class TypeChecker {
         currentAsyncCallable = fn.async();
         boolean previousMaySuspend = currentMaySuspend;
         currentMaySuspend = fn.async() || fn.suspends();
+        Type previousQuestionReturn = currentQuestionReturn;
+        currentQuestionReturn = !fn.async() && !fn.suspends() && !fn.generator()
+                && !fn.trapped() && fn.actorKind() == Ast.ActorKind.NONE
+                ? returns : null;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            currentQuestionReturn = previousQuestionReturn;
             currentActorKind = previousActorKind;
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
@@ -1458,6 +1466,8 @@ public final class TypeChecker {
             lexicalClassOrigin = klass;
             boolean previousMaySuspend = currentMaySuspend;
             currentMaySuspend = method.async() || method.suspends();
+            Type previousQuestionReturn = currentQuestionReturn;
+            currentQuestionReturn = null; // Methods await a separate lifetime/ownership gate.
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
@@ -1465,6 +1475,7 @@ public final class TypeChecker {
                 currentClassOwner = previousClassOwner;
                 lexicalClassOrigin = previousLexicalClass;
                 currentMaySuspend = previousMaySuspend;
+                currentQuestionReturn = previousQuestionReturn;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -1648,6 +1659,8 @@ public final class TypeChecker {
         boolean previousGenerator = currentGenerator;
         boolean previousAsync = currentAsyncCallable;
         boolean previousDiscard = inDiscardingSelectArm;
+        Type previousQuestionReturn = currentQuestionReturn;
+        currentQuestionReturn = null; // Block callbacks return locally, never from their enclosing fnc.
         loopDepth = 0;
         currentGenerator = false;
         currentAsyncCallable = false;
@@ -1659,6 +1672,7 @@ public final class TypeChecker {
             currentGenerator = previousGenerator;
             currentAsyncCallable = previousAsync;
             inDiscardingSelectArm = previousDiscard;
+            currentQuestionReturn = previousQuestionReturn;
         }
     }
 
@@ -2226,6 +2240,40 @@ public final class TypeChecker {
             return cast.mode() == Ast.CastMode.OPTIONAL
                     ? new Named("Option", List.of(narrowed))
                     : narrowed;
+        }
+        if (expr instanceof Ast.PropagateExpr propagated) {
+            if (currentQuestionReturn == null || currentMaySuspend || currentAsyncCallable
+                    || currentGenerator || currentActorKind != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "postfix '?' currently requires an ordinary synchronous fnc with an Option/Result return; "
+                                + "async, actor, method, trap and lambda propagation are not admitted");
+            }
+            Type carrier = typeOf(propagated.expression(), env, generics, self);
+            if (!(carrier instanceof Named sum) || sum.arguments().isEmpty()) {
+                throw new IllegalArgumentException("postfix '?' requires a typed Option<T> or Result<T,E> operand");
+            }
+            if (!(currentQuestionReturn instanceof Named enclosing)) {
+                throw new IllegalArgumentException("postfix '?' requires a compatible Option/Result return type; "
+                        + "typed throws propagation is not admitted yet");
+            }
+            if (sum.name().equals("Option") && sum.arguments().size() == 1
+                    && enclosing.name().equals("Option") && enclosing.arguments().size() == 1) {
+                Type payload = sum.arguments().getFirst();
+                if (payload instanceof Borrow) throw new IllegalArgumentException("postfix '?' cannot return a borrowed Option payload");
+                return payload;
+            }
+            if (sum.name().equals("Result") && sum.arguments().size() == 2
+                    && enclosing.name().equals("Result") && enclosing.arguments().size() == 2) {
+                Type error = sum.arguments().get(1);
+                if (error == Unknown.INSTANCE || !error.equals(enclosing.arguments().get(1))) {
+                    throw new IllegalArgumentException("postfix '?' Result error type must exactly match enclosing Result error type");
+                }
+                Type payload = sum.arguments().getFirst();
+                if (payload instanceof Borrow) throw new IllegalArgumentException("postfix '?' cannot return a borrowed Result payload");
+                return payload;
+            }
+            throw new IllegalArgumentException("postfix '?' operand and enclosing return must both be Option or Result; "
+                    + "no implicit exceptions, conversions, or Future/Stream/Observable/Channel propagation");
         }
         if (expr instanceof Ast.TrapExpr trapped) {
             Type inner = typeOf(trapped.expression(), env, generics, self);
