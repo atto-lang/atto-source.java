@@ -8,6 +8,7 @@ on:
       - 'scripts/test-native-actor-turn.sh'
       - 'scripts/test-native-actor-jni.sh'
       - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnSchedulerJniTest.java'
       - '.github/workflows/native-actor-turn.yml'
@@ -20,6 +21,7 @@ on:
       - 'scripts/test-native-actor-turn.sh'
       - 'scripts/test-native-actor-jni.sh'
       - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
+      - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnSchedulerJniTest.java'
 permissions:
