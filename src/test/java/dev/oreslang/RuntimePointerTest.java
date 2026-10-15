@@ -72,6 +72,17 @@ final class RuntimePointerTest {
         reject("const p = rt ref new Box(); const Box view = rt deref p; const Box owned = rt unref p;", "borrow");
         reject("const p = rt ref new Box(); const copy = rt copy p; const Box owned = rt unref p;", "rt copy");
         reject("const p = rt ref new Box(); const shared = rt share p; const Box owned = rt unref p;", "rt share");
+        // Loan of the first argument must live until the full invocation returns.
+        var callFailure = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(BOX + """
+                fnc take_both(borrow Box view, Box owned): void { return; }
+                fnc bad(): void {
+                  const p = rt ref new Box();
+                  take_both(rt deref p, rt unref p);
+                  return;
+                }
+                """)));
+        assertTrue(callFailure.getMessage().contains("borrow"), callFailure.getMessage());
+
 
         Object target = new Object();
         dev.oreslang.runtime.OresPointer pointer = new dev.oreslang.runtime.OresPointer(target);
