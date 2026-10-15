@@ -52,4 +52,15 @@ final class ExperimentalHirV1ExporterTest {
         assertThrows(RuntimeException.class, () -> ExperimentalHirV1Exporter.fromSource(
                 "pub fnc main(): int { return true; }"));
     }
+    @Test
+    void rejectsRecursiveFunctionsAtExperimentalContractBoundary() {
+        assertThrows(RuntimeException.class, () -> ExperimentalHirV1Exporter.fromSource("""
+                pub fnc main(): int { return main(); }
+                """));
+        assertThrows(RuntimeException.class, () -> ExperimentalHirV1Exporter.fromSource("""
+                pub fnc first(): int { return second(); }
+                pub fnc second(): int { return first(); }
+                """));
+    }
+
 }
