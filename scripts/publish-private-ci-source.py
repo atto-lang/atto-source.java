@@ -29,8 +29,12 @@ MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
 # This policy must be approved on the protected source main branch, not merely
 # present in the caller's current PR/worktree.
+SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPOSITORY_ID = 1400792274
+SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
+PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
-    "repos/ores-truffle-oreslang/oreslang-source.java/contents/"
+    SOURCE_METADATA_ROUTE + "/contents/"
     ".github/private-ci-approved-repositories.txt?ref=main"
 )
 
@@ -175,7 +179,27 @@ def checked_policy_fingerprint(root, repository):
 
 
 def require_protected_main_policy(approved_policy):
-    """Fail closed if this checkout's authorization differs from source main."""
+    """Require a known private source and protected main, not just its blob.
+
+    A matching policy blob on an unprotected branch cannot prove approval:
+    direct pushes could change that branch without independent review.
+    """
+    source = gh_api(SOURCE_METADATA_ROUTE)
+    if (source.get("full_name") != SOURCE_REPOSITORY
+            or type(source.get("id")) is not int
+            or source["id"] != SOURCE_REPOSITORY_ID
+            or source.get("private") is not True
+            or source.get("visibility") != "private"
+            or source.get("archived") is not False
+            or source.get("disabled") is not False
+            or source.get("default_branch") != "main"):
+        raise Denied("source repository identity or private status is not verified")
+    branch = gh_api(PROTECTED_BRANCH_ROUTE)
+    if (branch.get("name") != "main"
+            or branch.get("protected") is not True
+            or not isinstance(branch.get("commit"), dict)):
+        raise Denied("source main branch is not protected")
+    valid_sha(branch["commit"].get("sha"))
     metadata = gh_api(PROTECTED_POLICY_ROUTE)
     if (metadata.get("type") != "file"
             or valid_sha(metadata.get("sha")) != approved_policy[2]):

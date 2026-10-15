@@ -33,6 +33,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.expected_tree = pub.source_tree_sha(pub.collect_source(self.source, self.root))
         self.route_calls = []
+        self.source_identity = ["ores-truffle-oreslang/oreslang-source.java"] * 100
+        self.source_ids = [1400792274] * 100
+        self.source_private = [True] * 100
+        self.source_visibility = ["private"] * 100
+        self.source_protected = [True] * 100
         self.visibility = ["private"] * 100
         self.repository_ids = [123] * 100
         self.archived = [False] * 100
@@ -43,6 +48,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == pub.SOURCE_METADATA_ROUTE:
+            return dict(full_name=self.source_identity.pop(0),
+                        id=self.source_ids.pop(0), private=self.source_private.pop(0),
+                        visibility=self.source_visibility.pop(0), archived=False,
+                        disabled=False, default_branch="main")
+        if route == pub.PROTECTED_BRANCH_ROUTE:
+            return dict(name="main", protected=self.source_protected.pop(0),
+                        commit={"sha": A})
         if route == pub.PROTECTED_POLICY_ROUTE:
             return {"type": "file", "sha": self.protected_policy_sha}
         if route == "repos/trusted/ci":
@@ -79,6 +92,38 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree)
+
+    def test_unprotected_source_main_denies_without_source_write(self):
+        self.source_protected = [False] * 100
+        with self.assertRaisesRegex(pub.Denied, "main branch is not protected"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_source_identity_and_visibility_denied_before_any_write(self):
+        cases = (
+            ("source_identity", "attacker/oreslang"),
+            ("source_ids", 1400792275),
+            ("source_ids", True),
+            ("source_private", False),
+            ("source_visibility", "public"),
+        )
+        for attribute, value in cases:
+            with self.subTest(attribute=attribute, value=value):
+                self.route_calls.clear()
+                original = getattr(self, attribute)
+                setattr(self, attribute, [value] * 100)
+                try:
+                    with self.assertRaisesRegex(pub.Denied, "source repository identity"):
+                        self.publish()
+                    self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+                finally:
+                    setattr(self, attribute, original)
+
+    def test_source_branch_protection_revoked_before_first_git_write(self):
+        self.source_protected = [True, False] + [False] * 98
+        with self.assertRaisesRegex(pub.Denied, "main branch is not protected"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()

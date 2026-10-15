@@ -33,6 +33,16 @@ scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --expected-source-tree '<trusted full 40-hex Git tree SHA>'
 ```
 
+A matching policy Git blob on `main` is not authorization by itself. The
+publisher now requires a live private and active source repository whose
+numeric GitHub ID is `1400792274` and requires the source branch
+`main` to report `protected=true` before reading source bytes.
+It rechecks this source identity and branch protection before every Git
+object write. A missing or unprotected branch denies publication. This
+is a necessary fail-closed check, **not** proof that branch rules enforce
+independent reviews or required exact-tree tests: see issues #904 and #962.
+Approval must remain disabled until those independent rules are verified.
+
 The checked-in policy file must explicitly list the destination. The
 publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility
