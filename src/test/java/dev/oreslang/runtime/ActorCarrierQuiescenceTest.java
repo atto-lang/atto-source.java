@@ -16,6 +16,51 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @Timeout(15)
 final class ActorCarrierQuiescenceTest {
+    @org.junit.jupiter.api.RepeatedTest(20)
+    void freshActorStartupCannotAppearPhysicallyQuiescentBeforeFirstTurn()
+            throws Exception {
+        CountDownLatch enteredCarrier = new CountDownLatch(1);
+        CountDownLatch resumeStartup = new CountDownLatch(1);
+        CountDownLatch delivered = new CountDownLatch(1);
+        AtomicBoolean firstTurn = new AtomicBoolean();
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            // Stop the first scheduled physical carrier before it enters its
+            // actor initializer. This is a deterministic startup race: no
+            // HTTP timeout, sleep, or heuristic scheduling assumption.
+            if (firstTurn.compareAndSet(false, true)) {
+                enteredCarrier.countDown();
+                awaitTestRelease(resumeStartup);
+            }
+            turn.run();
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> fresh = runtime.spawnShared(() ->
+                    (message, context) -> delivered.countDown());
+            try {
+                assertTrue(enteredCarrier.await(5, TimeUnit.SECONDS),
+                        "fresh actor startup did not enter its physical carrier");
+                // Mail is accepted while its initializer is stalled. Neither
+                // the initial turn nor the later mailbox turn may be skipped
+                // by the host-only quiescence observer.
+                fresh.send(1);
+                OresFuture<Void> quiescence = runtime.quiesceAcceptedMessages(fresh);
+                assertFalse(quiescence.isDone(),
+                        "startup carrier must not appear idle before entering guest code");
+                resumeStartup.countDown();
+                quiescence.get(5, TimeUnit.SECONDS);
+                assertEquals(0L, delivered.getCount(),
+                        "accepted mail was not processed before quiescence");
+            } finally {
+                resumeStartup.countDown();
+            }
+        }
+    }
+
     @Test
     void mailboxDrainCannotImpersonatePhysicalCarrierExit() throws Exception {
         CountDownLatch guestProcessed = new CountDownLatch(1);
