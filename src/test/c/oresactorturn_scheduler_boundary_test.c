@@ -42,6 +42,41 @@ static void test_suspended_task_retirement_barrier(void) {
     OK(ores_turn_vm_destroy(vm));
 }
 
+/* Same actor, recycled scheduler task ID: a new logical lifetime must
+ * advance the generation, while previously retired SourceTask handles
+ * remain stale and cannot mint cleanup tickets or become live again.
+ */
+static void test_settled_task_generation_reuse(void) {
+    ores_turn_vm *vm = ores_turn_vm_new(24);
+    assert(vm);
+    ores_actor_cap *actor = NULL;
+    ores_source_task_cap *old = NULL, *fresh = NULL, *probe = NULL;
+    ores_cleanup_cap *ticket = NULL;
+    OK(ores_turn_register(vm, 8, 1, 1, &actor));
+    OK(ores_turn_register_source_task(vm, actor, 19, 9, &old));
+    IS(ores_turn_register_source_task(vm, actor, 19, 9, &probe),
+       ORES_TURN_STALE);
+    assert(probe == NULL);
+    IS(ores_turn_register_source_task(vm, actor, 19, 10, &probe),
+       ORES_TURN_BUSY);
+    assert(probe == NULL);
+    IS(ores_turn_retire_source_task(vm, old), ORES_TURN_BUSY);
+    OK(ores_turn_note_source_settled(vm, old));
+    OK(ores_turn_retire_source_task(vm, old));
+    IS(ores_turn_issue_cleanup(vm, old, &ticket), ORES_TURN_STALE);
+    assert(ticket == NULL);
+    IS(ores_turn_register_source_task(vm, actor, 19, 8, &probe),
+       ORES_TURN_STALE);
+    OK(ores_turn_register_source_task(vm, actor, 19, 10, &fresh));
+    IS(ores_turn_note_source_settled(vm, old), ORES_TURN_STALE);
+    IS(ores_turn_retire_source_task(vm, fresh), ORES_TURN_BUSY);
+    OK(ores_turn_note_source_settled(vm, fresh));
+    OK(ores_turn_retire_source_task(vm, fresh));
+    OK(ores_turn_stop(vm, actor));
+    OK(ores_turn_retire(vm, actor));
+    OK(ores_turn_vm_destroy(vm));
+}
+
 static void test_cleanup_completes_after_injection(void) {
     ores_turn_vm *vm = ores_turn_vm_new(32);
     assert(vm);
@@ -187,6 +222,7 @@ static void test_forked_child_cannot_use_parent_vm(void) {
 
 int main(void) {
     test_suspended_task_retirement_barrier();
+    test_settled_task_generation_reuse();
     test_cleanup_completes_after_injection();
     test_incomplete_cleanup_requires_force_abort();
     test_force_vs_cleanup_linearization();
