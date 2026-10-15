@@ -87,21 +87,21 @@ public final class RaceTraceRecorder implements AutoCloseable {
         int n = json.getBytes(StandardCharsets.UTF_8).length + 1;
         if (bytes + n > MAX_BYTES) throw new IOException("race trace exceeds 10 MB");
         out.write(json);
-        out.newLine();
+        out.write('\n');
         bytes += n;
     }
 
     private synchronized void event(String op, String task, String key, String value) throws IOException {
         if (closed || broken) throw new IOException("race trace is closed or failed");
         if (events >= MAX_EVENTS) { broken = true; throw new IOException("race trace exceeds 100000 events"); }
-        StringBuilder json = new StringBuilder("{\"op\":").append(quote(label(op, "operation")));
-        json.append(",\"task\":").append(quote(label(task, "task")));
-        if (key != null) json.append(",\"").append(key).append("\":").append(quote(label(value, key)));
-        json.append('}');
         try {
+            StringBuilder json = new StringBuilder("{\"op\":").append(quote(label(op, "operation")));
+            json.append(",\"task\":").append(quote(label(task, "task")));
+            if (key != null) json.append(",\"").append(key).append("\":").append(quote(label(value, key)));
+            json.append('}');
             writeLine(json.toString());
             events++;
-        } catch (IOException failure) {
+        } catch (IOException | RuntimeException failure) {
             broken = true;
             throw failure;
         }
@@ -122,11 +122,16 @@ public final class RaceTraceRecorder implements AutoCloseable {
         synchronized (this) {
             if (closed || broken) throw new IOException("race trace is closed or failed");
             if (events >= MAX_EVENTS) { broken = true; throw new IOException("race trace exceeds 100000 events"); }
-            String json = "{\"op\":\"access\",\"task\":" + quote(label(task, "task"))
-                    + ",\"location\":" + quote(label(location, "location"))
-                    + ",\"mode\":" + quote(write ? "W" : "R") + "}";
-            try { writeLine(json); events++; }
-            catch (IOException failure) { broken = true; throw failure; }
+            try {
+                String json = "{\"op\":\"access\",\"task\":" + quote(label(task, "task"))
+                        + ",\"location\":" + quote(label(location, "location"))
+                        + ",\"mode\":" + quote(write ? "W" : "R") + "}";
+                writeLine(json);
+                events++;
+            } catch (IOException | RuntimeException failure) {
+                broken = true;
+                throw failure;
+            }
         }
     }
 
