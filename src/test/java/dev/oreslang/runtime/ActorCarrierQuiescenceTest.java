@@ -68,6 +68,73 @@ final class ActorCarrierQuiescenceTest {
     }
 
     @Test
+    void alreadyQueuedFollowupTurnMustNotProduceFalseQuiescence() throws Exception {
+        CountDownLatch firstProcessed = new CountDownLatch(1);
+        CountDownLatch firstCarrierPaused = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondProcessed = new CountDownLatch(1);
+        CountDownLatch secondCarrierPaused = new CountDownLatch(1);
+        CountDownLatch releaseSecond = new CountDownLatch(1);
+        AtomicBoolean pausedFirst = new AtomicBoolean();
+        AtomicBoolean pausedSecond = new AtomicBoolean();
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            turn.run();
+            if (firstProcessed.getCount() == 0
+                    && pausedFirst.compareAndSet(false, true)) {
+                firstCarrierPaused.countDown();
+                awaitTestRelease(releaseFirst);
+            } else if (secondProcessed.getCount() == 0
+                    && pausedSecond.compareAndSet(false, true)) {
+                secondCarrierPaused.countDown();
+                awaitTestRelease(releaseSecond);
+            }
+        };
+
+        // Throughput one guarantees that the second accepted mail is queued
+        // behind the first physical TurnExecutor exit, not processed in the
+        // same batch. Observe the first, then admit the follow-up.
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 1, 16),
+                executor)) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnShared(() ->
+                    (message, context) -> {
+                        if (message == 1) firstProcessed.countDown();
+                        else if (message == 2) secondProcessed.countDown();
+                    });
+            try {
+                actor.send(1);
+                assertTrue(firstCarrierPaused.await(5, TimeUnit.SECONDS));
+                OresFuture<Void> barrier = runtime.quiesceAcceptedMessages(actor);
+                assertFalse(barrier.isDone());
+                actor.send(2); // accepted after the barrier snapshot
+                releaseFirst.countDown();
+                assertTrue(secondCarrierPaused.await(5, TimeUnit.SECONDS));
+                assertFalse(barrier.isDone(),
+                        "the first carrier exit cannot authorize Context.close with a queued successor");
+                releaseSecond.countDown();
+                barrier.get(5, TimeUnit.SECONDS);
+                assertTrue(secondProcessed.getCount() == 0);
+            } finally {
+                releaseFirst.countDown();
+                releaseSecond.countDown();
+            }
+        }
+    }
+
+    private static void awaitTestRelease(CountDownLatch release) {
+        try {
+            if (!release.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("test carrier release timed out");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("test carrier interrupted", interrupted);
+        }
+    }
+
+    @Test
     void foreignRuntimeCannotClaimQuiescenceOfAnotherActor() throws Exception {
         try (ActorRuntime owner = new ActorRuntime();
              ActorRuntime foreign = new ActorRuntime()) {
