@@ -83,12 +83,12 @@ final class NativeActorTurnSchedulerJniTest {
                 });
                 assertTrue(blocked.await(5, TimeUnit.SECONDS));
                 kernel.stop();
-                OresFuture<Integer> second = scheduler.start(
-                        resume -> OresScheduler.done(77));
+                // Native SourceTask registration fails synchronously during
+                // scheduler admission, before the second Future is published.
+                assertThrows(IllegalStateException.class, () -> scheduler.start(
+                        resume -> OresScheduler.done(77)));
+                gate.completeFromRuntime(1);
                 assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS));
-                // A task admitted after native STOP cannot claim a new native
-                // source identity or be allowed to run guest code.
-                assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS));
                 assertEquals(1, normalTurns.get());
             }
         }
