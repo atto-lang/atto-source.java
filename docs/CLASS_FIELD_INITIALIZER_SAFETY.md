@@ -22,7 +22,12 @@ runtime intrinsics (`rt fail`, `rt take`, `rt borrow`, `rt copy`,
 `rt share`, `rt cooperate`, `spawn`), and AST node types not explicitly
 proven effect-free. Indexing is rejected even when its operands are pure,
 because bounds failure could unwind an incompletely constructed object and
-partial-construction resource cleanup remains unproven.
+partial-construction resource cleanup remains unproven. Arithmetic division
+and remainder are likewise excluded. Bit shifts (`<<`, `>>`, `>>>`) are
+also excluded: the current runtime throws on shift counts outside 0..63,
+even when both operands are well-typed integers, and evaluating an earlier
+field may already have installed an owned value. A future proven range and
+failure-cleanup analysis may narrow these exclusions.
 
 Member reads and all nonlocal runtime value names are rejected in eager
 initializers. Resolving a module export, imported namespace, host member or
