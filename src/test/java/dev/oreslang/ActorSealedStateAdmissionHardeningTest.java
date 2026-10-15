@@ -74,4 +74,13 @@ final class ActorSealedStateAdmissionHardeningTest {
                 () -> ActorStateContract.verify(replaceActor(parsed, rewritten)));
         assertTrue(denied.getMessage().contains("canonical sealed compiler-owned layout"));
     }
+    @Test void implicitLoopRejectsLiveStateLoan() {
+        String src = "define actor Counter as\n"
+                + "state { value: int = 0; }\n"
+                + "read(): int with state.read, suspend { "
+                + "return using state.read(|s| -> { loop { break; } return s.value; }); "
+                + "} end";
+        Ast.Program parsed = Parser.parse(src);
+        assertThrows(IllegalArgumentException.class, () -> ActorStateContract.verify(parsed));
+    }
 }
