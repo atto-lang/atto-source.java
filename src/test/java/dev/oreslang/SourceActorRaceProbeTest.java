@@ -20,6 +20,8 @@ final class SourceActorRaceProbeTest {
 
         ActorRaceInstrumentation.Snapshot before =
                 ActorRaceInstrumentation.runtime().snapshot();
+        long locationsBefore = ActorRaceInstrumentation.runtime().trackedLocationCount();
+        long epochsBefore = ActorRaceInstrumentation.runtime().trackedAccessEpochCount();
         String guest = """
                 define actor Counter as
                   let int count;
@@ -62,5 +64,11 @@ final class SourceActorRaceProbeTest {
         assertEquals(before.memoryRaces(), after.memoryRaces(),
                 "one actor must not race with its own serialized field operations");
         assertEquals(before.actorOverlapViolations(), after.actorOverlapViolations());
+        assertEquals(locationsBefore,
+                ActorRaceInstrumentation.runtime().trackedLocationCount(),
+                "finalized actor must retire the exact probed object identity");
+        assertEquals(epochsBefore,
+                ActorRaceInstrumentation.runtime().trackedAccessEpochCount(),
+                "actor shutdown must release all retained field access epochs");
     }
 }
