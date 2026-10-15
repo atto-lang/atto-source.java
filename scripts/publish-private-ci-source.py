@@ -458,6 +458,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree):
                        and item.get("sha") == expected_source_tree
                        for item in tree_items)):
         raise Denied("committed CI source subtree differs from pinned source SHA")
+    # Readback may take time: check protected-main approval, destination
+    # repository identity and private visibility again before success.
+    authorize_write()
     return commit_sha, len(files)
 
 
