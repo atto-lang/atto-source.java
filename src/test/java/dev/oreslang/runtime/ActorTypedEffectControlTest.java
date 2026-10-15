@@ -677,7 +677,7 @@ final class ActorTypedEffectControlTest {
                                 ActorRuntime.ActorContext<String> context) {
                             try {
                                 assertEquals(child.get().id(), notice.actorId());
-                                assertEquals(parentId(context), notice.supervisorId());
+                                assertEquals(context.self().id(), notice.supervisorId());
                                 assertEquals(0L, releaseObserver.getCount(),
                                         "parent cannot receive child CONTROL while done observer is blocked");
                                 assertTrue(child.get().ref().done().isDone());
@@ -686,11 +686,6 @@ final class ActorTypedEffectControlTest {
                             } finally {
                                 controlDelivered.countDown();
                             }
-                        }
-
-                        private ActorRuntime.ActorId parentId(
-                                ActorRuntime.ActorContext<String> context) {
-                            return context.self().id();
                         }
                     });
             parent.send("spawn");
