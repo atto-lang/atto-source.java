@@ -21,11 +21,11 @@ final class ActorMiddlewareValuePipelineTest {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("trim"), S,
                         (input, res) -> CompletableFuture.completedFuture(
-                                new ActorMiddlewareValuePipeline.Continue<>(input.withMessage(input.message().strip()))),
+                                new ActorMiddlewareValuePipeline.Continue<>(input.withMessage(input.message().strip()), res)),
                         false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(key("enrich"), A,
                         (input, res) -> CompletableFuture.completedFuture(
-                                new ActorMiddlewareValuePipeline.Continue<>(input.withHeader("X-Actor", "accepted"))),
+                                new ActorMiddlewareValuePipeline.Continue<>(input.withHeader("X-Actor", "accepted"), res)),
                         false)),
                 Set.of(),
                 input -> {
@@ -105,8 +105,8 @@ final class ActorMiddlewareValuePipelineTest {
                 List.of(),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("twice"), A,
                         (request, res, next) -> {
-                            next.proceed(request).toCompletableFuture().join();
-                            return next.proceed(request);
+                            next.proceed(request, res).toCompletableFuture().join();
+                            return next.proceed(request, res);
                         }, false)),
                 Set.of(), input -> CompletableFuture.completedFuture(terminal.incrementAndGet()));
         assertThrows(CompletionException.class,
@@ -133,7 +133,7 @@ final class ActorMiddlewareValuePipelineTest {
         assertEquals(11, ((ActorMiddlewareValuePipeline.Reply<Integer>)
                 pipeline.invoke(req("x"), () -> false).toCompletableFuture().join()).value());
         assertThrows(CompletionException.class, () ->
-                continuation.get().proceed(req("late")).toCompletableFuture().join());
+                continuation.get().proceed(req("late"), ActorMiddlewareValuePipeline.ResponseDraft.defaults()).toCompletableFuture().join());
         assertEquals(0, called.get());
     }
 
@@ -144,12 +144,12 @@ final class ActorMiddlewareValuePipelineTest {
         var pipeline = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, S,
                         (input, res) -> CompletableFuture.completedFuture(
-                                new ActorMiddlewareValuePipeline.Continue<>(input)), false)),
+                                new ActorMiddlewareValuePipeline.Continue<>(input, res)), false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, A,
                         (input, res) -> {
                             count.incrementAndGet();
                             return CompletableFuture.completedFuture(
-                                    new ActorMiddlewareValuePipeline.Continue<>(input));
+                                    new ActorMiddlewareValuePipeline.Continue<>(input, res));
                         }, true)),
                 Set.of(shared), input -> CompletableFuture.completedFuture(42));
         pipeline.invoke(req("x"), () -> false).toCompletableFuture().join();
@@ -158,16 +158,16 @@ final class ActorMiddlewareValuePipelineTest {
         var changed = new ActorMiddlewareValuePipeline<Integer>(
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, S,
                         (input, res) -> CompletableFuture.completedFuture(
-                                new ActorMiddlewareValuePipeline.Continue<>(input)), false),
+                                new ActorMiddlewareValuePipeline.Continue<>(input, res)), false),
                         ActorMiddlewareValuePipeline.Stage.<Integer>value(key("rewrite"), S,
                                 (input, res) -> CompletableFuture.completedFuture(
                                         new ActorMiddlewareValuePipeline.Continue<>(
-                                                input.withMessage(input.message()))), false)),
+                                                input.withMessage(input.message()), res)), false)),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>value(shared, A,
                         (input, res) -> {
                             count.incrementAndGet();
                             return CompletableFuture.completedFuture(
-                                    new ActorMiddlewareValuePipeline.Continue<>(input));
+                                    new ActorMiddlewareValuePipeline.Continue<>(input, res));
                         }, true)),
                 Set.of(shared), input -> CompletableFuture.completedFuture(42));
         changed.invoke(req("x"), () -> false).toCompletableFuture().join();
@@ -181,7 +181,7 @@ final class ActorMiddlewareValuePipelineTest {
                 List.of(),
                 List.of(ActorMiddlewareValuePipeline.Stage.<Integer>around(key("error"), A,
                         (request, res, next) -> {
-                            next.proceed(request);
+                            next.proceed(request, res);
                             throw new IllegalStateException("post-next failure");
                         }, false)),
                 Set.of(), input -> pending);
