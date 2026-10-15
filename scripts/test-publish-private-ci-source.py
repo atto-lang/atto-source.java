@@ -848,9 +848,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             candidate = Path(external)
             (candidate / ".github").mkdir()
             (candidate / ".github" / "private-ci-approved-repositories.txt"
-             ).write_text("trusted/ci\\n")
-            (candidate / "run.sh").write_text("#!/bin/sh\\nexit 0\\n")
-            self.approval.write_text("# protected publisher policy denies\\n")
+             ).write_text("trusted/ci\n")
+            (candidate / "run.sh").write_text("#!/bin/sh\nexit 0\n")
+            self.approval.write_text("# protected publisher policy denies\n")
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
                 with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
                     pub.publish("trusted/ci", candidate, "ci/oreslang-test",
