@@ -4822,7 +4822,8 @@ public final class OresEvalRootNode extends RootNode {
         // Fatal panic and scheduler cancellation remain uncatchable.
         // The guest value stays in the current evaluator/try activation only.
         // It must never be inserted in ActorRuntime transport or host Throwable
-        // diagnostics. The compiler forbids actor and escaping guest throws.
+        // diagnostics. Synchronous actors escalate uncaught guest throws to
+        // payload-free raise at each actor entry or cooperative task boundary.
         private static final class GuestThrowSignal extends RuntimeException {
             private final OresObject guestError;
 
@@ -4846,8 +4847,29 @@ public final class OresEvalRootNode extends RootNode {
                 new RedactedGuestThrow();
 
         private static Throwable safeSuppressedFailure(Throwable failure) {
-            return failure instanceof GuestThrowSignal
-                    ? REDACTED_GUEST_THROW : failure;
+            // Host wrappers can retain a guest throw as a cause or suppressed
+            // child. Check the entire bounded exception graph instead of only
+            // the top-level Throwable, and fail closed for oversized graphs.
+            ArrayDeque<Throwable> pending = new ArrayDeque<>();
+            IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
+            pending.addLast(failure);
+            while (!pending.isEmpty()) {
+                if (visited.size() >= 64
+                        || pending.size() + visited.size() > 64) {
+                    return REDACTED_GUEST_THROW;
+                }
+                Throwable current = pending.removeFirst();
+                if (visited.put(current, Boolean.TRUE) != null) continue;
+                if (current instanceof GuestThrowSignal) {
+                    return REDACTED_GUEST_THROW;
+                }
+                Throwable cause = current.getCause();
+                if (cause != null) pending.addLast(cause);
+                for (Throwable suppressed : current.getSuppressed()) {
+                    pending.addLast(suppressed);
+                }
+            }
+            return failure;
         }
 
         private boolean isGuestCatchableFailure(Throwable failure) {
