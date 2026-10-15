@@ -3,6 +3,9 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.compiler.TreeShaker;
+import dev.oreslang.compiler.BuildOptions;
+import java.util.Map;
+import java.util.Set;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -78,6 +81,28 @@ final class ActorMiddlewareDeclarationTest {
                 define class Foo as end
                 """));
         assertTrue(wrong.getMessage().contains("silently discarded"), wrong.getMessage());
+    }
+
+    @Test
+    void treeShakingKeepsAnnotationOnlyMiddlewareDependencies() {
+        Ast.Program program = Parser.parse("""
+                define class Clean as end
+                define class Unused as end
+
+                @ActorMiddleware(Clean)
+                define stream actor Worker as
+                    receive(ActorMail<int> mail): void { return; }
+                end
+                """);
+        TreeShaker.Result result = TreeShaker.shake(
+                program, new BuildOptions(Map.of(), Set.of("Worker"), false));
+        String root = Parser.ROOT_MODULE + ".";
+        assertTrue(result.retained(root + "Worker"));
+        assertTrue(result.retained(root + "Clean"),
+                "middleware used exclusively through annotation must never be removed");
+        assertTrue(result.removed(root + "Unused"));
+        assertEquals("Clean", actor(result.program()).annotations()
+                .getFirst().arguments().getFirst().name());
     }
 
     @Test
