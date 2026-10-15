@@ -663,6 +663,26 @@ def source_tree_sha(files):
 
     return hash_directory(root).hex()
 
+def require_private_ci_api_budget(file_count):
+    """Refuse transfers likely to exhaust GitHub's core API rate limit.
+
+    Each file requires 15 independent live security/identity reads plus
+    one blob POST. The remaining fixed writes and readbacks need reserve.
+    This does not override any per-write approval checks.
+    """
+    if type(file_count) is not int or file_count < 1 or file_count > MAX_FILES:
+        raise Denied("private CI snapshot file count invalid")
+    budget = gh_api("rate_limit")
+    resources = budget.get("resources")
+    core = resources.get("core") if isinstance(resources, dict) else None
+    remaining = core.get("remaining") if isinstance(core, dict) else None
+    if type(remaining) is not int or remaining < 0:
+        raise Denied("GitHub core API budget unavailable")
+    required = 16 * file_count + 128
+    if remaining < required:
+        raise Denied("insufficient GitHub core API budget for safe private CI export")
+
+
 def publish(repository, source, branch, trusted_root, expected_source_tree,
             expected_source_commit):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
@@ -754,6 +774,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
     files = collect_source(source, trusted_root)
     if source_tree_sha(files) != expected_source_tree:
         raise Denied("source snapshot Git tree differs from pinned expected SHA")
+    # Fail before any mutable GitHub object is created rather than leaving
+    # partial private blobs after a predictable core-rate-limit exhaustion.
+    require_private_ci_api_budget(len(files))
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
