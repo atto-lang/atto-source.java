@@ -7444,6 +7444,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean previousCarrier = Boolean.TRUE.equals(ACTOR_CARRIER.get());
             boolean carrierEntered = false;
             boolean reschedule = false;
+            boolean rescheduleControl = false;
             try {
                 synchronized (lifecycleLock) {
                     // Prevent obsolete queued runnables impersonating the
@@ -7543,6 +7544,11 @@ public final class ActorRuntime implements AutoCloseable {
                                     && !closed.get()
                                     && !finalized
                                     && hasQueuedWorkLocked();
+                            ArrayBlockingQueue<ActorFailureNotice> pendingControl =
+                                    childFailureControlInbox.get();
+                            rescheduleControl = reschedule
+                                    && behavior instanceof ChildFailureHandler<?>
+                                    && pendingControl != null && !pendingControl.isEmpty();
                         }
                         lifecycleLock.notifyAll();
                     }
@@ -7552,7 +7558,10 @@ public final class ActorRuntime implements AutoCloseable {
                         else ACTOR_CARRIER.remove();
                     }
                 }
-                if (reschedule) schedule();
+                // Keep a supervisor's queued CONTROL notices eligible for
+                // the independent reserved admission budget at every yield,
+                // not only on the child's first notification.
+                if (reschedule) schedule(!rescheduleControl);
             }
         }
 
