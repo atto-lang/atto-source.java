@@ -241,11 +241,10 @@ public final class TypeChecker {
 
     private boolean enumOverloadCompatible(Ast.FunctionDecl first, Ast.FunctionDecl second) {
         // The initial executable slice excludes generic/actor/supervisor
-        // callables and mixed fnc/routine kinds; no runtime type dispatch.
+        // callables; fnc and routine share the callable namespace.
         if (!first.genericParameters().isEmpty() || !second.genericParameters().isEmpty()
                 || first.actorKind() != Ast.ActorKind.NONE
-                || second.actorKind() != Ast.ActorKind.NONE
-                || first.kind() != second.kind()) return false;
+                || second.actorKind() != Ast.ActorKind.NONE) return false;
         try {
             return NominalEnumOverloads.compare(
                     NominalEnumOverloads.signature(
