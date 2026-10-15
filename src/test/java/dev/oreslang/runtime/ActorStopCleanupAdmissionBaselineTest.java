@@ -328,4 +328,80 @@ final class ActorStopCleanupAdmissionBaselineTest {
                     "external producer ownership does not transfer on force revocation");
         }
     }
+
+    @Test
+    void refusedForceRevocationDuringStopDoesNotLoseSuspendedCleanup()
+            throws Exception {
+        OresFuture<Integer> producer = new OresFuture<>();
+        OresFuture<Integer> cleanupGate = new OresFuture<>();
+        CountDownLatch suspended = new CountDownLatch(1);
+        CountDownLatch cleanupEntered = new CountDownLatch(1);
+        CountDownLatch revokerEntered = new CountDownLatch(1);
+        CountDownLatch releaseRevoker = new CountDownLatch(1);
+        AtomicInteger guestTurns = new AtomicInteger();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setForceCancellationTreeHook(request -> {
+                revokerEntered.countDown();
+                try {
+                    if (!releaseRevoker.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("force revoker remained fenced");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return false;
+            });
+            var actor = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                context.runtime().ownCurrentActorFuture(context.runtime().startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) event -> {
+                            int turn = guestTurns.incrementAndGet();
+                            if (turn == 1) {
+                                suspended.countDown();
+                                return OresScheduler.await(producer);
+                            }
+                            if (turn == 2) {
+                                assertInstanceOf(CancellationException.class, event.failure());
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertEquals(3, turn);
+                            return OresScheduler.done(7);
+                        }));
+            });
+            actor.send("start");
+            assertTrue(suspended.await(5, TimeUnit.SECONDS));
+            actor.stop();
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone());
+
+            CompletableFuture<Throwable> rejectedForce = CompletableFuture.supplyAsync(() -> {
+                try {
+                    actor.forceCancel();
+                    return null;
+                } catch (Throwable denied) {
+                    return denied;
+                }
+            });
+            try {
+                assertTrue(revokerEntered.await(5, TimeUnit.SECONDS));
+                cleanupGate.completeFromRuntime(11);
+                assertFalse(actor.done().isDone(),
+                        "tentative force fence must only queue, never run cleanup");
+            } finally {
+                releaseRevoker.countDown();
+            }
+            assertInstanceOf(IllegalStateException.class,
+                    rejectedForce.get(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "failed external revocation must reschedule the retained STOP cleanup");
+            assertEquals(3, guestTurns.get(),
+                    "cleanup Future completion during a failed force fence must not be lost");
+            assertTrue(actor.failure().isEmpty(),
+                    "failed force revocation must not turn successful lexical STOP into failure");
+            assertEquals(0, cleanupGate.pendingRuntimeWaiterCount());
+            assertEquals(0, producer.pendingRuntimeWaiterCount());
+            assertFalse(producer.isCancelled());
+        }
+    }
 }

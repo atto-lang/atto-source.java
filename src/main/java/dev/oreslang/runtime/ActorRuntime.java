@@ -1822,7 +1822,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(continuation, "continuation");
         ActorCell<?> cell = actors.get(actorId);
         if (cell == null || closed.get()
-                || (cell.stopped.get() && !cell.authorizedCleanupContinuation(continuation)))
+                || (cell.stopped.get() && !cell.canQueueStoppedCleanupContinuation(continuation)))
             return false;
         if (!cell.reserveContinuationSlot()) {
             cell.fail(new IllegalStateException(
@@ -1835,7 +1835,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (cell.lifecycleLock) {
                 if (cell.finalized || closed.get()
                         || (cell.stopped.get()
-                            && !cell.authorizedCleanupContinuation(continuation))) return false;
+                            && !cell.canQueueStoppedCleanupContinuation(continuation))) return false;
                 if (!cell.continuationMailbox.tryWrite(
                         MessageEnvelope.continuation(continuation))) {
                     throw new IllegalStateException(
@@ -4954,7 +4954,7 @@ public final class ActorRuntime implements AutoCloseable {
             for (ActorCell<?> cell : attempt.cells) {
                 cell.forceKillFenced = false;
                 if (resume
-                        && !cell.stopped.get()
+                        && (!cell.stopped.get() || cell.hasSourceCleanup())
                         && !cell.finalized()
                         && cell.hasQueuedWork()) {
                     resumeCells.add(cell);
@@ -7022,6 +7022,20 @@ public final class ActorRuntime implements AutoCloseable {
                     && sourceScheduler != null
                     && OresScheduler.current() == sourceScheduler
                     && OresScheduler.currentTaskInCleanup();
+        }
+
+        /**
+         * Queueing while STOP is injecting cancellation or a tentative
+         * force-revoker is fenced must not execute guest code. Preserve only
+         * scheduler-minted, already-entered, still-live source continuations.
+         * Admission to execute remains stricter and is checked separately.
+         */
+        private boolean canQueueStoppedCleanupContinuation(Runnable command) {
+            return !sourceCleanupRevoked && !closed.get() && !finalized
+                    && !sourceCleanupTasks.isEmpty()
+                    && command instanceof OresScheduler.CleanupTurn turn
+                    && turn.eligibleForStoppedCleanup(sourceScheduler)
+                    && (sourceCancellationPending || turn.authorizedBy(sourceScheduler));
         }
 
         private boolean authorizedCleanupContinuation(Runnable command) {
