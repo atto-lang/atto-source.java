@@ -837,6 +837,37 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             outside.rmdir()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_python_preflight_never_executes_checkout_controlled_bash(self):
+        guard = self.root / "scripts" / "check-private-ci-destination.sh"
+        guard.parent.mkdir(exist_ok=True)
+        guard.write_text("#!/bin/bash\\nexit 99\\n")
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub.subprocess, "run",
+                              side_effect=AssertionError("checkout code executed")) as run:
+                pub.require_preflight("trusted/ci", self.root)
+                run.assert_not_called()
+        self.assertEqual([(method, route) for method, route, _ in self.route_calls],
+                         [("GET", "repos/trusted/ci")])
+
+    def test_python_preflight_denies_unapproved_without_running_shell(self):
+        self.approval.write_text("# approval revoked\\n")
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub.subprocess, "run",
+                              side_effect=AssertionError("checkout code executed")) as run:
+                with self.assertRaisesRegex(pub.Denied, "revoked or absent"):
+                    pub.require_preflight("trusted/ci", self.root)
+                run.assert_not_called()
+        self.assertEqual(self.route_calls, [])
+
+    def test_python_preflight_denies_replaced_destination_without_shell(self):
+        self.destination_ids = [987654321]
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with patch.object(pub.subprocess, "run",
+                              side_effect=AssertionError("checkout code executed")) as run:
+                with self.assertRaisesRegex(pub.Denied, "numeric identity"):
+                    pub.require_preflight("trusted/ci", self.root)
+                run.assert_not_called()
+
     def test_denied_preflight_halts_before_api(self):
         with patch.object(pub, "require_preflight", side_effect=pub.Denied("not approved")):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
