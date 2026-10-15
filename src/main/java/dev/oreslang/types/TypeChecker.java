@@ -4960,7 +4960,7 @@ public final class TypeChecker {
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
-        if (named.name().equals("SharedMutex")) {
+        if (actorBoundarySimpleName.equals("SharedMutex")) {
             if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
