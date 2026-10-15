@@ -3737,7 +3737,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (caller == null) return;
 
         ActorCell<?> targetCell = actors.get(target.id());
-        if (targetCell == null) return;
+        // A stale or impersonated ref must never obtain ancestor authority
+        // merely by presenting a matching ActorId.
+        if (!isCurrentIncarnation(targetCell, target)) return;
         if (caller == targetCell) return;
 
         for (ActorCell<?> ancestor = targetCell.parent;
