@@ -65,12 +65,34 @@ def nested_sha(response, member):
     return valid_sha(value.get("sha"))
 
 
+# Executables are resolved only from controlled system directories; a caller's
+# PATH must never select its own bash/git/gh helper during authorization.
+SAFE_EXEC_PATH = "/usr/bin:/bin:/usr/local/bin"
+
+
+def verified_child_env():
+    """Exclude shell startup hooks, Git overrides, and dynamic loader injection."""
+    env = os.environ.copy()
+    for name in tuple(env):
+        if (name in ("BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS",
+                     "CDPATH", "GLOBIGNORE", "PROMPT_COMMAND",
+                     "PYTHONPATH", "PYTHONHOME")
+                or name.startswith(("BASH_FUNC_", "GIT_", "LD_", "DYLD_"))):
+            env.pop(name, None)
+    env["PATH"] = SAFE_EXEC_PATH
+    env["GH_HOST"] = "github.com"
+    env["GH_PROMPT_DISABLED"] = "1"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    return env
+
+
 def gh_api(route, method="GET", payload=None):
     argv = ["gh", "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
     if payload is not None:
         argv.extend(["--input", "-"])
-    env = dict(os.environ, GH_HOST="github.com", GH_PROMPT_DISABLED="1")
+    env = verified_child_env()
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
@@ -113,7 +135,8 @@ def require_preflight(repository, root):
         raise Denied("trusted destination approval guard missing")
     try:
         p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
+                           capture_output=True, text=True,
+                           env=verified_child_env(), timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("destination policy check unavailable") from exc
     if p.returncode != 0:
@@ -219,12 +242,13 @@ def require_protected_main_policy(approved_policy):
             or not required_checks["contexts"]
             or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
         raise Denied("protected main must require strict source CI checks")
-    # Missing or permissive ref-update policies cannot establish immutable
-    # protected-main provenance. Require explicit false, not absent metadata.
+    # A mutable or deletable source main can invalidate approved publisher
+    # provenance without an independently reviewed code change. Deny missing
+    # GitHub protection metadata as well as explicitly permissive policies.
     for rule in ("allow_force_pushes", "allow_deletions"):
-        control = rules.get(rule)
-        if not isinstance(control, dict) or control.get("enabled") is not False:
-            raise Denied("protected main allows unsafe ref updates or policy is unknown")
+        setting = rules.get(rule)
+        if not isinstance(setting, dict) or setting.get("enabled") is not False:
+            raise Denied("protected source main has unsafe ref-update permissions")
     # An unresolved security review thread must be able to block the policy
     # change before the private publisher trusts it. Do not infer this from
     # required approving reviews: GitHub exposes the gate separately.
@@ -261,9 +285,11 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
     base = Path(root).resolve(strict=True)
     def git(*args):
         try:
-            response = subprocess.run(["git", "-C", str(base), *args],
-                                      capture_output=True, text=True,
-                                      timeout=12, check=False)
+            response = subprocess.run(
+                ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=/dev/null", "-C", str(base), *args],
+                capture_output=True, text=True, env=verified_child_env(),
+                timeout=12, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise Denied("trusted source checkout Git proof unavailable") from exc
         if response.returncode != 0:
@@ -280,14 +306,63 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
         ".github/private-ci-approved-repositories.txt",
         ".github/private-ci-approved-source-snapshots.txt",
     )
-    for rel in protected_paths:
-        # A tracked, unmodified file is required. Untracked replacement and
-        # staged/unstaged edits both fail before opening any private source.
-        tracked = git("ls-files", "--error-unmatch", "--", rel)
-        if tracked != rel:
-            raise Denied("reviewed publisher code or policy is not Git-tracked")
-    if git("status", "--porcelain", "--untracked-files=no", "--", *protected_paths):
-        raise Denied("reviewed publisher code or source policy was modified")
+    # Git status is NOT an integrity proof. A caller can mark an index entry
+    # --skip-worktree or --assume-unchanged and edit its executable bytes while
+    # status --porcelain reports a clean checkout. Compare the real file
+    # bytes with the blob named by the pinned, non-replaced HEAD tree.
+    if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+        raise Denied("OS cannot safely authenticate publisher files")
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        root_fd = os.open(base, directory_flags)
+        try:
+            for rel in protected_paths:
+                tracked = git("ls-tree", "HEAD", "--", rel)
+                metadata, separator, actual_path = tracked.partition("\t")
+                fields = metadata.split(" ")
+                if (not separator or actual_path != rel or len(fields) != 3
+                        or fields[0] not in ("100644", "100755")
+                        or fields[1] != "blob"):
+                    raise Denied("publisher file is not a regular tracked Git blob")
+                expected_sha = valid_sha(fields[2])
+                parent_fd = os.dup(root_fd)
+                try:
+                    components = rel.split("/")
+                    for component in components[:-1]:
+                        next_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+                        os.close(parent_fd)
+                        parent_fd = next_fd
+                    leaf_fd = os.open(components[-1], file_flags, dir_fd=parent_fd)
+                    try:
+                        before = os.fstat(leaf_fd)
+                        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                                or before.st_size > 2 * 1024 * 1024
+                                or ("100755" if before.st_mode & stat.S_IXUSR
+                                    else "100644") != fields[0]):
+                            raise Denied("publisher file type, permissions or size changed")
+                        with os.fdopen(leaf_fd, "rb", closefd=False) as stream:
+                            raw = stream.read(2 * 1024 * 1024 + 1)
+                        after = os.fstat(leaf_fd)
+                        if (len(raw) != before.st_size
+                                or (before.st_dev, before.st_ino, before.st_size,
+                                    before.st_mtime_ns, before.st_ctime_ns)
+                                != (after.st_dev, after.st_ino, after.st_size,
+                                    after.st_mtime_ns, after.st_ctime_ns)):
+                            raise Denied("publisher file changed during authentication")
+                    finally:
+                        os.close(leaf_fd)
+                finally:
+                    os.close(parent_fd)
+                actual_sha = hashlib.sha1(
+                    b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+                ).hexdigest()
+                if actual_sha != expected_sha:
+                    raise Denied("reviewed publisher code or policy bytes differ from HEAD")
+        finally:
+            os.close(root_fd)
+    except OSError as exc:
+        raise Denied("publisher file cannot be opened without following links") from exc
     return reviewed_main_sha
 
 
@@ -579,6 +654,44 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                 or not isinstance(carrier_main.get("commit"), dict)
                 or valid_sha(carrier_main["commit"].get("sha")) != current_sha):
             raise Denied("private carrier main is not protected and pinned")
+        # A protected=true flag alone does not guarantee that the destination
+        # workflow definitions were independently reviewed. The carrier's
+        # inherited root .github/workflows can read the private source on a
+        # CI branch, so require an enforced two-party review boundary before
+        # reading or uploading even one private source byte.
+        carrier_rules = gh_api(f"repos/{repository}/branches/main/protection")
+        checks = carrier_rules.get("required_status_checks")
+        if (not isinstance(carrier_rules.get("enforce_admins"), dict)
+                or carrier_rules["enforce_admins"].get("enabled") is not True
+                or not isinstance(checks, dict)
+                or checks.get("strict") is not True
+                or not isinstance(checks.get("contexts"), list)
+                or not checks["contexts"]
+                or not all(isinstance(c, str) and c for c in checks["contexts"])):
+            raise Denied("private carrier main lacks enforced administrator and CI protections")
+        # The destination's reviewed workflow definitions are also sensitive
+        # to force pushes and deletion/recreation of the protected base ref.
+        for rule in ("allow_force_pushes", "allow_deletions"):
+            setting = carrier_rules.get(rule)
+            if not isinstance(setting, dict) or setting.get("enabled") is not False:
+                raise Denied("private carrier main has unsafe ref-update permissions")
+        conversations = carrier_rules.get("required_conversation_resolution")
+        if (not isinstance(conversations, dict)
+                or conversations.get("enabled") is not True):
+            raise Denied("private carrier main must enforce resolved reviews")
+        carrier_reviews = gh_api(
+            f"repos/{repository}/branches/main/protection/required_pull_request_reviews")
+        approvals = carrier_reviews.get("required_approving_review_count")
+        if (type(approvals) is not int or approvals < 1
+                or carrier_reviews.get("require_code_owner_reviews") is not True
+                or carrier_reviews.get("dismiss_stale_reviews") is not True):
+            raise Denied("private carrier main lacks independent code-owner approval")
+        bypass = carrier_reviews.get("bypass_pull_request_allowances")
+        if bypass is not None:
+            if not isinstance(bypass, dict) or any(
+                    not isinstance(bypass.get(key, []), list) or bypass.get(key)
+                    for key in ("users", "teams", "apps")):
+                raise Denied("private carrier main allows review bypass")
         return current_sha
     base_sha = require_pinned_carrier_main()
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")

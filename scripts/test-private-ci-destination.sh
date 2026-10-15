@@ -120,4 +120,23 @@ mv "$work/fixture/.github" "$work/approved-policy-directory"
 ln -s "$work/approved-policy-directory" "$work/fixture/.github"
 expect_fail trusted/ci
 expect_wrapper_reject trusted/ci
+# The wrapper must not execute a caller-provided Bash startup script or use
+# a caller-prepended fake bash/python interpreter before policy denial.
+printf 'printf injected > "%s/injected"\n' "$work" > "$work/untrusted-startup"
+for executable in bash python3; do
+  printf '#!/bin/sh\nprintf injected > "%s/injected"\nexit 97\n' "$work" > "$work/$executable"
+  chmod +x "$work/$executable"
+done
+rm -f "$work/injected"
+if PATH="$work:$PATH" BASH_ENV="$work/untrusted-startup" PYTHONPATH="$work" \
+  "$script_dir/run-in-private-ci-destination.sh" trusted/ci \
+  --source-dir "$work/fixture/source" --branch ci/oreslang-test \
+  --expected-source-tree 0000000000000000000000000000000000000000 \
+  --expected-source-commit 1111111111111111111111111111111111111111 \
+  > "$work/out" 2>&1; then
+  echo 'Unsafe wrapper execution with hostile environment' >&2
+  exit 1
+fi
+test ! -e "$work/injected" || { echo 'Hostile Bash/Python launcher executed' >&2; exit 1; }
+grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 printf 'PASS: private identity, symlink directory and multiline API rejection, child not executed\n'
