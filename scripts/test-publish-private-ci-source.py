@@ -165,7 +165,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_carrier_main_moving_during_transfer_prevents_next_write(self):
-        for flip_after in (2, 6):
+        for flip_after in (2, 5):
             with self.subTest(flip_after=flip_after):
                 self.route_calls.clear()
                 self.carrier_main_shas = [A] * flip_after + [E] * 100
