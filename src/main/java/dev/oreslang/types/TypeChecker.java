@@ -102,6 +102,11 @@ public final class TypeChecker {
     private boolean currentMaySuspend;
     // Opt-in migration gate: legacy callable bodies are not all suspension-pure yet.
     private boolean currentStrictSuspension;
+    // Deferred callbacks are not executable until scheduler-backed callback
+    // invocation/escape analysis exists. Reject every local use rather than
+    // letting an alias silently call the callback on the registering stack.
+    private final Set<Env.Binding> gatedDeferredCallbacks =
+            java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private int loopDepth;
     private boolean inDiscardingSelectArm;
     private final List<String> warnings = new ArrayList<>();
@@ -542,6 +547,16 @@ public final class TypeChecker {
                 Ast.BindingKind.CONST);
     }
 
+    private void gateUnloweredDeferredCallback(Ast.Param param, Env env) {
+        if (param.callbackDelivery() == Ast.CallbackDelivery.DEFERRED) {
+            Env.Binding binding = env.lookup(param.name());
+            if (binding == null || !gatedDeferredCallbacks.add(binding)) {
+                throw new IllegalStateException(
+                        "missing or reused deferred callback parameter binding");
+            }
+        }
+    }
+
     private void validateCallbackDeliveryParameter(
             Ast.Param param, Type parameterType, boolean publicApi, String owner) {
         if (param.callbackDelivery() == Ast.CallbackDelivery.UNSPECIFIED) {
@@ -679,6 +694,7 @@ public final class TypeChecker {
                     param.name(),
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            gateUnloweredDeferredCallback(param, env);
         }
         defineImplicitArguments(env, argumentTypes);
 
@@ -1296,6 +1312,7 @@ public final class TypeChecker {
                         param.name(),
                         parameterType,
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                gateUnloweredDeferredCallback(param, constructorEnv);
             }
             defineImplicitArguments(constructorEnv, constructorArgumentTypes);
 
@@ -1491,6 +1508,7 @@ public final class TypeChecker {
                             "mailbox payload of actor '" + klass.name() + ".receive'");
                 }
                 env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                gateUnloweredDeferredCallback(param, env);
             }
             defineImplicitArguments(env, methodArgumentTypes);
             Type returns = resolve(method.returnType(), generics, callableSelf);
@@ -2119,6 +2137,12 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) {
+                if (gatedDeferredCallbacks.contains(local)) {
+                    throw new IllegalArgumentException(
+                            "@callback(deferred) parameter '" + name.name()
+                                    + "' cannot be invoked, captured or forwarded "
+                                    + "until verified deferred callback lowering exists");
+                }
                 if (local.hasUninitializedFields()) {
                     throw new IllegalArgumentException(
                             "explicit struct binding '" + name.name()
