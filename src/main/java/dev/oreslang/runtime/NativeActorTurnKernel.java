@@ -197,6 +197,18 @@ final class NativeActorTurnKernel implements AutoCloseable {
         task.retired = true;
     }
 
+    /**
+     * Retry-safe trusted scheduler terminal barrier. Native settlement and
+     * retirement are separate operations: a successful first settlement can
+     * precede a failed retirement (for example, a still-active actor lease).
+     * A retry must never reissue the one-shot settlement witness.
+     */
+    synchronized void settleAndRetire(SourceTask task) {
+        checkLiveTask(task);
+        if (!task.settled) settled(task);
+        retire(task);
+    }
+
     synchronized void stop() {
         ensureOpen();
         if (!stopped) {
