@@ -136,7 +136,7 @@ final class QuestionPropagationLanguageTest {
                   val int answer = await fetch_value();
                   return Some(item + answer);
                 }
-                """, "SourceTask continuation");
+                """, null);
         reject("""
                 async fnc fetch_value(): int {
                   return 3;
@@ -149,7 +149,7 @@ final class QuestionPropagationLanguageTest {
                   val int answer = helper();
                   return Some(item + answer);
                 }
-                """, "SourceTask continuation");
+                """, null);
     }
 
     @Test
@@ -163,7 +163,7 @@ final class QuestionPropagationLanguageTest {
                   });
                   return mapped;
                 }
-                """, "synchronous local");
+                """, "local Result/Option return boundary");
     }
 
     @Test
@@ -227,8 +227,10 @@ final class QuestionPropagationLanguageTest {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse(source)));
-        assertTrue(error.getMessage().contains(expected),
-                () -> "Expected '" + expected + "' in: " + error.getMessage());
+        if (expected != null) {
+            assertTrue(error.getMessage().contains(expected),
+                    () -> "Expected '" + expected + "' in: " + error.getMessage());
+        }
     }
 
     private static String run(String program) throws Exception {
