@@ -142,6 +142,8 @@ public final class OresScheduler implements AutoCloseable {
     /** Diagnostics for opt-in native source retirement failures. */
     private final AtomicLong nativeRetirementFailures = new AtomicLong();
     private final AtomicLong nativeQuiescenceFailures = new AtomicLong();
+    /** A repeated close must not claim success before the native sweep ends. */
+    private final AtomicBoolean nativeCloseSweepFinished = new AtomicBoolean();
 
     /**
      * Create a user-owned scheduler with exactly {@code parallelism} carrier
@@ -657,7 +659,14 @@ public final class OresScheduler implements AutoCloseable {
         }
         final Set<TaskRunner<?>> admitted;
         synchronized (taskAdmissionLock) {
-            if (!closed.compareAndSet(false, true)) return;
+            if (!closed.compareAndSet(false, true)) {
+                if (nativeTurnKernel != null
+                        && (!nativeCloseSweepFinished.get() || !tasks.isEmpty())) {
+                    throw new IllegalStateException(
+                            "native actor scheduler close has unresolved SourceTasks or shutdown");
+                }
+                return;
+            }
             admitted = Set.copyOf(tasks);
         }
 
@@ -732,6 +741,9 @@ public final class OresScheduler implements AutoCloseable {
         // All admitted tasks were revoked before reporting native failure.
         // An authorized host may close its pending cleanup ticket and retry
         // native retirement; it must NOT re-run a failed cleanup callback.
+        // A concurrent/repeated close cannot return success while the first
+        // cancellation sweep is still delivering synchronous notifications.
+        if (nativeTurnKernel != null) nativeCloseSweepFinished.set(true);
         if (nativeShutdownFailure instanceof Error fatal) throw fatal;
         if (nativeShutdownFailure instanceof RuntimeException failure) throw failure;
     }
