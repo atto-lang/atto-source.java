@@ -29,14 +29,15 @@ Use parentheses around adjacent `?` before infix operators:
 - Only scalar/nested scalar sum payloads are admitted. No affine
   payloads, borrowed values, owned channel handles, or borrowed
   actor state in the sum boundary until move/drop laws are proven.
-- Async callable v1 is **restricted to the direct initializer** of a
+- Ordinary standalone `async fnc` v1 is **restricted to the direct initializer** of a
   binding, for example `val int x = (await result_future)?;`. A failed
   sum becomes `SourceFlow.RETURN`, not a thrown exception, and is
   carried through `finally` and lexical `defer`.
   Async postfix `?` inside conditions, call arguments, return expressions,
   nested operators, callbacks and detached continuations is **rejected**
   pending verified continuation-local early-return lowering.
-- No `suspends`-only, actor callable, detached select arm or generator.
+- No async methods, `suspends`-only callables, actor callables,
+  detached select arms or generators.
   Full transitive scheduling/effect verification is still a merge gate.
 - No implicit `throw`, `raise`, `panic`, `await`, `map_err`, or
   typed exception conversion. Use explicit `map_err<E>()` before `?`.
