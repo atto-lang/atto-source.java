@@ -5218,14 +5218,13 @@ public final class TypeChecker {
                                 + " cannot satisfy " + structural.target());
             }
             if (structural.binding() != null) {
-                // A named interface target becomes a proven structural view of
-                // that interface; inline shapes retain their record type.
-                Type bindingType = resolvedTarget instanceof Named ? resolvedTarget : targetShape;
-                // Structural matching must not erase a record's readonly
-                // capability, including readonly members inside an explicit
-                // struct. A named structural contract needs the same shape
-                // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                // A structural match proves shape, never write authority.
+                // Previously a mutable record (or a named class/interface
+                // subject) could bind a writable shape and mutate it after
+                // pattern matching. The matched binding is always a readonly
+                // record view, regardless of the subject's original capability.
+                // Preserve public method slots from the resolved shape.
+                Type bindingType = new Record(targetShape.members(), true);
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
