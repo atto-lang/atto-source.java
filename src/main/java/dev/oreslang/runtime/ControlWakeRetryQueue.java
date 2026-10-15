@@ -40,9 +40,18 @@ final class ControlWakeRetryQueue {
         Objects.requireNonNull(callback, "callback");
         Runnable ready = null;
         synchronized (this) {
-            if (closed || pending.size() >= capacity) return false;
-            pending.addLast(new Retry(callback, lane));
-            if (releaseEpoch != observedEpoch) ready = dequeueForLane(lane);
+            if (closed) return false;
+            if (releaseEpoch != observedEpoch) {
+                // The slot opened between this *caller's* failed submit
+                // and registration. Retry that callback, not an older
+                // queued waiter: waking another parent can strand this one
+                // indefinitely if no further queue slots are released.
+                // Nothing is enqueued, so the pending-capacity bound holds.
+                ready = callback;
+            } else {
+                if (pending.size() >= capacity) return false;
+                pending.addLast(new Retry(callback, lane));
+            }
         }
         notifyRetry(ready);
         return true;
