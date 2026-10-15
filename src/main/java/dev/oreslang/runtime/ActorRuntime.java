@@ -621,7 +621,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (parent == null) {
             throw new IllegalStateException("child failure notices require an actor turn");
         }
-        return Optional.ofNullable(parent.childFailureControlInbox.poll());
+        ArrayBlockingQueue<ActorFailureNotice> inbox = parent.childFailureControlInbox.get();
+        return inbox == null ? Optional.empty() : Optional.ofNullable(inbox.poll());
     }
 
     public long currentActorChildFailureNoticesDropped() {
@@ -6704,10 +6705,30 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorOwnedGuestState codeActorState;
         private final ActorCell<?> parent;
         private final Set<ActorCell<?>> children = ConcurrentHashMap.newKeySet();
-        /** Parent-owned CONTROL data only, independent of ordinary mailbox slots. */
-        private final ArrayBlockingQueue<ActorFailureNotice> childFailureControlInbox =
-                new ArrayBlockingQueue<>(CHILD_FAILURE_CONTROL_SLOTS);
+        /** Lazily allocated: leaf actors must not reserve 256 CONTROL slots. */
+        private final AtomicReference<ArrayBlockingQueue<ActorFailureNotice>>
+                childFailureControlInbox = new AtomicReference<>();
         private final AtomicLong childFailureControlDropped = new AtomicLong();
+
+        private boolean acceptDirectChildFailure(ActorFailureNotice notice) {
+            if (!ref.id().equals(notice.supervisorId())) {
+                throw new IllegalArgumentException("child CONTROL notice has wrong parent");
+            }
+            ArrayBlockingQueue<ActorFailureNotice> inbox =
+                    childFailureControlInbox.get();
+            if (inbox == null) {
+                ArrayBlockingQueue<ActorFailureNotice> fresh =
+                        new ArrayBlockingQueue<>(CHILD_FAILURE_CONTROL_SLOTS);
+                if (childFailureControlInbox.compareAndSet(null, fresh)) {
+                    inbox = fresh;
+                } else {
+                    inbox = childFailureControlInbox.get();
+                }
+            }
+            if (inbox.offer(notice)) return true;
+            childFailureControlDropped.incrementAndGet();
+            return false;
+        }
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -7103,9 +7124,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // notice; never route by user-supplied ID or ActorRef.
                 // ArrayBlockingQueue.offer is nonblocking and has no guest
                 // callbacks, including while this child lifecycle lock is held.
-                if (parent != null
-                        && !parent.childFailureControlInbox.offer(pendingControlNotice)) {
-                    parent.childFailureControlDropped.incrementAndGet();
+                if (parent != null) {
+                    parent.acceptDirectChildFailure(pendingControlNotice);
                 }
                 publishActorFailureNotice(pendingControlNotice);
                 pendingControlNotice = null;
