@@ -25,6 +25,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
         self.approval.write_text("trusted/ci\n")
+        self.protected_policy = b"trusted/ci\n"
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 100
@@ -34,6 +35,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == pub.PROTECTED_POLICY_ROUTE:
+            raw = self.protected_policy
+            return dict(type="file", encoding="base64", size=len(raw),
+                        content=base64.b64encode(raw).decode("ascii"),
+                        sha=hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                         + bytes([0]) + raw).hexdigest())
         if route == "repos/trusted/ci":
             return dict(full_name="trusted/ci", visibility=self.visibility.pop(0),
                         private=True, default_branch="main")
@@ -57,6 +64,61 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_checkout_cannot_self_approve_when_protected_main_does_not(self):
+        # The local file is approved, but protected main is still deny-by-default.
+        self.protected_policy = b"# no approved destination on main\n"
+        with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_remote_policy_unavailable_fails_before_first_source_write(self):
+        original = self.fake_api
+        def unavailable(route, method="GET", payload=None):
+            if route == pub.PROTECTED_POLICY_ROUTE:
+                raise pub.Denied("authenticated source policy unavailable")
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=unavailable):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_protected_policy_revoked_mid_upload_blocks_ref_creation(self):
+        original = self.fake_api
+        def revoke_after_first_blob(route, method="GET", payload=None):
+            result = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs":
+                self.protected_policy = b"# revoked by protected main\n"
+            return result
+        with patch.object(pub, "gh_api", side_effect=revoke_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+        self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
+                         ["repos/trusted/ci/git/blobs"])
+
+    def test_malformed_protected_policy_response_fails_closed(self):
+        original = self.fake_api
+        bad_payloads = [
+            {"type": "file", "encoding": "base64", "size": 0,
+             "content": "not base64!", "sha": "a" * 40},
+            {"type": "symlink", "encoding": "base64", "size": 0,
+             "content": "", "sha": "a" * 40},
+            {"type": "file", "encoding": "base64", "size": 0,
+             "content": "", "sha": "a" * 40},
+        ]
+        for payload in bad_payloads:
+            self.route_calls.clear()
+            def malformed(route, method="GET", payload_arg=None):
+                if route == pub.PROTECTED_POLICY_ROUTE:
+                    return payload
+                return original(route, method, payload_arg)
+            # Preserve keyword argument compatibility with the GitHub stub.
+            def proxy(route, method="GET", payload=None):
+                return malformed(route, method, payload)
+            with patch.object(pub, "gh_api", side_effect=proxy):
+                with self.assertRaises(pub.Denied):
+                    pub.publish("trusted/ci", self.source, "ci/oreslang-test", self.root)
+            self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
