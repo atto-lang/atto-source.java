@@ -32,7 +32,7 @@ final class ReservedControlDispatcherTest {
                     () -> lanes.executeControlOnLane(0, delivered::incrementAndGet));
             assertThrows(RejectedExecutionException.class,
                     () -> lanes.executeOnLane(0, delivered::incrementAndGet));
-            assertTrue(lanes.registerControlRetry(() -> {
+            assertTrue(lanes.registerControlRetry(0, () -> {
                 try {
                     lanes.executeControlOnLane(0, delivered::incrementAndGet);
                 } catch (RejectedExecutionException busyReserve) {
