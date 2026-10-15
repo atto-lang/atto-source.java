@@ -1173,9 +1173,21 @@ public final class ChannelRuntime {
                 "default select case has no channel");
     }
 
-    private static <T> OresFuture<T> mapSelection(
+    /**
+     * Map a channel selection without weakening its cancellation admission.
+     *
+     * <p>The source selection commits under COORDINATOR before its terminal
+     * result is published. The mapped Future must reject cancellation once
+     * that commit has occurred, even if its own mapping callback is still
+     * queued or blocked. A cancellation hook would run only AFTER publishing
+     * the mapped Future's cancelled state, which is too late and could lose a
+     * committed channel value.</p>
+     */
+    static <T> OresFuture<T> mapSelection(
             OresFuture<SelectResult> source,
             Function<SelectResult, T> mapper) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(mapper, "mapper");
         OresFuture<T> result = new OresFuture<>(
                 () -> source.cancel(false),
                 () -> { });
