@@ -80,6 +80,45 @@ public final class ControlWakeRetryStandaloneStress {
                 "fatal VM effect was swallowed or misclassified");
     }
 
+    private static void verifyDeepReentrantWakes() {
+        final int chained = 20_000;
+        ControlWakeRetryQueue queue = new ControlWakeRetryQueue(chained);
+        AtomicInteger delivered = new AtomicInteger();
+        long epoch = queue.epoch();
+        for (int i = 0; i < chained; ++i) {
+            require(queue.register(() -> {
+                delivered.incrementAndGet();
+                // The old recursive callback implementation exhausted a
+                // 512-KiB carrier stack before completing this chain.
+                queue.slotReleased();
+            }, epoch), "reentrant registration");
+        }
+        queue.slotReleased();
+        require(delivered.get() == chained && queue.pending() == 0,
+                "deep nested wake lost a callback or overflowed the carrier stack");
+
+        final int each = 10_000;
+        ControlWakeRetryQueue first = new ControlWakeRetryQueue(each);
+        ControlWakeRetryQueue second = new ControlWakeRetryQueue(each);
+        AtomicInteger firstDelivered = new AtomicInteger();
+        AtomicInteger secondDelivered = new AtomicInteger();
+        long firstEpoch = first.epoch(), secondEpoch = second.epoch();
+        for (int i = 0; i < each; ++i) {
+            require(first.register(() -> {
+                firstDelivered.incrementAndGet();
+                second.slotReleased();
+            }, firstEpoch), "first chained registration");
+            require(second.register(() -> {
+                secondDelivered.incrementAndGet();
+                first.slotReleased();
+            }, secondEpoch), "second chained registration");
+        }
+        first.slotReleased();
+        require(firstDelivered.get() == each && secondDelivered.get() == each
+                && first.pending() == 0 && second.pending() == 0,
+                "interleaved CONTROL retries stranded a notice");
+    }
+
     private static int verifyConcurrentRegistrations() throws Exception {
         final int rounds = 4;
         final int perRound = 25_000;
@@ -146,6 +185,7 @@ public final class ControlWakeRetryStandaloneStress {
     public static void main(String[] args) throws Exception {
         verifyFairnessAndCapacity();
         verifyLifecycleAndEpoch();
+        verifyDeepReentrantWakes();
         int delivered = verifyConcurrentRegistrations();
         System.out.println("PASS: 100,000 concurrent registrations, " + delivered
                 + " delivered; no duplicates, missing noncancelled callbacks, "
