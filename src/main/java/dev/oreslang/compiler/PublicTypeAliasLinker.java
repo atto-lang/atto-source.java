@@ -89,6 +89,10 @@ final class PublicTypeAliasLinker {
                 visiting.add(selected.scope().identity(declaration));
                 Ast.TypeRef expanded = expand(declaration.target(), selected.scope(),
                         context, bindings, visiting, 0, new Budget());
+                // The standalone ownership pass has no verified foreign
+                // alias layout. Do not allow hidden borrow capabilities across
+                // a source boundary until ownership linking is implemented.
+                rejectHiddenBorrow(expanded, new Budget());
                 String localName = ImportRules.localName(use, name);
                 Ast.TypeAliasDecl exported = new Ast.TypeAliasDecl(localName,
                         Ast.Visibility.PUBLIC, declaration.genericParameters(), expanded);
@@ -98,6 +102,16 @@ final class PublicTypeAliasLinker {
             }
         }
         return Map.copyOf(linked);
+    }
+
+    private static void rejectHiddenBorrow(Ast.TypeRef ref, Budget budget) {
+        budget.consume();
+        if (ref.isBorrow()) {
+            throw new IllegalArgumentException(
+                    "imported alias contains borrowed ownership; verified ownership "
+                    + "linkage is required before it can cross source units");
+        }
+        for (Ast.TypeRef child : ref.arguments()) rejectHiddenBorrow(child, budget);
     }
 
     private static Map<String, Ast.TypeRef> genericBindings(Ast.TypeAliasDecl alias) {
