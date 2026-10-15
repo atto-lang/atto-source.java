@@ -369,6 +369,12 @@ public final class RuntimePermissions {
                             || !octet.matches("[0-9]+")
                             || Integer.parseInt(octet) > 255) return null;
                 }
+            } else if (host.matches(
+                    "(?:0x[0-9a-f]+|[0-9]+)(?:\\.(?:0x[0-9a-f]+|[0-9]+))*")) {
+                // libc-based socket APIs may interpret hexadecimal and mixed
+                // numeric components as IPv4, e.g. 0x7f.0.0.1 = 127.0.0.1.
+                // Never treat those spellings as DNS names under allow-net=*.
+                return null;
             }
         }
         Integer port = null;
