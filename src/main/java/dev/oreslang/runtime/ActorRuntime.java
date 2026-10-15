@@ -7498,6 +7498,10 @@ public final class ActorRuntime implements AutoCloseable {
                                                     "source middleware may replace only immutable scalar payloads "
                                                             + "until checked actor-owned aggregate transfers are available");
                                         }
+                                        if (prepared.value().getClass() != sourceMail.value().getClass()) {
+                                            throw new SecurityException(
+                                                    "source middleware may not change the admitted actor mail payload type");
+                                        }
                                         // The queued original already owns its memory
                                         // reservation. Until middleware can acquire a
                                         // distinct actor-owned loan, replacement must
