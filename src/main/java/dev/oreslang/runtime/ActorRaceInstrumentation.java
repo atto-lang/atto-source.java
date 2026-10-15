@@ -21,11 +21,15 @@ import java.util.Objects;
  */
 public final class ActorRaceInstrumentation {
     private static final int MAX_LOCATIONS = 100_000;
+    private static final int MAX_TRACKED_THREADS = 4_096;
+    private static final int MAX_LIVE_ACTORS = 100_000;
+    private static final int MAX_SYNC_DOMAINS = 100_000;
     private static final ActorRaceInstrumentation RUNTIME = new ActorRaceInstrumentation();
     private static final boolean ENABLED = Boolean.getBoolean("ores.test.race");
 
     public record Snapshot(long accesses, long memoryRaces,
-                           long actorChecks, long actorOverlapViolations) { }
+                           long actorChecks, long actorOverlapViolations,
+                           long checkedCommitAttempts, long rejectedStaleCommits) { }
 
     private static final class Clock {
         private final IdentityHashMap<Thread, Long> ticks = new IdentityHashMap<>();
@@ -59,6 +63,8 @@ public final class ActorRaceInstrumentation {
     private long races;
     private long actorChecks;
     private long overlaps;
+    private long checkedCommitAttempts;
+    private long rejectedStaleCommits;
 
     public static boolean enabled() { return ENABLED; }
     public static ActorRaceInstrumentation runtime() { return RUNTIME; }
@@ -69,14 +75,29 @@ public final class ActorRaceInstrumentation {
     }
 
     private Clock currentClock() {
-        return clocks.computeIfAbsent(Thread.currentThread(), ignored -> new Clock());
+        Thread thread = Thread.currentThread();
+        Clock existing = clocks.get(thread);
+        if (existing != null) return existing;
+        if (clocks.size() == MAX_TRACKED_THREADS) {
+            throw new IllegalStateException("race instrumentation thread limit exhausted");
+        }
+        Clock created = new Clock();
+        clocks.put(thread, created);
+        return created;
     }
 
     /** A host-owned actor key must be an incarnation-specific identity, not a name. */
     public synchronized void enterActor(Object actorKey) {
         Objects.requireNonNull(actorKey, "actor incarnation");
         actorChecks++;
-        ActorLane lane = lanes.computeIfAbsent(actorKey, ignored -> new ActorLane());
+        ActorLane lane = lanes.get(actorKey);
+        if (lane == null) {
+            if (lanes.size() == MAX_LIVE_ACTORS) {
+                throw new IllegalStateException("race instrumentation actor limit exhausted");
+            }
+            lane = new ActorLane();
+            lanes.put(actorKey, lane);
+        }
         if (lane.executing != null) {
             overlaps++;
             throw new IllegalStateException("actor has overlapping physical execution");
@@ -124,7 +145,15 @@ public final class ActorRaceInstrumentation {
         Objects.requireNonNull(synchronizationKey, "synchronization key");
         Clock clock = currentClock();
         clock.tick(Thread.currentThread());
-        synchronization.computeIfAbsent(synchronizationKey, ignored -> new Clock()).merge(clock);
+        Clock published = synchronization.get(synchronizationKey);
+        if (published == null) {
+            if (synchronization.size() == MAX_SYNC_DOMAINS) {
+                throw new IllegalStateException("race instrumentation synchronization limit exhausted");
+            }
+            published = new Clock();
+            synchronization.put(synchronizationKey, published);
+        }
+        published.merge(clock);
     }
 
     /** Host synchronization acquire. Never infer this edge from a plain guest callback. */
@@ -178,7 +207,15 @@ public final class ActorRaceInstrumentation {
         }
     }
 
+    /** Count atomic optimistic-commit outcomes without treating rejected
+     * stale writes as actual stale state mutations. */
+    public synchronized void observeCheckedCommit(boolean staleRejected) {
+        checkedCommitAttempts++;
+        if (staleRejected) rejectedStaleCommits++;
+    }
+
     public synchronized Snapshot snapshot() {
-        return new Snapshot(accesses, races, actorChecks, overlaps);
+        return new Snapshot(accesses, races, actorChecks, overlaps,
+                checkedCommitAttempts, rejectedStaleCommits);
     }
 }
