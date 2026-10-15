@@ -4,6 +4,9 @@ on:
     branches:
       - integration/future-select-guest-on-runtime-20261014
   workflow_dispatch:
+# Self-hosted mode requires explicit exact-SHA approval in repository variable
+# ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA; other branches/commits fail at job
+# admission. No shared Maven cache on an ephemeral private-source runner.
 permissions:
   contents: read
 concurrency:
@@ -11,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   language-contract:
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' && (vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha)) }}
     # Opt-in only: dedicated disposable private repo runner; maintainers
     # must register the ephemeral machine and set the approved repo variable.
     runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
@@ -35,12 +38,12 @@ jobs:
           java-version: '25'
           version: '25.3'
           distribution: graalvm
-          cache: maven
+
       - name: Typecheck and execute typed Future select plus legacy channel select
         run: mvn -B -ntp '-Dtest=NativeFutureSelectSmokeTest,SelectAwaitFutureLanguageTest,SelectTypedBindingOwnershipTest,NativeChannelSelectSmokeTest,ChannelSelectSyntaxTest,OresFutureHostWaiterDetachmentTest,FutureChannelSelectTest' test
   full-maven:
     needs: language-contract
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' && (vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha)) }}
     # Opt-in only: dedicated disposable private repo runner; maintainers
     # must register the ephemeral machine and set the approved repo variable.
     runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
@@ -64,12 +67,12 @@ jobs:
           java-version: '25'
           version: '25.3'
           distribution: graalvm
-          cache: maven
+
       - name: Full JVM regression
         run: mvn -B -ntp verify
   compiled-native-future:
     needs: language-contract
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/integration/future-select-guest-on-runtime-20261014' && (vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || (vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha)) }}
     # Opt-in only: dedicated disposable private repo runner; maintainers
     # must register the ephemeral machine and set the approved repo variable.
     runs-on: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && fromJSON('["self-hosted","linux","x64","oreslang-private-ephemeral"]') || 'ubuntu-24.04' }}
@@ -97,7 +100,7 @@ jobs:
           java-version: '25'
           version: '25.3'
           distribution: graalvm
-          cache: maven
+
       - name: Build native Oreslang CLI
         run: mvn -B -ntp -DskipTests -P${{ matrix.mode }} package
       - name: Execute typed Future-select guest on native compiler
