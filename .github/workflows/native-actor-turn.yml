@@ -9,6 +9,7 @@ on:
       - 'scripts/test-native-actor-jni.sh'
       - 'scripts/test-native-actor-scheduler-jni.sh'
       - 'scripts/test-native-actor-exact-tree-ci.sh'
+      - 'scripts/test-native-actor-ci-preflight.sh'
       - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
       - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
@@ -25,6 +26,7 @@ on:
       - 'scripts/test-native-actor-jni.sh'
       - 'scripts/test-native-actor-scheduler-jni.sh'
       - 'scripts/test-native-actor-exact-tree-ci.sh'
+      - 'scripts/test-native-actor-ci-preflight.sh'
       - 'src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java'
       - 'src/main/java/dev/oreslang/runtime/OresScheduler.java'
       - 'src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java'
@@ -79,6 +81,8 @@ jobs:
           git rev-parse HEAD
           git rev-parse HEAD^{tree}
           git hash-object src/main/java/dev/oreslang/runtime/NativeActorTurnKernel.java src/main/c/oresactorturnjni.c src/test/java/dev/oreslang/runtime/NativeActorTurnKernelStandaloneSmoke.java
+      - name: Deny-by-default source-local CI preflight regressions (no network)
+        run: sh scripts/test-native-actor-ci-preflight.sh
       - name: Compile and run JDK 21 JNI kernel and real scheduler smoke (no Maven)
         run: |
           if [ -n "${JAVA_HOME_21_X64:-}" ]; then
