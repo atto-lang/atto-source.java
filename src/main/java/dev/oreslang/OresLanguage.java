@@ -179,7 +179,8 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
             }
         }
         throw new IllegalArgumentException(
-                "checked-i64-v1 unsupported or impure expression in experimental host profile");
+                "checked-i64-v1 unsupported expression AST kind: "
+                + expr.getClass().getSimpleName());
     }
 
     private static boolean isCheckedI64Scalar(Ast.TypeRef type) {
