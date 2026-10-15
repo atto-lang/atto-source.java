@@ -9233,6 +9233,17 @@ public final class OresEvalRootNode extends RootNode {
                 double b = Math.scalb(imaginary, -numeratorExponent);
                 double c = Math.scalb(o.real, -divisorExponent);
                 double d = Math.scalb(o.imaginary, -divisorExponent);
+                // A small nonzero component can disappear when the larger
+                // component is hundreds of orders of magnitude bigger.
+                // Its *quotient* component may still be representable.
+                // Fall back to an exact binary64-input decimal rational
+                // calculation in just those exceptional cases.
+                if ((real != 0.0 && a == 0.0)
+                        || (imaginary != 0.0 && b == 0.0)
+                        || (o.real != 0.0 && c == 0.0)
+                        || (o.imaginary != 0.0 && d == 0.0)) {
+                    return divExtremeFinite(o);
+                }
                 double denominator = c * c + d * d;
                 int exponent = numeratorExponent - divisorExponent;
                 return new Complex(
@@ -9243,6 +9254,28 @@ public final class OresEvalRootNode extends RootNode {
             return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
                     (imaginary * o.real - real * o.imaginary) / denominator);
         }
+
+        private Complex divExtremeFinite(Complex o) {
+            // Every operand here is a finite binary64; BigDecimal(double)
+            // captures its *exact* rational value, not an approximate string.
+            // Products/sums are exact. Only the final quotient is rounded.
+            // 1800 decimal digits exceed the range needed to distinguish
+            // binary64 components even for extreme finite exponent gaps.
+            // This slow path allocates bounded, temporary decimal objects;
+            // it is deliberately not the fast-path or a zero-allocation API.
+            java.math.BigDecimal a = new java.math.BigDecimal(real);
+            java.math.BigDecimal b = new java.math.BigDecimal(imaginary);
+            java.math.BigDecimal c = new java.math.BigDecimal(o.real);
+            java.math.BigDecimal d = new java.math.BigDecimal(o.imaginary);
+            java.math.BigDecimal denominator = c.multiply(c).add(d.multiply(d));
+            java.math.BigDecimal realNumerator = a.multiply(c).add(b.multiply(d));
+            java.math.BigDecimal imaginaryNumerator = b.multiply(c).subtract(a.multiply(d));
+            java.math.MathContext context = new java.math.MathContext(
+                    1800, java.math.RoundingMode.HALF_EVEN);
+            return new Complex(realNumerator.divide(denominator, context).doubleValue(),
+                    imaginaryNumerator.divide(denominator, context).doubleValue());
+        }
+
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
