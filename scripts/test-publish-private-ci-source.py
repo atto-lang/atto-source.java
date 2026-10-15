@@ -196,16 +196,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_policy_numeric_identity_mismatch_blocks_before_source_read(self):
         # A name-only review cannot authorize a recreated repository.
-        self.approval.write_text("trusted/ci 456\\n")
+        self.approval.write_text("trusted/ci 456\n")
         with self.assertRaisesRegex(pub.Denied, "numeric ID differs from reviewed approval policy"):
             self.publish()
         self.assertEqual(self.route_calls, [])
 
     def test_name_only_or_malformed_numeric_policy_never_authorizes(self):
         for malformed in (
-            "trusted/ci\\n", "trusted/ci 0\\n", "trusted/ci -1\\n",
-            "trusted/ci 0123\\n", "trusted/ci\\t123\\n",
-            "trusted/ci 123 # misleading comment\\n", "trusted/ci 123 \\n"
+            "trusted/ci\n", "trusted/ci 0\n", "trusted/ci -1\n",
+            "trusted/ci 0123\n", "trusted/ci\t123\n",
+            "trusted/ci 123 # misleading comment\n", "trusted/ci 123 \n"
         ):
             with self.subTest(malformed=malformed):
                 self.approval.write_text(malformed)
