@@ -609,11 +609,48 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 receiveActorOwned(actorTypeName, rawState, mail, actorContext);
             } catch (GuestThrowSignal unhandled) {
-                // Local try/catch sees the original guest value. Only an
-                // uncaught value reaches this actor-turn exit, where its host
-                // representation must contain no guest reference.
+                // Deliver only on the current actor's carrier and in its heap.
+                // A missing/declining hook escalates via a payload-free signal.
+                if (rawState instanceof SourceActorState state
+                        && state.ownerActorId().equals(actorContext.self().id())
+                        && state.actorTypeName().equals(actorTypeName)
+                        && handleActorUncaughtThrow(state.object(), unhandled)) {
+                    return;
+                }
                 throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
             }
+        }
+
+        private boolean handleActorUncaughtThrow(
+                OresObject actor,
+                GuestThrowSignal unhandled) {
+            Ast.MethodDecl hook = findMethod(
+                    actor.klass, CallableSelector.instance("on_throw", 1));
+            if (hook == null) return false;
+            // Hooks cannot create suspended guest frames while the triggering
+            // Error remains live. In particular, cooperative loops promote
+            // synchronous methods to SourceTask continuations.
+            if (hook.async() || hook.suspends()
+                    || methodContainsPotentialSuspension(hook)
+                    || hook.body().stream().anyMatch(this::containsSourceLoop)) {
+                throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
+            }
+            Env env = new Env(null, false, declaringClass(hook), actor);
+            env.define("self", actor, Ast.BindingKind.VAL);
+            bindCallableArguments(
+                    env, hook.parameters(), List.of(unhandled.guestError),
+                    "actor on_throw");
+            try {
+                executeBlock(hook.body(), env, true);
+            } catch (ReturnSignal returned) {
+                if (returned.value instanceof Boolean handled) return handled;
+            } catch (GuestThrowSignal ignored) {
+                // The hook's nested throw must not escape with its guest Error.
+            } catch (TailCallSignal | BreakSignal | ContinueSignal ignored) {
+                // Malformed control transfer cannot escape the actor boundary.
+            }
+            // Missing/invalid return or a second uncaught Error is unhandled.
+            throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
         }
 
         private void receiveActorOwned(
@@ -1038,7 +1075,15 @@ public final class OresEvalRootNode extends RootNode {
                     // and retain an actor-owned OresObject in the host heap.
                     // Local source try/catch executes before this boundary.
                     if (ActorRuntime.inActorExecution()
-                            && failure instanceof GuestThrowSignal) {
+                            && failure instanceof GuestThrowSignal unhandled) {
+                        // The same actor-local hook is admitted at a resumed
+                        // cooperative receive boundary, before Future failure
+                        // serialization can retain a guest Error instance.
+                        if (method != null && receiver != null
+                                && method.name().equals("receive")
+                                && handleActorUncaughtThrow(receiver, unhandled)) {
+                            return OresScheduler.done(null);
+                        }
                         throw dev.oreslang.runtime.GuestActorEffectSignal.raise();
                     }
                     // Preserve control/authority failures even when a future
