@@ -40,10 +40,11 @@ numeric GitHub ID is `1400792274` and requires the source branch
 `main` to report `protected=true` before reading source bytes.
 It rechecks this source identity and branch protection before every Git
 object write. A missing or unprotected branch denies publication. It also
-requires GitHub's required-review endpoint to report at least one approving
-review, code-owner reviews enabled, stale approvals dismissed, and no review
-bypass allowlist. Missing permissions or unsupported private-branch rules fail
-closed. A passing API read is not a substitute for issue #904's independent
+requires GitHub's protected-branch and required-review endpoints to report
+administrator enforcement, strict nonempty required CI checks, at least one
+approving reviewer, code-owner reviews enabled, stale approvals dismissed,
+and no review bypass allowlist. Missing permissions or unsupported
+private-branch rules fail closed. A passing API read is not a substitute for issue #904's independent
 synthetic-PR demonstration that direct pushes and unreviewed merges are blocked.
 Do not turn the repository public to gain protection features.
 
