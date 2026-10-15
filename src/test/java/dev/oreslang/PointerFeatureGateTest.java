@@ -40,7 +40,16 @@ final class PointerFeatureGateTest {
     }
 
     @Test
-    void existingCopyBorrowAndTakePathsRemainAdmitted() {
+    void nominalPointerSignatureCannotBypassAdmissionGate() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(
+                        "fnc leak(Pointer<int> fake): void { return; }")));
+        assertTrue(failure.getMessage().contains("Pointer<T>"), failure::getMessage);
+    }
+
+    @Test
+    void existingCopyAndTakePathsRemainAdmitted() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub routine main(): void {
                   val int original = 7;
