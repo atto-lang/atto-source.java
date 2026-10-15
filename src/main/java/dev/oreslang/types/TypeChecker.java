@@ -1939,12 +1939,14 @@ public final class TypeChecker {
                     requirePointerTarget(operand);
                     yield new Named("Pointer", List.of(operand));
                 }
-                case "unref", "deref" -> {
+                case "deref", "unref" -> {
                     if (!(operand instanceof Named pointer) || !pointer.name().equals("Pointer")
                             || pointer.arguments().size() != 1) {
                         throw new IllegalArgumentException("rt " + runtime.operation() + " requires Pointer<T>");
                     }
-                    yield new Borrow(pointer.arguments().getFirst(), false);
+                    Type pointee = pointer.arguments().getFirst();
+                    // Deref lends a view; unref consumes the handle and transfers T.
+                    yield runtime.operation().equals("unref") ? pointee : new Borrow(pointee, false);
                 }
                 case "borrow" -> new Borrow(operand, false);
                 case "copy", "take", "share" -> operand;
