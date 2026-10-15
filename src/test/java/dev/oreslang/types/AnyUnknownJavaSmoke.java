@@ -34,7 +34,7 @@ public final class AnyUnknownJavaSmoke {
         check(!Types.isAssignable(any, integer), "Any cannot narrow to int");
         check(!Types.isAssignable(opaque, integer), "Unknown cannot narrow to int");
         check(!Types.isAssignable(opaque, any), "Unknown cannot narrow to Any");
-        check(Types.Unknown.INSTANCE != opaque, "source Unknown distinct from inference hole");
+        check(!Types.Unknown.INSTANCE.equals(opaque), "source Unknown distinct from inference hole");
         check(!Types.isAssignable(Types.Unknown.INSTANCE, integer),
                 "legacy unresolved source cannot impersonate int");
         check(!Types.isAssignable(

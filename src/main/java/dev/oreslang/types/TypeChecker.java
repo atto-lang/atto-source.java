@@ -308,6 +308,21 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
+        // Parsing ADT declarations is not evidence that variant allocation,
+        // generic payload substitution, recursive ownership, or runtime tag
+        // matching exists. Until those phases land as one verified vertical
+        // slice, fail closed even for otherwise well-formed declarations.
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.EnumDecl tagged) {
+                    throw new IllegalArgumentException(
+                            "enum '" + tagged.name() + "' is parsed but not executable: "
+                                    + "tagged constructor typechecking, runtime lowering, "
+                                    + "recursive ownership and exhaustive match parity "
+                                    + "must land before enum values can be used");
+                }
+            }
+        }
         // Local overload identity must be validated before class-shape
         // construction. Otherwise same-name/same-arity declarations whose
         // types differ can fail later as a generic structural conflict before

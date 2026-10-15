@@ -35,7 +35,7 @@ public final class Ast {
         public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) { this(name, annotations, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EnumDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -498,6 +498,40 @@ public final class Ast {
         public MethodArity {
             if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
             if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
+        }
+    }
+
+    /**
+     * Source-level algebraic sum declaration. A variant is a distinct nominal
+     * constructor; field types never imply variant identity. Positional cases
+     * use null field names, while record cases carry explicit field names.
+     * Runtime allocation/lowering is a separate backend milestone.
+     */
+    public record EnumDecl(String name, List<String> genericParameters,
+                           List<EnumVariant> variants) implements Decl {
+        public EnumDecl {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("enum needs a name");
+            genericParameters = List.copyOf(genericParameters);
+            variants = List.copyOf(variants);
+            if (variants.isEmpty()) throw new IllegalArgumentException("enum requires at least one variant");
+        }
+    }
+
+    public record EnumVariant(String name, List<EnumField> fields, boolean recordStyle) {
+        public EnumVariant {
+            if (name == null || name.isBlank() || name.equals("_")) {
+                throw new IllegalArgumentException("enum variant must have a named constructor");
+            }
+            fields = List.copyOf(fields);
+        }
+    }
+
+    public record EnumField(String name, TypeRef type) {
+        public EnumField {
+            if (type == null) throw new IllegalArgumentException("enum field requires a type");
+            if (name != null && (name.isBlank() || name.equals("_"))) {
+                throw new IllegalArgumentException("enum field name cannot be empty or _");
+            }
         }
     }
 

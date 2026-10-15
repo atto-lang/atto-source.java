@@ -4558,7 +4558,6 @@ public final class ActorRuntime implements AutoCloseable {
                 actorCount.decrementAndGet();
                 throw reservationFailure;
             }
-            ActorRef<M> ref = new ActorRef<>(id, kind);
             ActorCell<M> cell = null;
             boolean linkedToParent = false;
             boolean childControlReserved = false;
@@ -4566,7 +4565,6 @@ public final class ActorRuntime implements AutoCloseable {
                 // All potentially throwing incarnation construction belongs
                 // inside the same rollback boundary as actor registration.
                 // Otherwise generation exhaustion leaks the reserved actor slot.
-                ActorId id = ActorId.create();
                 long generation = nextActorGeneration.getAndIncrement();
                 if (generation <= 0) {
                     throw new IllegalStateException("actor generation sequence exhausted");

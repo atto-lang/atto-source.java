@@ -130,7 +130,6 @@ public final class Types {
         public Not { Objects.requireNonNull(excluded, "excluded type"); }
     }
 
-    public enum Unknown implements Type { INSTANCE }
     /**
      * A statically known Oreslang value whose concrete type is hidden from the
      * current scope. Any is NOT a dynamically unchecked operation permission.
