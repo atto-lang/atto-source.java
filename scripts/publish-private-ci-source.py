@@ -253,7 +253,51 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def git_object_hash(kind, payload):
+    # Git object identity is a hash of a length-prefixed object, not raw
+    # bytes. Compute this locally without invoking external Git commands.
+    return hashlib.sha1(kind.encode("ascii") + b" "
+                        + str(len(payload)).encode("ascii")
+                        + bytes([0]) + payload).digest()
+
+
+def snapshot_tree_sha(files):
+    """Canonical Git tree identity of the snapshot, including nested modes.
+
+    Git orders tree entries by byte names, treating directory names as if
+    they had a trailing slash. A flat sorted path list is NOT a Git tree.
+    """
+    root = {}
+    for rel, data, mode in files:
+        parts = rel.split("/")
+        node = root
+        for name in parts[:-1]:
+            existing = node.setdefault(name, {})
+            if not isinstance(existing, dict):
+                raise Denied("source snapshot has a file/directory collision")
+            node = existing
+        name = parts[-1]
+        if name in node:
+            raise Denied("source snapshot has duplicate or conflicting paths")
+        node[name] = (mode, git_object_hash("blob", data))
+
+    def digest(node):
+        records = []
+        for name, item in node.items():
+            name_bytes = name.encode("utf-8")
+            if isinstance(item, dict):
+                git_mode, object_id, sort_key = b"40000", digest(item), name_bytes + b"/"
+            else:
+                git_mode = item[0].encode("ascii")
+                object_id, sort_key = item[1], name_bytes
+            records.append((sort_key, git_mode + b" " + name_bytes
+                            + bytes([0]) + object_id))
+        return git_object_hash("tree", b"".join(data for _, data in sorted(records)))
+
+    return digest(root).hex()
+
+
+def publish(repository, source, branch, trusted_root, expected_tree=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
@@ -266,6 +310,11 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    if expected_tree is not None:
+        if not isinstance(expected_tree, str) or not SHA.fullmatch(expected_tree):
+            raise Denied("reviewed source tree SHA must be exactly 40 lowercase hex")
+        if snapshot_tree_sha(files) != expected_tree:
+            raise Denied("private source snapshot differs from reviewed exact Git tree")
     base = checked_repo(repository, expected_id=admitted_id)
     destination_id = base["id"]
     default = base.get("default_branch")
@@ -300,6 +349,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if expected_tree is not None and isolated_sha != expected_tree:
+        raise Denied("destination isolated subtree differs from reviewed exact Git tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -336,11 +387,14 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--expected-tree-sha", required=True,
+                   help="independently reviewed full Git tree SHA from source commit")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, expected_tree=args.expected_tree_sha)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
