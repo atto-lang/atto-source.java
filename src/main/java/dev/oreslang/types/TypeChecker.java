@@ -1080,7 +1080,71 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * A new actor role must never be treated as ordinary user method metadata.
+     * Until the existing source request/reply implementation is reconciled
+     * with main's actor scheduler, and network adapters supply request-scoped
+     * capabilities, reject execution rather than silently dropping the prefix.
+     */
+    private void validateExplicitActorRoleAndTransport(Ast.ClassDecl klass) {
+        if (klass.actorKind() == Ast.ActorKind.NONE) return;
+        Ast.ActorReplyRole role = klass.actorReplyRole();
+        Ast.ActorTransport transport = klass.actorTransport();
+        if (role == Ast.ActorReplyRole.INFER && transport == Ast.ActorTransport.GENERIC) return;
+
+        // Actor persistence will be exclusively inside the sealed state {}
+        // schema. Explicit new roles cannot accidentally resurrect ordinary
+        // instance fields while state lowering remains under integration.
+        if (!klass.fields().isEmpty()) {
+            throw new IllegalArgumentException("specialized actor '" + klass.name()
+                    + "' cannot declare ordinary instance fields; use sealed state {} with using/handle_state");
+        }
+
+        long localRuns = klass.methods().stream().filter(m -> !m.isStatic() && m.name().equals("run")).count();
+        long localReceives = klass.methods().stream().filter(m -> !m.isStatic() && m.name().equals("receive")).count();
+        if (localRuns > 1 || localReceives > 1 || (localRuns > 0 && localReceives > 0)) {
+            throw new IllegalArgumentException("actor '" + klass.name()
+                    + "' cannot overload or mix unary run and stream receive handlers");
+        }
+        if (role == Ast.ActorReplyRole.UNARY) {
+            if (localReceives != 0) throw new IllegalArgumentException(
+                    "unary actor '" + klass.name() + "' must declare run(...): R, not receive(...): void");
+            if (localRuns == 0 && klass.parents().isEmpty()) throw new IllegalArgumentException(
+                    "unary actor '" + klass.name() + "' requires a private run(...): R handler");
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.name().equals("run")) continue;
+                if (method.visibility() == Ast.Visibility.PUBLIC || method.isStatic()
+                        || method.isAbstract() || !method.genericParameters().isEmpty()
+                        || method.parameters().size() != 1
+                        || method.returnType().name().equals("void")) {
+                    throw new IllegalArgumentException("unary actor run must be private, concrete, "
+                            + "instance-only, non-generic, one-argument and return non-void");
+                }
+            }
+        } else if (role == Ast.ActorReplyRole.STREAM && localRuns != 0) {
+            throw new IllegalArgumentException("stream actor '" + klass.name()
+                    + "' must use receive(...): void, not run(...): R");
+        }
+        if (transport == Ast.ActorTransport.TCP || transport == Ast.ActorTransport.WEBSOCKET) {
+            if (role == Ast.ActorReplyRole.UNARY) {
+                throw new IllegalArgumentException("unary " + transport
+                        + " actors require typed request framing and correlation; not implemented");
+            }
+        }
+        if (transport != Ast.ActorTransport.GENERIC) {
+            throw new IllegalArgumentException("actor '" + klass.name() + "' declares "
+                    + transport + " transport but the runtime-bound network actor adapter "
+                    + "is not installed; listener/session dispatch is not yet supported");
+        }
+        if (role == Ast.ActorReplyRole.UNARY) {
+            throw new IllegalArgumentException("unary actor '" + klass.name()
+                    + "' requires the request/reply source runtime integration; "
+                    + "run/request cannot execute on this Java mainline yet");
+        }
+    }
+
     private void checkClassBody(String module, Ast.ClassDecl klass) {
+        validateExplicitActorRoleAndTransport(klass);
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
