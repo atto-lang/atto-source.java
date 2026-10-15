@@ -22,6 +22,8 @@ final class ControlWakeRetryQueue {
     private long releaseEpoch;
     private boolean closed;
     private long callbacksFailed;
+    // Guarded by the queue monitor: bounded affinity preference over FIFO.
+    private int consecutiveAffinityBypasses;
 
     ControlWakeRetryQueue(int capacity) {
         if (capacity < 1) throw new IllegalArgumentException("retry capacity must be positive");
@@ -76,18 +78,29 @@ final class ControlWakeRetryQueue {
      * Scan at most 16 entries per release to bound scheduler overhead.
      */
     private Runnable dequeueForLane(int lane) {
-        if (pending.isEmpty()) return null;
-        if (lane >= 0) {
+        if (pending.isEmpty()) {
+            consecutiveAffinityBypasses = 0;
+            return null;
+        }
+        // Locality is a preference, not a priority class. Without a bypass
+        // budget, a steady stream of matching-lane waiters can permanently
+        // starve the oldest supervisor even while slots are being released.
+        // Bound both search cost and head-of-line delay to 16 bypasses.
+        if (lane >= 0 && consecutiveAffinityBypasses < MAX_LANE_AFFINITY_SCAN) {
+            Retry oldest = pending.peekFirst();
             var cursor = pending.iterator();
             int inspected = 0;
             while (cursor.hasNext() && inspected++ < MAX_LANE_AFFINITY_SCAN) {
                 Retry candidate = cursor.next();
                 if (candidate.lane() == lane) {
                     cursor.remove();
+                    if (candidate == oldest) consecutiveAffinityBypasses = 0;
+                    else ++consecutiveAffinityBypasses;
                     return candidate.callback();
                 }
             }
         }
+        consecutiveAffinityBypasses = 0;
         return pending.removeFirst().callback();
     }
 
