@@ -28,6 +28,51 @@ import java.util.Set;
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
+    // Only successfully checked source graphs can enter the trusted Truffle
+    // AST handoff. BuildResult and CompiledUnit are public data records, so
+    // their constructors are not sufficient evidence of compiler admission.
+    // Weak identity keys prevent equivalent attacker-created records from
+    // impersonating an issued result, without retaining completed builds.
+    private static final java.lang.ref.ReferenceQueue<BuildResult> VERIFIED_QUEUE =
+            new java.lang.ref.ReferenceQueue<>();
+    private static final java.util.Set<VerifiedBuild> VERIFIED_BUILDS = new java.util.HashSet<>();
+
+    private static final class VerifiedBuild extends java.lang.ref.WeakReference<BuildResult> {
+        private final int identityHash;
+
+        VerifiedBuild(BuildResult build, java.lang.ref.ReferenceQueue<BuildResult> queue) {
+            super(build, queue);
+            identityHash = System.identityHashCode(build);
+        }
+
+        @Override public int hashCode() { return identityHash; }
+
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof VerifiedBuild key)) return false;
+            BuildResult build = get();
+            return build != null && build == key.get();
+        }
+    }
+
+    private static void reapVerifiedBuilds() {
+        java.lang.ref.Reference<? extends BuildResult> expired;
+        while ((expired = VERIFIED_QUEUE.poll()) != null) VERIFIED_BUILDS.remove(expired);
+    }
+
+    private static synchronized BuildResult issueCheckedBuild(BuildResult build) {
+        reapVerifiedBuilds();
+        VERIFIED_BUILDS.add(new VerifiedBuild(build, VERIFIED_QUEUE));
+        return build;
+    }
+
+    /** True only for this compiler's exact successfully validated BuildResult object. */
+    public static synchronized boolean isCheckedBuild(BuildResult build) {
+        if (build == null) return false;
+        reapVerifiedBuilds();
+        return VERIFIED_BUILDS.contains(new VerifiedBuild(build, null));
+    }
+
 
     public synchronized BuildResult compile(Map<String, String> sources) {
         return compile(sources, Map.of());
@@ -140,11 +185,11 @@ public final class IncrementalCompiler {
 
         cache.keySet().retainAll(normalized.keySet());
         cache.putAll(next);
-        return new BuildResult(
+        return issueCheckedBuild(new BuildResult(
                 Map.copyOf(next),
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
-                initializationGroups);
+                initializationGroups));
     }
 
     private record LinkedClasses(

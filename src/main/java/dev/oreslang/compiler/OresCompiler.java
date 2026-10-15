@@ -40,6 +40,10 @@ public final class OresCompiler {
 
     public static LinkedParseScope beginLinkedParse(IncrementalCompiler.BuildResult checked) {
         java.util.Objects.requireNonNull(checked, "checked link build");
+        if (!IncrementalCompiler.isCheckedBuild(checked)) {
+            throw new SecurityException(
+                    "linked parse requires an exact compiler-issued, fully validated build result");
+        }
         if (LINKED_PARSE.get() != null) throw new IllegalStateException(
                 "nested linked parse scopes are prohibited");
         MapSourceScope state = new MapSourceScope(java.util.Map.copyOf(checked.units()),

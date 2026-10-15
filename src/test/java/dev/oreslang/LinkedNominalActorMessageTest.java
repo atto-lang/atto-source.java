@@ -157,4 +157,57 @@ final class LinkedNominalActorMessageTest {
         assertTrue(built.rebuiltUnits().contains("src/main.ores"));
     }
 
+    @Test
+    void forgedOrCopiedBuildResultsCannotBypassTypeAndOwnershipAdmission() {
+        var compiler = new IncrementalCompiler();
+        var checked = compiler.compile(Map.of(
+                "src/protocol.ores", PROTOCOL,
+                "src/main.ores", ACTOR));
+        var copy = new IncrementalCompiler.BuildResult(
+                checked.units(), checked.rebuiltUnits(), checked.reusedUnits(),
+                checked.initializationGroups());
+        assertThrows(SecurityException.class,
+                () -> dev.oreslang.compiler.OresCompiler.beginLinkedParse(copy));
+
+        String invalid = "pub fnc main(): void { val int x = \"not an integer\"; return; }";
+        var invalidUnit = new IncrementalCompiler.CompiledUnit(
+                "src/invalid.ores", "test", "test", "fake", "fake", Set.of(),
+                invalid, dev.oreslang.parser.Parser.parse(invalid));
+        var unverified = new IncrementalCompiler.BuildResult(
+                Map.of("src/invalid.ores", invalidUnit), Set.of("src/invalid.ores"),
+                Set.of(), java.util.List.of(java.util.List.of("src/invalid.ores")));
+        assertThrows(SecurityException.class,
+                () -> dev.oreslang.compiler.OresCompiler.beginLinkedParse(unverified));
+        assertNull(dev.oreslang.compiler.OresCompiler.linkedProgramOrNull(
+                "src/invalid.ores", invalid));
+        try (var scope = dev.oreslang.compiler.OresCompiler.beginLinkedParse(checked)) {
+            assertNotNull(dev.oreslang.compiler.OresCompiler.linkedProgramOrNull(
+                    "src/main.ores", ACTOR));
+        }
+    }
+
+    @Test
+    void twoAliasesOfSamePublicEnumPreserveExhaustiveMatching() throws Exception {
+        String multiAlias = ACTOR.replace(
+                "import type Messages from \"./protocol.ores\";",
+                "import type Messages as First from \"./protocol.ores\";\n"
+                        + "import type Messages as Second from \"./protocol.ores\";")
+                .replace("ActorMail<Messages>", "ActorMail<First>")
+                .replace("on Messages.", "on First.")
+                .replace("worker.send(Messages.", "worker.send(Second.");
+
+        assertDoesNotThrow(() -> new IncrementalCompiler().compile(Map.of(
+                "src/protocol.ores", PROTOCOL,
+                "src/main.ores", multiAlias)));
+        Path protocol = temp.resolve("protocol.ores");
+        Path main = temp.resolve("main.ores");
+        Files.writeString(protocol, PROTOCOL);
+        Files.writeString(main, multiAlias);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), output,
+                new ByteArrayOutputStream());
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
