@@ -39,7 +39,7 @@ final class RuntimePointerTest {
 
     @Test void hostCannotManufacturePointersToCopyScalars() {
         for (Object scalar : java.util.List.of(
-                42, "text", true, java.util.UUID.randomUUID(),
+                42, "text", true, java.util.UUID.fromString("00000000-0000-0000-0000-000000000042"),
                 java.math.BigInteger.valueOf(1000))) {
             var error = assertThrows(IllegalArgumentException.class,
                     () -> new dev.oreslang.runtime.OresPointer(scalar));
