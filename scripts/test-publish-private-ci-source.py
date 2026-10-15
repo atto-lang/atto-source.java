@@ -371,14 +371,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             commit = git("rev-parse", "HEAD")
             self.assertEqual(
                 self.real_publisher_checkout(root, commit), commit)
+            # A dirty file masked by either Git index flag must never pass
+            # the byte-level protected-publisher attestation.
+            for flag, undo in (("--skip-worktree", "--no-skip-worktree"),
+                               ("--assume-unchanged", "--no-assume-unchanged")):
+                guard = root / protected[2]
+                git("update-index", flag, "--", protected[2])
+                guard.write_text("unreviewed preflight guard")
+                self.assertEqual(
+                    git("-c", "core.fsmonitor=false", "status", "--porcelain",
+                        "--untracked-files=no", "--", protected[2]),
+                    "", "Git status must be bypassed for this regression")
+                with self.assertRaisesRegex(pub.Denied, "bytes differ from HEAD"):
+                    self.real_publisher_checkout(root, commit)
+                git("update-index", undo, "--", protected[2])
+                git("reset", "--hard", "HEAD")
+                self.assertEqual(self.real_publisher_checkout(root, commit), commit)
             with self.assertRaisesRegex(pub.Denied, "not executing reviewed"):
                 self.real_publisher_checkout(root, "0" * 40)
             script = root / protected[0]
             script.write_text("unreviewed mutation")
-            with self.assertRaisesRegex(pub.Denied, "modified"):
+            with self.assertRaisesRegex(pub.Denied, "bytes differ from HEAD"):
                 self.real_publisher_checkout(root, commit)
             git("add", protected[0])
-            with self.assertRaisesRegex(pub.Denied, "modified"):
+            with self.assertRaisesRegex(pub.Denied, "bytes differ from HEAD"):
                 self.real_publisher_checkout(root, commit)
             git("reset", "--hard", "HEAD")
             (root / protected[-1]).unlink()
