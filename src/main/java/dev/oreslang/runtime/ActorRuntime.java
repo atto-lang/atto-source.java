@@ -7392,7 +7392,12 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     dispatcher.execute(dispatch);
                 }
-            } catch (RejectedExecutionException rejected) {
+            } catch (RuntimeException submissionFailure) {
+                // A non-RejectedExecutionException from a custom/host executor
+                // must release the same scheduling lease. Otherwise a failed
+                // optional CONTROL wake can leave scheduled=true forever and
+                // starve ordinary mail as well as subsequent supervision.
+                // A late callback carrying this ticket is then harmless.
                 synchronized (lifecycleLock) {
                     if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
                         scheduledDispatchToken = null;
@@ -7404,7 +7409,7 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
                 stop();
-                if (!closed.get()) throw rejected;
+                if (!closed.get()) throw submissionFailure;
             }
         }
 
