@@ -61,6 +61,7 @@ final class ControlWakeRetryQueueTest {
         // Two carrier threads pause *after* the registration lock and before
         // callback-start admission; a third must not allocate an unbounded
         // ready ticket. Cancellation must reclaim both stalled tickets.
+        for (boolean closing : new boolean[]{false, true}) {
         ControlWakeRetryQueue queue = new ControlWakeRetryQueue(2);
         long missedEpoch = queue.epoch();
         queue.slotReleased();
@@ -116,7 +117,7 @@ final class ControlWakeRetryQueueTest {
             assertEquals(0, queue.pending());
             assertFalse(queue.register(victim, missedEpoch),
                     "stalled immediate retries must have a finite admission quota");
-            queue.cancel(victim);
+            if (closing) queue.close(); else queue.cancel(victim);
             assertEquals(0, queue.directHandoffs());
             java.lang.reflect.Field tickets =
                     ControlWakeRetryQueue.class.getDeclaredField("aboutToInvoke");
@@ -134,9 +135,16 @@ final class ControlWakeRetryQueueTest {
         field.set(queue, original);
         assertNull(workerError.get(), () -> "carrier failed: " + workerError.get());
         assertEquals(0, invoked.get(), "cancelled immediate retry must not run");
-        assertTrue(queue.register(victim, missedEpoch));
-        assertEquals(1, invoked.get(), "direct handoff capacity did not recover");
+        if (closing) {
+            assertFalse(queue.register(victim, missedEpoch),
+                    "closed CONTROL queue may not re-admit a callback");
+        } else {
+            assertTrue(queue.register(victim, missedEpoch));
+            assertEquals(1, invoked.get(),
+                    "direct handoff capacity did not recover");
+        }
         assertEquals(0, queue.directHandoffs());
+        }
     }
 
     @Test void staleEpochRetryStillBypassesFullOrdinaryPendingQueue() {
