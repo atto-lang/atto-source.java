@@ -182,8 +182,16 @@ final class ControlWakeRetryQueue {
         }
         // A dequeued callback is still cancellable before the start gate;
         // removing from pending/later alone is not sufficient.
-        for (Retry ticket : aboutToInvoke) {
-            if (ticket.callback() == callback) revoke(ticket);
+        var iterator = aboutToInvoke.iterator();
+        while (iterator.hasNext()) {
+            Retry ticket = iterator.next();
+            if (ticket.callback() == callback) {
+                revoke(ticket);
+                // The carrier still owns its local ticket, whose cancellation
+                // bit it checks at the start gate; the queue need not retain
+                // another strong reference while that carrier is delayed.
+                iterator.remove();
+            }
         }
     }
 
