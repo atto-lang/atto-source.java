@@ -97,7 +97,9 @@ final class ActorPipelineRouteSession {
         ensureOpen();
         reserve(1);
         if (nextFlowId == Long.MAX_VALUE) throw new IllegalStateException("flow IDs exhausted");
-        return newFrame(nextFlowId++, List.of(source));
+        MailFrame ingress = newFrame(nextFlowId, List.of(source));
+        nextFlowId++;
+        return ingress;
     }
 
     public synchronized MailFrame forward(MailFrame current) {
