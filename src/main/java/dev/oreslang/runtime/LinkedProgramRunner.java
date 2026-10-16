@@ -67,8 +67,9 @@ public final class LinkedProgramRunner {
         entry = entry.toRealPath();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
+        LinkedHashMap<String, OresProjectConfig.ImportContext> sourceContexts = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+                sourceContexts, new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -186,8 +187,9 @@ public final class LinkedProgramRunner {
         entry = entry.toRealPath();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
+        LinkedHashMap<String, OresProjectConfig.ImportContext> sourceContexts = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+                sourceContexts, new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -375,10 +377,20 @@ public final class LinkedProgramRunner {
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions,
+            Map<String, OresProjectConfig.ImportContext> sourceContexts,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
         Path normalized = unit.toAbsolutePath().normalize();
         String id = unitId(normalized);
+        // A physical file cannot be compiled with two different @/ or pkg:
+        // namespaces. Otherwise traversal order silently changes its imports.
+        OresProjectConfig.ImportContext context = projectConfig.importContext();
+        OresProjectConfig.ImportContext previous = sourceContexts.putIfAbsent(id, context);
+        if (previous != null && !previous.equals(context)) {
+            throw new IllegalArgumentException("source unit '" + id
+                    + "' is imported from conflicting project contexts: "
+                    + previous + " versus " + context);
+        }
         if (units.containsKey(id)) return;
         // Fail before any file I/O or parsing when import recursion is too deep.
         budget.checkCanAdmitUnit(depth);
@@ -429,7 +441,7 @@ public final class LinkedProgramRunner {
                     ? projectConfig.forImportedPackage(resolvedTarget, raw)
                     : projectConfig.forImportedSource(resolvedTarget);
             collectImportClosure(resolvedTarget, units, nextConfig, importResolutions,
-                    budget, depth + 1);
+                    sourceContexts, budget, depth + 1);
         }
     }
 
