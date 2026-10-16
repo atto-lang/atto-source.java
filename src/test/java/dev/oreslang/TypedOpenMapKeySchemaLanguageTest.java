@@ -279,6 +279,22 @@ final class TypedOpenMapKeySchemaLanguageTest {
     }
 
     @Test
+    void unknownIsReservedAgainstTypeNamespaceShadowing() {
+        String[] invalid = {
+                "define class unknown as end",
+                "define interface unknown as end",
+                "type unknown = int;",
+                "fnc bad<unknown>(unknown value): unknown { return value; }",
+                "define module unknown end"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)),
+                    source);
+        }
+    }
+
+    @Test
     void runtimeUsesHardenedKeyedStorageForSchemaInstances() throws Exception {
         String source = SCHEMA + """
                 pub fnc main(): void {
