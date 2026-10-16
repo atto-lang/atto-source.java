@@ -153,3 +153,18 @@ Resetting branch references did **not** remove the Git objects: commits were
 still retrievable by SHA. Administrators must restrict public access and seek
 GitHub Support assistance for retained Git objects, Actions caches/logs, and
 other copies before resolving the incident.
+
+## Protected original-source mainline pin
+
+A source-branch-local approval is never enough. The publisher verifies the
+original private source `main` is protected, requires the configured
+app-scoped CI check and independent code-owner reviews, and pins the exact
+Git commit SHA of that protected mainline. For every attempted destination
+Git write, it verifies that main has not moved and that both the policy from
+the pinned immutable source commit and the policy from live source `main`
+match the trusted local policy bytes (including the Git blob identifier).
+
+A revoked or advanced source mainline aborts the transfer. Earlier Git objects
+might already have been created; their containment still requires a separate
+security decision. None of this authorizes private-source export while source
+main remains unprotected or the reviewed allowlist is empty.
