@@ -149,6 +149,27 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with self.assertRaisesRegex(pub.Denied, "unexportable"):
                     EXACT_VERIFIER(self.source, self.root, files, A, D)
 
+    def test_git_metadata_is_excluded_only_at_trusted_checkout_root(self):
+        marker = self.root / ".git"
+        marker.mkdir()
+        (marker / "config").write_text("PRIVATE GIT METADATA")
+        files = pub.collect_source(self.root, self.root)
+        self.assertTrue(any(path == "source/hello.ores"
+                            for path, _, _ in files))
+        self.assertFalse(any(".git" in path.split("/")
+                             for path, _, _ in files))
+        # Git metadata inside an exported subtree is never silently ignored.
+        (self.source / ".git").mkdir()
+        with self.assertRaisesRegex(pub.Denied, "nested"):
+            pub.collect_source(self.root, self.root)
+        (self.source / ".git").rmdir()
+        # Nor can the trusted root metadata itself be a symlink.
+        (marker / "config").unlink()
+        marker.rmdir()
+        marker.symlink_to(self.source, target_is_directory=True)
+        with self.assertRaisesRegex(pub.Denied, "Git metadata"):
+            pub.collect_source(self.root, self.root)
+
     def test_wrapper_requires_explicit_git_provenance(self):
         script = MODULE.with_name("run-in-private-ci-destination.sh").read_text()
         self.assertIn("source-commit", script)
