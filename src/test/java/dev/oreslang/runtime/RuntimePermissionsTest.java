@@ -94,6 +94,67 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void csvFilesystemScopesPreserveLiteralFilenameSpaces() throws Exception {
+        Path directory = Files.createTempDirectory("ores-csv-literal-");
+        Path plain = Files.writeString(directory.resolve("private"), "normal");
+        Path spaced = Files.writeString(directory.resolve("private "), "sensitive");
+        for (RuntimePermissions.Permission permission : new RuntimePermissions.Permission[] {
+                RuntimePermissions.Permission.READ,
+                RuntimePermissions.Permission.WRITE,
+                RuntimePermissions.Permission.FFI,
+                RuntimePermissions.Permission.IMPORT
+        }) {
+            RuntimePermissions.Builder allowed = new RuntimePermissions.Builder();
+            allowed.allowCsv(permission, spaced.toString());
+            assertTrue(allowed.build().allows(permission, spaced.toString()));
+            assertFalse(allowed.build().allows(permission, plain.toString()),
+                    "CSV scope dropped trailing space in filename: " + permission);
+
+            RuntimePermissions.Builder denied = new RuntimePermissions.Builder();
+            denied.allowAll(permission).denyCsv(permission, spaced.toString());
+            assertFalse(denied.build().allows(permission, spaced.toString()),
+                    "CSV deny must use the literal path: " + permission);
+            assertTrue(denied.build().allows(permission, plain.toString()));
+        }
+    }
+
+    @Test
+    void paddedWildcardIsRejectedBeforeChangingPermissionRules() {
+        for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+            for (String padded : new String[] {"* ", " *", " * "}) {
+                RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.allow(permission, padded),
+                        "padded allow wildcard " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.deny(permission, padded),
+                        "padded deny wildcard " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.allowCsv(permission, "PATH," + padded),
+                        "padded CSV allow wildcard " + permission);
+                assertThrows(IllegalArgumentException.class,
+                        () -> builder.denyCsv(permission, "PATH," + padded),
+                        "padded CSV deny wildcard " + permission);
+                assertFalse(builder.build().grantsAnything(permission),
+                        "failed wildcard parse must not grant permissions: " + permission);
+            }
+        }
+
+        RuntimePermissions.Builder staged = new RuntimePermissions.Builder();
+        staged.allowCsv(RuntimePermissions.Permission.ENV, "ALREADY_ALLOWED");
+        assertThrows(IllegalArgumentException.class,
+                () -> staged.allowCsv(RuntimePermissions.Permission.ENV, "NEW_KEY, * "));
+        assertTrue(staged.build().allows(RuntimePermissions.Permission.ENV, "ALREADY_ALLOWED"));
+        assertFalse(staged.build().allows(RuntimePermissions.Permission.ENV, "NEW_KEY"));
+
+        // Preserve intentional CSV token-list padding, without granting '*'.
+        staged.allowCsv(RuntimePermissions.Permission.ENV, " SECOND_KEY , THIRD_KEY ");
+        assertTrue(staged.build().allows(RuntimePermissions.Permission.ENV, "SECOND_KEY"));
+        assertTrue(staged.build().allows(RuntimePermissions.Permission.ENV, "THIRD_KEY"));
+        assertFalse(staged.build().allows(RuntimePermissions.Permission.ENV, "SECOND_KEY "));
+    }
+
+    @Test
     void networkHostGrantCanBeNarrowedByPortDeny() {
         RuntimePermissions permissions = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "example.com")
