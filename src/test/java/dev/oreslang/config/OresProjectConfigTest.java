@@ -375,4 +375,25 @@ final class OresProjectConfigTest {
                 config.resolveImport(nested.resolve("main.ores"), "@/root").orElseThrow());
     }
 
+
+    @Test
+    void rootAndEntrypointWrongTomlTypesFailClosed() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [project]
+                root = 123
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [entrypoints]
+                main = ["src/main.ores"]
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+    }
+
 }
