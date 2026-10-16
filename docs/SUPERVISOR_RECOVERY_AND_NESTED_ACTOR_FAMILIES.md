@@ -111,3 +111,16 @@ Compiler-owned supervisor identities, guest CONTROL callbacks, resource quotas
 for nested hierarchies, policy hot-upgrade fencing and native parity are release
 gates. Typechecker `Sendable` data mailboxes and `Serializable<MessagePack>`
 network codecs are distinct from runtime-authenticated CONTROL notices.
+
+### CONTROL consumer exclusivity (2026-10-16 follow-up)
+
+The first creator-actor `pollSupervisorNotice()` call **permanently claims** that
+supervisor's CONTROL queue for actor polling, including an empty poll. A later
+host `installSupervisorProcess()` or failure handler registration must reject.
+Likewise, after host policy installation, actor polling must reject. The runtime
+must never split ordered terminal notices between competing actor and host
+consumers or silently change failure policy after actor admission. The queue
+retains its bounded capacity and no user payload is admitted as a CONTROL
+notice. Verified by 1,000 adversarial Java consumer-claim races in a focused
+SHA-verified host-substrate test; full nested actor JUnit remains a separate
+release gate.
