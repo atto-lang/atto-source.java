@@ -752,4 +752,28 @@ final class NominalInheritedMethodSlotsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> dev.oreslang.types.TypeChecker.checkTypes(program));
     }
+
+    @Test
+    void abstractSubclassCannotPretendToBeConcreteVirtualReceiver() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 1; }
+                    pub pick(Mode value): int { return 2; }
+                end
+                define abstract class AbstractChild extends Base as
+                    pub pick(Color value): int { return 3; }
+                end
+                define class ConcreteChild extends AbstractChild as
+                end
+                """);
+        var bound = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        var denied = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.resolveVirtual(
+                        program, bound, "AbstractChild"));
+        assertTrue(denied.getMessage().contains("abstract class"), denied::getMessage);
+        assertEquals("AbstractChild", NominalInheritedMethodSlots.resolveVirtual(
+                program, bound, "ConcreteChild").owner().name());
+    }
 }
