@@ -62,7 +62,7 @@ public final class NioReadinessGroup implements AutoCloseable {
             try { first.start(); }
             catch (RuntimeException | Error problem) {
                 reactors.clear();
-                first.requestStop();
+                first.abortUnstarted();
                 throw problem;
             }
         }
@@ -95,15 +95,21 @@ public final class NioReadinessGroup implements AutoCloseable {
                 consecutiveCommandPressure = 0;
             }
             if (consecutiveCommandPressure >= 8 && reactors.size() < maxReactors) {
+                Reactor extra = null;
                 try {
-                    Reactor extra = new Reactor(reactors.size());
+                    extra = new Reactor(reactors.size());
                     extra.start();
                     reactors.add(extra);
                     target = extra;
                     consecutiveCommandPressure = 0;
-                } catch (IOException | RuntimeException ignored) {
-                    // Best effort throughput expansion. Existing reactor still
-                    // handles the bounded work or rejects it explicitly.
+                } catch (IOException | RuntimeException | Error failure) {
+                    // Thread startup can fail after a selector was opened.
+                    // Never leak that kernel descriptor when the optional
+                    // expansion fails. Existing reactors can still serve or
+                    // explicitly reject the bounded request.
+                    if (extra != null) extra.abortUnstarted();
+                    if (failure instanceof VirtualMachineError fatal) throw fatal;
+                    if (failure instanceof ThreadDeath fatal) throw fatal;
                 }
             }
             if (target.stopping.get())
@@ -166,6 +172,15 @@ public final class NioReadinessGroup implements AutoCloseable {
                     .name("ores-nio-reactor-" + index).unstarted(this);
         }
         void start() { thread.start(); }
+        // Only for a reactor whose Thread.start() failed. Never called after
+        // a successful start, because the live loop owns selector closure.
+        void abortUnstarted() {
+            if (thread.getState() != Thread.State.NEW)
+                throw new IllegalStateException("reactor was already started");
+            stopping.set(true);
+            try { selector.close(); } catch (IOException ignored) { }
+            stopped.countDown();
+        }
         void requestStop() { stopping.set(true); selector.wakeup(); }
 
         void retire(Watch watch, Integer events, Throwable error) {
