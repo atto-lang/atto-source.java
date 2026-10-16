@@ -7858,6 +7858,11 @@ public final class TypeChecker {
             Map<String, Ast.TypeRef> metadata = namedTypeParameters(ref);
             validateCollectionMetadata("Tuple", metadata);
             List<Ast.TypeRef> elements = positionalTypeArguments(ref);
+            if (elements.stream().anyMatch(Ast.TypeRef::isOmittableTupleSlot)) {
+                throw new IllegalArgumentException(
+                        "omittable tuple-tail syntax is parsed but not yet executable; "
+                                + "requires checked tuple-view, Option and call ABI lowering");
+            }
             validateFixedExtentMetadata("Tuple", metadata, elements.size());
             return new Tuple(elements.stream()
                     .map(element -> resolve(element, generics, self, allowNullMarker))
