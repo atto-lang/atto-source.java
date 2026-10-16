@@ -6523,7 +6523,16 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static ExecutorService newActorDispatcher(int parallelism, int capacity, String prefix) {
         String mode = System.getProperty("ores.actor.affinity", "lane").trim();
-        if (mode.equals("none")) return newDispatcher(parallelism, capacity, prefix);
+        if (mode.equals("none")) {
+            // Non-affine actor domains can admit independent runnable actor
+            // turns on demand. Physical single-flight per actor is unchanged.
+            int max = Integer.getInteger("ores.actor.dispatch.max.parallelism", 20);
+            if (max < parallelism || max > 256) {
+                throw new IllegalArgumentException(
+                        "ores.actor.dispatch.max.parallelism must be between domain minimum and 256");
+            }
+            return newDispatcher(parallelism, max, capacity, prefix);
+        }
         if (!mode.equals("lane") && !mode.equals("cpu")) {
             throw new IllegalArgumentException("ores.actor.affinity must be lane, cpu, or none");
         }
@@ -6534,12 +6543,16 @@ public final class ActorRuntime implements AutoCloseable {
             cpus = java.util.Arrays.stream(configured.split(",", -1))
                     .map(String::trim).mapToInt(Integer::parseInt).toArray();
         }
+        // A pinned/soft-affine actor lane must never silently create another
+        // executing worker for that lane. Scaling lanes needs a placement
+        // migration contract; preserve their existing one-carrier semantics.
         return new ActorAffinityDispatcher(parallelism, capacity, cpus,
-                lane -> newDispatcher(1, capacity, prefix + "lane-" + lane + "-"));
+                lane -> newDispatcher(1, 1, capacity, prefix + "lane-" + lane + "-"));
     }
 
     private static ExecutorService newDispatcher(
             int parallelism,
+            int maximumParallelism,
             int readyQueueCapacity,
             String threadPrefix) {
         String requested = System.getProperty(CARRIER_BACKEND_PROPERTY, "auto")
@@ -6559,6 +6572,9 @@ public final class ActorRuntime implements AutoCloseable {
                         "native Oreslang carriers currently require Linux or macOS");
             }
             try {
+                // NativeCarrierExecutor preallocates its pthread capacity.
+                // Distinct lazy growth and demand admission for native carriers
+                // is a separate JNI rework; do NOT claim dynamic native growth.
                 return new NativeCarrierExecutor(
                         parallelism,
                         parallelism,
@@ -6575,17 +6591,12 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(
-                parallelism,
-                parallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity),
-                namedFactory(threadPrefix),
-                new ThreadPoolExecutor.AbortPolicy());
-        // JVM workers are a portability fallback, not the preferred Oreslang
-        // runtime backend. They are created lazily on first scheduled turn.
-        return executor;
+        // JVM fallback has bounded, demand-driven expansion when CPU/soft
+        // actor lane affinity is explicitly disabled. Other domains retain
+        // their own queues and actor physical execution leases.
+        return new AdaptiveCarrierExecutor(
+                parallelism, maximumParallelism, readyQueueCapacity,
+                namedFactory(threadPrefix));
     }
 
     private static boolean isNativeCarrierPlatform() {
