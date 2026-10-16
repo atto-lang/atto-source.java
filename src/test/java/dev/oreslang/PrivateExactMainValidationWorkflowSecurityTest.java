@@ -125,6 +125,42 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }
     }
 
+    @Test
+    void exactMainNativeStagesMustBuildFreshImagesBeforeGuestSmoke() throws Exception {
+        String workflow = Files.readString(WORKFLOW);
+        String[] profiles = {"native-aot", "native-hybrid", "native-isolate"};
+        String[] stages = {
+                "Native AOT image and compiled guest smoke",
+                "Native hybrid image and compiled guest smoke",
+                "Strict polyglot isolate and compiled guest smoke"
+        };
+        for (int i = 0; i < stages.length; i++) {
+            String start = "      - name: " + stages[i] + "\n";
+            String stage = i < stages.length - 1
+                    ? section(workflow, start, "      - name: " + stages[i + 1] + "\n")
+                    : workflow.substring(workflow.indexOf(start));
+            String command = "mvn -B -ntp -P" + profiles[i] + " -DskipTests clean package";
+            assertEquals(1L, stage.lines()
+                    .filter(line -> line.equals("          " + command)).count(),
+                    "the exact-main native profile must build exactly once from clean output");
+            assertTrue(stage.indexOf(command) < stage.indexOf("timeout 180s"),
+                    "a clean native image must be built before any guest execution");
+            assertFalse(stage.contains("-DskipTests package"),
+                    "incremental package risks executing stale native artifacts");
+
+            String disabled = stage.replace("          " + command,
+                    "          # " + command);
+            assertFalse(disabled.lines()
+                    .anyMatch(line -> line.equals("          " + command)),
+                    "commented-out clean image compilation is not executable evidence");
+            String stale = stage.replace("          " + command,
+                    "          " + command.replace("clean ", ""));
+            assertFalse(stale.lines()
+                    .anyMatch(line -> line.equals("          " + command)),
+                    "an incremental build must be rejected by the review contract");
+        }
+    }
+
     /** Extract the actual YAML job property at exactly four-space indentation. */
     @Test
     void disguisedOrDuplicatedAdmissionConditionsAreNotAccepted() throws Exception {
