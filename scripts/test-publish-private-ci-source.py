@@ -534,6 +534,77 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     self.publish()
                 self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
+    def test_unprotected_original_source_main_rejects_export(self):
+        self.main_protected = False
+        with self.assertRaisesRegex(pub.Denied, "main is not protected"):
+            self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_unreviewed_local_policy_is_not_original_main_approval(self):
+        # The local branch may name the destination, but protected original
+        # main must contain exactly the same reviewed approval bytes.
+        self.approval.write_text("trusted/ci\n# unreviewed local edit\n")
+        with self.assertRaisesRegex(pub.Denied, "differs from protected"):
+            self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_protected_main_policy_metadata_must_be_verifiable(self):
+        original = self.fake_api
+        for mutation in (
+                {"type": "symlink", "encoding": "base64", "content": ""},
+                {"type": "file", "encoding": "none", "content": ""},
+                {"type": "file", "encoding": "base64", "content": "not valid !"},
+                {"type": "file", "encoding": "base64", "content":
+                 base64.b64encode(self.main_policy).decode(), "sha": B}):
+            with self.subTest(mutation=mutation):
+                self.route_calls.clear()
+                def fake(route, method="GET", payload=None):
+                    if "/contents/.github/private-ci-approved-repositories.txt?" in route:
+                        return mutation
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=fake):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
+    def test_protected_main_changes_during_transfer_abort_further_writes(self):
+        original = self.fake_api
+        def rotate_main_after_first_blob(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if method == "POST" and route == "repos/trusted/ci/git/blobs":
+                self.main_sha = B
+            return response
+        with patch.object(pub, "gh_api", side_effect=rotate_main_after_first_blob):
+            with self.assertRaisesRegex(pub.Denied, "source main changed"):
+                pub.publish("trusted/ci", self.source,
+                            "ci/oreslang-test", self.root)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+
+    def test_remote_main_policy_verifier_rejects_malformed_branch(self):
+        original = self.fake_api
+        for invalid in (
+                {"protected": False, "commit": {"sha": A}},
+                {"protected": True, "commit": None},
+                {"protected": True, "commit": {"sha": "invalid"}}):
+            with self.subTest(invalid=invalid):
+                self.route_calls.clear()
+                def fake(route, method="GET", payload=None):
+                    if route == "repos/" + pub.SOURCE_REPOSITORY + "/branches/main":
+                        return invalid
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=fake):
+                    with self.assertRaises(pub.Denied):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root)
+                self.assertFalse(any(method == "POST"
+                                     for method, _, _ in self.route_calls))
+
     def test_source_repo_id_mismatch_refuses_private_export(self):
         self.source_ids = [987654321]
         with self.assertRaisesRegex(pub.Denied, "numeric identity"):
