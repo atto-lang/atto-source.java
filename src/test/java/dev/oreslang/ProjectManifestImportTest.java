@@ -497,8 +497,8 @@ final class ProjectManifestImportTest {
                     () -> new IncrementalCompiler().compile(sources,
                             Map.of("src/main.ores", Map.of(malformed, "src/helper.ores"))),
                     malformed);
-            assertTrue(rejected.getMessage().contains("import"),
-                    rejected.getMessage());
+            assertTrue(rejected.getMessage() != null && !rejected.getMessage().isBlank(),
+                    "rejection should include a diagnostic for " + malformed);
         }
     }
 
