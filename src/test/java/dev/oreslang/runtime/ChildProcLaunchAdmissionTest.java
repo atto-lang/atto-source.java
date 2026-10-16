@@ -195,4 +195,28 @@ final class ChildProcLaunchAdmissionTest {
         }
     }
 
+    @Test
+    void preparedProcessBuilderCannotInheritHostEnvironment() throws Exception {
+        var spec = new ChildProcLaunchAdmission.Spec(
+                javaExecutable(), List.of("-version"), cwd(), Map.of());
+        var plan = ChildProcLaunchAdmission.admit(spec, allow());
+        ProcessBuilder builder = ChildProcLaunchAdmission.newProcessBuilder(plan);
+        assertEquals(Map.of(), builder.environment());
+        assertEquals(plan.argv(), builder.command());
+        assertEquals(plan.cwd().toFile(), builder.directory());
+        assertFalse(builder.redirectErrorStream());
+    }
+
+    @Test
+    void preparedProcessBuilderUsesOnlyExplicitAuthorizedEnvironmentAndPipedStdio() throws Exception {
+        var spec = new ChildProcLaunchAdmission.Spec(
+                javaExecutable(), List.of("-version"), cwd(), Map.of("APP_SAFE", "value"));
+        var plan = ChildProcLaunchAdmission.admit(spec, allow());
+        ProcessBuilder builder = ChildProcLaunchAdmission.newProcessBuilder(plan);
+        assertEquals(Map.of("APP_SAFE", "value"), builder.environment());
+        assertEquals(ProcessBuilder.Redirect.PIPE, builder.redirectInput());
+        assertEquals(ProcessBuilder.Redirect.PIPE, builder.redirectOutput());
+        assertEquals(ProcessBuilder.Redirect.PIPE, builder.redirectError());
+    }
+
 }
