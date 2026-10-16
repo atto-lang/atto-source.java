@@ -170,6 +170,14 @@ This check is embedded in the reviewed workflow definition rather than loaded as
 from the untrusted candidate source checkout. The administrator's isolated runner
 must provide `python3` in addition to Java, GraalVM and Maven.
 
+Both trusted **focused** Maven stages (Future/channel exact-main and
+permissions exact-candidate) now execute `mvn ... clean test`, not incremental
+`mvn ... test`. Clearing Surefire XML alone is insufficient: a checkout can
+contain committed or pre-existing `target/classes` or `target/test-classes`
+which would otherwise invalidate exact-source testing. A fresh Maven target
+ensures the compiled classes and reports correspond to the approved checkout,
+subject to the separately audited Maven build configuration.
+
 The full Java 25 `verify` stage uses `mvn ... -DskipTests=false
 -Dmaven.test.skip=false clean verify` to discard focused-only reports and
 rebuild from scratch. A separate trusted Surefire verifier then requires
