@@ -694,4 +694,53 @@ final class OresProjectConfigTest {
         assertEquals(project.toAbsolutePath().normalize(),
                 OresProjectConfig.load(selected, Map.of()).projectRoot());
     }
+
+    @Test
+    void rootedImportsMustNotCrossNestedPackageBoundary() throws Exception {
+        Path project = temp.resolve("root-boundary");
+        Path nested = project.resolve("nested");
+        Files.createDirectories(nested.resolve("lib"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(nested.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path nestedSource = Files.writeString(nested.resolve("lib/helper.ores"),
+                "pub fnc helper():int {return 42;}\n");
+        OresProjectConfig outer = OresProjectConfig.discover(
+                project.resolve("main.ores"), Map.of());
+        IllegalArgumentException crossing = assertThrows(IllegalArgumentException.class,
+                () -> outer.resolveImport(project.resolve("main.ores"),
+                        "+/nested/lib/helper"));
+        assertTrue(crossing.getMessage().contains("nested package boundary"));
+
+        OresProjectConfig inner = outer.forImportedSource(nestedSource);
+        assertEquals(nestedSource.toRealPath(),
+                inner.resolveImport(nestedSource, "+/lib/helper").orElseThrow());
+    }
+
+    @Test
+    void brokenNestedManifestShadowsParentRatherThanFallingBack() throws Exception {
+        Path project = temp.resolve("shadowed-root");
+        Path nested = project.resolve("nested");
+        Files.createDirectories(nested);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path childManifest = nested.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        try {
+            Files.createSymbolicLink(childManifest, project.resolve("absent-manifest.toml"));
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        Path nestedSource = nested.resolve("main.ores");
+        IllegalArgumentException dangling = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(nestedSource, Map.of()));
+        assertTrue(dangling.getMessage().contains("not a regular file"));
+        Files.delete(childManifest);
+        Files.createDirectory(childManifest);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(nestedSource, Map.of()));
+        Files.delete(childManifest);
+        assertEquals(project.toAbsolutePath().normalize(),
+                OresProjectConfig.discover(nestedSource, Map.of()).projectRoot());
+    }
 }
