@@ -49,8 +49,8 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
                 || value instanceof Character || value instanceof Byte
                 || value instanceof Short || value instanceof Integer
                 || value instanceof Long || value instanceof Float
-                || value instanceof Double || value instanceof BigInteger
-                || value instanceof BigDecimal || value instanceof PersistentActorMap) {
+                || value instanceof Double || value.getClass() == BigInteger.class
+                || value.getClass() == BigDecimal.class || value instanceof PersistentActorMap) {
             return;
         }
         throw new IllegalArgumentException(
