@@ -403,7 +403,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }) {
             assertTrue(proof.contains(executable), "missing fail-closed assertion: " + executable);
         }
-        assertTrue(proof.contains("root.iter(\"testcase\")"));
+        assertTrue(proof.contains("root.findall(\"testcase\")"));
         assertTrue(hasExactLine(proof, 10,
                 "report_dir = Path(\"target/surefire-reports\")"),
                 "proof must use the single-module Maven output, not candidate fixtures");
