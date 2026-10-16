@@ -475,8 +475,19 @@ final class ProjectManifestImportTest {
         Files.writeString(src.resolve("local.ores"), """
                 pub fnc local() : string { return "local:"; }
                 """);
+        Files.writeString(external.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "tools"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(external.resolve("src/internal.ores"), """
+                pub fnc internal() : string { return "zed"; }
+                """);
         Files.writeString(external.resolve("src/remote.ores"), """
-                pub fnc remote() : string { return "zed"; }
+                import fnc internal from "@/src/internal";
+                pub fnc remote() : string { return internal(); }
                 """);
         try {
             Files.createSymbolicLink(project.resolve("zed_modules/acme/tools"), external);
@@ -499,7 +510,7 @@ final class ProjectManifestImportTest {
                 IsolatePolicy.developer(),
                 ExecutionProfile.serverJit(),
                 Set.of(), Map.of(), out, new ByteArrayOutputStream());
-        assertEquals(3, build.units().size());
+        assertEquals(4, build.units().size());
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("local:zed"));
     }
 
