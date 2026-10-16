@@ -634,10 +634,10 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
 
+            // Mailbox delivery alone can enter this trusted dispatch slot.
             Object result =
-                    invoke(methodInvocation(
-                            state.object(),
-                            receive,
+                    invoke(new Invocation(
+                            this, InvocationKind.METHOD, state.object(), receive,
                             List.of(mail)));
             if (result != null) {
                 throw new IllegalStateException(
@@ -804,6 +804,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("receive")) {
+                throw new SecurityException(
+                        "actor receive can only be invoked by the mailbox runtime");
+            }
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
 
@@ -4378,12 +4383,8 @@ public final class OresEvalRootNode extends RootNode {
                                 object.klass,
                                 CallableSelector.instance(member.member(), args.size()));
                 if (method != null) {
-                    object.owner.requireClassMemberVisible(
-                            method.visibility(),
-                            object.owner.declaringClass(method),
-                            env.accessClass(),
-                            "method",
-                            method.name());
+                    object.owner.requireInstanceMethodCallable(
+                            object, method, env.accessClass());
                     return object.owner.methodInvocation(
                             object,
                             method,
@@ -5827,12 +5828,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
-                        object.owner.requireClassMemberVisible(
-                                method.visibility(),
-                                object.owner.declaringClass(method),
-                                env.accessClass(),
-                                "method",
-                                method.name());
+                        object.owner.requireInstanceMethodCallable(
+                                object, method, env.accessClass());
                         return object.owner.methodInvocation(object, method, args);
                     }
 
@@ -5894,12 +5891,8 @@ public final class OresEvalRootNode extends RootNode {
                     Ast.MethodDecl method = object.owner.findMethod(
                             object.klass, CallableSelector.instance(methodCall.member(), args.size()));
                     if (method != null) {
-                        object.owner.requireClassMemberVisible(
-                                method.visibility(),
-                                object.owner.declaringClass(method),
-                                env.accessClass(),
-                                "method",
-                                method.name());
+                        object.owner.requireInstanceMethodCallable(
+                                object, method, env.accessClass());
                         return object.owner.methodInvocation(object, method, args);
                     }
                 }
@@ -7117,6 +7110,13 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE && name.equals("receive")) {
+                        throw new SecurityException("actor receive cannot be referenced by user code");
+                    }
+                    if (object.owner.hasPrivateAbstractSlotNamed(
+                            object.klass, name, new LinkedHashSet<>())) {
+                        throw new SecurityException("private abstract method cannot be captured as a method value");
+                    }
                     return new BoundMethod(object, name, env == null ? null : env.accessClass());
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
@@ -7365,7 +7365,7 @@ public final class OresEvalRootNode extends RootNode {
             CallableSelector selector = CallableSelector.instance(name, args.size());
             Ast.MethodDecl method = findMethod(receiver.klass, selector);
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            requireClassMemberVisible(method.visibility(), declaringClass(method), accessClass, "method", name);
+            requireInstanceMethodCallable(receiver, method, accessClass);
             if (!method.genericParameters().isEmpty()) throw new IllegalArgumentException("generic method values require direct-call specialization");
             return methodInvocation(receiver, method, args);
         }
@@ -7882,6 +7882,61 @@ public final class OresEvalRootNode extends RootNode {
                         "cannot find declaring class for method '" + method.name() + "'");
             }
             return owner;
+        }
+
+        private Ast.ClassDecl privateAbstractSlotOwner(
+                Ast.ClassDecl klass, CallableSelector selector, Set<Ast.ClassDecl> visited) {
+            if (!visited.add(klass)) return null;
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.isAbstract()
+                        && method.visibility() == Ast.Visibility.PRIVATE
+                        && selector.matches(method)) return klass;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                Ast.ClassDecl owner = privateAbstractSlotOwner(parent, selector, visited);
+                if (owner != null) return owner;
+            }
+            return null;
+        }
+
+        private boolean hasPrivateAbstractSlotNamed(
+                Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> visited) {
+            if (!visited.add(klass)) return false;
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.isAbstract()
+                        && method.visibility() == Ast.Visibility.PRIVATE
+                        && method.name().equals(name)) return true;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null && hasPrivateAbstractSlotNamed(parent, name, visited)) return true;
+            }
+            return false;
+        }
+
+        private void requireInstanceMethodCallable(
+                OresObject receiver, Ast.MethodDecl method, Ast.ClassDecl accessClass) {
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("receive")) {
+                throw new SecurityException("actor receive can only be invoked by the mailbox runtime");
+            }
+            Ast.ClassDecl origin = privateAbstractSlotOwner(
+                    receiver.klass,
+                    CallableSelector.instance(method.name(), method.arity()),
+                    new LinkedHashSet<>());
+            if (origin != null) {
+                if (accessClass != origin) {
+                    throw new SecurityException("private abstract method '"
+                            + origin.name() + "." + method.name()
+                            + "' is callable only by its declaring superclass");
+                }
+            } else {
+                requireClassMemberVisible(
+                        method.visibility(), declaringClass(method), accessClass,
+                        "method", method.name());
+            }
         }
 
         private void requireClassMemberVisible(
