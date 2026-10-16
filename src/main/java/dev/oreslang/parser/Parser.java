@@ -3101,8 +3101,12 @@ public final class Parser {
      */
     private Ast.Expr parsePipeline() {
         Ast.Expr value = parseConditional();
+        int stages = 0;
         while (match(PIPE_FORWARD)) {
             Token operator = previous();
+            if (++stages > 128) {
+                throw error(operator, "pipeline exceeds 128 stages");
+            }
             Ast.Expr stage = parsePostfix();
             if (stage instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr member
