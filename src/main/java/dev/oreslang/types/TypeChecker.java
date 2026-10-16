@@ -4938,7 +4938,18 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
-        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            // Only bool, signed i64, f64 and UTF-8 string currently have
+            // portable scalar DATA codecs. Source width/finiteness must still
+            // be validated by the compiler-owned descriptor and encoder.
+            if (primitive != Primitive.INT && primitive != Primitive.FLOAT
+                    && primitive != Primitive.BOOL && primitive != Primitive.STRING) {
+                throw new IllegalArgumentException(where + " has no proven portable actor DATA codec for "
+                        + primitive + "; explicit validated serialization is required");
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
             return;
@@ -5012,7 +5023,14 @@ public final class TypeChecker {
                         + named.name() + " to have exactly " + expected
                         + " type argument(s) at an actor DATA boundary");
             }
-            return;
+            // Type arguments alone are not a runtime codec. The interpreter
+            // currently has private Option/Result values which cannot be
+            // transported by the generic actor freezer/MessagePack subset.
+            // Gate compiler admission on a verified, registered tagged-value
+            // DATA codec rather than silently accepting a nominal spelling.
+            throw new IllegalArgumentException(where + " cannot transport "
+                    + named.name() + " in actor DATA until a verified tagged-value"
+                    + " mailbox codec is registered for the recipient");
         }
 
         Ast.ClassDecl klass = findClass(named.name());
