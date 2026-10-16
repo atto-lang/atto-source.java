@@ -529,4 +529,62 @@ final class OresProjectConfigTest {
         assertTrue(config.resolveImport(importer, "../.hidden/missing").isEmpty());
     }
 
+
+    @Test
+    void explicitEntryManifestAndRootOverridesDoNotLeakIntoNestedPackages() throws Exception {
+        Path project = temp.resolve("overridden");
+        Path entry = project.resolve("src/main.ores");
+        Path nested = project.resolve("src/nested");
+        Files.createDirectories(nested);
+        Files.writeString(entry, "pub fnc main(): void { return; }");
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "outer"
+                """);
+        Files.writeString(nested.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "inner"
+                """);
+        Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Map<String, String> overrides = Map.of(
+                OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString(),
+                OresProjectConfig.ENV_ORES_PROJECT_ROOT, project.toString());
+        OresProjectConfig config = OresProjectConfig.discover(entry, overrides);
+        assertEquals(project.toAbsolutePath().normalize(), config.projectRoot());
+        assertEquals("outer", config.projectName().orElseThrow());
+
+        Path nestedSource = nested.resolve("child.ores");
+        Files.writeString(nestedSource, "pub fnc child(): int { return 1; }");
+        OresProjectConfig child = config.forImportedSource(nestedSource);
+        assertEquals(nested.toAbsolutePath().normalize(), child.projectRoot());
+        assertEquals("inner", child.projectName().orElseThrow());
+    }
+
+    @Test
+    void invalidEntryRootOverridesFailClosed() throws Exception {
+        Path project = temp.resolve("explicit-root-errors");
+        Path unrelated = temp.resolve("unrelated-root");
+        Files.createDirectories(project.resolve("src"));
+        Files.createDirectories(unrelated);
+        Path main = project.resolve("src/main.ores");
+        Files.writeString(main, "pub fnc main(): void { return; }");
+        Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, "schema_version = \\"1\\"\\n");
+
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(main,
+                Map.of(OresProjectConfig.ENV_ORES_PROJECT_ROOT, "")));
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(main,
+                Map.of(OresProjectConfig.ENV_ORES_MANIFEST_PATH, "")));
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(main,
+                Map.of(OresProjectConfig.ENV_ORES_MANIFEST_PATH, project.resolve("other.toml").toString())));
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(main,
+                Map.of(OresProjectConfig.ENV_ORES_PROJECT_ROOT, unrelated.toString())));
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(main,
+                Map.of(OresProjectConfig.ENV_ORES_PROJECT_ROOT, unrelated.toString(),
+                        OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString())));
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(unrelated.resolve("other.ores"),
+                Map.of(OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString())));
+    }
 }
