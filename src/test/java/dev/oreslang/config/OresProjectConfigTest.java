@@ -221,4 +221,46 @@ final class OresProjectConfigTest {
         assertTrue(invalid.getMessage().contains("invalid zed-pkg identifier"));
     }
 
+
+    @Test
+    void respectsZedInstallDirectoryFromZpkgManifest() throws Exception {
+        Path project = temp.resolve("custom-zed-install");
+        Path installed = project.resolve(".vendor/.zed/acme/math");
+        Files.createDirectories(installed.resolve("lib"));
+        Files.writeString(installed.resolve("lib/math.ores"), "pub fnc math() : int { return 1; }");
+        Files.writeString(project.resolve(".zpkg.toml"), """
+                [package]
+                org = "acme"
+                name = "consumer"
+                version = "0.1.0"
+                [install]
+                dir = ".vendor/.zed"
+                """);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                math = "acme/math"
+                """);
+        OresProjectConfig config = OresProjectConfig.discover(project.resolve("src/main.ores"), Map.of());
+        assertEquals(installed.resolve("lib/math.ores").toRealPath(),
+                config.resolveImport(project.resolve("src/main.ores"), "pkg:math/lib/math").orElseThrow());
+    }
+
+    @Test
+    void rejectsZedInstallDirectoryTraversal() throws Exception {
+        Path project = temp.resolve("zed-traversal");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve(".zpkg.toml"), """
+                [install]
+                dir = "../outside"
+                """);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                math = "acme/math"
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(project.resolve("main.ores"), Map.of()));
+    }
+
 }
