@@ -1183,8 +1183,8 @@ final class MethodOverloadTest {
                 end
                 pub routine main(): void {
                   val c = new m.C();
-                  c.pick(3);
-                  c.pick(3);
+                  stdio.stdout.write(c.pick(3));
+                  stdio.stdout.write(c.pick(3));
                 }
                 """));
         var bindings = checked.boundMethodCalls();
