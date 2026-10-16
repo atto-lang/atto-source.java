@@ -147,7 +147,14 @@ public final class OresProjectConfig {
             // +/ must always bind the nearest package manifest, even when a
             // legacy compiler config exists in a lower source directory.
             Path packageManifest = cursor.resolve(PACKAGE_MANIFEST_NAME);
-            if (Files.isRegularFile(packageManifest)) {
+            // Even an invalid package marker must shadow ancestor package
+            // roots. Falling back through a dangling symlink or directory
+            // silently changes what +/ and pkg: imports are authorized to see.
+            if (Files.exists(packageManifest, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isRegularFile(packageManifest)) {
+                    throw new IllegalArgumentException(
+                            "nearest package manifest is not a regular file: " + packageManifest);
+                }
                 return load(packageManifest, environment).withDiscoveryBoundary(physicalBoundary);
             }
             Path legacyManifest = cursor.resolve(MANIFEST_NAME);
@@ -517,6 +524,19 @@ public final class OresProjectConfig {
             if (!resolved.get().startsWith(physicalRoot)) {
                 throw new IllegalArgumentException(
                         "rooted import escapes physical package root: " + importPath);
+            }
+            // A parent package must not import into a child package through
+            // +/ or pkg: and thereby bypass that child's own resolver context.
+            // Check the canonical path, including symlink aliases that land
+            // in a nested package.
+            for (Path parent = resolved.get().getParent();
+                    parent != null && !parent.equals(physicalRoot);
+                    parent = parent.getParent()) {
+                if (Files.exists(parent.resolve(PACKAGE_MANIFEST_NAME),
+                        java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IllegalArgumentException(
+                            "rooted import crosses nested package boundary: " + importPath);
+                }
             }
         }
         return resolved;
