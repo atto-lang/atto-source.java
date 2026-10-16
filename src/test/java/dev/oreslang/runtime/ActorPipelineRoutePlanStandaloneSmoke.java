@@ -268,6 +268,61 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
             check(rejectedSource.getMessage().contains("source has no connected"),
                     "key validation ran before source routing admission");
         }
+        var identityStages = List.of(
+                new ActorPipelineRoutePlan.Stage(
+                        "a:b", "Producer", ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                new ActorPipelineRoutePlan.Stage(
+                        "a", "Producer", ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                new ActorPipelineRoutePlan.Stage(
+                        "c", "Sink", ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""),
+                new ActorPipelineRoutePlan.Stage(
+                        "b:c", "Sink", ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""));
+        var identityEdges = List.of(
+                new ActorPipelineRoutePlan.Edge("a:b", "c", "Event"),
+                new ActorPipelineRoutePlan.Edge("a", "b:c", "Event"));
+        var identityPlan = new ActorPipelineRoutePlan(identityStages, identityEdges);
+        check(identityPlan.forward("a:b").target().equals("c")
+                        && identityPlan.forward("a").target().equals("b:c"),
+                "delimiter-bearing endpoint tuples collided");
+        rejects(() -> new ActorPipelineRoutePlan(identityStages,
+                List.of(identityEdges.get(0), identityEdges.get(1), identityEdges.get(0))),
+                "duplicated endpoint pair accepted");
+        var composed = List.of(
+                new ActorPipelineRoutePlan.Stage(
+                        "é", "P", ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                new ActorPipelineRoutePlan.Stage(
+                        "e\u0301", "P", ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                identityStages.get(2), identityStages.get(3));
+        var composedEdges = List.of(
+                new ActorPipelineRoutePlan.Edge("é", "c", "Event"),
+                new ActorPipelineRoutePlan.Edge("e\u0301", "b:c", "Event"));
+        var normalized = new ActorPipelineRoutePlan(composed, composedEdges);
+        check(normalized.forward("é").target().equals("c")
+                        && normalized.forward("e\u0301").target().equals("b:c"),
+                "actor instance keys were incorrectly Unicode-normalized");
+        rejects(() -> new ActorPipelineRoutePlan(
+                java.util.Collections.nCopies(1025, identityStages.getFirst()),
+                identityEdges), "vertex budget bypassed");
+        rejects(() -> new ActorPipelineRoutePlan(identityStages,
+                java.util.Collections.nCopies(4097, identityEdges.getFirst())),
+                "edge budget bypassed");
+        String exact256 = "🌍".repeat(64);
+        var boundStages = List.of(
+                new ActorPipelineRoutePlan.Stage(exact256, "P",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                identityStages.get(1), identityStages.get(2), identityStages.get(3));
+        var boundEdges = List.of(
+                new ActorPipelineRoutePlan.Edge(exact256, "c", "Event"),
+                identityEdges.get(1));
+        check(new ActorPipelineRoutePlan(boundStages, boundEdges)
+                .forward(exact256).target().equals("c"),
+                "exactly 256-byte UTF-8 actor ID rejected");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(
+                new ActorPipelineRoutePlan.Stage(exact256 + "🌍", "P",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                identityStages.get(1), identityStages.get(2), identityStages.get(3)),
+                boundEdges), "257+ byte actor ID admitted");
+
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
                 + " cases=24 concurrent_selections=" + (writers * sendsEach));
     }
