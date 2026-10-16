@@ -206,18 +206,21 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException("project-root import escapes root: " + importPath);
             }
             Optional<Path> source = existingSource(candidate);
-            if (source.isPresent()) {
-                try {
-                    if (!source.get().toRealPath().startsWith(root.toRealPath())) {
-                        throw new IllegalArgumentException(
-                                "project-root import escapes root through symlink: " + importPath);
-                    }
-                } catch (IOException error) {
+            if (source.isEmpty()) return Optional.empty();
+            try {
+                Path realRoot = root.toRealPath();
+                Path realTarget = source.get().toRealPath();
+                if (!realTarget.startsWith(realRoot)) {
                     throw new IllegalArgumentException(
-                            "cannot verify project-root import: " + importPath, error);
+                            "project-root import escapes root through symlink: " + importPath);
                 }
+                // Preserve the validated canonical identity throughout import closure loading.
+                // In-root symlink aliases must not create duplicate source identities.
+                return Optional.of(realTarget);
+            } catch (IOException error) {
+                throw new IllegalArgumentException(
+                        "cannot verify project-root import: " + importPath, error);
             }
-            return source;
         }
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
