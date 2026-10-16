@@ -275,7 +275,8 @@ loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
 assignment      = pipeline [ "=" assignment ] ;
 pipeline        = conditional { "|>" pipeline_stage } ;
-pipeline_stage  = qualified_name [ call_suffix ] ;
+pipeline_stage  = IDENT [ call_suffix ]
+                | ( "Option" | "Result" ) "." IDENT call_suffix ;
 (* A pipeline stage is a named callable or call; Option.* and Result.* stages
    are lowered to instance combinators, all others pass the LHS as argument 1.
    The left operand is evaluated once, and pipeline stages associate leftwards. *)
