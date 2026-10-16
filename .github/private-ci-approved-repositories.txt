@@ -2,3 +2,11 @@
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+
+# CANDIDATE FOR INDEPENDENT SECURITY/MAINTAINER APPROVAL ONLY.
+# The exact private repository below passed source-free native runner probe
+# https://github.com/chapter-publishing-test/zed-pkg-integration-e2e/actions/runs/38920743449
+# GitHub destination repository numeric ID (verify live before publishing): 1344442382
+# This entry MUST NOT reach protected main until the source/security owners
+# approve destination ownership, visibility, source scope, retention and cleanup.
+chapter-publishing-test/zed-pkg-integration-e2e
