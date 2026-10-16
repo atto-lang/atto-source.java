@@ -68,6 +68,8 @@ public final class ActorPipelineRoutePlan {
     }
     private final List<Edge> edges;
     private final Map<String, List<Edge>> outgoing;
+    // Only supervisor-approved DAG roots may originate new flows.
+    private final Set<String> ingressRoots;
     private final Map<String, Integer> cursors = new HashMap<>();
 
     public ActorPipelineRoutePlan(List<Stage> stages, List<Edge> edges) {
@@ -159,6 +161,19 @@ public final class ActorPipelineRoutePlan {
             throw new IllegalArgumentException("pipeline graph contains a cycle");
         }
 
+        Set<String> eligibleRoots = new HashSet<>();
+        for (Stage stage : stages) {
+            if (incoming.get(stage.instanceId()) == 0
+                    && (stage.role() == Role.READABLE || stage.role() == Role.DUPLEX)
+                    && routes.containsKey(stage.instanceId())) {
+                eligibleRoots.add(stage.instanceId());
+            }
+        }
+        if (eligibleRoots.isEmpty()) {
+            throw new IllegalArgumentException("pipeline graph has no ingress root");
+        }
+        this.ingressRoots = Set.copyOf(eligibleRoots);
+
         Map<String, List<Edge>> immutable = new HashMap<>();
         routes.forEach((name, options) -> immutable.put(name, List.copyOf(options)));
         this.outgoing = Map.copyOf(immutable);
@@ -166,6 +181,13 @@ public final class ActorPipelineRoutePlan {
     }
 
     public List<Edge> edges() { return edges; }
+
+    /** Graph-shape check ONLY; runtime must authenticate the caller identity. */
+    public void requireIngressRoot(String source) {
+        if (source == null || !ingressRoots.contains(source)) {
+            throw new IllegalArgumentException("actor is not a pipeline ingress root");
+        }
+    }
 
     private List<Edge> connected(String source) {
         Objects.requireNonNull(source);
