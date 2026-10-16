@@ -3610,6 +3610,12 @@ public final class Parser {
             consume(RPAREN, "expected ')' after explicit tuple");
             return new Ast.TupleExpr(items);
         }
+        // Contextual lex capture policy must be recognized before a generic
+        // IDENT; otherwise lex[bindings] is parsed as ordinary indexing.
+        if (isContextualIdentifier("lex") && checkNext(LBRACKET)) {
+            advance();
+            return parseSelectiveLambda(Ast.LambdaCapturePolicy.ALLOW);
+        }
         if (match(IDENT, SHARED, UNTRUSTED)) {
             return new Ast.NameExpr(previous().lexeme());
         }
@@ -3653,11 +3659,6 @@ public final class Parser {
             if (check(PIPE)) return parsePipeLambda(true);
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
-        }
-        // 'lex' remains contextual so existing symbols named lex are unaffected.
-        if (isContextualIdentifier("lex") && checkNext(LBRACKET)) {
-            advance();
-            return parseSelectiveLambda(Ast.LambdaCapturePolicy.ALLOW);
         }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
