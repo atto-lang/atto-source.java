@@ -510,17 +510,17 @@ final class NominalInheritedMethodSlotsTest {
     void typedSelectionValidatesNondiscriminatorScalarArguments() {
         Ast.Program program = Parser.parse(ENUMS + """
                 define class Base as
-                    pub pick(Color value, int count): int { return 11; }
+                    pub pick(Color value, bool count): int { return 11; }
                 end
                 define class Child extends Base as
-                    pub pick(Mode value, int count): int { return 22; }
+                    pub pick(Mode value, bool count): int { return 22; }
                 end
                 """);
         var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
         var selected = NominalInheritedMethodSlots.selectResolved(
                 program, "Child", Domain.INSTANCE, "pick",
                 List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
-                        dev.oreslang.types.Types.Primitive.INT), registry);
+                        dev.oreslang.types.Types.Primitive.BOOL), registry);
         assertEquals("Base", selected.owner().name());
         IllegalArgumentException badScalar = assertThrows(IllegalArgumentException.class,
                 () -> NominalInheritedMethodSlots.selectResolved(
@@ -810,7 +810,7 @@ final class NominalInheritedMethodSlotsTest {
     }
 
     @Test
-    void resolvedF64ParameterIsNotMisclassifiedAsUnknownPrimitive() {
+    void widthErasedNumericArgumentsCannotForgeExactOverloadIdentity() {
         Ast.Program program = Parser.parse(ENUMS + """
                 define class Base as
                     pub pick(Color value, f64 weight): int { return 11; }
@@ -820,20 +820,23 @@ final class NominalInheritedMethodSlotsTest {
                 end
                 """);
         var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
-        var color = NominalInheritedMethodSlots.selectResolved(
-                program, "Child", Domain.INSTANCE, "pick",
-                List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
-                        dev.oreslang.types.Types.Primitive.FLOAT), registry);
-        assertEquals("Base", color.owner().name());
-        var mode = NominalInheritedMethodSlots.selectResolved(
-                program, "Child", Domain.INSTANCE, "pick",
-                List.of(new dev.oreslang.types.Types.Named("Mode", List.of()),
-                        dev.oreslang.types.Types.Primitive.FLOAT), registry);
-        assertEquals("Child", mode.owner().name());
+        // The existing checker normalizes f32 and f64 to FLOAT and integer
+        // aliases to INT. Neither normalized type can prove an exact source
+        // width at a nominal-overload parameter.
+        for (var numeric : List.of(
+                dev.oreslang.types.Types.Primitive.FLOAT,
+                dev.oreslang.types.Types.Primitive.INT)) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> NominalInheritedMethodSlots.selectResolved(
+                            program, "Child", Domain.INSTANCE, "pick",
+                            List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                                    numeric), registry));
+        }
         assertThrows(IllegalArgumentException.class,
                 () -> NominalInheritedMethodSlots.selectResolved(
                         program, "Child", Domain.INSTANCE, "pick",
                         List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
-                                dev.oreslang.types.Types.Primitive.INT), registry));
+                                new dev.oreslang.types.Types.Named("f64", List.of())),
+                        registry));
     }
 }
