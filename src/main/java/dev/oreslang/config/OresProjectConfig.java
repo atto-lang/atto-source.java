@@ -247,6 +247,10 @@ public final class OresProjectConfig {
         // project.root and absolute-entrypoint behavior.
         if (packageManifest && mainText != null
                 && (mainText.isBlank() || Path.of(mainText).isAbsolute()
+                    // Package manifests are portable across host OSes:
+                    // backslash separators and colon/drive spellings must
+                    // not change an entrypoint's meaning on Windows.
+                    || mainText.indexOf('\\') >= 0 || mainText.indexOf(':') >= 0
                     || !mainEntrypoint.startsWith(projectRoot))) {
             throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
                     + " entrypoints.main must be a nonblank project-relative path inside the package root");
