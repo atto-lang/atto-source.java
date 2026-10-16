@@ -261,7 +261,24 @@ public final class OresProjectConfig {
     public record ImportContext(Path projectRoot, Path manifestPath, Path packageBoundary) { }
 
     public ImportContext importContext() {
-        return new ImportContext(projectRoot, manifestPath, discoveryBoundary);
+        // Linking is keyed by physical source paths. Context identity must
+        // likewise be physical, or different symlinks to the SAME package
+        // manifest falsely appear to be incompatible root namespaces.
+        return new ImportContext(
+                contextIdentity(projectRoot),
+                manifestPath == null ? null : contextIdentity(manifestPath),
+                discoveryBoundary == null ? null : contextIdentity(discoveryBoundary));
+    }
+
+    private static Path contextIdentity(Path path) {
+        try {
+            return path.toRealPath();
+        } catch (java.nio.file.NoSuchFileException missing) {
+            // Preserve prior semantics for not-yet-materialized legacy roots.
+            return path.toAbsolutePath().normalize();
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("cannot resolve import context identity: " + path, failure);
+        }
     }
 
     private OresProjectConfig withDiscoveryBoundary(Path boundary) {
