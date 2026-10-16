@@ -73,8 +73,14 @@ final class NioReadinessGroupTest {
             listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
             var waiting = group.watch(listener, SelectionKey.OP_ACCEPT);
             assertFalse(waiting.isDone());
-            assertThrows(java.util.concurrent.RejectedExecutionException.class,
-                    () -> group.watch(listener, SelectionKey.OP_READ).get());
+            try (var other = ServerSocketChannel.open()) {
+                other.configureBlocking(false);
+                other.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+                var exhausted = assertThrows(ExecutionException.class,
+                        () -> group.watch(other, SelectionKey.OP_ACCEPT).get());
+                assertInstanceOf(java.util.concurrent.RejectedExecutionException.class,
+                        exhausted.getCause());
+            }
             // A second watch on the same channel fails independently of count.
             assertThrows(ExecutionException.class,
                     () -> group.watch(listener, SelectionKey.OP_ACCEPT).get());
