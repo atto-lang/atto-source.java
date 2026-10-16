@@ -47,7 +47,10 @@ supervisor-approved outgoing edge.
 
 `forwardAll` independently invokes `ActorRuntime.send` for each declared
 edge, returning one ordered per-target `Admission` with its individual
-success or failure. Partial success is not a transaction or a processing
+success or failure **and immutable supervisor-plan `edgeIndex`**. This
+index refers to the original validated edge list (not an unordered map or
+a source-local position), matching the native host's labelled routing
+receipts. Partial success is not a transaction or a processing
 acknowledgment. `forwardRoundRobin`, `forwardTo`, `forwardByKey` and
 single-edge `forward` admit through the same established mailbox invariants.
 
