@@ -30,6 +30,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.protected_policy = b"trusted/ci\n"
         self.main_protected = True
+        self.main_sha = A
         self.protection_rules = {
             "required_pull_request_reviews": {
                 "require_code_owner_reviews": True,
@@ -72,10 +73,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                         full_name=pub.SOURCE_REPOSITORY, visibility="private",
                         private=True, archived=False, disabled=False)
         if route == "repos/" + pub.SOURCE_REPOSITORY + "/branches/main":
-            return {"protected": self.main_protected}
+            return {"protected": self.main_protected,
+                    "commit": {"sha": self.main_sha}}
         if route == "repos/" + pub.SOURCE_REPOSITORY + "/branches/main/protection":
             return self.protection_rules
-        if route == pub.PROTECTED_POLICY_ROUTE:
+        if (route == pub.PROTECTED_POLICY_ROUTE or
+                route == pub.PROTECTED_POLICY_ROUTE.replace(
+                    "?ref=main", "?ref=" + self.main_sha)):
             raw = self.protected_policy
             return dict(type="file", encoding="base64", size=len(raw),
                         content=base64.b64encode(raw).decode("ascii"),
@@ -228,6 +232,47 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                     "ci/oreslang-test", self.root, commit, tree)
                 self.assertFalse(any(method == "POST"
                                      for method, _, _ in self.route_calls))
+
+    def test_protected_source_main_commit_identity_is_mandatory(self):
+        for bad in (None, "", "not-a-SHA", "0"*39):
+            with self.subTest(bad=bad):
+                self.route_calls.clear()
+                self.main_sha = bad
+                with self.assertRaises(pub.Denied):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+        self.main_sha = A
+
+    def test_immutable_main_policy_must_agree_with_live_main(self):
+        original = self.fake_api
+        pinned = pub.PROTECTED_POLICY_ROUTE.replace("?ref=main", "?ref=" + A)
+        def forged(route, method="GET", payload=None):
+            if route == pinned:
+                self.route_calls.append((method, route, payload))
+                return {"type": "file", "encoding": "base64",
+                        "content": base64.b64encode(b"# different approval\\n").decode(),
+                        "size": len(b"# different approval\\n"),
+                        "sha": "0"*40}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=forged):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, A, D)
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_protected_main_ref_change_during_export_stops_new_ci_ref(self):
+        original = self.fake_api
+        def moved(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.main_sha = B
+            return response
+        with patch.object(pub, "gh_api", side_effect=moved):
+            with self.assertRaisesRegex(pub.Denied, "protected source main changed"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, A, D)
+        self.assertNotIn("repos/trusted/ci/git/refs",
+                         [r for m, r, _ in self.route_calls if m == "POST"])
 
     def test_unprotected_source_main_cannot_authorize_export(self):
         self.main_protected = False
