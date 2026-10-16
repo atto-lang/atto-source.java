@@ -75,7 +75,7 @@ per file, requires the source directory to remain **inside the trusted
 checkout**, and walks the source **through directory file descriptors** to
 prevent parent-directory symlink swap races. It rejects symbolic links,
 hardlinks to outside files, FIFOs, `.git` directories, and other unsafe
-filesystem objects. Directory enumeration is bounded to 4,096 entries,
+filesystem objects. The trusted checkout root may have only a real `.git` **directory**, never a regular `.git` pointer file or symlink: such a file can redirect Git object reads outside the trusted checkout. Directory enumeration is bounded to 4,096 entries,
 1,024 directories and a maximum depth of 64. It verifies every uploaded
 Git blob SHA-1 against the source bytes. It checks that the reviewed
 destination policy has not changed
