@@ -2775,8 +2775,8 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.MethodDecl iterator = findMethod(object.klass,
                         CallableSelector.instance("Symbol.asyncIterator", 0));
                 if (iterator != null) {
-                    object.owner.requireClassMemberVisible(iterator.visibility(),
-                            object.owner.declaringClass(iterator), env.accessClass(), "method", iterator.name());
+                    object.owner.requireInstanceMethodCallable(
+                            object, iterator, env.accessClass());
                     return sourceAsyncGenerator(callMethod(object, iterator, List.of()), env);
                 }
             }
@@ -8034,12 +8034,8 @@ public final class OresEvalRootNode extends RootNode {
                         object.klass,
                         CallableSelector.instance("Symbol.iterator", 0));
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
-                object.owner.requireClassMemberVisible(
-                        iterator.visibility(),
-                        object.owner.declaringClass(iterator),
-                        env == null ? null : env.accessClass(),
-                        "method",
-                        iterator.name());
+                object.owner.requireInstanceMethodCallable(
+                        object, iterator, env == null ? null : env.accessClass());
                 Object produced = callMethod(object, iterator, List.of());
                 return iterableValues(produced, env);
             }
@@ -8053,12 +8049,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (iterator == null) {
                     return asyncSynchronousIterableValues(value, env);
                 }
-                object.owner.requireClassMemberVisible(
-                        iterator.visibility(),
-                        object.owner.declaringClass(iterator),
-                        env == null ? null : env.accessClass(),
-                        "method",
-                        iterator.name());
+                object.owner.requireInstanceMethodCallable(
+                        object, iterator, env == null ? null : env.accessClass());
                 return asyncIterableValues(callMethod(object, iterator, List.of()), env);
             }
             if (!(value instanceof GeneratorRuntime.AsyncGenerator<?> generator)) {
