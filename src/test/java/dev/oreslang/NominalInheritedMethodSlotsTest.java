@@ -776,4 +776,36 @@ final class NominalInheritedMethodSlotsTest {
         assertEquals("AbstractChild", NominalInheritedMethodSlots.resolveVirtual(
                 program, bound, "ConcreteChild").owner().name());
     }
+
+    @Test
+    void linkSymbolUsesStaticDeclarationNotDynamicOverride() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color x): int { return 1; }
+                    pub pick(Mode x): int { return 2; }
+                end
+                define class Child extends Base as
+                    pub pick(Color x): int { return 3; }
+                end
+                """);
+        var color = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        var mode = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Mode", List.of())));
+        String colorSymbol = NominalInheritedMethodSlots.declaredSlotSymbol(program, color);
+        assertEquals(color.slot().linkSymbol(color.declaredTarget().ownerId()), colorSymbol);
+        assertNotEquals(colorSymbol,
+                NominalInheritedMethodSlots.declaredSlotSymbol(program, mode));
+        assertEquals("Child", NominalInheritedMethodSlots.resolveVirtual(
+                program, color, "Child").owner().name());
+        // Virtual dispatch may switch implementations, but cannot change the
+        // compile-time declaration's link symbol.
+        assertEquals(colorSymbol, NominalInheritedMethodSlots.declaredSlotSymbol(program, color));
+        var altered = new NominalInheritedMethodSlots.InstanceBinding(
+                color.staticReceiver(), mode.slot(), color.declaredTarget());
+        assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.declaredSlotSymbol(program, altered));
+    }
 }
