@@ -94,13 +94,23 @@ public final class RuntimePermissions {
             IsolatePolicy isolatePolicy) {
         Builder builder = new Builder();
         boolean sawPermissionArgument = false;
+        boolean sawExplicitMarker = false;
+        Set<String> seenSerializedRules = new LinkedHashSet<>();
 
         for (String arg : args) {
             if (!arg.startsWith(ARG_PREFIX) || arg.startsWith("--ores-permission-check=")) continue;
             sawPermissionArgument = true;
-            // Even a deny-all policy has zero grant rules. Preserve its explicit
-            // presence or fromCapabilities() would silently grant broad I/O.
-            if (arg.equals(ARG_PREFIX + "explicit=true")) continue;
+            // Even deny-all must stay explicit. Duplicated markers and exact
+            // rule arguments are ambiguous/corrupted serialized policies,
+            // not an opportunity to silently reinterpret caller authority.
+            if (arg.equals(ARG_PREFIX + "explicit=true")) {
+                if (sawExplicitMarker)
+                    throw new IllegalArgumentException("duplicate Oreslang permission marker");
+                sawExplicitMarker = true;
+                continue;
+            }
+            if (!seenSerializedRules.add(arg))
+                throw new IllegalArgumentException("duplicate Oreslang permission argument");
             String remainder = arg.substring(ARG_PREFIX.length());
             int equals = remainder.indexOf('=');
             if (equals <= 0) {
@@ -196,11 +206,25 @@ public final class RuntimePermissions {
 
     public boolean allows(Permission permission, String resource) {
         Rule rule = rules.get(permission);
-        if (rule == null) return false;
+        if (rule == null || !safeScope(resource)) return false;
 
         // Invalid endpoint spellings must not match a broad network grant.
-        if (permission == Permission.NET && parseNetworkScope(resource, false) == null)
-            return false;
+        if (permission == Permission.NET) {
+            NetworkScope endpoint = parseNetworkScope(resource, false);
+            if (endpoint == null) return false;
+            if (endpoint.port() == null) {
+                // A portless authorization request cannot prove it excludes
+                // a denied port on the same host. Do not let a broad allow
+                // turn this missing detail into an authorization bypass.
+                for (String denied : rule.denied()) {
+                    NetworkScope blocked = parseNetworkScope(denied, true);
+                    if (blocked != null && blocked.port() != null
+                            && networkHostMatches(endpoint, blocked)) {
+                        return false;
+                    }
+                }
+            }
+        }
         String normalized = normalize(permission, resource);
         if (rule.denyAll() || matchesAny(permission, normalized, rule.denied())) return false;
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
@@ -255,6 +279,10 @@ public final class RuntimePermissions {
         NetworkScope rule = parseNetworkScope(scope, true);
         if (target == null || rule == null) return false;
         if (rule.port() != null && !rule.port().equals(target.port())) return false;
+        return networkHostMatches(target, rule);
+    }
+
+    private static boolean networkHostMatches(NetworkScope target, NetworkScope rule) {
         if (rule.host().startsWith("*.")) {
             String suffix = rule.host().substring(1);
             return target.host().endsWith(suffix)
@@ -368,6 +396,25 @@ public final class RuntimePermissions {
                 && resource.startsWith(scope.substring(0, scope.length() - 1));
     }
 
+    /** Avoid treating malformed host resources as all-access requests.
+     * POSIX filenames may contain control bytes, but they are deliberately
+     * unsupported permission scope/resource spellings across VM backends.
+     */
+    private static boolean safeScope(String value) {
+        if (value == null || value.isBlank()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (Character.isISOControl(c)) return false;
+            if (Character.isHighSurrogate(c)) {
+                if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i)))
+                    return false;
+            } else if (Character.isLowSurrogate(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static String normalize(Permission permission, String value) {
         if (value == null || value.isBlank()) return "";
         String trimmed = value.trim();
@@ -448,8 +495,8 @@ public final class RuntimePermissions {
             // Empty filesystem scopes previously normalized to "" and matched
             // EVERY absolute Unix path via resource.startsWith("/").
             // A missing scope must never become a root-wide capability.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty allow scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid allow scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.allowAll = true;
             else rule.allowed.add(normalize(permission, scope));
@@ -472,8 +519,8 @@ public final class RuntimePermissions {
         public Builder deny(Permission permission, String scope) {
             // Denials must not accept an ambiguous empty resource either;
             // malformed serialized arguments should fail, not be reinterpreted.
-            if (scope == null || scope.isBlank())
-                throw new IllegalArgumentException("empty deny scope for " + permission);
+            if (!safeScope(scope))
+                throw new IllegalArgumentException("invalid deny scope for " + permission);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
             if ("*".equals(scope.trim())) rule.denyAll = true;
             else rule.denied.add(normalize(permission, scope));
@@ -497,6 +544,14 @@ public final class RuntimePermissions {
                     .toList();
             if (values.stream().anyMatch(String::isEmpty))
                 throw new IllegalArgumentException("empty permission scope element for " + permission);
+            // Validate the *entire* CSV before mutating the builder. A later
+            // malformed scope must not leave earlier grants installed if an
+            // embedding caller catches the exception and reuses this builder.
+            for (String scope : values) {
+                if (!safeScope(scope))
+                    throw new IllegalArgumentException("invalid permission scope for " + permission);
+                normalize(permission, scope);
+            }
             return values;
         }
 
