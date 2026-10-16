@@ -11,6 +11,50 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class RuntimePermissionsNetworkAuditTest {
     @Test
+    void deniedResourceCannotInjectControlsOrForgedLogLines() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+        String invalid = "api.example.com:443\nFORGED\rDENIAL\u001b[31m"
+                + '\u2028' + '\u2029' + (char) 0xd800;
+
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> policy.require(RuntimePermissions.Permission.NET,
+                        invalid, "net.connect"));
+        String message = denied.getMessage();
+        assertTrue(message.contains("\\u000a"), "newline must be escaped");
+        assertTrue(message.contains("\\u000d"), "carriage return must be escaped");
+        assertTrue(message.contains("\\u001b"), "terminal escape must be escaped");
+        assertTrue(message.contains("\\u2028"), "Unicode line separator must be escaped");
+        assertTrue(message.contains("\\u2029"), "Unicode paragraph separator must be escaped");
+        assertTrue(message.contains("\\ud800"), "unpaired surrogate must be escaped");
+        assertFalse(message.contains("\nFORGED"), "guest resource forged a log line");
+        for (int i = 0; i < message.length(); i++) {
+            char c = message.charAt(i);
+            assertFalse(Character.isISOControl(c)
+                            || c == '\u2028' || c == '\u2029' || Character.isSurrogate(c),
+                    "denial diagnostic included an unescaped separator/control");
+        }
+    }
+
+    @Test
+    void denialDiagnosticSizeIsBoundedWithoutChangingPermissions() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443");
+        assertDoesNotThrow(() -> policy.require(RuntimePermissions.Permission.NET,
+                "api.example.com:443", "net.connect"));
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> policy.require(RuntimePermissions.Permission.NET,
+                        "X".repeat(100_000), "net.connect"));
+        assertTrue(denied.getMessage().length() < 500);
+        assertTrue(denied.getMessage().contains("...(truncated)"));
+
+        SecurityException ordinary = assertThrows(SecurityException.class,
+                () -> policy.require(RuntimePermissions.Permission.NET,
+                        "api.other.com:443", "net.connect"));
+        assertTrue(ordinary.getMessage().contains("api.other.com:443"));
+    }
+
+    @Test
     void wildcardPortDenyOverridesAnUnrestrictedNetworkGrant() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*")
