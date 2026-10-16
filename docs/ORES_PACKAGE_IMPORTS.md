@@ -25,7 +25,10 @@ import class ArrayList from "java:java.util.ArrayList";
   `ORES_PATHS`, then legacy `ORESLANG_PATH`, in that order. An omitted
   `source.roots` defaults to `["."]`; an explicitly empty `roots = []`
   disables that implicit project-root lookup without disabling `@/` imports.
-- `./` and `../` keep their existing importer-relative meaning.
+- `./` and `../` keep their existing importer-relative meaning. A bare
+  name starting with a dot (for example `.hidden/util` or `..backup/util`)
+  is **not** implicitly importer-relative: it uses the ordered bare search
+  roots, or the existing package resolver when no filesystem root matches.
 - `java:` remains capability-gated Java host interop, not a filesystem import.
 
 Source-file resolution supports the exact path and extension inference (`.ores`,
