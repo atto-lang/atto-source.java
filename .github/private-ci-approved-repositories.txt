@@ -2,3 +2,5 @@
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
 # Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+# Proposed private exact-tree LLVM CTest carrier; requires protected review.
+embedded-alerts-test/web-ui-e2e
