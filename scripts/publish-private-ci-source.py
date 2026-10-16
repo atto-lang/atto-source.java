@@ -517,7 +517,7 @@ def checked_destination_root_entries(repository, tree_sha):
         name, mode, kind, digest = (
             item.get("path"), item.get("mode"), item.get("type"), item.get("sha"))
         if (not isinstance(name, str) or not name
-                or "/" in name or "\\x00" in name or name in (".", "..")
+                or "/" in name or "\x00" in name or name in (".", "..")
                 or not isinstance(mode, str) or not isinstance(kind, str)
                 or name in entries):
             raise Denied("destination root Git tree contains ambiguous entries")
