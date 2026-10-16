@@ -66,7 +66,60 @@ public final class NominalInheritedMethodSlots {
             Ast.Program program, String rootClass, Domain domain,
             String methodName, int arity, Map<Integer, String> staticEnumProofs) {
         Objects.requireNonNull(staticEnumProofs, "static enum proofs");
+        return selectPlanned(prove(program, rootClass, domain, methodName, arity),
+                staticEnumProofs);
+    }
+
+    /**
+     * Compile-time method target selection using already resolved argument
+     * types and the compiler-owned enum registry. No user-supplied enum ID
+     * map is needed. The TypeChecker must still check *all* argument types,
+     * effects and ownership before publishing a call-site binding.
+     *
+     * <p>This is a proof helper, not a runtime multimethod or a permission
+     * to dispatch from runtime enum tags.
+     */
+    public static Target selectResolved(
+            Ast.Program program, String rootClass, Domain domain,
+            String methodName, List<Types.Type> resolvedArguments,
+            TaggedMessageContracts.Registry tagged) {
+        Objects.requireNonNull(resolvedArguments, "resolved argument types");
+        Objects.requireNonNull(tagged, "compiler enum registry");
+        int arity = resolvedArguments.size();
         Map<Slot, Target> plan = prove(program, rootClass, domain, methodName, arity);
+        if (plan.isEmpty()) {
+            throw new IllegalArgumentException("no inherited nominal method candidates");
+        }
+        List<Slot> slots = new ArrayList<>(plan.keySet());
+        java.util.Set<Integer> discriminators = new java.util.HashSet<>();
+        for (int i = 0; i < slots.size(); i++) {
+            for (int j = i + 1; j < slots.size(); j++) {
+                for (int position = 0; position < arity; position++) {
+                    if (!slots.get(i).positions().get(position)
+                            .equals(slots.get(j).positions().get(position))) {
+                        discriminators.add(position);
+                    }
+                }
+            }
+        }
+        Map<String, String> knownEnumSymbols =
+                NominalEnumOverloads.eligibleEnumSymbols(program);
+        Map<Integer, String> proofs = new HashMap<>();
+        for (int position : discriminators) {
+            String symbol = NominalEnumOverloads.staticEnumArgumentSymbol(
+                    resolvedArguments.get(position), tagged, knownEnumSymbols);
+            if (symbol == null) {
+                throw new IllegalArgumentException(
+                        "cannot prove nominal enum identity from resolved argument "
+                                + (position + 1));
+            }
+            proofs.put(position, symbol);
+        }
+        return selectPlanned(plan, proofs);
+    }
+
+    private static Target selectPlanned(
+            Map<Slot, Target> plan, Map<Integer, String> staticEnumProofs) {
         if (plan.isEmpty()) {
             throw new IllegalArgumentException("no inherited nominal method candidates");
         }
@@ -167,6 +220,11 @@ public final class NominalInheritedMethodSlots {
                 throw new IllegalArgumentException("inheritance cycle in nominal method proof");
             }
             try {
+                if (owner.methods().size()
+                        > NominalMethodSlots.MAX_LOCAL_METHOD_DECLARATIONS) {
+                    throw new IllegalArgumentException(
+                            "nominal class method declaration limit exceeded");
+                }
                 if (!owner.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "generic class requires substitution before nominal method proof");
