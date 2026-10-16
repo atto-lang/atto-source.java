@@ -142,9 +142,13 @@ public final class MessagePackWireV2 {
                 default -> { }
             }
             require(value instanceof List<?>, "expected sequence"); List<?> values = (List<?>)value;
-            require(values.size() <= MAX_ELEMENTS && (!fixed(shape.kind()) || values.size() == shape.members().size()), "sequence arity");
-            array(values.size());
-            for (int i = 0; i < values.size(); i++) value(shape.members().get(fixed(shape.kind()) ? i : 0), values.get(i), depth + 1);
+            // Capture one admitted logical size. Re-reading a caller-owned
+            // List.size() after emitting the array header can produce a
+            // noncanonical frame if a malicious/mutable list changes size.
+            int count = values.size();
+            require(count <= MAX_ELEMENTS && (!fixed(shape.kind()) || count == shape.members().size()), "sequence arity");
+            array(count);
+            for (int i = 0; i < count; i++) value(shape.members().get(fixed(shape.kind()) ? i : 0), values.get(i), depth + 1);
         }
     }
     private static final class Reader {
