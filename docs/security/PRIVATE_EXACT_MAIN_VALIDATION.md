@@ -75,6 +75,10 @@ References:
    commit and tree, and a clean worktree *before* invoking the toolchain.
 5. Confirm that focused JUnit, full JDK 25 Maven verify, ten stress replays,
    native AOT, native hybrid, and strict-isolate guest execution all ran.
+   Each of the three native profiles must run `mvn ... -DskipTests clean package`
+   **before** its guest smoke test, rather than reusing an incremental build
+   or an artifact left behind by a prior profile. Verify this requirement
+   separately for the exact-main and exact-candidate workflows.
    Do not claim success from a skipped job or a GitHub Actions job with
    `steps=null`. Preserve workflow/job links and the exact commit/tree.
 6. Retire the ephemeral runner and clear the approval SHA/tree and enable
