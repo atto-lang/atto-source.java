@@ -682,6 +682,45 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void nativeIsolateLibrariesMustBeUniqueFreshRegularFiles() throws Exception {
+        for (String workflowFile : new String[] {
+                ".github/workflows/private-exact-main-validation.yml",
+                ".github/workflows/private-exact-candidate-validation.yml"
+        }) {
+            String workflow = Files.readString(Path.of(workflowFile));
+            String nativeStage = workflow.substring(
+                    workflow.indexOf("      - name: Strict polyglot isolate "));
+            for (String command : new String[] {
+                    "test -d target && test ! -L target",
+                    "libraries=()",
+                    "for candidate in target/oresvm.so target/liboresvm.so; do",
+                    "if test -e \"$candidate\" || test -L \"$candidate\"; then",
+                    "test -f \"$candidate\" && test ! -L \"$candidate\" && test -s \"$candidate\"",
+                    "libraries+=(\"$candidate\")",
+                    "test \"${#libraries[@]}\" -eq 1",
+                    "lib=\"${libraries[0]}\"",
+                    "echo \"VERIFIED_ISOLATE_LIBRARY=$lib\""
+            }) {
+                assertTrue(hasExactLine(nativeStage, 10, command)
+                        || hasExactLine(nativeStage, 12, command)
+                        || hasExactLine(nativeStage, 14, command),
+                        "missing executable isolate library proof: " + command);
+            }
+            assertFalse(nativeStage.contains("find target -maxdepth 1"),
+                    "non-deterministic first-match isolate selection must be rejected");
+            assertTrue(nativeStage.indexOf("test \"${#libraries[@]}\" -eq 1")
+                    < nativeStage.indexOf("IsolateLibrary=$PWD/$lib"),
+                    "validate unique isolate library before executing guest code");
+            String noUniqueCheck = nativeStage.replace(
+                    "          test \"${#libraries[@]}\" -eq 1",
+                    "          # test \"${#libraries[@]}\" -eq 1");
+            assertFalse(hasExactLine(noUniqueCheck, 10,
+                    "test \"${#libraries[@]}\" -eq 1"),
+                    "a disabled uniqueness guard must not count");
+        }
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
