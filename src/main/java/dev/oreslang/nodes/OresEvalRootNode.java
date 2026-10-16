@@ -4392,7 +4392,117 @@ public final class OresEvalRootNode extends RootNode {
                 throw new SecurityException(
                         "typed Map allocation inside actors requires ownership and memory accounting");
             }
-            return OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+            return OresKeyedMap.stringKeys(
+                    OresKeyedMap.ValueDomain.ANY,
+                    (key, value) -> validateTypedOpenMapEntry(klass, key, value));
+        }
+
+        private void validateTypedOpenMapEntry(
+                Ast.ClassDecl klass,
+                Object rawKey,
+                Object value) {
+            if (!(rawKey instanceof String key)) {
+                throw new IllegalArgumentException("typed open Map key must be a String");
+            }
+            for (Ast.MapKeyDecl declared : klass.mapKeys()) {
+                if (!declared.name().equals(key)) continue;
+                Ast.TypeRef schema = declared.declaredType();
+                if (!schema.name().equals("Option") || schema.arguments().size() != 1
+                        || schema.inferArguments()) {
+                    throw new IllegalStateException(
+                            "malformed typed open Map schema for key '" + key + "'");
+                }
+                Ast.TypeRef stored = schema.arguments().getFirst();
+                if (!typedOpenMapStoredValueMatches(
+                        value, stored, new IdentityHashMap<>(), 0)) {
+                    throw new IllegalArgumentException(
+                            "typed open Map key '" + key
+                                    + "' does not satisfy stored type " + stored);
+                }
+                return;
+            }
+            if (!typedOpenMapOpenValueIsCopy(
+                    value, new IdentityHashMap<>(), 0)) {
+                throw new IllegalArgumentException(
+                        "typed open Map extra keys accept only recursively Copy scalar, Option or Result values");
+            }
+        }
+
+        private boolean typedOpenMapStoredValueMatches(
+                Object value,
+                Ast.TypeRef target,
+                IdentityHashMap<Object, Boolean> active,
+                int depth) {
+            if (value == null || depth > 64 || target.inferArguments()
+                    || target.isBorrow() || target.isUnion()
+                    || target.isTupleType() || target.isRecordType()) return false;
+            String name = target.name();
+            if (name.equals("int")) {
+                return value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long
+                        || value instanceof java.math.BigInteger;
+            }
+            if (name.equals("bool") || name.equals("Bool")) {
+                return value instanceof Boolean;
+            }
+            if (name.equals("string") || name.equals("String")) {
+                return value instanceof String;
+            }
+            if (name.equals("Symbol")) {
+                return value instanceof dev.oreslang.runtime.OresSymbol;
+            }
+            if (active.put(value, Boolean.TRUE) != null) return false;
+            try {
+                if (name.equals("Option") && target.arguments().size() == 1
+                        && value instanceof OptionValue option) {
+                    return !option.present()
+                            || typedOpenMapStoredValueMatches(
+                                    option.value(),
+                                    target.arguments().getFirst(),
+                                    active,
+                                    depth + 1);
+                }
+                if (name.equals("Result") && target.arguments().size() == 2
+                        && value instanceof ResultValue result) {
+                    return typedOpenMapStoredValueMatches(
+                            result.value(),
+                            target.arguments().get(result.ok() ? 0 : 1),
+                            active,
+                            depth + 1);
+                }
+                return false;
+            } finally {
+                active.remove(value);
+            }
+        }
+
+        private boolean typedOpenMapOpenValueIsCopy(
+                Object value,
+                IdentityHashMap<Object, Boolean> active,
+                int depth) {
+            if (value == null || depth > 64) return false;
+            if (value instanceof String || value instanceof Boolean
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof java.math.BigInteger
+                    || value instanceof dev.oreslang.runtime.OresSymbol) {
+                return true;
+            }
+            if (active.put(value, Boolean.TRUE) != null) return false;
+            try {
+                if (value instanceof OptionValue option) {
+                    return !option.present()
+                            || typedOpenMapOpenValueIsCopy(
+                                    option.value(), active, depth + 1);
+                }
+                if (value instanceof ResultValue result) {
+                    return typedOpenMapOpenValueIsCopy(
+                            result.value(), active, depth + 1);
+                }
+                return false;
+            } finally {
+                active.remove(value);
+            }
         }
 
         private Object newGuestMap(Ast.TypeRef type) {
