@@ -712,6 +712,9 @@ public final class TypeChecker {
         Set<Ast.MethodArity> locallyResolved = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() == staticNamespace) locallyResolved.add(method.overloadIdentity());
+            if (!staticNamespace && !method.isStatic()) {
+                validateOriginalPrivateAbstractSignature(klass, method);
+            }
             if (!staticNamespace && !method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 // An intermediate concrete override cannot launder the private
                 // abstract slot into a public method further down the hierarchy.
@@ -803,6 +806,54 @@ public final class TypeChecker {
                     + " from " + owners
                     + "; add an explicit child declaration for this name + arity slot; argument and return types never select an overload");
         }
+    }
+
+    private void validateOriginalPrivateAbstractSignature(
+            Ast.ClassDecl klass, Ast.MethodDecl implementation) {
+        Ast.ClassDecl origin = privateAbstractSlotOwner(
+                klass, implementation.name(), implementation.arity(),
+                new LinkedHashSet<>());
+        if (origin == null || origin == klass) return;
+        Ast.MethodDecl contract = null;
+        for (Ast.MethodDecl candidate : origin.methods()) {
+            if (candidate.isAbstract()
+                    && candidate.visibility() == Ast.Visibility.PRIVATE
+                    && !candidate.isStatic()
+                    && candidate.overloadIdentity().equals(implementation.overloadIdentity())) {
+                contract = candidate;
+                break;
+            }
+        }
+        if (contract == null) throw new IllegalArgumentException(
+                "private abstract slot provenance lost for " + klass.name());
+        if (!klass.genericParameters().isEmpty() || !origin.genericParameters().isEmpty()
+                || !contract.genericParameters().isEmpty()
+                || !implementation.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "generic private abstract override requires checked type substitution; "
+                            + "cannot admit " + klass.name() + "." + implementation.name());
+        }
+        boolean equal = contract.returnType().equals(implementation.returnType())
+                && contract.async() == implementation.async()
+                && contract.suspends() == implementation.suspends()
+                && contract.structural() == implementation.structural()
+                && (contract.explicitReceiverType() != null
+                     && contract.explicitReceiverType().isBorrow()
+                     && contract.explicitReceiverType().mutableBorrow())
+                   == (implementation.explicitReceiverType() != null
+                       && implementation.explicitReceiverType().isBorrow()
+                       && implementation.explicitReceiverType().mutableBorrow());
+        for (int i = 0; i < implementation.arity() && equal; i++) {
+            Ast.Param required = contract.parameters().get(i);
+            Ast.Param actual = implementation.parameters().get(i);
+            equal = required.type().equals(actual.type())
+                    && required.mutable() == actual.mutable()
+                    && required.structural() == actual.structural();
+        }
+        if (!equal) throw new IllegalArgumentException(
+                "incompatible private abstract method override '" + klass.name()
+                        + "." + implementation.name()
+                        + "': original superclass signature or effects differ");
     }
 
     private Map<Ast.MethodArity, List<MethodOrigin>> inheritedMethodOrigins(
