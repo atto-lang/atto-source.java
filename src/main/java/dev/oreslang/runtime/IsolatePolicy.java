@@ -404,17 +404,55 @@ public record IsolatePolicy(
         int maxMailbox = 1024;
         long maxWallMs = 30_000L;
         boolean adversarial = false;
+        boolean sawHostPolicyArgument = false;
+        Set<String> seenPolicyFields = new java.util.HashSet<>();
         for (String arg : args) {
-            if (arg.startsWith("--ores-capabilities=")) raw = arg.substring("--ores-capabilities=".length());
-            else if (arg.startsWith("--ores-max-heap-bytes=")) maxHeap = Long.parseLong(arg.substring("--ores-max-heap-bytes=".length()));
-            else if (arg.startsWith("--ores-max-mailbox-messages=")) maxMailbox = Integer.parseInt(arg.substring("--ores-max-mailbox-messages=".length()));
-            else if (arg.startsWith("--ores-max-wall-ms=")) maxWallMs = Long.parseLong(arg.substring("--ores-max-wall-ms=".length()));
-            else if (arg.startsWith("--ores-adversarial=")) adversarial = Boolean.parseBoolean(arg.substring("--ores-adversarial=".length()));
+            if (arg == null)
+                throw new IllegalArgumentException("null Oreslang application argument");
+            // Empty guest argument arrays still support legacy embedding.
+            // A partially serialized host policy must not silently expand
+            // into the developer capability baseline.
+            if (arg.startsWith("--ores-")) sawHostPolicyArgument = true;
+            String field = null;
+            if (arg.startsWith("--ores-capabilities=")) {
+                field = "capabilities";
+                raw = arg.substring("--ores-capabilities=".length());
+            } else if (arg.startsWith("--ores-max-heap-bytes=")) {
+                field = "max-heap-bytes";
+                maxHeap = Long.parseLong(arg.substring("--ores-max-heap-bytes=".length()));
+            } else if (arg.startsWith("--ores-max-mailbox-messages=")) {
+                field = "max-mailbox-messages";
+                maxMailbox = Integer.parseInt(arg.substring("--ores-max-mailbox-messages=".length()));
+            } else if (arg.startsWith("--ores-max-wall-ms=")) {
+                field = "max-wall-ms";
+                maxWallMs = Long.parseLong(arg.substring("--ores-max-wall-ms=".length()));
+            } else if (arg.startsWith("--ores-adversarial=")) {
+                field = "adversarial";
+                String value = arg.substring("--ores-adversarial=".length());
+                if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value))
+                    throw new IllegalArgumentException("invalid Oreslang adversarial marker");
+                adversarial = Boolean.parseBoolean(value);
+            }
+            if (field != null && !seenPolicyFields.add(field))
+                throw new IllegalArgumentException("duplicate Oreslang host policy field: " + field);
         }
-        if (raw == null) return developer();
+        if (raw == null) {
+            if (sawHostPolicyArgument)
+                throw new IllegalArgumentException("missing Oreslang capabilities in serialized host policy");
+            return developer();
+        }
         EnumSet<Capability> caps = EnumSet.noneOf(Capability.class);
-        if (!raw.isBlank()) {
-            for (String value : raw.split(",")) caps.add(Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
+        if (!raw.isEmpty()) {
+            // Preserve explicit empty capability sets but reject ambiguous
+            // empty segments, duplicates and malformed serialized lists.
+            for (String value : raw.split(",", -1)) {
+                if (value.isBlank())
+                    throw new IllegalArgumentException("empty serialized Oreslang capability");
+                Capability capability = Capability.valueOf(
+                        value.trim().toUpperCase(Locale.ROOT));
+                if (!caps.add(capability))
+                    throw new IllegalArgumentException("duplicate serialized Oreslang capability: " + capability);
+            }
         }
         return new IsolatePolicy(caps, maxHeap, maxMailbox, Duration.ofMillis(maxWallMs), adversarial);
     }
