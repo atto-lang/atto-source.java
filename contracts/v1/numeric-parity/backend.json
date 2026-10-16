@@ -4,7 +4,7 @@
   "reference_fixture_git_blob_sha": "cb28b5678d380f02c5e4e43bd763da04bdb996fe",
   "capabilities": {
     "source_i64": "implemented_unverified",
-    "checked_i64_overflow": "needs_audit",
+    "checked_i64_overflow": "implemented_unverified",
     "binary64_ordering": "implemented_unverified",
     "binary32_arithmetic": "blocked_unsound",
     "bigint_exact": "implemented_unverified",
