@@ -181,6 +181,26 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void focusedExactMainTestsMustCompileFromFreshSource() throws Exception {
+        String workflow = Files.readString(WORKFLOW);
+        String runner = workflow.substring(workflow.indexOf("  validate-exact-main:"));
+        String command = "run: mvn -B -ntp "
+                + "'-Dtest=ChannelCompletionPublicationIsolationTest,"
+                + "FutureSelectAttachmentPublicationBarrierTest,FutureChannelSelectTest,"
+                + "ChannelCommittedCompletionDrainTest,ChannelMappedCancellationStressTest,"
+                + "OresFutureHostWaiterDetachmentTest' clean test";
+        assertTrue(hasExactLine(runner, 8, command),
+                "focused exact-main tests must compile from a clean Maven target");
+        String incremental = runner.replace(" clean test", " test");
+        assertFalse(hasExactLine(incremental, 8, command),
+                "incremental test execution cannot satisfy this security check");
+        String disabled = runner.replace("        " + command,
+                "        # " + command);
+        assertFalse(hasExactLine(disabled, 8, command),
+                "commented-out clean test commands are not executable evidence");
+    }
+
+    @Test
     void exactMainNativeStagesMustBuildFreshImagesBeforeGuestSmoke() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String[] profiles = {"native-aot", "native-hybrid", "native-isolate"};
@@ -401,7 +421,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String expected = "run: mvn -B -ntp -Dores.runtime.carriers=native "
                 + "'-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,"
                 + "RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,"
-                + "IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' test";
+                + "IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' clean test";
         assertTrue(hasExactLine(runner, 8, expected),
                 "the reviewed focused Maven command must execute the full policy suite");
 
