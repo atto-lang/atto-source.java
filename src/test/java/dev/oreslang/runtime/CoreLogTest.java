@@ -106,6 +106,57 @@ class CoreLogTest {
         }
     }
 
+    @Test void disablingDropsAllRetainedEventsAndSuppressesShutdownExport() {
+        CoreLog.configure(CoreLog.Level.OFF);
+        try {
+            CoreLog.configure(CoreLog.Level.ERROR);
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 77L);
+            assertTrue(dumpRetained().contains("\"value\":77"));
+            CoreLog.configure(CoreLog.Level.OFF);
+            assertEquals("", dumpRetained(), "no diagnostic output once disabled");
+            assertFalse(CoreLog.enabled(CoreLog.Level.ERROR));
+
+            // A fresh session must never replay data recorded before disable.
+            CoreLog.configure(CoreLog.Level.INFO);
+            String fresh = dumpRetained();
+            assertTrue(fresh.contains("\"reserved\":0"));
+            assertFalse(fresh.contains("\"value\":77"));
+            CoreLog.record(CoreLog.Level.INFO, CoreLog.ASYNC_IO_REJECTED, 88L);
+            String after = dumpRetained();
+            assertTrue(after.contains("\"value\":88"));
+            assertFalse(after.contains("\"value\":77"));
+        } finally {
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+        assertEquals("", dumpRetained());
+    }
+
+    @Test void severityChangeKeepsCurrentSessionUntilExplicitOff() {
+        CoreLog.configure(CoreLog.Level.OFF);
+        try {
+            CoreLog.configure(CoreLog.Level.WARN);
+            CoreLog.record(CoreLog.Level.INFO, CoreLog.ASYNC_IO_FAILED, 901L);
+            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 902L);
+            CoreLog.configure(CoreLog.Level.ERROR);
+            CoreLog.record(CoreLog.Level.WARN, CoreLog.ASYNC_IO_REJECTED, 903L);
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 904L);
+            String snapshot = dumpRetained();
+            assertFalse(snapshot.contains("\"value\":901"));
+            assertTrue(snapshot.contains("\"value\":902"));
+            assertFalse(snapshot.contains("\"value\":903"));
+            assertTrue(snapshot.contains("\"value\":904"));
+            assertTrue(snapshot.contains("\"recorded\":2,\"reserved\":2"));
+        } finally {
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+    }
+
+    private static String dumpRetained() {
+        var bytes = new ByteArrayOutputStream();
+        CoreLog.dumpRetained(new PrintStream(bytes, true, StandardCharsets.UTF_8));
+        return bytes.toString(StandardCharsets.UTF_8);
+    }
+
     private static String dump(CoreLog.Recorder recorder) {
         var bytes = new ByteArrayOutputStream();
         recorder.dump(new PrintStream(bytes, true, StandardCharsets.UTF_8));
