@@ -4922,7 +4922,7 @@ public final class ActorRuntime implements AutoCloseable {
                     "actor carrier quiescence can only be observed from host context"));
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (!isCurrentIncarnation(cell, ref)) {
+        if (cell == null || cell.ref != ref) {
             // The registry removes an incarnation only AFTER finalization.
             return OresFuture.completed(null);
         }
@@ -7478,12 +7478,20 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         behavior = created;
                     }
+                    final Throwable readinessFailure;
                     synchronized (lifecycleLock) {
-                        if (stopped.get() || forceKillFenced) {
-                            ref.readyFuture.failFromRuntime(terminated(ref));
-                        } else {
-                            ref.readyFuture.completeFromRuntime(null);
-                        }
+                        readinessFailure = stopped.get() || forceKillFenced
+                                ? terminated(ref) : null;
+                    }
+                    // Runtime observers may acquire an HTTP ownership monitor
+                    // while a concurrent supervisor holds that monitor and
+                    // reserves actor mail. Never call them under lifecycleLock.
+                    // Finalization may race this publication; readyFuture's
+                    // first terminal settlement remains authoritative.
+                    if (readinessFailure != null) {
+                        ref.readyFuture.failFromRuntime(readinessFailure);
+                    } else {
+                        ref.readyFuture.completeFromRuntime(null);
                     }
                 }
 

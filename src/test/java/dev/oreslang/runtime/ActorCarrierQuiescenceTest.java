@@ -42,6 +42,7 @@ final class ActorCarrierQuiescenceTest {
             ActorRuntime.ActorRef<Integer> fresh = runtime.spawnShared(() ->
                     (message, context) -> delivered.countDown());
             try {
+                fresh.ready(); // spawn is lazy; explicitly schedule the startup carrier
                 assertTrue(enteredCarrier.await(5, TimeUnit.SECONDS),
                         "fresh actor startup did not enter its physical carrier");
                 // Mail is accepted while its initializer is stalled. Neither
@@ -351,6 +352,69 @@ final class ActorCarrierQuiescenceTest {
                 assertEquals(i, privateDelivered.get(),
                         "isolated actor quiescence preceded accepted mail processing");
             }
+        }
+    }
+
+    @Test
+    void readinessObserverDoesNotHoldMailboxAdmissionLock() throws Exception {
+        CountDownLatch initializing = new CountDownLatch(1);
+        CountDownLatch finishInitialization = new CountDownLatch(1);
+        CountDownLatch callbackDone = new CountDownLatch(1);
+        CountDownLatch sent = new CountDownLatch(1);
+        var callbackFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> actor = runtime.spawnSharedTrusted(context -> {
+                initializing.countDown();
+                awaitTestRelease(finishInitialization);
+                return (message, actorContext) -> { };
+            });
+            OresFuture<Void> readiness = actor.ready();
+            assertTrue(initializing.await(5, TimeUnit.SECONDS));
+            readiness.whenCompleteRuntime((ignored, failure) -> {
+                Thread.ofVirtual().start(() -> {
+                    try {
+                        actor.send(1);
+                    } catch (Throwable sendFailure) {
+                        callbackFailure.compareAndSet(null, sendFailure);
+                    } finally {
+                        sent.countDown();
+                    }
+                });
+                try {
+                    assertNull(failure);
+                    assertTrue(sent.await(2, TimeUnit.SECONDS),
+                            "readiness observer blocked concurrent mailbox admission");
+                } catch (Throwable observerFailure) {
+                    callbackFailure.compareAndSet(null, observerFailure);
+                } finally {
+                    callbackDone.countDown();
+                }
+            });
+            finishInitialization.countDown();
+            assertTrue(callbackDone.await(5, TimeUnit.SECONDS));
+            assertNull(callbackFailure.get());
+            actor.drain().get(5, TimeUnit.SECONDS);
+        } finally {
+            finishInitialization.countDown();
+        }
+    }
+
+    @Test
+    void finalizedActorObserverCannotWaitOnAnUnrelatedLiveActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Integer> retired =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            retired.ready().get(5, TimeUnit.SECONDS);
+            retired.cancel();
+            assertTrue(retired.awaitTermination(5, TimeUnit.SECONDS));
+            ActorRuntime.ActorRef<Integer> live =
+                    runtime.spawnShared(() -> (message, context) -> { });
+            live.ready().get(5, TimeUnit.SECONDS);
+
+            OresFuture<Void> observer = runtime.quiesceAcceptedMessages(retired);
+            observer.get(5, TimeUnit.SECONDS);
+            assertTrue(observer.isDone());
+            assertTrue(live.isAlive(), "observing a retired actor cannot stop another actor");
         }
     }
 
