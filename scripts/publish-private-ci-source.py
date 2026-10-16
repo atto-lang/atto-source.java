@@ -469,7 +469,8 @@ def main(argv=None):
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
-    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} commit={commit}")
+    print(f"PRIVATE_CI_SNAPSHOT_CREATED: files={count} source_commit={args.source_commit} "
+          f"source_tree={args.source_tree} destination_commit={commit}")
     return 0
 
 
