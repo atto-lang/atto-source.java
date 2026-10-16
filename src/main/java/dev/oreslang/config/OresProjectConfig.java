@@ -406,6 +406,15 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
+        // Explicit package namespaces have one portable spelling. In
+        // particular, +/foo\\bar must not become +/foo/bar on Windows
+        // while naming a different file on POSIX.
+        if ((importPath.startsWith("+") || importPath.startsWith("pkg:"))
+                && importPath.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException(
+                    "rooted import requires forward-slash separators: " + importPath);
+        }
+
         // Source import syntax is platform-independent: +/ is required even
         // on Windows. Do not silently normalize +\\ into a rooted import.
         if (importPath.startsWith("+") && !importPath.startsWith("+/")) {
@@ -498,12 +507,13 @@ public final class OresProjectConfig {
         if (relative.isBlank() || relative.startsWith("/")) {
             throw new IllegalArgumentException("invalid rooted import: " + importPath);
         }
-        // Reject traversal components even when normalization would land
-        // inside the package. A rooted import must name a source beneath that
-        // root without changing directories through parent segments.
-        for (String segment : relative.replace('\\', '/').split("/", -1)) {
-            if ("..".equals(segment)) {
-                throw new IllegalArgumentException("rooted import cannot contain '..': " + importPath);
+        // Rooted paths must be canonical: neither traversal nor ambiguous
+        // empty/dot components may be silently normalized away. LLVM applies
+        // the same rule to the experimental +/ implementation.
+        for (String segment : relative.split("/", -1)) {
+            if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+                throw new IllegalArgumentException(
+                        "rooted import contains empty/dot/traversal component: " + importPath);
             }
         }
         Path component = Path.of(relative);
