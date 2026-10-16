@@ -83,6 +83,25 @@ final class VerifiedTcpSocketTest {
     }
 
     @Test
+    void unspecifiedIpv4RemoteCannotAliasToDeniedLoopback() throws Exception {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+        // Linux may route an attempted TCP connection to 0.0.0.0 through
+        // loopback, so that value is not an admissible selected peer identity.
+        assertFalse(policy.allowsNetworkConnection(
+                "api.example.com:443", "0.0.0.0:443"));
+        assertFalse(policy.allowsNetworkConnection(
+                "0.0.0.0:443", "0.0.0.0:443"));
+        assertThrows(SecurityException.class, () -> VerifiedTcpSocket.checkedAddress(
+                policy, "api.example.com:443", numeric(0, 0, 0, 0), 443));
+        assertThrows(SecurityException.class, () -> VerifiedTcpSocket.checkedAddress(
+                policy, "0.0.0.0:443", numeric(0, 0, 0, 0), 443));
+        assertDoesNotThrow(() -> VerifiedTcpSocket.checkedAddress(
+                policy, "api.example.com:443", numeric(203, 0, 113, 7), 443));
+    }
+
+    @Test
     void defaultDenyBlocksNumericallyPinnedDestination() throws Exception {
         assertThrows(SecurityException.class, () -> VerifiedTcpSocket.checkedAddress(
                 RuntimePermissions.denyAll(), "127.0.0.1:8080",
