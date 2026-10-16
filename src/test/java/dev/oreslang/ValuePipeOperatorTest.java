@@ -177,6 +177,30 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void pipelineDoesNotResurrectMovedOptionPayloads() {
+        IllegalArgumentException moved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+                    fnc consume(Option<Box> value): int { return 1; }
+                    fnc bad(): int {
+                      val Option<Box> owned = None;
+                      val int first = owned |> consume;
+                      return owned |> consume;
+                    }
+                    """)));
+        assertTrue(moved.getMessage().contains("moved value"), moved::toString);
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                    fnc consume(Option<int> value): int { return 1; }
+                    fnc good(): int {
+                      val Option<int> copyable = None;
+                      val int first = copyable |> consume;
+                      return copyable |> consume;
+                    }
+                    """)));
+    }
+
+    @Test
     void executesOptionAndResultCombinators() throws Exception {
         String program = """
                 fnc double(int n): int { return n * 2; }
