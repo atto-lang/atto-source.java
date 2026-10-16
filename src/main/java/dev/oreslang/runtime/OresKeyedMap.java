@@ -135,6 +135,15 @@ public final class OresKeyedMap<K, V> {
         return new OresKeyedMap<>(KeyDomain.SYMBOL, values, NO_ENTRY_VALIDATOR);
     }
 
+    public static <V> OresKeyedMap<OresSymbol, V> symbolKeys(
+            ValueDomain values,
+            EntryValidator validator) {
+        return new OresKeyedMap<>(
+                KeyDomain.SYMBOL,
+                values,
+                Objects.requireNonNull(validator, "entry validator"));
+    }
+
     /** Host-only constructor defaults to explicit dynamic values. */
     public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys() {
         return stringOrSymbolKeys(ValueDomain.ANY);
@@ -142,6 +151,15 @@ public final class OresKeyedMap<K, V> {
 
     public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys(ValueDomain values) {
         return new OresKeyedMap<>(KeyDomain.STRING_OR_SYMBOL, values, NO_ENTRY_VALIDATOR);
+    }
+
+    public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys(
+            ValueDomain values,
+            EntryValidator validator) {
+        return new OresKeyedMap<>(
+                KeyDomain.STRING_OR_SYMBOL,
+                values,
+                Objects.requireNonNull(validator, "entry validator"));
     }
 
     public KeyDomain keyDomain() {
