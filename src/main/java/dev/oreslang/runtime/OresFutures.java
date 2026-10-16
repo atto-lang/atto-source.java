@@ -2,6 +2,10 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
@@ -23,6 +27,86 @@ public final class OresFutures {
         public boolean ok() {
             return error == null;
         }
+    }
+
+    /**
+     * Recursively adopt a chain of Oreslang Futures into a single completion.
+     *
+     * <p>Only runtime waiters are invoked inline; guest continuations remain
+     * scheduler-owned. The work-in-progress drain avoids stack growth for
+     * already-settled chains. Cancellation detaches the observer but does not
+     * revoke shared producer Futures.</p>
+     *
+     * <p>This is a runtime composition primitive. Compiler type normalization
+     * and async return-path adoption require separate language integration.</p>
+     */
+    public static <T> OresFuture<T> flatten(OresFuture<?> source) {
+        Objects.requireNonNull(source, "source");
+        AtomicReference<OresFuture.RuntimeWaiterRegistration<?>> active =
+                new AtomicReference<>();
+        OresFuture<T> result = new OresFuture<>(() -> {
+            OresFuture.RuntimeWaiterRegistration<?> waiter = active.getAndSet(null);
+            if (waiter != null) waiter.detach();
+        });
+        ConcurrentLinkedQueue<OresFuture<?>> pending = new ConcurrentLinkedQueue<>();
+        AtomicInteger draining = new AtomicInteger();
+        // Accessed only by the one elected drainer.
+        Set<OresFuture<?>> visited =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+
+        class Adoption {
+            void enqueue(OresFuture<?> next) {
+                pending.add(next);
+                drain();
+            }
+
+            @SuppressWarnings("unchecked")
+            void drain() {
+                if (draining.getAndIncrement() != 0) return;
+                int missed = 1;
+                do {
+                    OresFuture<?> current;
+                    while ((current = pending.poll()) != null) {
+                        if (result.isDone()) continue;
+                        if (!visited.add(current)) {
+                            result.failFromRuntime(new IllegalStateException(
+                                    "cyclic nested Future completion"));
+                            continue;
+                        }
+                        OresFuture.RuntimeWaiterRegistration<?> previous =
+                                active.getAndSet(null);
+                        if (previous != null) previous.detach();
+
+                        OresFuture<?> observed = current;
+                        OresFuture<Object> typed = (OresFuture<Object>) current;
+                        OresFuture.RuntimeWaiterRegistration<Object> registration =
+                                typed.whenCompleteRuntimeCancellable((value, failure) -> {
+                                    if (result.isDone()) return;
+                                    if (failure != null) {
+                                        if (observed.isCancelled()) {
+                                            result.cancel(false);
+                                        } else {
+                                            result.failFromRuntime(OresFuture.unwrap(failure));
+                                        }
+                                    } else if (value instanceof OresFuture<?> nested) {
+                                        enqueue(nested);
+                                    } else {
+                                        result.completeFromRuntime((T) value);
+                                    }
+                                });
+                        active.set(registration);
+                        if (result.isDone()) {
+                            OresFuture.RuntimeWaiterRegistration<?> terminal =
+                                    active.getAndSet(null);
+                            if (terminal != null) terminal.detach();
+                        }
+                    }
+                    missed = draining.addAndGet(-missed);
+                } while (missed != 0);
+            }
+        }
+        new Adoption().enqueue(source);
+        return result;
     }
 
     public static <T> OresFuture<List<T>> all(List<?> awaitables) {
