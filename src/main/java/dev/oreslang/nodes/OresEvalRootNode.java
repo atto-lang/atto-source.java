@@ -4907,8 +4907,22 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean isTrappableFailure(RuntimeException failure) {
+            // These lightweight runtime exceptions are Oreslang control-flow
+            // tokens, never user-thrown failures. In particular a checked
+            // postfix ? must remain a return even if an untyped/host-entered
+            // path reaches an expression trap boundary. Do not reinterpret it
+            // as None or allow the enclosing function to continue.
+            if (isSourceControlSignal(failure)) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
+        }
+
+        private boolean isSourceControlSignal(Throwable failure) {
+            return failure instanceof ReturnSignal
+                    || failure instanceof TailCallSignal
+                    || failure instanceof BreakSignal
+                    || failure instanceof ContinueSignal
+                    || failure instanceof ProcessExitSignal;
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
