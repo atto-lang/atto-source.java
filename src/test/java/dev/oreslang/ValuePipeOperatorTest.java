@@ -335,4 +335,40 @@ final class ValuePipeOperatorTest {
         assertTrue(actual.contains("Ok(Some(42))"), actual);
         assertTrue(actual.contains("33"), actual);
     }
+    @Test
+    void rejectsAwaitInSynchronousSumCallbacksEvenInsideAsyncCallers() {
+        IllegalArgumentException direct = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    async fnc answer(): int { return 7; }
+                    async fnc broken(Option<int> value): Option<int> {
+                      return value |> Option.map(|n| -> await answer());
+                    }
+                    """)));
+        assertTrue(direct.getMessage().contains("cannot suspend or await"), direct::toString);
+
+        IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    async fnc answer(): int { return 7; }
+                    async fnc broken(Result<int,String> value): Result<int,String> {
+                      return value |> Result.map(|n| -> n + (await answer()));
+                    }
+                    """)));
+        assertTrue(nested.getMessage().contains("cannot suspend or await"), nested::toString);
+    }
+
+    @Test
+    void rejectsNestedBorrowEscapingThroughMappedStruct() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    define class Box as
+                    end
+                    fnc broken(Option<Box> input): void {
+                      val nested = input |> Option.map(|item| -> infer struct{view: rt borrow item});
+                      return;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("cannot publish a borrowed callback result"),
+                failure::toString);
+    }
+
 }
