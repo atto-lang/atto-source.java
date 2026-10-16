@@ -133,7 +133,7 @@ final class ProjectRootImportTest {
         try {
             Files.createSymbolicLink(link, outside);
         } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
-            org.junit.jupiter.api.Assumptions.abort("symlink creation unavailable: " + unsupported);
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlink creation unavailable: " + unsupported);
         }
         Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
         OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
