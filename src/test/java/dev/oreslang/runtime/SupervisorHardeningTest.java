@@ -111,4 +111,114 @@ final class SupervisorHardeningTest {
             assertTrue(root.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void creatorActorMaySuperviseOwnChildGroupWithoutLosingParentAncestry() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorGroup parentGroup = runtime.createActorGroup();
+            AtomicReference<ActorRuntime.ActorGroup> subGroup = new AtomicReference<>();
+            AtomicReference<ActorRuntime.ActorRef<String>> childRef = new AtomicReference<>();
+            AtomicReference<SupervisorFailureControl.Notice> received = new AtomicReference<>();
+
+            // Trusted host fixture captures observer references. The child and
+            // grandchild factories themselves have no captured host state.
+            ActorRuntime.ActorRef<String> supervisor = runtime.spawnPrivateTrusted(
+                    factory -> (message, self) -> {
+                        if ("open".equals(message)) {
+                            ActorRuntime.ActorGroup owned = self.runtime().createActorGroup();
+                            subGroup.set(owned);
+                            childRef.set(owned.spawnWorker(
+                                    ActorRuntime.ActorKind.PRIVATE,
+                                    IsolatePolicy.developer(),
+                                    childFactory -> (work, childContext) -> {
+                                        if ("spawn".equals(work)) {
+                                            childContext.runtime().spawnPrivate(
+                                                    grandFactory -> (input, grandContext) -> {
+                                                        if ("fail".equals(input))
+                                                            throw new IllegalStateException("grandchild failed");
+                                                    });
+                                        }
+                                    }));
+                        } else if ("poll".equals(message)) {
+                            received.set(subGroup.get().pollSupervisorNotice().orElse(null));
+                        }
+                    });
+            parentGroup.manageWorker(supervisor);
+            supervisor.getReady().get(5, TimeUnit.SECONDS);
+            supervisor.send("open");
+            supervisor.drain().get(5, TimeUnit.SECONDS);
+
+            ActorRuntime.ActorGroup owned = subGroup.get();
+            assertNotNull(owned);
+            assertNotEquals(parentGroup.supervisorId(), owned.supervisorId(),
+                    "actor-owned group creates an independent supervisor identity");
+            assertEquals(1, parentGroup.workerCount());
+            assertEquals(1, owned.workerCount());
+            assertEquals(0, owned.memberCount(),
+                    "lifecycle ownership must not implicitly join event-bus membership");
+
+            ActorRuntime.ActorRef<String> child = childRef.get();
+            child.send("spawn");
+            child.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(2, owned.workerCount(),
+                    "ordinary B -> C spawn continues to inherit B's child group");
+            ActorRuntime.ActorRef<?> grandchild = owned.workers().stream()
+                    .filter(ref -> !ref.id().equals(child.id()))
+                    .findFirst().orElseThrow();
+            @SuppressWarnings("unchecked")
+            ActorRuntime.ActorRef<String> grandchildString =
+                    (ActorRuntime.ActorRef<String>) grandchild;
+            grandchildString.send("fail");
+            assertTrue(grandchild.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, owned.queuedSupervisorFailures());
+
+            // The host can inspect failure counts but may not consume the
+            // actor-supervisor's reserved CONTROL stream.
+            assertThrows(SecurityException.class, owned::pollSupervisorNotice);
+            supervisor.send("poll");
+            supervisor.drain().get(5, TimeUnit.SECONDS);
+            SupervisorFailureControl.Notice notice = received.get();
+            assertNotNull(notice);
+            assertEquals(grandchild.id(), notice.actorId());
+            assertEquals(Optional.of(child.id()), notice.spawnedBy());
+            assertEquals(owned.supervisorId(), notice.supervisorId());
+            assertEquals(SupervisorFailureControl.Kind.TERMINAL_FAILURE, notice.kind());
+            assertEquals(0, owned.queuedSupervisorFailures());
+
+            parentGroup.close();
+            assertTrue(supervisor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(child.awaitTermination(5, TimeUnit.SECONDS),
+                    "ancestor cancellation still tears down independently supervised descendants");
+        }
+    }
+
+    @Test
+    void controlPublicationIsRuntimeOnlyAndSanitizesBoundedDiagnostics() {
+        try {
+            var method = SupervisorFailureControl.class.getDeclaredMethod(
+                    "publish", SupervisorFailureControl.Notice.class);
+            assertFalse(java.lang.reflect.Modifier.isPublic(method.getModifiers()),
+                    "untrusted callers must not inject public supervisor CONTROL notices");
+        } catch (NoSuchMethodException failure) {
+            fail(failure);
+        }
+
+        var id = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        SupervisorFailureControl control = new SupervisorFailureControl(
+                id, group, runnable -> new Thread(runnable).start(), 2);
+        String malicious = "failure\\nforged\\r" + "🚀".repeat(600);
+        control.publish(new SupervisorFailureControl.Notice(
+                id, group, ActorRuntime.ActorId.create(), Optional.empty(),
+                SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Type",
+                malicious));
+        var value = control.poll().orElseThrow();
+        assertFalse(value.diagnostic().contains("\\n"));
+        assertFalse(value.diagnostic().contains("\\r"));
+        assertTrue(value.diagnostic().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1024);
+        assertTrue(control.poll().isEmpty(), "CONTROL must be delivered exactly once");
+        control.install(ignored -> { });
+        assertThrows(IllegalStateException.class, control::poll,
+                "host-installed handler and actor polling must never split one CONTROL queue");
+    }
+
 }
