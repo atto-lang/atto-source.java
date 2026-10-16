@@ -281,7 +281,8 @@ public final class NativeIo {
         }
         String endpoint = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "network.connect");
-        Socket socket = new Socket();
+        // Direct TCP bypasses any ambient SOCKS selector or JVM proxy settings.
+        Socket socket = new Socket(java.net.Proxy.NO_PROXY);
         try {
             context.nativeIo().register(socket);
             // Resolve exactly once under the checked host policy; the chosen
@@ -318,9 +319,14 @@ public final class NativeIo {
             throw new SecurityException("DNS response exceeds address admission limit");
         for (InetAddress address : addresses) {
             if (!(address instanceof Inet4Address)) continue;
-            String selected = address.getHostAddress() + ":" + port;
-            if (permissions.allowsNetworkConnection(requested, selected))
-                return new InetSocketAddress(address, port);
+            try {
+                // The same independently tested selected-IP policy helper
+                // returns the exact InetAddress bytes later sent to connect.
+                return VerifiedTcpSocket.checkedAddress(
+                        permissions, requested, address, port);
+            } catch (SecurityException denied) {
+                // No retry is permitted for this numeric destination.
+            }
         }
         throw new SecurityException("no resolved network address is authorized");
     }
