@@ -247,7 +247,7 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("ChildProcManager is a reserved built-in actor base; "
                                 + "user-defined interfaces/contracts cannot impersonate a runtime process manager");
                     }
-                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), "interface");
+                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("ChildProcManager")) {
