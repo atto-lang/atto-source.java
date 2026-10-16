@@ -19,7 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Authenticate exact Java source commit before compiler tests
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_HEAD"
+          git diff --quiet --exit-code
+          echo "EXACT_SOURCE_COMMIT=$actual"
+          echo "EXACT_SOURCE_TREE=$(git rev-parse HEAD^{tree})"
       - name: Validate pinned numeric reference vectors and backend claim manifest (data-only)
         run: python3 -m unittest discover -s tests -p 'test_numeric_*.py' -v
       - name: Set up GraalVM
