@@ -1059,12 +1059,13 @@ public final class Parser {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
-            // Do not silently drop a claimed serialization derivation: class
-            // declarations do not yet retain/generate portable codec metadata.
-            if (name.equals("Serializable")) {
-                throw error(previous(),
-                        "@Serializable codec derivation is reserved but not yet implemented; "
-                        + "built-in data-only actor messages are admitted without an annotation");
+            // A guest annotation cannot mint Sendable proof, CODEC selection,
+            // or privileged supervisor CONTROL authority. Keep these names
+            // reserved until compiler-verified derivation and lowering exist.
+            if (List.of("Sendable", "Serializable", "NetworkCodec",
+                    "ActorMessageCodec", "SupervisorControlCodec").contains(name)) {
+                throw error(previous(), "@" + name
+                        + " requires compile-time semantic validation and guest-AOT lowering; not implemented");
             }
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
