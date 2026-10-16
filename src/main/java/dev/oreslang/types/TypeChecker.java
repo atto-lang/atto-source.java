@@ -4909,7 +4909,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
-        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        // Boolean singleton types are immutable scalar refinements, just like
+        // literal strings. Their runtime representation is a plain boolean,
+        // so reject unsafe complement/borrow types without rejecting these.
+        if (type instanceof Primitive || type instanceof StringLiteral
+                || type instanceof BoolLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
             return;
