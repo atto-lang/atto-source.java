@@ -94,5 +94,7 @@ final class NativeSocketBoundaryTest {
                 policy, "203.0.113.7:443"));
         assertThrows(SecurityException.class, () -> NativeIo.requirePinnedHttpLiteral(
                 policy, "[::1]:443"));
+        assertThrows(SecurityException.class, () -> NativeIo.requirePinnedHttpLiteral(
+                policy, "0.0.0.0:443"));
     }
 }
