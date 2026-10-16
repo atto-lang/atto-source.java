@@ -357,6 +357,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
 
+    def test_ref_attestation_rejects_malformed_payloads(self):
+        valid = {"ref": "refs/heads/ci/oreslang-test",
+                 "object": {"type": "commit", "sha": A}}
+        with patch.object(pub, "gh_api") as call:
+            for bad in (None, [], "not-an-object", 0):
+                with self.subTest(creation=bad):
+                    with self.assertRaisesRegex(pub.Denied, "exact new CI ref"):
+                        pub.verify_private_ci_ref(
+                            "trusted/ci", "ci/oreslang-test", A, bad)
+                    call.assert_not_called()
+        for bad in (None, [], "wrong-shape", 0):
+            with self.subTest(readback=bad):
+                with patch.object(pub, "gh_api", return_value=bad) as call:
+                    with self.assertRaisesRegex(pub.Denied, "does not point"):
+                        pub.verify_private_ci_ref(
+                            "trusted/ci", "ci/oreslang-test", A, valid)
+                    call.assert_called_once_with(
+                        "repos/trusted/ci/git/ref/heads/ci/oreslang-test")
+
     def test_new_branch_ref_must_confirm_the_created_commit_sha(self):
         base = self.fake_api
         for value in [
