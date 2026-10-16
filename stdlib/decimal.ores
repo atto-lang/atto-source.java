@@ -32,4 +32,20 @@ define module decimal as
     return value;
   }
 
+  // Explicit per-call MathContext. The VM owns the same closed intrinsic on
+  // every backend; no ambient mutable precision or Java interop is exposed.
+  // Supported rounding strings: HALF_EVEN, HALF_UP, HALF_DOWN, UP, DOWN,
+  // CEILING, FLOOR, UNNECESSARY. Precision must be 1..4096.
+  pub fnc divide(decimal numerator, decimal denominator, int precision, String rounding): decimal {
+    return DecimalOps.divide(numerator, denominator, precision, rounding);
+  }
+
+  pub fnc round(decimal value, int precision, String rounding): decimal {
+    return DecimalOps.round(value, precision, rounding);
+  }
+
+  pub fnc sqrt(decimal value, int precision, String rounding): decimal {
+    return DecimalOps.sqrt(value, precision, rounding);
+  }
+
 end
