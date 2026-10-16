@@ -161,7 +161,10 @@ public final class OresProjectConfig {
         Path projectRoot = packageManifest ? manifestDir : resolvePath(manifestDir, rootText);
 
         List<String> sourceRootValues = stringArray(toml, "source.roots");
-        if (sourceRootValues.isEmpty()) sourceRootValues = List.of(".");
+        // An omitted roots field defaults to the project root, but an
+        // explicitly empty array disables implicit bare-source lookups.
+        // Treating [] as ["."] silently expands the import search surface.
+        if (tomlValue(toml, "source.roots") == null) sourceRootValues = List.of(".");
         List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
         List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
 
