@@ -897,13 +897,16 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public synchronized void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
+            // Publish revocation before scrubbing. Retain work after an
+            // exceptional native/accounting release so shutdown is retryable.
+            sliceClosed.set(true);
             for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
             blocks.clear();
-            long bytes = usedBytes.getAndSet(0);
+            long bytes = usedBytes.get();
             if (bytes != 0) {
                 if (ownerKind == ActorKind.SHARED) releaseSharedActorLocalRuntimeBytes(bytes, owner);
                 else releasePrivateRuntimeBytes(bytes, owner);
+                usedBytes.set(0); // only after aggregate release succeeded
             }
         }
 
@@ -1017,18 +1020,26 @@ public final class ActorRuntime implements AutoCloseable {
             memory = null;
         }
 
-        private void invalidateFromSlice() {
-            if (!blockClosed.compareAndSet(false, true)) return;
+        private synchronized void invalidateFromSlice() {
+            blockClosed.set(true);
+            // Retrying slice retirement must also retry an interrupted scrub.
             zeroAndDetachMemory();
         }
 
         @Override
         public void close() {
-            openMemory(); // owner + liveness check before invalidation
-            if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
+            slice.requireCurrentOwner();
+            synchronized (this) {
+                if (!blockClosed.get()) {
+                    openMemory();
+                    blockClosed.set(true);
+                    zeroAndDetachMemory();
+                }
+            }
+            // Never hold the block monitor while acquiring slice monitor:
+            // shutdown acquires slice -> block.
             slice.unregister(this);
-            reservation.close();
+            reservation.close(); // retryable if global accounting rejects
         }
     }
 
@@ -1046,8 +1057,11 @@ public final class ActorRuntime implements AutoCloseable {
         public long bytes() { return bytes; }
 
         @Override
-        public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
+        public synchronized void close() {
+            if (released.get()) return;
+            slice.release(bytes);
+            // Do not lose the ability to retry after failed aggregate release.
+            released.set(true);
         }
     }
 
