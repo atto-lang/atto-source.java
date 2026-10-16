@@ -174,7 +174,7 @@ final class OresProjectConfigTest {
                 () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+src/shared/util"));
         assertTrue(malformedRoot.getMessage().contains("expected +/<path>"));
         IllegalArgumentException backslashRoot = assertThrows(IllegalArgumentException.class,
-                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+\\\\src/shared/util"));
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+\\src/shared/util"));
         assertTrue(backslashRoot.getMessage().contains("expected +/<path>"));
         assertThrows(IllegalArgumentException.class,
                 () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/src/shared/util"));
@@ -584,7 +584,7 @@ final class OresProjectConfigTest {
         Path main = project.resolve("src/main.ores");
         Files.writeString(main, "pub fnc main(): void { return; }");
         Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
-        Files.writeString(manifest, "schema_version = \\"1\\"\\n");
+        Files.writeString(manifest, "schema_version = \"1\"\n");
 
         assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(main,
                 Map.of(OresProjectConfig.ENV_ORES_PROJECT_ROOT, "")));
