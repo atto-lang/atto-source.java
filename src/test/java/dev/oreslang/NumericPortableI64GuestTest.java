@@ -21,7 +21,19 @@ final class NumericPortableI64GuestTest {
     private record Case(String expression, long expected) { }
 
     @Test
-    void signedI64OverflowDoesNotSilentlyWrap() {
+    void signedI64OverflowDoesNotSilentlyWrap() throws Exception {
+        // Bind these four executable guest negatives to the exact cross-
+        // backend corpus. A source change must not silently retain green
+        // tests for a stale, independently embedded list.
+        byte[] overflowFixture = Files.readAllBytes(
+                Path.of("contracts/v1/numeric-parity/source-i64-overflow-cases.json"));
+        MessageDigest overflowHash = MessageDigest.getInstance("SHA-1");
+        overflowHash.update(("blob " + overflowFixture.length + "\0")
+                .getBytes(StandardCharsets.US_ASCII));
+        overflowHash.update(overflowFixture);
+        assertEquals("2ce0b0ff5c52e54a788280fd64d67fa8dc32614a",
+                HexFormat.of().formatHex(overflowHash.digest()),
+                "shared signed-i64 overflow fixture drift");
         // These expressions are valid Oreslang syntax but their mathematical
         // result exceeds signed i64. Failure must be attributable to the
         // numeric boundary, rather than an unrelated parser/grammar problem.
