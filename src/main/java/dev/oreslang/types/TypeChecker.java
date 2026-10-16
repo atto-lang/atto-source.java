@@ -746,6 +746,31 @@ public final class TypeChecker {
                         // public and then fail runtime access checks.
                         if (parentMethod.isAbstract()
                                 && parentMethod.visibility() == Ast.Visibility.PRIVATE
+                                && klass.genericParameters().isEmpty()
+                                && origin.owner().genericParameters().isEmpty()
+                                && parentMethod.genericParameters().isEmpty()
+                                && local.genericParameters().isEmpty()) {
+                            boolean sameSignature =
+                                    parentMethod.returnType().equals(local.returnType())
+                                    && parentMethod.async() == local.async()
+                                    && parentMethod.suspends() == local.suspends()
+                                    && parentMethod.structural() == local.structural();
+                            for (int i = 0; i < local.arity() && sameSignature; i++) {
+                                Ast.Param a = parentMethod.parameters().get(i);
+                                Ast.Param b = local.parameters().get(i);
+                                sameSignature = a.type().equals(b.type())
+                                        && a.mutable() == b.mutable()
+                                        && a.structural() == b.structural();
+                            }
+                            if (!sameSignature) {
+                                throw new IllegalArgumentException(
+                                        "incompatible private abstract method override '"
+                                                + klass.name() + "." + local.name()
+                                                + "': parameter, return or effect signature differs");
+                            }
+                        }
+                        if (parentMethod.isAbstract()
+                                && parentMethod.visibility() == Ast.Visibility.PRIVATE
                                 && local.visibility() != Ast.Visibility.PRIVATE) {
                             throw new IllegalArgumentException("private abstract method '"
                                     + methodOriginLabel(origin) + "." + local.name()
