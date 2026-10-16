@@ -53,6 +53,15 @@ final class ImportGraph {
         }
 
         String raw = imported.path().replace('\\', '/');
+        // Project-root and declared-package authorities are established only
+        // by the host filesystem resolver. The incremental compiler also has
+        // a direct source-map API; it must not silently accept these imports
+        // as unresolved bare names when that API omits the resolution graph.
+        if (raw.startsWith("+") || raw.startsWith("pkg:")) {
+            throw new IllegalArgumentException(
+                    "rooted/package import '" + imported.path() + "' from '" + unitId
+                            + "' requires a resolved filesystem import mapping");
+        }
         Path parent = Path.of(unitId).getParent();
         Path candidatePath = raw.startsWith(".")
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
