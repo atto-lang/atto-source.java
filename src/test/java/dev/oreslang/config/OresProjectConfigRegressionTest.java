@@ -71,13 +71,18 @@ final class OresProjectConfigRegressionTest {
         // Namespace checking must reject substitution without rejecting
         // canonical symlink aliases for installed package sources.
         Path alias = temp.resolve("same-physical-source-link.ores");
+        boolean aliasSupported = true;
         try {
             Files.createSymbolicLink(alias, source);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unavailable) {
+            aliasSupported = false;
+        }
+        if (aliasSupported) {
+            // Keep resolver errors *outside* the optional-filesystem catch.
+            // A failed implementation must never be mistaken for no symlink
+            // support and silently pass this regression.
             OresProjectConfig throughAlias = consumer.forImportedPackage(alias, "pkg:tools/src/a");
             assertEquals(imported.importContext(), throughAlias.importContext());
-        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unavailable) {
-            // Symlink support is optional on this filesystem; the remaining
-            // package-boundary assertions are still meaningful.
         }
 
         IllegalArgumentException windowsSeparators = assertThrows(IllegalArgumentException.class,
