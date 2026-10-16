@@ -4975,10 +4975,14 @@ public final class TypeChecker {
             }
             return;
         }
-        if (named.name().equals("ActorMail")) {
+        if (named.name().equals("ActorMail") || named.name().equals("ActorOutput")) {
             throw new IllegalArgumentException(
-                    where + " cannot send an ActorMail envelope as data; "
+                    where + " cannot send an ActorMail/ActorOutput envelope as data; "
                             + "mailbox/supervisor metadata is created by the runtime");
+        }
+        if (named.name().equals("ActorOutputStream")) {
+            throw new IllegalArgumentException(
+                    where + " cannot send an ActorOutputStream runtime capability as data");
         }
 
         // Validate every transitive constituent. Builtin sum types must have
@@ -5009,11 +5013,15 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // Only explicitly recognized immutable builtins are source
+            // sendable here. Unknown nominal classes, imported aliases that
+            // failed to resolve, and host/runtime capability types cannot
+            // acquire Sendable simply by lacking a declaration.
+            if ((named.name().equals("ActorKind") || named.name().equals("$builtin$Symbol"))
+                    && named.arguments().isEmpty()) return;
+            throw new IllegalArgumentException(
+                    where + " has no proven Sendable contract for nominal type '"
+                            + named.name() + "'; unknown types and opaque capabilities fail closed");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
