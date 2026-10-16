@@ -3833,7 +3833,7 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
-            Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical, !nonLexical);
+            Env lambdaEnv = new Env(lambdaCaptureParent(lambda, env), nonLexical, !nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
@@ -4503,6 +4503,31 @@ public final class TypeChecker {
                 "object rest destructuring requires a statically known record type");
     }
 
+    /**
+     * A lambda receives an explicit, filtered lexical boundary rather than the
+     * entire method frame. Ordinary lambdas never inherit 'self'; lex[self]
+     * can expose its type, but the ownership checker still controls whether
+     * that borrowed receiver may actually be captured.
+     */
+    private Env lambdaCaptureParent(Ast.LambdaExpr lambda, Env outer) {
+        if (lambda.nonLexical() || outer.descendantsNonLexical()) return null;
+        for (String name : lambda.captureNames()) {
+            if (outer.lookup(name) == null) {
+                throw new IllegalArgumentException(
+                        "unknown outer binding '" + name + "' in lambda capture list");
+            }
+        }
+        Env captured = new Env(null, false, true);
+        for (Env frame = outer; frame != null; frame = frame.parent) {
+            for (Map.Entry<String, Env.Binding> entry : frame.bindings.entrySet()) {
+                if (lambda.permitsOuterBinding(entry.getKey())) {
+                    captured.bindings.putIfAbsent(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        return captured;
+    }
+
     private void validateMutexCallback(Ast.LambdaExpr lambda, Type expectedParameter, Env parent, Set<String> generics, Type self) {
         if (lambda.parameters().size() != 1) {
             throw new IllegalArgumentException("mutex callback must accept exactly one protected-value parameter");
@@ -4512,7 +4537,7 @@ public final class TypeChecker {
         requireAssignable(expectedParameter, declared, "mutex callback parameter " + param.name());
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
-        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        Env lambdaEnv = new Env(lambdaCaptureParent(lambda, parent), nonLexical, !nonLexical);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
@@ -4545,7 +4570,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
-        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        Env lambdaEnv = new Env(lambdaCaptureParent(lambda, parent), nonLexical, !nonLexical);
         List<Type> lambdaArgumentTypes = new ArrayList<>(lambda.parameters().size());
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
