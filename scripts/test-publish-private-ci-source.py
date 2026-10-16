@@ -111,7 +111,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": F},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"type": "commit", "sha": F}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -465,6 +467,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                     "ci/oreslang-test", self.root, A, D)
                 self.assertFalse(any(
                     method == "POST" and route == "repos/trusted/ci/git/refs"
+                    for method, route, _ in self.route_calls))
+
+    def test_create_ref_receipt_must_match_exact_commit_before_readback(self):
+        original = self.fake_api
+        for receipt in [
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "commit", "sha": A}},
+            {"ref": "refs/heads/main",
+             "object": {"type": "commit", "sha": F}},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "tag", "sha": F}},
+            {"ref": "refs/heads/ci/oreslang-test"},
+        ]:
+            with self.subTest(receipt=receipt):
+                self.route_calls.clear()
+                def mutate(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/refs" and method == "POST":
+                        self.route_calls.append((method, route, payload))
+                        return receipt
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=mutate):
+                    with self.assertRaisesRegex(pub.Denied, "exact isolated CI"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A, D)
+                self.assertFalse(any(
+                    method == "GET"
+                    and route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test"
                     for method, route, _ in self.route_calls))
 
     def test_ref_readback_rejects_mismatched_new_branch_target(self):
