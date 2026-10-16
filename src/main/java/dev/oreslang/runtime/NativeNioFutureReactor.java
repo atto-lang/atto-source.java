@@ -490,8 +490,11 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             } finally {
                 try { listener.close(); } catch (IOException ignored) { }
                 try { selector.close(); } catch (IOException ignored) { }
-                terminated.completeFromRuntime(null);
+                // Publish quiescence before completing guest-visible close:
+                // a resumed task may immediately open a new listener, and
+                // capacity accounting must already see this reactor stopped.
                 stopped.countDown();
+                terminated.completeFromRuntime(null);
             }
         }
     }
