@@ -3576,6 +3576,24 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * A narrow host-only grant used to register the immutable graph-to-actor
+     * bindings. Never expose an equivalent guest or ActorGroup capability.
+     * It also denies force-cancellation hook reentry and closed runtimes.
+     */
+    void requirePipelineRegistrationHostAuthority() {
+        requireSupervisorContext("register actor pipeline routing");
+        if (OresScheduler.current() != null) {
+            throw new SecurityException(
+                    "actor pipeline registration cannot occur on scheduler continuations");
+        }
+        if (closed.get()) {
+            throw new IllegalStateException("actor runtime is closed");
+        }
+    }
+
+
+
     private void requireBlockingHostContext(String operation) {
         if (inActorExecution()
                 || inActorGroupMailmanExecution()
