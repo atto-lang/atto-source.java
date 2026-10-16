@@ -2299,7 +2299,16 @@ public final class OwnershipChecker {
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
+        if (!nonLexical) {
+            for (String name : lambda.captureNames()) {
+                if (outer.lookup(name) == null) {
+                    throw error("unknown outer binding '" + name + "' in lambda capture list");
+                }
+            }
+        }
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
+        captures.values.entrySet().removeIf(
+                entry -> !lambda.permitsOuterBinding(entry.getKey()));
         Scope closure = new Scope(null, nonLexical);
 
         for (Capture capture : captures.values.values()) {
@@ -2565,21 +2574,20 @@ public final class OwnershipChecker {
                 nestedLocals.add(parameter.name());
             }
             nestedLocals.add("arguments");
+            CaptureSet nestedCaptures = new CaptureSet();
             if (lambda.expressionBody() != null) {
-                scanExpr(
-                        lambda.expressionBody(),
-                        nestedLocals,
-                        outer,
-                        recursiveBinding,
-                        captures,
-                        false);
+                scanExpr(lambda.expressionBody(), nestedLocals, outer,
+                        recursiveBinding, nestedCaptures, false);
             } else {
-                scanStatements(
-                        lambda.blockBody(),
-                        nestedLocals,
-                        outer,
-                        recursiveBinding,
-                        captures);
+                scanStatements(lambda.blockBody(), nestedLocals, outer,
+                        recursiveBinding, nestedCaptures);
+            }
+            // Exclusions of a nested lambda must not count as transitive
+            // captures of its enclosing closure.
+            for (Capture capture : nestedCaptures.values.values()) {
+                if (lambda.permitsOuterBinding(capture.name)) {
+                    captures.add(capture.name, capture.source, capture.write);
+                }
             }
         }
     }
