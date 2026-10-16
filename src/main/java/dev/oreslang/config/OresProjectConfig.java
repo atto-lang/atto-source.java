@@ -19,10 +19,10 @@ import java.util.Optional;
 /**
  * Project-level Oreslang compiler configuration.
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
- * file (or current working directory) owns the project. Manifest paths are
- * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
- * process-relative and are searched after project-local roots.</p>
+ * <p>Package manifests (.ores.pkg.toml) bind the source project root and
+ * take precedence over legacy compiler manifests. Without a package manifest,
+ * the nearest .oreslangc.cfg.toml keeps its previous semantics. Host import
+ * resolution uses project roots first, then ORES_PATHS and ORESLANG_PATH.</p>
  */
 public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
@@ -227,7 +227,7 @@ public final class OresProjectConfig {
 
     /**
      * Ordered import search roots. Project-local paths intentionally win over
-     * ambient ORESLANG_PATH entries for deterministic/reproducible builds.
+     * ambient ORES_PATHS and ORESLANG_PATH entries for reproducible builds.
      */
     public List<Path> searchRoots() {
         LinkedHashSet<Path> ordered = new LinkedHashSet<>();
@@ -244,7 +244,9 @@ public final class OresProjectConfig {
      *   <li>java: imports are not filesystem imports.</li>
      *   <li>./ and ../ imports resolve only relative to the importing file.</li>
      *   <li>absolute imports resolve directly.</li>
-     *   <li>bare imports search source.roots, source.import_paths, then ORESLANG_PATH.</li>
+     *   <li>@/ imports use the nearest package manifest directory.</li>
+     *   <li>pkg: aliases use declared zed dependency roots.</li>
+     *   <li>bare imports search project roots, ORES_PATHS, then ORESLANG_PATH.</li>
      * </ul>
      */
     public Optional<Path> resolveImport(Path importer, String importPath) {
