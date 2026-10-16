@@ -53,6 +53,11 @@ final class ImportGraph {
         }
 
         String raw = imported.path().replace('\\', '/');
+        if (raw.startsWith("+")) {
+            throw new IllegalArgumentException(
+                    "project-root import '" + imported.path() + "' from '" + unitId
+                            + "' requires a resolved filesystem import mapping");
+        }
         Path parent = Path.of(unitId).getParent();
         Path candidatePath = raw.startsWith(".")
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
