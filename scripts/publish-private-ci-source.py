@@ -501,6 +501,53 @@ def require_source_tree_match(source, trusted_root, files):
     return commit_sha, expected_tree
 
 
+
+def verify_published_root_tree(repository, root_sha, source_tree_sha):
+    """Read back the exact source subtree in the destination root tree."""
+    valid_sha(root_sha)
+    valid_sha(source_tree_sha)
+    actual = gh_api(f"repos/{repository}/git/trees/{root_sha}")
+    entries = actual.get("tree")
+    if (actual.get("sha") != root_sha or actual.get("truncated") is not False
+            or not isinstance(entries, list)):
+        raise Denied("destination root Git tree could not be verified")
+    matches = [item for item in entries
+               if isinstance(item, dict) and item.get("path") == PREFIX]
+    if (len(matches) != 1 or matches[0].get("mode") != "040000"
+            or matches[0].get("type") != "tree"
+            or matches[0].get("sha") != source_tree_sha):
+        raise Denied("destination root does not contain exact reviewed source subtree")
+
+
+def verify_published_commit(repository, commit_sha, root_sha, parent_sha):
+    """Read back destination commit, verifying root tree and parent binding."""
+    for sha in (commit_sha, root_sha, parent_sha):
+        valid_sha(sha)
+    result = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    tree = result.get("tree")
+    parents = result.get("parents")
+    if (result.get("sha") != commit_sha
+            or not isinstance(tree, dict) or tree.get("sha") != root_sha
+            or not isinstance(parents, list) or len(parents) != 1
+            or not isinstance(parents[0], dict)
+            or parents[0].get("sha") != parent_sha):
+        raise Denied("destination commit does not bind exact root tree and parent")
+
+
+def verify_created_snapshot_ref(repository, branch, commit_sha):
+    """Read back new isolated branch instead of trusting its POST receipt."""
+    valid_sha(commit_sha)
+    target_ref = "refs/heads/" + branch
+    result = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    target = result.get("object")
+    if (result.get("ref") != target_ref
+            or not isinstance(target, dict)
+            or target.get("type") != "commit"
+            or target.get("sha") != commit_sha):
+        raise Denied("created private CI branch does not reference verified commit")
+
+
+
 def publish(repository, source, branch, trusted_root,
             source_commit, source_tree):
     # Caller-selected expected commit/tree must be explicit and immutable.
@@ -577,6 +624,9 @@ def publish(repository, source, branch, trusted_root,
                           {"path": PREFIX, "mode": "040000", "type": "tree",
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
+    # Re-fetch the root tree: a valid SHA returned from POST is insufficient.
+    checked_repo(repository)
+    verify_published_root_tree(repository, new_tree_sha, isolated_sha)
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": ("ci: source snapshot from approved private Oreslang checkout\n\n"
@@ -584,6 +634,8 @@ def publish(repository, source, branch, trusted_root,
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
+    checked_repo(repository)
+    verify_published_commit(repository, commit_sha, new_tree_sha, base_sha)
     authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
@@ -591,6 +643,9 @@ def publish(repository, source, branch, trusted_root,
     })
     if created.get("ref") != "refs/heads/" + branch:
         raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    # A successful create-ref response is not a confirmed destination state.
+    checked_repo(repository)
+    verify_created_snapshot_ref(repository, branch, commit_sha)
     return commit_sha, len(files)
 
 
