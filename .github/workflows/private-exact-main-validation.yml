@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Pnative-aot -DskipTests package
+          mvn -B -ntp -Pnative-aot -DskipTests clean package
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/together.ores
           timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-core-library.ores
           test "$(timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/native-channel-select-smoke.ores)" = 'first:7:9'
@@ -91,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Pnative-hybrid -DskipTests package
+          mvn -B -ntp -Pnative-hybrid -DskipTests clean package
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
           timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-core-library.ores
           test "$(timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/native-channel-select-smoke.ores)" = 'first:7:9'
@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -B -ntp -Pnative-isolate -DskipTests package
+          mvn -B -ntp -Pnative-isolate -DskipTests clean package
           lib="$(find target -maxdepth 1 -type f \( -name 'oresvm.so' -o -name 'liboresvm.so' \) | head -n1)"
           test -n "$lib"
           timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
