@@ -389,10 +389,14 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "a required security class was omitted from report verification: " + className);
         }
         for (String executable : new String[] {
-                "if not reports:",
+                "for classname in sorted(required):",
+                "report = report_dir / f\"TEST-{classname}.xml\"",
+                "if report.is_symlink() or not report.is_file():",
+                "if not 0 < report.stat().st_size <= 16 * 1024 * 1024:",
+                "if root.tag != \"testsuite\" or root.get(\"name\") != classname:",
+                "if case.get(\"classname\") != classname:",
                 "missing = sorted(name for name, count in executed.items() if count == 0)",
-                "if missing:",
-                "raise SystemExit(\"No Maven Surefire XML reports; tests did not execute\")"
+                "if missing:"
         }) {
             assertTrue(proof.contains(executable), "missing fail-closed assertion: " + executable);
         }
