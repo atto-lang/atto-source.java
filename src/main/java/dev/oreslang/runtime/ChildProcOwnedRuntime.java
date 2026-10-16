@@ -94,6 +94,12 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         if (maxOutputBytes < 1 || maxOutputBytes > 16 * 1024 * 1024) {
             throw new IllegalArgumentException("maxOutputBytes must be in 1..16 MiB");
         }
+        // There are two independent captured pipes per child, and
+        // ByteArrayOutputStream can temporarily duplicate its buffer while
+        // growing/copying. Bound the *aggregate* configured capture budget.
+        if ((long) maxChildren * maxOutputBytes * 2L > 64L * 1024 * 1024) {
+            throw new IllegalArgumentException("child process registry output budget exceeds 64 MiB");
+        }
         this.maxChildren = maxChildren;
         this.maxOutputBytes = maxOutputBytes;
     }
