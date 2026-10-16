@@ -45,7 +45,7 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
-    # Candidate identity only: not authorization without protected-main approval.
+    # Candidate identity pin only; protected source-main approval is separate.
     "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
@@ -321,7 +321,7 @@ def collect_source(root, trusted_root, *, omit_checkout_metadata=False):
                                        follow_symlinks=False)
                 except OSError as exc:
                     raise Denied("source Git metadata cannot be inspected") from exc
-                if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+                if not stat.S_ISDIR(metadata.st_mode):
                     raise Denied("source Git metadata must not be a symlink or special file")
                 continue
             if (name in (".", "..")
@@ -474,6 +474,9 @@ def require_source_tree_match(source, trusted_root, files):
         raise Denied("exact-tree source root unavailable") from exc
     if source_root != trusted:
         raise Denied("exact-tree transfer requires the checkout root")
+    marker = trusted / ".git"
+    if marker.is_symlink() or not marker.is_dir():
+        raise Denied("checkout root requires real Git metadata directory")
     try:
         verify = subprocess.run(
             ["git", "-C", str(trusted), "rev-parse",
@@ -501,6 +504,23 @@ def require_source_tree_match(source, trusted_root, files):
     if actual_tree != expected_tree:
         raise Denied("source snapshot differs from committed Git HEAD tree")
     return commit_sha, expected_tree
+
+
+def verify_private_ci_ref(repository, branch, commit_sha, created):
+    """Attest the GitHub ref write with an independent exact-commit readback."""
+    expected = "refs/heads/" + branch
+    valid_sha(commit_sha)
+    if not isinstance(created, dict):
+        raise Denied("CI ref create acknowledgement is missing")
+    written = created.get("object")
+    if (created.get("ref") != expected or not isinstance(written, dict)
+            or written.get("type") != "commit" or written.get("sha") != commit_sha):
+        raise Denied("CI ref creation did not attest the expected commit")
+    check = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    pointed = check.get("object")
+    if (check.get("ref") != expected or not isinstance(pointed, dict)
+            or pointed.get("type") != "commit" or pointed.get("sha") != commit_sha):
+        raise Denied("CI ref readback does not match the expected commit")
 
 
 def publish(repository, source, branch, trusted_root,
@@ -591,8 +611,8 @@ def publish(repository, source, branch, trusted_root,
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    authorize_write()
+    verify_private_ci_ref(repository, branch, commit_sha, created)
     return commit_sha, len(files)
 
 
