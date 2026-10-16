@@ -52,6 +52,14 @@ final class DopRegionScheduleTest {
                 () -> new DopRegionSchedule.Task("  ", List.of()));
         assertThrows(IllegalArgumentException.class,
                 () -> new DopRegionSchedule.Task(" padded ", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DopRegionSchedule.Task("\u000bname", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DopRegionSchedule.Task("name\u0000", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> DopRegionSchedule.Access.rows(r, 0, 0, 1, DopRegionSchedule.Mode.REDUCE, "\u000bsum"));
+        assertThrows(IllegalArgumentException.class,
+                () -> DopRegionSchedule.Access.rows(r, 0, 0, 1, DopRegionSchedule.Mode.REDUCE, "sum\f"));
         assertThrows(NullPointerException.class,
                 () -> new DopRegionSchedule.Task("bad", java.util.Arrays.asList((DopRegionSchedule.Access) null)));
     }
