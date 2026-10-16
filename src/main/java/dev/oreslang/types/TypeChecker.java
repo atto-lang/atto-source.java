@@ -4895,6 +4895,35 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Runtime capabilities are not actor DATA, regardless of whether their
+     * user-facing type has type arguments. Keep both mailbox admission and
+     * shared-safety admission on the same deny-set. Source name screening is
+     * defense in depth, not a substitute for resolved nominal provenance or
+     * runtime capability admission.
+     */
+    private static final Set<String> ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES = Set.of(
+            "Pointer", "NetworkCodec", "ActorMessageCodec", "SupervisorControlCodec",
+            "ControlCodec", "Serializable", "Sendable", "Stream", "Observable",
+            "ActorRef", "ActorHandle", "ActorControlHandle", "ActorGroup",
+            "ActorGroupJoinCapability", "ProxyActor", "Mailman", "EventBus",
+            "ContinuationTarget", "Region", "RegionTransfer", "OwnedRegion",
+            "SyncCell");
+
+    private static final Set<String> ACTOR_EXECUTION_LOCAL_HANDLES = Set.of(
+            "TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
+            "Mutex", "MutexGuard", "Future", "Channel", "SelectCase",
+            "SelectSet", "SelectResult", "Iterator", "AsyncIterator");
+
+    // Source module names and canonical/linker identities both count as
+    // namespaces for capability admission. Neither pkg.Pointer nor
+    // pkg::Pointer may masquerade as data-only mailbox contents.
+    static String actorCapabilitySimpleName(String resolvedName) {
+        int dot = resolvedName.lastIndexOf('.');
+        int scope = resolvedName.lastIndexOf("::");
+        return resolvedName.substring(Math.max(dot, scope < 0 ? -1 : scope + 1) + 1);
+    }
+
     private void validateActorCallableBoundaryType(
             Type type,
             Ast.ActorKind actorKind,
@@ -4909,7 +4938,18 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
         }
-        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            // Only bool, signed i64, f64 and UTF-8 string currently have
+            // portable scalar DATA codecs. Source width/finiteness must still
+            // be validated by the compiler-owned descriptor and encoder.
+            if (primitive != Primitive.INT && primitive != Primitive.FLOAT
+                    && primitive != Primitive.BOOL && primitive != Primitive.STRING) {
+                throw new IllegalArgumentException(where + " has no proven portable actor DATA codec for "
+                        + primitive + "; explicit validated serialization is required");
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
             return;
@@ -4936,45 +4976,75 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
-                || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+        // Serialization codec objects and pointer/stream handles are
+        // executable or lifetime-bearing capabilities, never mailbox data.
+        // In particular a NetworkCodec<T> may not grant actor-message
+        // authority merely by serializing its own implementation object.
+        // Types declared within an Oreslang module resolve to qualified
+        // names (e.g. "CodecModule.NetworkCodec"). Do not allow that
+        // qualification to bypass the non-data-capability admission list.
+        String actorBoundarySimpleName = actorCapabilitySimpleName(named.name());
+        if (ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES.contains(actorBoundarySimpleName)) {
+            throw new IllegalArgumentException(where + " cannot transport "
+                    + named.name() + " across an actor boundary; encode owned data with "
+                    + "an independently admitted ActorMessageCodec<T>");
+        }
+        if (ACTOR_EXECUTION_LOCAL_HANDLES.contains(actorBoundarySimpleName)) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
-        if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
-                throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
-            }
-            if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
-                throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
-            }
-            return;
+        // SharedMutex is executable lock authority, not actor DATA, even for
+        // SHARED actors. The actor kind never makes it safe to send a lock.
+        if (actorBoundarySimpleName.equals("SharedMutex")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport SharedMutex<T> across an actor boundary");
         }
 
         for (Type argument : named.arguments()) {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
         }
 
-        // Built-in sum/container values are data-only when their arguments pass.
+        // A type name alone does not prove a valid tagged-value contract.
+        // Every generic parameter is recursively screened above; now require
+        // the exact intrinsic arity before treating the nominal as data.
         if (named.name().equals("Option") || named.name().equals("Result")
                 || named.name().equals("OptionUnwrapError")) {
-            return;
+            int expected = named.name().equals("Option") ? 1
+                    : named.name().equals("Result") ? 2 : 0;
+            if (named.arguments().size() != expected) {
+                throw new IllegalArgumentException(where + " requires "
+                        + named.name() + " to have exactly " + expected
+                        + " type argument(s) at an actor DATA boundary");
+            }
+            // Type arguments alone are not a runtime codec. The interpreter
+            // currently has private Option/Result values which cannot be
+            // transported by the generic actor freezer/MessagePack subset.
+            // Gate compiler admission on a verified, registered tagged-value
+            // DATA codec rather than silently accepting a nominal spelling.
+            throw new IllegalArgumentException(where + " cannot transport "
+                    + named.name() + " in actor DATA until a verified tagged-value"
+                    + " mailbox codec is registered for the recipient");
         }
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
+            // Actor DATA is not a general-purpose host object transport.
+            // An unresolved nominal name might denote an imported resource,
+            // function table, FFI handle or a spoofed codec implementation.
+            // The transport cannot prove deep ownership from its spelling.
+            // ActorId/ActorKind and the compiler's Symbol marker are explicitly
+            // data-only built-ins; everything else needs a verified data shape
+            // or a separately admitted compiler-owned schema descriptor.
+            if (named.arguments().isEmpty()
+                    && Set.of("ActorId", "ActorKind", "$builtin$Symbol")
+                            .contains(named.name())) {
+                return;
+            }
+            throw new IllegalArgumentException(
+                    where + " cannot transport unresolved nominal type '"
+                            + named.name() + "'; actor DATA requires an explicitly "
+                            + "verified, owned serialization shape");
         }
         if (klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
@@ -5020,9 +5090,12 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("Iterator")
-                || named.name().equals("AsyncIterator") || named.name().equals("SharedMutex")) return false;
+        // A module-qualified runtime/codec name remains a capability even
+        // when it appears nested in a class or shared-safe generic field.
+        String sharedSafetySimpleName = actorCapabilitySimpleName(named.name());
+        if (ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES.contains(sharedSafetySimpleName)) return false;
+        if (ACTOR_EXECUTION_LOCAL_HANDLES.contains(sharedSafetySimpleName)
+                || sharedSafetySimpleName.equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
