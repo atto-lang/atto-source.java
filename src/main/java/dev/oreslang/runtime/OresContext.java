@@ -119,11 +119,12 @@ public final class OresContext implements AutoCloseable {
                     vm::executeControl);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
+            RuntimeGarbageCollector actorGc = gc;
             actors.setActorExitHook(domain -> {
                 try {
                     retireOwnedChildProcesses(domain);
                 } finally {
-                    gc.retireActorDomain(domain);
+                    actorGc.retireActorDomain(domain);
                 }
             });
 
