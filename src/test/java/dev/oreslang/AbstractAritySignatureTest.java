@@ -94,14 +94,15 @@ final class AbstractAritySignatureTest {
     }
 
     @Test
-    void explicitPrivateAbstractSignatureDoesNotSilentlyBecomePublic() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define abstract class Foo as
-                          private abc(int a): void;
-                        end
-                        """)));
-        assertTrue(error.getMessage().contains("must be public"), error.getMessage());
+    void explicitPrivateAbstractSignatureIsAnOverrideOnlySlot() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define abstract class Foo as
+                  private abc(int a): void;
+                end
+                define class Bar extends Foo as
+                  private abc(int a): void { return; }
+                end
+                """)));
     }
 
     @Test

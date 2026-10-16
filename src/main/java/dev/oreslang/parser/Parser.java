@@ -795,7 +795,7 @@ public final class Parser {
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
-            methods.add(parseMethod(annotations, mods));
+            methods.add(parseMethod(annotations, mods, false, true));
         }
 
         consume(terminator, braceStyle
@@ -1009,6 +1009,11 @@ public final class Parser {
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
                                        boolean enclosingAbstractClass) {
+        return parseMethod(annotations, mods, enclosingAbstractClass, false);
+    }
+
+    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
+                                       boolean enclosingAbstractClass, boolean enclosingActor) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -1022,6 +1027,7 @@ public final class Parser {
             throw error(peek(), "static class functions do not have a self receiver");
         }
 
+        // Actor private-abstract receive uses the same single receiver slot.
         // A leading receiver is never a value parameter or overload discriminator:
         //   method(self, Type value)       -> default read-only receiver
         //   method(self)                   -> default read-only receiver, zero args
