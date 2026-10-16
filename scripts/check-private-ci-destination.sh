@@ -27,7 +27,6 @@ done < "$policy"
 # Keep this immutable reviewed ID pin synchronized with the Python publisher.
 case "${target,,}" in
   chapter-publishing-test/zed-pkg-integration-e2e) expected_id=1344442382 ;;
-  ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra) expected_id=1412142815 ;;
   *) fail 'destination numeric identity is not pinned in reviewed code' ;;
 esac
 command -v gh >/dev/null 2>&1 || fail 'GitHub CLI is required'
