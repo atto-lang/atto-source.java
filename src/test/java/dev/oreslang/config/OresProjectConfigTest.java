@@ -743,4 +743,33 @@ final class OresProjectConfigTest {
         assertEquals(project.toAbsolutePath().normalize(),
                 OresProjectConfig.discover(nestedSource, Map.of()).projectRoot());
     }
+
+    @Test
+    void rootedPackageSyntaxRequiresCanonicalPathComponentsAndSeparators() throws Exception {
+        Path project = temp.resolve("canonical-root-syntax");
+        Files.createDirectories(project.resolve("src"));
+        Files.createDirectories(project.resolve("zed_modules/acme/math/src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n[dependencies]\nmath = \"acme/math\"\n");
+        Path file = Files.writeString(project.resolve("src/helper.ores"),
+                "pub fnc helper():int {return 42;}\n");
+        Path dependencyFile = Files.writeString(
+                project.resolve("zed_modules/acme/math/src/helper.ores"),
+                "pub fnc helper():int {return 42;}\n");
+        Path importer = project.resolve("main.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(file.toRealPath(),
+                config.resolveImport(importer, "+/src/helper").orElseThrow());
+        assertEquals(dependencyFile.toRealPath(),
+                config.resolveImport(importer, "pkg:math/src/helper").orElseThrow());
+
+        for (String invalid : java.util.List.of(
+                "+/src//helper", "+/src/./helper", "+/src/../src/helper",
+                "+/src\\helper", "pkg:math/src//helper",
+                "pkg:math/src/./helper", "pkg:math/src/../src/helper",
+                "pkg:math/src\\helper")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> config.resolveImport(importer, invalid), invalid);
+        }
+    }
 }
