@@ -4895,6 +4895,26 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Runtime capabilities are not actor DATA, regardless of whether their
+     * user-facing type has type arguments. Keep both mailbox admission and
+     * shared-safety admission on the same deny-set. Source name screening is
+     * defense in depth, not a substitute for resolved nominal provenance or
+     * runtime capability admission.
+     */
+    private static final Set<String> ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES = Set.of(
+            "Pointer", "NetworkCodec", "ActorMessageCodec", "SupervisorControlCodec",
+            "ControlCodec", "Serializable", "Sendable", "Stream", "Observable",
+            "ActorRef", "ActorHandle", "ActorControlHandle", "ActorGroup",
+            "ActorGroupJoinCapability", "ProxyActor", "Mailman", "EventBus",
+            "ContinuationTarget", "Region", "RegionTransfer", "OwnedRegion",
+            "SyncCell");
+
+    private static final Set<String> ACTOR_EXECUTION_LOCAL_HANDLES = Set.of(
+            "TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
+            "Mutex", "MutexGuard", "Future", "Channel", "SelectCase",
+            "SelectSet", "SelectResult", "Iterator", "AsyncIterator");
+
     // Source module names and canonical/linker identities both count as
     // namespaces for capability admission. Neither pkg.Pointer nor
     // pkg::Pointer may masquerade as data-only mailbox contents.
@@ -4953,18 +4973,12 @@ public final class TypeChecker {
         // names (e.g. "CodecModule.NetworkCodec"). Do not allow that
         // qualification to bypass the non-data-capability admission list.
         String actorBoundarySimpleName = actorCapabilitySimpleName(named.name());
-        if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
-                "Observable", "ActorRef", "ActorGroup", "ProxyActor",
-                "SupervisorControlCodec", "ControlCodec", "Mailman",
-                "EventBus").contains(actorBoundarySimpleName)) {
+        if (ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES.contains(actorBoundarySimpleName)) {
             throw new IllegalArgumentException(where + " cannot transport "
                     + named.name() + " across an actor boundary; encode owned data with "
                     + "an independently admitted ActorMessageCodec<T>");
         }
-        if (Set.of("TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
-                "Mutex", "MutexGuard", "Future", "Channel", "SelectCase",
-                "SelectSet", "SelectResult", "Iterator", "AsyncIterator")
-                .contains(actorBoundarySimpleName)) {
+        if (ACTOR_EXECUTION_LOCAL_HANDLES.contains(actorBoundarySimpleName)) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
@@ -4986,9 +5000,18 @@ public final class TypeChecker {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
         }
 
-        // Built-in sum/container values are data-only when their arguments pass.
+        // A type name alone does not prove a valid tagged-value contract.
+        // Every generic parameter is recursively screened above; now require
+        // the exact intrinsic arity before treating the nominal as data.
         if (named.name().equals("Option") || named.name().equals("Result")
                 || named.name().equals("OptionUnwrapError")) {
+            int expected = named.name().equals("Option") ? 1
+                    : named.name().equals("Result") ? 2 : 0;
+            if (named.arguments().size() != expected) {
+                throw new IllegalArgumentException(where + " requires "
+                        + named.name() + " to have exactly " + expected
+                        + " type argument(s) at an actor DATA boundary");
+            }
             return;
         }
 
@@ -5056,14 +5079,9 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         String sharedSafetySimpleName = actorCapabilitySimpleName(named.name());
-        if (Set.of("Pointer", "NetworkCodec", "ActorMessageCodec", "Stream",
-                "Observable", "ActorRef", "ActorGroup", "ProxyActor",
-                "SupervisorControlCodec", "ControlCodec", "Mailman", "EventBus")
-                .contains(sharedSafetySimpleName)) return false;
-        if (Set.of("Mutex", "MutexGuard", "Future", "Iterator",
-                "AsyncIterator", "SharedMutex", "TcpConnection", "HttpExchange",
-                "HttpServer", "HttpHandler", "Channel", "SelectCase",
-                "SelectSet", "SelectResult").contains(sharedSafetySimpleName)) return false;
+        if (ACTOR_CONTROL_AND_RESOURCE_CAPABILITIES.contains(sharedSafetySimpleName)) return false;
+        if (ACTOR_EXECUTION_LOCAL_HANDLES.contains(sharedSafetySimpleName)
+                || sharedSafetySimpleName.equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option") || named.name().equals("IteratorResult")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
