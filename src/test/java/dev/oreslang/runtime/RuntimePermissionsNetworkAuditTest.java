@@ -11,6 +11,35 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class RuntimePermissionsNetworkAuditTest {
     @Test
+    void directNetworkRulesCannotSilentlyTrimMalformedHostnames() {
+        RuntimePermissions baseline = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443");
+        assertTrue(baseline.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        for (String padded : new String[] {
+                " api.example.com:443", "api.example.com:443 ",
+                "\tapi.example.com:443", "api.example.com:443\t",
+                " 127.0.0.1:443", "127.0.0.1:443 "
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> baseline.withAllowed(RuntimePermissions.Permission.NET, padded),
+                    "padded direct allow must be rejected: " + padded);
+            assertThrows(IllegalArgumentException.class,
+                    () -> baseline.withDenied(RuntimePermissions.Permission.NET, padded),
+                    "padded direct deny must be rejected: " + padded);
+            assertTrue(baseline.allows(RuntimePermissions.Permission.NET, "api.example.com:443"),
+                    "failed update must not mutate the original policy");
+        }
+        // CSV delimiters are intentionally trimmed before individual rules.
+        RuntimePermissions csv = new RuntimePermissions.Builder()
+                .allowCsv(RuntimePermissions.Permission.NET,
+                        " api.example.com:443 , 127.0.0.1:8443 ")
+                .build();
+        assertTrue(csv.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertTrue(csv.allows(RuntimePermissions.Permission.NET, "127.0.0.1:8443"));
+        assertFalse(csv.allows(RuntimePermissions.Permission.NET, "api.example.com:444"));
+    }
+
+    @Test
     void ephemeralPortAuthorizationRejectsUnknownPortAndIpBypasses() {
         RuntimePermissions broad = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
