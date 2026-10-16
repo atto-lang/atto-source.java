@@ -375,7 +375,8 @@ public record IsolatePolicy(
             }
             for (Method method : type.getDeclaredMethods()) {
                 if (Modifier.isPublic(method.getModifiers())
-                        && !isUnscopedGlobalMutator(type, method)) {
+                        && !isUnscopedGlobalMutator(type, method)
+                        && !isUnscopedNativeAllocation(type, method)) {
                     access.allowAccess(method);
                 }
             }
@@ -397,6 +398,18 @@ public record IsolatePolicy(
                 || !method.getName().equals("setDefault")) return false;
         return type == java.util.Locale.class
                 || java.util.TimeZone.class.isAssignableFrom(type);
+    }
+
+    /**
+     * DirectByteBuffer storage consumes process-native memory outside an
+     * actor's bounded heap/arena accounting. An explicit Java host-class
+     * allowlist must not expose this unscoped allocation path. Ordinary
+     * heap-backed ByteBuffer utilities remain available.
+     */
+    static boolean isUnscopedNativeAllocation(Class<?> type, Method method) {
+        return type == java.nio.ByteBuffer.class
+                && Modifier.isStatic(method.getModifiers())
+                && method.getName().equals("allocateDirect");
     }
 
     public boolean allows(Capability capability) {
