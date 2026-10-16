@@ -258,6 +258,16 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                 "multi-consumer forward silently picked a target");
         rejects(() -> canonicalThree.forwardTo("producer-1", "worker-z"),
                 "unknown canonical destination was accepted");
+        // Deny an unauthorised source before attempting Unicode/key parsing:
+        // callers must not learn key parsing behavior through unknown edges.
+        try {
+            canonicalThree.forwardByKey("unconnected-source",
+                    String.valueOf((char) 0xD800));
+            throw new AssertionError("unknown keyed route admitted");
+        } catch (IllegalArgumentException rejectedSource) {
+            check(rejectedSource.getMessage().contains("source has no connected"),
+                    "key validation ran before source routing admission");
+        }
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
                 + " cases=24 concurrent_selections=" + (writers * sendsEach));
     }
