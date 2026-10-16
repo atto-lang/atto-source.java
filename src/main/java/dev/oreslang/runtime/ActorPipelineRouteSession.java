@@ -180,15 +180,35 @@ public final class ActorPipelineRouteSession {
         active.remove(current);
     }
 
-    /** Lifecycle barrier: all previous-frame tokens become invalid. */
+    /** A clean topology change is only allowed after every current message
+     * has completed. In-flight actor messages must never silently disappear. */
     public synchronized void advanceGeneration(long successor) {
+        validateSuccessor(successor);
+        if (!active.isEmpty()) {
+            throw new IllegalStateException(
+                    "pipeline reconfiguration requires a quiescent message barrier");
+        }
+        roundRobin.clear();
+        generation = successor;
+    }
+
+    /** Explicit supervisor cancellation barrier. Previous frames become stale,
+     * and any actual mailbox writers must be failed/drained by the scheduler
+     * before a replacement graph is published. This ledger is host-only. */
+    public synchronized int abortAndAdvanceGeneration(long successor) {
+        validateSuccessor(successor);
+        int cancelled = active.size();
+        active.clear();
+        roundRobin.clear();
+        generation = successor;
+        return cancelled;
+    }
+
+    private void validateSuccessor(long successor) {
         ensureOpen();
         if (successor <= generation) {
             throw new IllegalArgumentException("graph generation must increase");
         }
-        active.clear();
-        roundRobin.clear();
-        generation = successor;
     }
 
     public synchronized void close() {
