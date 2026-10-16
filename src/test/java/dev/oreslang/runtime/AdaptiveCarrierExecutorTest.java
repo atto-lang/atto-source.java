@@ -1,0 +1,74 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class AdaptiveCarrierExecutorTest {
+    @Test void expandsForIndependentRunnableWorkBeforeQueueing() throws Exception {
+        var serial = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) task ->
+                Thread.ofPlatform().daemon(true)
+                        .name("adaptive-test-" + serial.incrementAndGet()).unstarted(task);
+        try (var workers = new AdaptiveCarrierExecutor(2, 5, 8, factory)) {
+            assertEquals(2, workers.minimumCarriers());
+            assertEquals(2, workers.prestartAllCoreThreads());
+            var release = new CountDownLatch(1);
+            var entered = new CountDownLatch(5);
+            var tasks = new ArrayList<java.util.concurrent.Future<?>>();
+            try {
+                for (int i = 0; i < 5; i++) {
+                    tasks.add(workers.submit(() -> {
+                        entered.countDown();
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("carrier launch timed out");
+                        return null;
+                    }));
+                }
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertEquals(5, workers.getPoolSize());
+                assertTrue(workers.getLargestPoolSize() <= 5);
+            } finally {
+                release.countDown();
+            }
+            for (var task : tasks) task.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test void boundedReadyQueueRejectsWithoutCallerRuns() throws Exception {
+        var factory = (java.util.concurrent.ThreadFactory) task ->
+                Thread.ofPlatform().daemon(true).unstarted(task);
+        try (var workers = new AdaptiveCarrierExecutor(1, 1, 1, factory)) {
+            workers.prestartAllCoreThreads();
+            var busy = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            try {
+                workers.execute(() -> {
+                    busy.countDown();
+                    try { release.await(5, TimeUnit.SECONDS); }
+                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                });
+                assertTrue(busy.await(5, TimeUnit.SECONDS));
+                workers.execute(() -> { });
+                assertThrows(RejectedExecutionException.class,
+                        () -> workers.execute(() -> { }));
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test void rejectsInvalidLimits() {
+        var factory = (java.util.concurrent.ThreadFactory) task -> new Thread(task);
+        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(0, 5, 1, factory));
+        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(3, 2, 1, factory));
+        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(1, 257, 1, factory));
+        assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(1, 3, 0, factory));
+    }
+}
