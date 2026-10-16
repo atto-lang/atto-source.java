@@ -75,6 +75,46 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void unresolvedMutableOrNominalSlotsCannotForgeClosedProofs() {
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(dev.oreslang.types.Types.Unknown.INSTANCE, false));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(new dev.oreslang.types.Types.Generic("T"), false));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(new dev.oreslang.types.Types.Borrow(Primitive.INT, true), false));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(new Named("ActorRef", List.of(Primitive.INT)), false));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Slot(Primitive.VOID, false));
+        assertFalse(StructuralTuplePolicy.admits(STRUCTURAL,
+                tuple(Primitive.INT, Primitive.INT,
+                        new dev.oreslang.types.Types.Borrow(Primitive.STRING, true))));
+    }
+
+    @Test
+    void overloadFamilyMustHaveDistinctCallableIdentityAndFiniteBounds() {
+        assertThrows(IllegalArgumentException.class, () ->
+                StructuralTuplePolicy.selectExplicitTupleSpread(List.of(
+                        new Candidate("same", 0, null),
+                        new Candidate("same", 1, STRUCTURAL)),
+                        tuple(Primitive.INT, Primitive.INT)));
+        assertThrows(IllegalArgumentException.class, () ->
+                new Candidate("out-of-range", 65, null));
+
+        var excessive = new java.util.ArrayList<Candidate>();
+        for (int i = 0; i < 129; i++) {
+            excessive.add(new Candidate("f" + i, i % 65, null));
+        }
+        assertThrows(IllegalArgumentException.class, () ->
+                StructuralTuplePolicy.selectExplicitTupleSpread(excessive,
+                        tuple(Primitive.INT, Primitive.INT)));
+
+        var tooWide = new java.util.ArrayList<Slot>();
+        for (int i = 0; i < 65; i++) tooWide.add(new Slot(Primitive.INT, false));
+        assertThrows(IllegalArgumentException.class, () -> new Shape(tooWide, true));
+    }
+
+    @Test
     void cannotUseShapeForSameArityOverloadingOrDynamicLists() {
         assertThrows(IllegalArgumentException.class, () ->
                 StructuralTuplePolicy.selectExplicitTupleSpread(
