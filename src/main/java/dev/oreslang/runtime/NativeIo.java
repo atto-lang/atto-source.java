@@ -260,16 +260,28 @@ public final class NativeIo {
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
         try (client) {
-            HttpResponse<String> response = client.send(
-                    request.build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            return response.body();
+            HttpResponse<java.io.InputStream> response = client.send(
+                    request.build(), HttpResponse.BodyHandlers.ofInputStream());
+            try (java.io.InputStream bodyStream = response.body()) {
+                return boundedHttpText(bodyStream);
+            }
         } catch (IOException failure) {
             throw new IllegalStateException("HTTP request failed for " + endpoint + ": " + failure.getMessage(), failure);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("HTTP request interrupted for " + endpoint, interrupted);
         }
+    }
+
+    // Enforce a strict response budget while reading the stream. The default
+    // ofString()/ofByteArray() handlers buffer unbounded peer-controlled data.
+    // This method remains host-only and never exposes the stream to guest code.
+    static String boundedHttpText(java.io.InputStream body) throws IOException {
+        final int maxBytes = 8 * 1024 * 1024;
+        byte[] bytes = body.readNBytes(maxBytes + 1);
+        if (bytes.length > maxBytes)
+            throw new IOException("HTTP response exceeds 8 MiB limit");
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     public static TcpConnection connect(OresContext context, String host, int port) {
