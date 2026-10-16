@@ -215,6 +215,23 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void numericRequestedIpv4MustMatchSelectedAddress() {
+        RuntimePermissions exact = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "203.0.113.7:443");
+        assertTrue(exact.allowsNetworkConnection("203.0.113.7:443",
+                "203.0.113.7:443"));
+        assertFalse(exact.allowsNetworkConnection("203.0.113.7:443",
+                "198.51.100.8:443"));
+
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+        assertFalse(broad.allowsNetworkConnection("203.0.113.7:443",
+                "198.51.100.8:443"));
+        assertFalse(broad.allowsNetworkConnection("[::1]:443",
+                "203.0.113.7:443"));
+    }
+
+    @Test
     void numericIpv4MixedHexMatrixHasSameCanonicalAdmissionAsNativeBackends() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .allowAll(RuntimePermissions.Permission.NET);
