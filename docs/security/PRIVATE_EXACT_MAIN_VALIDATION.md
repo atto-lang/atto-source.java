@@ -9,6 +9,37 @@ personal access token can checkout private source. It does not change
 `.github/private-ci-approved-repositories.txt`, does not approve a destination,
 and is not permission to bypass issue #991 or security review of PR #992.
 
+## Private-repository branch-protection availability
+
+**Preflight result on 2026-10-16:** GitHub returned `protected: false` for
+`main`. Reading the repository ruleset API returned HTTP 403 with the
+message `Upgrade to GitHub Pro or make this repository public to enable this
+feature.` Reading classic branch protection returned HTTP 403
+`Resource not accessible by integration`; the latter is an integration
+permission error, **not** independent evidence about configured rules.
+
+GitHub's documented feature availability requires a qualifying plan to
+protect private repository branches or apply private repository rulesets.
+For an **organization-owned private repository**, an organization
+administrator should verify eligibility for GitHub Team or Enterprise
+before proceeding. **Do not make private source public** to unlock a
+feature. If the organization's plan is ineligible, request an authorized
+plan change; do not strip `github.ref_protected` from the reviewed workflows,
+pretend that a CODEOWNERS file itself enforces approvals, or bypass the
+reviewed trust policy to copy source to a different organization.
+
+After the account owner confirms eligibility, an authorized repository
+administrator must configure and enforce protection for `main` in GitHub:
+require independent PR/code-owner approval, prevent unreviewed direct pushes
+and bypass, and require **executed** status checks only after runner
+eligibility is restored. Verify that the GitHub branch API reports
+`protected: true`, and independently verify effective settings as an
+authorized admin, **before** merging or dispatching this CI workflow.
+
+References:
+- https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches
+- https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets
+
 ## Administrator setup
 
 1. Before enabling either private runner, protect the trusted `main` branch
