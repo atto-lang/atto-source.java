@@ -326,6 +326,53 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void candidateMustProveExecutedSurefireResultsBeforeFullVerification() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String proof = section(workflow,
+                "      - name: Prove all six security JUnit classes executed",
+                "      - name: Full Java 25 Maven candidate verification");
+        String runner = workflow.substring(
+                workflow.indexOf("  validate-approved-candidate:"));
+        assertTrue(runner.indexOf("Focused permissions and scoped host interop regressions")
+                < runner.indexOf("Prove all six security JUnit classes executed"));
+        assertTrue(runner.indexOf("Prove all six security JUnit classes executed")
+                < runner.indexOf("Full Java 25 Maven candidate verification"));
+
+        assertTrue(hasExactLine(proof, 10, "python3 - <<'PY'"),
+                "the verifier must be part of the protected workflow, not candidate scripts");
+        for (String className : new String[] {
+                "dev.oreslang.launcher.DenoCliDefaultPermissionsTest",
+                "dev.oreslang.runtime.RuntimePermissionsNetworkAuditTest",
+                "dev.oreslang.runtime.RuntimePermissionsTest",
+                "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
+                "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
+                "dev.oreslang.runtime.ScopedPermissionInteropTest"
+        }) {
+            assertTrue(hasExactLine(proof, 14, "\"" + className + "\","),
+                    "a required security class was omitted from report verification: " + className);
+        }
+        for (String executable : new String[] {
+                "if not reports:",
+                "missing = sorted(name for name, count in executed.items() if count == 0)",
+                "if missing:",
+                "raise SystemExit(\"No Maven Surefire XML reports; tests did not execute\")"
+        }) {
+            assertTrue(proof.contains(executable), "missing fail-closed assertion: " + executable);
+        }
+        assertTrue(proof.contains("root.iter(\"testcase\")"));
+        assertTrue(proof.contains("\"failure\", \"error\", \"skipped\""),
+                "failed, erroneous and skipped test cases must all be rejected");
+        assertFalse(proof.contains("python3 scripts/"),
+                "proof must not execute a script from the untrusted candidate checkout");
+
+        String disabled = proof.replace("          python3 - <<'PY'",
+                "          # python3 - <<'PY'");
+        assertFalse(hasExactLine(disabled, 10, "python3 - <<'PY'"),
+                "commented-out Surefire verification cannot satisfy the gate");
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
