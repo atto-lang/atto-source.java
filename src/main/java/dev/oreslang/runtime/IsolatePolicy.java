@@ -237,18 +237,24 @@ public record IsolatePolicy(
             throw new IllegalArgumentException("allowlisted Java host class name cannot be blank");
         }
 
-        if (className.equals("java.lang.Class")
-                || className.equals("java.lang.ClassLoader")
-                || className.equals("java.lang.Module")
-                || className.equals("java.lang.Runtime")
-                || className.equals("java.lang.System")
-                || className.equals("java.lang.Process")
-                || className.equals("java.lang.ProcessBuilder")
-                || className.equals("java.lang.ProcessHandle")
-                || className.equals("java.lang.Thread")
-                || className.equals("java.lang.ThreadGroup")
-                || className.equals("java.lang.SecurityManager")
-                || className.equals("java.util.ServiceLoader")
+        // Public nested classes use binary names (Outer$Nested). A blocked
+        // outer class must not be reachable through one of its nested APIs.
+        int nestedSeparator = className.indexOf('$');
+        String authorizationRoot = nestedSeparator < 0
+                ? className : className.substring(0, nestedSeparator);
+
+        if (authorizationRoot.equals("java.lang.Class")
+                || authorizationRoot.equals("java.lang.ClassLoader")
+                || authorizationRoot.equals("java.lang.Module")
+                || authorizationRoot.equals("java.lang.Runtime")
+                || authorizationRoot.equals("java.lang.System")
+                || authorizationRoot.equals("java.lang.Process")
+                || authorizationRoot.equals("java.lang.ProcessBuilder")
+                || authorizationRoot.equals("java.lang.ProcessHandle")
+                || authorizationRoot.equals("java.lang.Thread")
+                || authorizationRoot.equals("java.lang.ThreadGroup")
+                || authorizationRoot.equals("java.lang.SecurityManager")
+                || authorizationRoot.equals("java.util.ServiceLoader")
                 || className.startsWith("java.lang.reflect.")
                 || className.startsWith("java.lang.invoke.")
                 || className.startsWith("java.beans.")
@@ -295,9 +301,8 @@ public record IsolatePolicy(
                 // login configuration can also read host resources or change
                 // process-wide authentication state. None is scoped by the
                 // Ores READ/WRITE/NET/SYS permission rules.
-                || className.equals("java.security.KeyStore")
-                || className.startsWith("java.security.KeyStore$")
-                || className.equals("java.security.Security")
+                || authorizationRoot.equals("java.security.KeyStore")
+                || authorizationRoot.equals("java.security.Security")
                 || className.startsWith("javax.security.auth.login.")
                 || className.startsWith("javax.naming.")
                 || className.startsWith("javax.net.")
@@ -316,9 +321,9 @@ public record IsolatePolicy(
                 || className.startsWith("javax.sound.")
                 // Timer constructors create unmanaged host threads without
                 // going through the actor scheduler or THREAD_CREATE checks.
-                || className.equals("java.util.Timer")
-                || className.equals("java.util.TimerTask")
-                || className.equals("java.util.ResourceBundle")) {
+                || authorizationRoot.equals("java.util.Timer")
+                || authorizationRoot.equals("java.util.TimerTask")
+                || authorizationRoot.equals("java.util.ResourceBundle")) {
             throw new SecurityException(
                     "direct Java host I/O is blocked from class-level interop; "
                             + "use Oreslang fs/network/http APIs: " + className);
