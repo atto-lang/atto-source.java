@@ -23,8 +23,8 @@ while IFS= read -r candidate || [[ -n "$candidate" ]]; do
   if [[ "${candidate,,}" == "${target,,}" ]]; then allowed=true; fi
 done < "$policy"
 [[ "$allowed" == true ]] || fail 'destination is absent from reviewed repository policy'
-# Immutable repository identity is independently pinned in reviewed code.
-# Merely naming a private repository in a policy cannot approve a replacement.
+# Name/visibility alone cannot authorize a recreated repo with a different ID.
+# Keep this immutable reviewed ID pin synchronized with the Python publisher.
 case "${target,,}" in
   chapter-publishing-test/zed-pkg-integration-e2e) expected_id=1344442382 ;;
   ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra) expected_id=1412142815 ;;
@@ -35,15 +35,11 @@ metadata="$(GH_HOST=github.com gh api "repos/$target" --jq '[.id, .full_name, .v
   fail 'cannot verify repository identity and visibility from live GitHub API'
 [[ -n "$metadata" && "$metadata" != *$'\n'* ]] ||
   fail 'API returned empty or multiline repository metadata'
-IFS=
+IFS=$'\t' read -r actual_id actual_name visibility private_flag archived_flag disabled_flag <<< "$metadata"
 [[ "$actual_id" =~ ^[0-9]+$ && "$actual_id" == "$expected_id" ]] ||
-  fail 'GitHub numeric repository ID differs from reviewed pin'
+  fail 'GitHub repository numeric ID differs from reviewed destination'
 [[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
 [[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
 [[ "$archived_flag" == false && "$disabled_flag" == false ]] ||
-  fail 'destination archived, disabled, or identity metadata incomplete'
+  fail 'destination is archived, disabled or metadata is incomplete'
 printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private, reviewed ID %s)\n' "$target" "$expected_id"
-\t' read -r actual_id actual_name visibility private_flag archived_flag disabled_flag <<< "$metadata"
-[[ "${actual_name,,}" == "${target,,}" ]] || fail 'API identity differs from requested destination'
-[[ "$visibility" == private && "$private_flag" == true ]] || fail 'destination is not private'
-printf 'PRIVATE_CI_DESTINATION_APPROVED: %s (private)\n' "$target"
