@@ -39,8 +39,8 @@ final class NativeSocketBoundaryTest {
                 .withAllowed(RuntimePermissions.Permission.NET, "*")
                 .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1")
                 .withDenied(RuntimePermissions.Permission.NET, "[::1]");
-        assertThrows(SecurityException.class, () -> NativeIo.resolveAuthorizedAddress(
-                policy, "localhost", 12345));
+        // DNS for localhost is machine-dependent; the selected-IP deny
+        // regression is deterministic in VerifiedTcpSocketTest instead.
         assertThrows(SecurityException.class, () -> NativeIo.resolveAuthorizedAddress(
                 policy, "127.0.0.1", 12345));
     }
