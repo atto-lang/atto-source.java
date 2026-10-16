@@ -20,6 +20,7 @@ import dev.oreslang.types.Types.TupleKind;
 import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
+import dev.oreslang.types.Types.OpenValue;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -1100,6 +1101,20 @@ public final class TypeChecker {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
 
+        if (isTypedOpenMapClass(klass)) {
+            validateTypedOpenMapClass(klass, classGenerics, self);
+            return;
+        }
+        if (!klass.mapKeys().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "key declarations require a direct Map<string, unknown> subclass");
+        }
+        if (klass.parents().stream().anyMatch(parent -> parent.name().equals("HashMap"))) {
+            throw new IllegalArgumentException(
+                    "HashMap subclass key schemas require the concrete HashMap runtime; "
+                            + "the current typed-map foundation implements Map only");
+        }
+
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
@@ -1758,8 +1773,7 @@ public final class TypeChecker {
             // no competing live writable aliases. Read-only aliases cannot
             // be promoted into writable references.
             if (isTypedMapType(actual)
-                    && !(binding.initializer() instanceof Ast.NewExpr created
-                            && created.type().name().equals("Map"))) {
+                    && !isFreshTypedMapConstruction(binding.initializer())) {
                 // Even a readonly alias of a mutable map would need an active
                 // lifetime loan so owners cannot write while it exists.
                 // Reject all local aliases until non-lexical loan lifetimes
@@ -2171,9 +2185,7 @@ public final class TypeChecker {
                 Type originalReceiver = typeOf(indexed.receiver(), env, generics, self);
                 Type receiver = deref(originalReceiver);
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Named map
-                        && map.name().equals("$builtin$Map")
-                        && map.arguments().size() == 2) {
+                if (isTypedMapType(receiver)) {
                     if (originalReceiver instanceof Borrow borrowed && !borrowed.mutable()) {
                         throw new IllegalArgumentException(
                                 "cannot mutate typed Map through a read-only borrow");
@@ -2187,8 +2199,15 @@ public final class TypeChecker {
                         throw new IllegalArgumentException(
                                 "typed Map mutation requires let mut or val binding");
                     }
-                    requireAssignable(index, map.arguments().getFirst(), "Map key");
-                    targetType = map.arguments().get(1);
+                    requireAssignable(index, typedMapKeyType(receiver), "Map key");
+                    Ast.ClassDecl openMap = typedOpenMapClass(receiver);
+                    if (openMap != null && !(index instanceof StringLiteral)) {
+                        throw new IllegalArgumentException(
+                                "typed open Map dynamic writes are disabled because the key may name a schema-constrained entry");
+                    }
+                    targetType = openMap == null
+                            ? typedMapBaseValueType(receiver)
+                            : typedOpenMapValueForKey(openMap, index, generics, self);
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
@@ -2687,9 +2706,9 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
-                if (receiver instanceof Named map && map.name().equals("$builtin$Map")) {
+                if (isTypedMapType(receiver)) {
                     throw new IllegalArgumentException(
-                            "typed Map does not provide dot-property or method access; use map[key]");
+                            "typed Map dot-method access is sealed in this slice; use map[key] until get/take lowering lands");
                 }
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
@@ -3386,7 +3405,7 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
-            if (sumReceiver instanceof Named map && map.name().equals("$builtin$Map")) {
+            if (isTypedMapType(sumReceiver)) {
                 throw new IllegalArgumentException(
                         "typed Map has no string-named properties; use explicit map[key]");
             }
@@ -3529,11 +3548,12 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
-            if (receiver instanceof Named map
-                    && map.name().equals("$builtin$Map")
-                    && map.arguments().size() == 2) {
-                requireAssignable(index, map.arguments().getFirst(), "Map key");
-                return map.arguments().get(1);
+            if (isTypedMapType(receiver)) {
+                requireAssignable(index, typedMapKeyType(receiver), "Map key");
+                Ast.ClassDecl openMap = typedOpenMapClass(receiver);
+                return openMap == null
+                        ? typedMapBaseValueType(receiver)
+                        : typedOpenMapValueForKey(openMap, index, generics, self);
             }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
@@ -3587,6 +3607,13 @@ public final class TypeChecker {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
             rejectUnimportedClassNamespace(klass);
+            if (isTypedOpenMapClass(klass)) {
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "typed open Map schema constructors take no arguments");
+                }
+                return typedOpenMapType(klass);
+            }
             if (klass.isAbstract()) {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
             }
@@ -7887,6 +7914,12 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "unknown" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("unknown does not accept type arguments");
+                }
+                yield OpenValue.INSTANCE;
+            }
             case "Map" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {
                     throw new IllegalArgumentException("Map<K,V> requires exactly two explicit type arguments");
@@ -8012,6 +8045,14 @@ public final class TypeChecker {
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
+                    if (isTypedOpenMapClass(knownClass)) {
+                        if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "typed open Map schema class '" + knownClass.name()
+                                            + "' does not accept type arguments");
+                        }
+                        yield typedOpenMapType(knownClass);
+                    }
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
                     yield new Named(qualifiedClassName(knownClass),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
@@ -8303,9 +8344,144 @@ public final class TypeChecker {
         return typeAliases.get(name);
     }
 
-    private static boolean isTypedMapType(Type type) {
+    private static final String TYPED_OPEN_MAP_PREFIX = "$builtin$TypedOpenMap$";
+
+    private boolean isTypedMapType(Type type) {
         if (type instanceof Borrow borrow) return isTypedMapType(borrow.target());
-        return type instanceof Named named && named.name().equals("$builtin$Map");
+        return type instanceof Named named
+                && (named.name().equals("$builtin$Map")
+                        || named.name().startsWith(TYPED_OPEN_MAP_PREFIX));
+    }
+
+    private boolean isFreshTypedMapConstruction(Ast.Expr expression) {
+        if (!(expression instanceof Ast.NewExpr created)) return false;
+        if (created.type().name().equals("Map")) return true;
+        Ast.ClassDecl klass = findClass(created.type().name());
+        return klass != null && isTypedOpenMapClass(klass);
+    }
+
+    private boolean isTypedOpenMapClass(Ast.ClassDecl klass) {
+        if (klass.parents().size() != 1) return false;
+        Ast.TypeRef parent = klass.parents().getFirst();
+        if (!parent.name().equals("Map") || parent.inferArguments()
+                || parent.arguments().size() != 2) return false;
+        Ast.TypeRef key = parent.arguments().get(0);
+        Ast.TypeRef value = parent.arguments().get(1);
+        return !key.inferArguments() && key.arguments().isEmpty()
+                && (key.name().equals("String") || key.name().equals("string"))
+                && !value.inferArguments() && value.arguments().isEmpty()
+                && value.name().equals("unknown");
+    }
+
+    private Named typedOpenMapType(Ast.ClassDecl klass) {
+        return new Named(
+                TYPED_OPEN_MAP_PREFIX + qualifiedClassName(klass),
+                List.of(Primitive.STRING, OpenValue.INSTANCE));
+    }
+
+    private Ast.ClassDecl typedOpenMapClass(Type type) {
+        if (type instanceof Borrow borrow) return typedOpenMapClass(borrow.target());
+        if (!(type instanceof Named named)
+                || !named.name().startsWith(TYPED_OPEN_MAP_PREFIX)) return null;
+        String qualified = named.name().substring(TYPED_OPEN_MAP_PREFIX.length());
+        for (Ast.ClassDecl candidate : new LinkedHashSet<>(classes.values())) {
+            if (qualifiedClassName(candidate).equals(qualified)) return candidate;
+        }
+        throw new IllegalStateException("typed open Map class metadata is unavailable for " + qualified);
+    }
+
+    private Type typedMapKeyType(Type type) {
+        Type concrete = type instanceof Borrow borrow ? borrow.target() : type;
+        if (concrete instanceof Named named && named.arguments().size() == 2
+                && isTypedMapType(named)) return named.arguments().get(0);
+        throw new IllegalArgumentException("malformed typed Map type");
+    }
+
+    private Type typedMapBaseValueType(Type type) {
+        Type concrete = type instanceof Borrow borrow ? borrow.target() : type;
+        if (concrete instanceof Named named && named.arguments().size() == 2
+                && isTypedMapType(named)) return named.arguments().get(1);
+        throw new IllegalArgumentException("malformed typed Map type");
+    }
+
+    private Type typedOpenMapValueForKey(
+            Ast.ClassDecl klass,
+            Type key,
+            Set<String> generics,
+            Type self) {
+        if (key instanceof StringLiteral literal) {
+            for (Ast.MapKeyDecl declared : klass.mapKeys()) {
+                if (declared.name().equals(literal.value())) {
+                    return resolve(
+                            TypedMapKeyContract.storedType(declared.declaredType()),
+                            generics,
+                            self);
+                }
+            }
+        }
+        return OpenValue.INSTANCE;
+    }
+
+    private void validateTypedOpenMapClass(
+            Ast.ClassDecl klass,
+            Set<String> classGenerics,
+            Type self) {
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("actors cannot be typed open Map schema classes");
+        }
+        if (klass.isAbstract()) {
+            throw new IllegalArgumentException("typed open Map schema classes cannot be abstract");
+        }
+        if (!klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "typed open Map schema classes cannot declare generic parameters");
+        }
+        if (!klass.interfaces().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "typed open Map schema classes do not yet implement interfaces");
+        }
+        if (!klass.fields().isEmpty() || klass.constructor() != null || !klass.methods().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "typed open Map schema classes currently contain only key declarations; "
+                            + "physical fields, constructors and hooks/methods are deferred");
+        }
+
+        List<TypedMapKeyContract.KeyDecl> keys = klass.mapKeys().stream()
+                .map(key -> new TypedMapKeyContract.KeyDecl(
+                        key.name(),
+                        key.declaredType(),
+                        TypedMapKeyContract.VisibilitySyntax.NONE))
+                .toList();
+        new TypedMapKeyContract.Schema(keys);
+        for (Ast.MapKeyDecl key : klass.mapKeys()) {
+            Ast.TypeRef stored = TypedMapKeyContract.storedType(key.declaredType());
+            requireReifiableTypedOpenMapStoredType(
+                    stored, "map key " + klass.name() + "." + key.name());
+            resolve(stored, classGenerics, self);
+        }
+    }
+
+    private void requireReifiableTypedOpenMapStoredType(Ast.TypeRef type, String where) {
+        if (type.inferArguments() || type.isBorrow() || type.isUnion()
+                || type.isTupleType() || type.isRecordType()) {
+            throw new IllegalArgumentException(
+                    where + " requires a recursively Copy runtime-reifiable value type");
+        }
+        if (type.name().equals("Option") && type.arguments().size() == 1) {
+            requireReifiableTypedOpenMapStoredType(type.arguments().getFirst(), where);
+            return;
+        }
+        if (type.name().equals("Result") && type.arguments().size() == 2) {
+            requireReifiableTypedOpenMapStoredType(type.arguments().get(0), where);
+            requireReifiableTypedOpenMapStoredType(type.arguments().get(1), where);
+            return;
+        }
+        if (!type.arguments().isEmpty()
+                || !Set.of("int", "bool", "Bool", "String", "string", "Symbol")
+                        .contains(type.name())) {
+            throw new IllegalArgumentException(
+                    where + " currently supports only scalar, Option and Result payloads");
+        }
     }
 
     private boolean isRuntimeMapValueSource(Ast.TypeRef ref) {
