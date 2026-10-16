@@ -4427,8 +4427,12 @@ public final class ActorRuntime implements AutoCloseable {
                                     (value, failure) -> {
                                         try {
                                             if (failure != null) {
-                                                staged.failFromRuntime(
-                                                        OresFuture.unwrap(failure));
+                                                if (owned.isCancelled()) {
+                                                    staged.cancel(false);
+                                                } else {
+                                                    staged.failFromRuntime(
+                                                            OresFuture.unwrap(failure));
+                                                }
                                             } else {
                                                 R frozen = (R) freeze(value);
                                                 staged.completeFromRuntime(frozen);
