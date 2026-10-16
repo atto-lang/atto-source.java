@@ -8693,8 +8693,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object numeric(Object left, Object right, char op) {
             if (left instanceof Complex || right instanceof Complex) {
-                if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal)
-                    throw new IllegalArgumentException("decimal and binary complex arithmetic requires explicit conversion");
+                if (left instanceof java.math.BigDecimal || right instanceof java.math.BigDecimal
+                        || left instanceof java.math.BigInteger || right instanceof java.math.BigInteger)
+                    throw new IllegalArgumentException("exact decimal/bigint and binary complex arithmetic requires explicit conversion");
                 Complex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
                     case '+' -> a.add(b); case '-' -> a.sub(b); case '*' -> a.mul(b); case '/' -> a.div(b);
