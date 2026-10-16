@@ -212,6 +212,110 @@ public final class NominalInheritedMethodSlots {
         throw new IllegalStateException("static method selection lost exact declaration identity");
     }
 
+    /**
+     * Immutable compiler-selected instance method slot. The declaration
+     * identity and statically known receiver class travel together; only the
+     * concrete receiver class may vary during virtual implementation lookup.
+     * This proof object is NOT an executable method value or runtime callback.
+     */
+    public record InstanceBinding(
+            Ast.ClassDecl staticReceiver, Slot slot, Target declaredTarget) {
+        public InstanceBinding {
+            Objects.requireNonNull(staticReceiver, "static receiver declaration");
+            Objects.requireNonNull(slot, "nominal method slot");
+            Objects.requireNonNull(declaredTarget, "statically selected target");
+            if (slot.domain() != Domain.INSTANCE) {
+                throw new IllegalArgumentException(
+                        "static callable cannot enter an instance virtual method binding");
+            }
+        }
+    }
+
+    /**
+     * Bind one overloaded instance call from compiler-known argument types.
+     * This helper does not publish an AST call-site binding. The production
+     * TypeChecker must still prove effects, ownership and assignment rules
+     * before it may emit this immutable slot into executable metadata.
+     */
+    public static InstanceBinding bindInstance(
+            Ast.Program program, String staticReceiverClass,
+            String methodName, List<Types.Type> resolvedArguments) {
+        Objects.requireNonNull(program, "program");
+        Objects.requireNonNull(resolvedArguments, "resolved argument types");
+        Target selected = selectResolved(
+                program, staticReceiverClass, Domain.INSTANCE, methodName,
+                resolvedArguments, TaggedMessageContracts.forTypes(program));
+        Planner planner = new Planner(program);
+        Ast.ClassDecl staticReceiver = planner.resolve(staticReceiverClass, null);
+        var signature = NominalEnumOverloads.signature(
+                methodName, selected.method().parameters(), planner.enums);
+        Slot slot = new Slot(Domain.INSTANCE, methodName, signature.positions());
+        Target proved = planner.collect(
+                staticReceiver, Domain.INSTANCE, methodName,
+                resolvedArguments.size()).get(slot);
+        if (!sameDeclaration(proved, selected)) {
+            throw new IllegalStateException(
+                    "nominal method binding lost the static declaration identity");
+        }
+        return new InstanceBinding(staticReceiver, slot, proved);
+    }
+
+    /**
+     * Resolve only the implementation of an ALREADY SELECTED nominal slot on
+     * a concrete subclass. No argument values, runtime enum tags or payloads
+     * are supplied, and the overload cannot change when the receiver changes.
+     *
+     * <p>Reject forged bindings, unrelated receiver classes, and contracts
+     * that cannot be proved in the same closed-world compilation program.
+     * This remains a compiler proof helper, not executable interpreter/JIT ABI.
+     */
+    public static Target resolveVirtual(
+            Ast.Program program, InstanceBinding binding,
+            String concreteReceiverClass) {
+        Objects.requireNonNull(program, "program");
+        Objects.requireNonNull(binding, "instance binding");
+        Objects.requireNonNull(concreteReceiverClass, "concrete receiver class");
+        if (binding.slot().domain() != Domain.INSTANCE) {
+            throw new IllegalArgumentException(
+                    "virtual method binding must be instance-domain");
+        }
+        Planner planner = new Planner(program);
+        if (!planner.qualifiedNames.containsKey(binding.staticReceiver())) {
+            throw new IllegalArgumentException(
+                    "virtual method binding originates outside compiler program");
+        }
+        Map<Slot, Target> staticSlots = planner.collect(
+                binding.staticReceiver(), Domain.INSTANCE,
+                binding.slot().name(), binding.slot().arity());
+        if (!sameDeclaration(
+                staticSlots.get(binding.slot()), binding.declaredTarget())) {
+            throw new IllegalArgumentException(
+                    "forged or stale nominal method call-site binding");
+        }
+        Ast.ClassDecl concrete = planner.resolve(concreteReceiverClass, null);
+        // Verify all ancestor contracts before trusting subtype information.
+        Map<Slot, Target> concreteSlots = planner.collect(
+                concrete, Domain.INSTANCE, binding.slot().name(),
+                binding.slot().arity());
+        if (!planner.isSubtype(concrete, binding.staticReceiver())) {
+            throw new IllegalArgumentException(
+                    "concrete receiver is not a subtype of the bound receiver");
+        }
+        Target implementation = concreteSlots.get(binding.slot());
+        if (implementation == null || implementation.method().isAbstract()) {
+            throw new IllegalArgumentException(
+                    "concrete receiver does not implement the selected nominal method slot");
+        }
+        return implementation;
+    }
+
+    private static boolean sameDeclaration(Target actual, Target expected) {
+        return actual != null && expected != null
+                && actual.owner() == expected.owner()
+                && actual.method() == expected.method()
+                && actual.ownerId().equals(expected.ownerId());
+    }
+
     private static final class Planner {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Set<String> ambiguous = new HashSet<>();
@@ -271,6 +375,34 @@ public final class NominalInheritedMethodSlots {
             if (found != null) return found;
             throw new IllegalArgumentException(
                     "nominal method proof cannot import or resolve class " + name);
+        }
+
+        private boolean isSubtype(
+                Ast.ClassDecl concrete, Ast.ClassDecl expectedBase) {
+            Set<Ast.ClassDecl> visited =
+                    Collections.newSetFromMap(new IdentityHashMap<>());
+            List<Ast.ClassDecl> pending = new ArrayList<>();
+            pending.add(concrete);
+            while (!pending.isEmpty()) {
+                Ast.ClassDecl current = pending.removeLast();
+                if (!visited.add(current)) continue;
+                if (visited.size() > MAX_PROOF_CLASSES) {
+                    throw new IllegalArgumentException(
+                            "nominal virtual receiver ancestry bound exceeded");
+                }
+                if (current == expectedBase) return true;
+                for (Ast.TypeRef parentRef : current.parents()) {
+                    if (parentRef.name().equals("Object")
+                            || parentRef.name().equals("List")) continue;
+                    if (parentRef.inferArguments()
+                            || !parentRef.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "unsubstituted virtual receiver generic parent");
+                    }
+                    pending.add(resolve(parentRef.name(), current));
+                }
+            }
+            return false;
         }
 
         private Map<Slot, Target> collect(
