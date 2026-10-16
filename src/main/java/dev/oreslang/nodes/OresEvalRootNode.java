@@ -7931,7 +7931,8 @@ public final class OresEvalRootNode extends RootNode {
          */
         private void requireBoundInstanceReceiver(Ast.CallExpr call, Object receiver) {
             if (program.boundMethodCalls().containsKey(call)
-                    && !(receiver instanceof OresObject)) {
+                    && (!(receiver instanceof OresObject object)
+                        || object.klass.actorKind() != Ast.ActorKind.NONE)) {
                 throw new IllegalStateException(
                         "compiler-bound instance call received non-object receiver");
             }
