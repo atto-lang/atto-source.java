@@ -2057,6 +2057,8 @@ public final class TypeChecker {
             Object value = literal.value();
             if (value == null) throw new IllegalArgumentException("standalone null values are forbidden; use Option<T>");
             if (value instanceof Long) return Primitive.INT;
+            if (value instanceof java.math.BigInteger) return Primitive.BIGINT;
+            if (value instanceof java.math.BigDecimal) return Primitive.DECIMAL;
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
@@ -2309,11 +2311,14 @@ public final class TypeChecker {
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
                 case "-", "*", "%" -> numericJoin(left, right, binary.operator());
                 case "/" -> {
-                    // OresEvalRootNode.numeric evaluates real division as a Double,
-                    // even for int/int. The result cannot be assigned to int without
-                    // an explicit conversion. Complex/decimal joins retain their
-                    // existing representation pending dedicated numeric contracts.
+                    // Fixed-width int / int produces binary64; BigInt division
+                    // needs an explicit result domain (rational/decimal), not
+                    // a fake statically inferred integer quotient.
                     Type result = numericJoin(left, right, "/");
+                    if (result == Primitive.BIGINT) {
+                        throw new IllegalArgumentException(
+                                "BigInt division requires an explicit result domain");
+                    }
                     yield result == Primitive.INT ? Primitive.FLOAT : result;
                 }
                 default -> Unknown.INSTANCE;
@@ -5719,9 +5724,10 @@ public final class TypeChecker {
         if (source instanceof Primitive left && target instanceof Primitive right) {
             if (left == Primitive.VOID || left == Primitive.NULL
                     || right == Primitive.VOID || right == Primitive.NULL) return false;
+            // Decimal is BigDecimal at runtime, not a binary64 carrier.
+            // Runtime BigInt type tests intentionally accept fixed-width ints.
             return left == right
-                    || (left == Primitive.FLOAT && right == Primitive.DECIMAL)
-                    || (left == Primitive.DECIMAL && right == Primitive.FLOAT);
+                    || (left == Primitive.INT && right == Primitive.BIGINT);
         }
         if (source instanceof StringLiteral && target == Primitive.STRING) return true;
         if (source instanceof Record left && target instanceof Record right) {
@@ -5769,9 +5775,10 @@ public final class TypeChecker {
 
         if (a instanceof Primitive ap && b instanceof Primitive bp) {
             if (ap == bp) return true;
-            // FLOAT and DECIMAL currently share the same runtime scalar domain.
-            return (ap == Primitive.FLOAT && bp == Primitive.DECIMAL)
-                    || (ap == Primitive.DECIMAL && bp == Primitive.FLOAT);
+            // BigInt runtime type tests may include fixed-width integers;
+            // Decimal and binary floats are explicitly distinct.
+            return (ap == Primitive.INT && bp == Primitive.BIGINT)
+                    || (ap == Primitive.BIGINT && bp == Primitive.INT);
         }
 
         if (a instanceof Named an && b instanceof Named bn) {
@@ -6201,7 +6208,9 @@ public final class TypeChecker {
         // A DECIMAL-FLOAT join would otherwise typecheck as Decimal but
         // execute either binary64 arithmetic or throw at runtime.
         if ((left == Primitive.DECIMAL && (right == Primitive.FLOAT || right == Primitive.COMPLEX))
-                || (right == Primitive.DECIMAL && (left == Primitive.FLOAT || left == Primitive.COMPLEX))) {
+                || (right == Primitive.DECIMAL && (left == Primitive.FLOAT || left == Primitive.COMPLEX))
+                || (left == Primitive.BIGINT && (right == Primitive.FLOAT || right == Primitive.COMPLEX))
+                || (right == Primitive.BIGINT && (left == Primitive.FLOAT || left == Primitive.COMPLEX))) {
             throw new IllegalArgumentException(
                     "operator '" + op + "' cannot mix decimal with binary floating/complex; use explicit conversion");
         }
@@ -7945,7 +7954,8 @@ public final class TypeChecker {
         }
 
         return switch (ref.name()) {
-            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint" -> Primitive.INT;
+            case "bigint" -> Primitive.BIGINT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
