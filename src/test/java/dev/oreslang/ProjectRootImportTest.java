@@ -75,6 +75,39 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void linkedRelativeAndDotBareImportsRetainSeparateNamespaces() throws Exception {
+        Path root = makeProject("relative-linked");
+        Path entry = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path local = entry.getParent().resolve("local.ores");
+        Path parent = entry.getParent().getParent().resolve("up.ores");
+        Path hidden = root.resolve("src/.hidden/hidden.ores");
+        Files.createDirectories(hidden.getParent());
+        Files.writeString(local, "pub fnc local(): string { return \"local-ok\"; }\n");
+        Files.writeString(parent, "pub fnc up(): string { return \"parent-ok\"; }\n");
+        Files.writeString(hidden, "pub fnc hidden(): string { return \"bare-ok\"; }\n");
+        Files.writeString(entry, """
+                import fnc local from "./local";
+                import fnc up from "../up";
+                import fnc hidden from ".hidden/hidden";
+                pub fnc main(): void {
+                  stdio.println(local());
+                  stdio.println(up());
+                  stdio.println(hidden());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), stdout, new ByteArrayOutputStream());
+        assertEquals(4, result.units().size());
+        String printed = stdout.toString(StandardCharsets.UTF_8);
+        assertTrue(printed.contains("local-ok"), printed);
+        assertTrue(printed.contains("parent-ok"), printed);
+        assertTrue(printed.contains("bare-ok"), printed);
+    }
+
+    @Test
     void explicitRootOverrideChoosesOnlyTheOverriddenProject() throws Exception {
         Path first = makeProject("first");
         Path second = makeProject("second");
