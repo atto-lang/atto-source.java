@@ -58,18 +58,20 @@ public final class PortableCodecRegistry {
         public Field {
             Objects.requireNonNull(name);
             Objects.requireNonNull(shape);
-            if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-                throw new IllegalArgumentException("invalid portable record field name: " + name);
+            if (name.isEmpty() || name.length() > 128
+                    || !name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException("invalid or overlong portable record field name");
             }
         }
     }
 
     public record ObjectShape(List<Field> fields) implements Shape {
         public ObjectShape {
-            fields = List.copyOf(fields);
+            Objects.requireNonNull(fields, "fields");
             if (fields.size() > 256) {
                 throw new IllegalArgumentException("portable record exceeds 256 fields");
             }
+            fields = List.copyOf(fields);
         }
     }
 
