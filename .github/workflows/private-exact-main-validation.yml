@@ -69,7 +69,70 @@ jobs:
       - name: Focused Future/select and exception-isolation regression suites
         run: mvn -B -ntp '-Dtest=ChannelCompletionPublicationIsolationTest,FutureSelectAttachmentPublicationBarrierTest,FutureChannelSelectTest,ChannelCommittedCompletionDrainTest,ChannelMappedCancellationStressTest,OresFutureHostWaiterDetachmentTest' test
       - name: Complete GraalVM JDK 25 Maven verification
-        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+        # A clean build prevents earlier focused-test reports from being
+        # mistaken for actual full-suite execution.
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify
+      - name: Prove fresh exact-main full JUnit suite execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only trusted workflow-owned verification; never execute a
+          # candidate-owned report checker.
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          required = {
+              "dev.oreslang.runtime.ChannelCompletionPublicationIsolationTest",
+              "dev.oreslang.runtime.FutureSelectAttachmentPublicationBarrierTest",
+              "dev.oreslang.runtime.FutureChannelSelectTest",
+              "dev.oreslang.runtime.ChannelCommittedCompletionDrainTest",
+              "dev.oreslang.runtime.ChannelMappedCancellationStressTest",
+              "dev.oreslang.runtime.OresFutureHostWaiterDetachmentTest",
+          }
+          report_dir = Path("target/surefire-reports")
+          if (not report_dir.is_dir() or report_dir.is_symlink()
+                  or report_dir.parent.is_symlink()):
+              raise SystemExit("Missing or symlinked exact-main Maven Surefire reports")
+          reports = list(report_dir.glob("TEST-*.xml"))
+          if len(reports) <= len(required):
+              raise SystemExit("Exact-main Maven test suite produced no broader JUnit reports")
+          executed = set()
+          for report in reports:
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit(f"Invalid exact-main Surefire report: {report}")
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit(f"Empty or oversized Surefire report: {report}")
+              classname = report.name[len("TEST-"):-len(".xml")]
+              root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit(f"Mismatched exact-main JUnit suite: {report}")
+              cases = root.findall("testcase")
+              try:
+                  declared = int(root.get("tests", "-1"))
+                  totals = [int(root.get(k, "-1"))
+                            for k in ("failures", "errors", "skipped")]
+              except ValueError:
+                  raise SystemExit(f"Invalid exact-main JUnit totals: {report}")
+              if declared < 1 or declared != len(cases) or any(n != 0 for n in totals):
+                  raise SystemExit(f"Failed/skipped or inconsistent JUnit suite: {report}")
+              for case in cases:
+                  if case.get("classname") != classname:
+                      raise SystemExit(f"Incorrect exact-main testcase identity: {report}")
+                  if any(case.find(k) is not None for k in
+                         ("failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError")):
+                      raise SystemExit(f"Failed/skipped/flaky exact-main testcase: {report}")
+              executed.add(classname)
+          if not required.issubset(executed):
+              raise SystemExit("Missing exact-main focused classes: "
+                               + ", ".join(sorted(required - executed)))
+          additional = executed - required
+          if not additional:
+              raise SystemExit("No JUnit classes beyond exact-main focused subset")
+          print(f"VERIFIED_EXACT_MAIN_JUNIT_CLASSES={len(executed)}")
+          print(f"VERIFIED_EXACT_MAIN_EXTRA_CLASSES={len(additional)}")
+          PY
       - name: Ten deterministic Future/channel stress replays
         shell: bash
         run: |
