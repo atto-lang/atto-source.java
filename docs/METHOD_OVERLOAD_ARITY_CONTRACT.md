@@ -24,6 +24,34 @@ The receiver (`self`, implicit or explicit) is **not** a value parameter.
 Instance and static slots are separate namespaces. Constructors are not part
 of ordinary method overloading and remain separately validated.
 
+## Optional inline receiver spelling
+
+These two declarations have the same instance method identity and cannot
+coexist in the same class or actor:
+
+```ores
+receive(Mail m): void { self.process(m); }
+receive(self, Mail m): void { self.process(m); } // duplicate receive/1
+```
+
+The optional first-position `self` marker declares the existing implicit
+instance receiver; it is **not** added to the value-parameter list, named
+arguments, overload arity, public ABI, or the method's callable type.
+`foo(self)` is the zero-value-argument spelling of `foo()`.
+`foo(mut self, int x)` lowers to the same mutable receiver contract as the
+pre-existing `foo(mut self)(int x)`. The legacy `foo(self Foo)(int x)`
+remains available for explicitly typed receivers. An inline receiver must be
+first, may not appear twice, cannot end in a dangling comma, and is forbidden
+on `static fnc` declarations.
+
+Receiver spelling has no bearing on nested lambda scopes. Use `nlex` when
+a callback must not capture enclosing locals or receiver authority. In
+particular, any use of `self` inside an `nlex` lambda is a name-resolution
+error, not a way to obtain an actor's instance through a hidden binding.
+The `nlex critical |state| -> { ... }` actor-state write-callback form is
+subject to separate actor-state grammar/effect integration; this change does
+not admit or implement that pending construct.
+
 At a call site, select the slot by receiver and syntactic argument count
 before checking argument/return types. In particular, an incompatible
 argument must produce a type error for the selected arity, not trigger
