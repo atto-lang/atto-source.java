@@ -641,4 +641,45 @@ final class ProjectManifestImportTest {
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("legacy-still-works"));
     }
 
+
+    @Test
+    void physicallySharedSourceCannotSilentlyInheritTwoPackageRoots() throws Exception {
+        Path project = temp.resolve("context-conflict");
+        Path one = project.resolve("zed_modules/acme/one");
+        Path two = project.resolve("zed_modules/acme/two");
+        Path common = temp.resolve("same-physical-source.ores");
+        Files.createDirectories(one.resolve("src"));
+        Files.createDirectories(two.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                one = "acme/one"
+                two = "acme/two"
+                """);
+        Files.writeString(one.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(two.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(common, """
+                pub fnc first(): int { return 1; }
+                pub fnc second(): int { return 2; }
+                """);
+        try {
+            Files.createSymbolicLink(one.resolve("src/first.ores"), common);
+            Files.createSymbolicLink(two.resolve("src/second.ores"), common);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        Path main = project.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc first from "pkg:one/src/first";
+                import fnc second from "pkg:two/src/second";
+                pub fnc main(): void { return; }
+                """);
+        IllegalArgumentException conflicting = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(conflicting.getMessage().contains("conflicting project contexts"),
+                conflicting.getMessage());
+    }
+
 }
