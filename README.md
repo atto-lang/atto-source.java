@@ -40,3 +40,5 @@ and remaining physical-isolation work are tracked in
 Async filesystem, TCP and HTTP client APIs: [usage and execution guarantees](docs/ASYNC_IO.md).
 
 Core assertions: see [Assert API and trap behavior](docs/ASSERT.md).
+
+CPU/GPU execution expressions, nested placement and `nb`/stream parity: see [proposed v1 contract](docs/CPU_GPU_NB_GRAPH_V1.md). This is **not** a claim that the backend executes GPU or streamed source blocks.
