@@ -728,4 +728,53 @@ final class ProjectManifestImportTest {
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("project-priority:symlink-path"));
     }
 
+
+    @Test
+    void externalOresPathsModulesPreserveTransitiveBareSearchWithoutRootAuthority() throws Exception {
+        Path project = temp.resolve("ambient-import-consumer");
+        Path src = project.resolve("src");
+        Path ambient = temp.resolve("ambient-import-package");
+        Files.createDirectories(src.resolve("common"));
+        Files.createDirectories(ambient);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(src.resolve("common/helper.ores"), """
+                pub fnc helper(): string { return "configured-root"; }
+                """);
+        Files.writeString(ambient.resolve("outer.ores"), """
+                import fnc helper from "common/helper";
+                pub fnc outer(): string { return helper(); }
+                """);
+        Path main = src.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc outer from "outer";
+                pub fnc main(): void {
+                  stdio.println(outer());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var built = LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(),
+                Map.of(OresProjectConfig.ENV_ORES_PATHS, ambient.toString()),
+                out, new ByteArrayOutputStream());
+        assertEquals(3, built.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("configured-root"));
+
+        // Ambient source files with no package manifest cannot borrow the
+        // consumer's @/ authority simply because it imported them.
+        Files.writeString(ambient.resolve("outer.ores"), """
+                import fnc helper from "@/src/common/helper";
+                pub fnc outer(): string { return helper(); }
+                """);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main,
+                        Map.of(OresProjectConfig.ENV_ORES_PATHS, ambient.toString())));
+        assertTrue(rejected.getMessage().contains("require a .ores.pkg.toml"),
+                rejected.getMessage());
+    }
+
 }
