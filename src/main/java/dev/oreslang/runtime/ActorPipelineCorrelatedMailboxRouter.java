@@ -191,31 +191,42 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         return inLiveGeneration(() -> {
         var frame = current();
         Objects.requireNonNull(value, "pipeline payload");
-        var children = session.forwardAll(frame);
-        var result = new ArrayList<Admission>(children.size());
+        // Allocate independent receipt slots and resolve the immutable edge
+        // order BEFORE reserving any route frame. A failed host allocation
+        // must never strand a live, undeliverable correlation child.
         var out = graph.forwardAll(frame.receiver());
-        for (int i = 0; i < children.size(); i++) {
-            var child = children.get(i);
-            var edge = out.get(i);
-            try {
-                owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child);
-                result.add(new Admission(edges.get(edge), child.receiver(),
-                        child.flowId(), child.routeId(), true, null));
-            } catch (RuntimeException failure) {
-                ActorPipelineRouteSession.retireDelivered(child);
-                result.add(new Admission(edges.get(edge), child.receiver(),
-                        child.flowId(), child.routeId(), false, failure));
-            } catch (Error fatal) {
-                ActorPipelineRouteSession.retireDelivered(child);
-                // No publication was attempted on these reserved frames.
-                // Preserve previous accepted branches but reclaim everything
-                // not handed to ActorRuntime before rethrowing the fatal error.
-                for (int rest = i + 1; rest < children.size(); rest++)
-                    ActorPipelineRouteSession.retireDelivered(children.get(rest));
-                throw fatal;
+        var result = new ArrayList<Admission>(out.size());
+        var children = session.forwardAll(frame);
+        int next = 0;
+        try {
+            for (; next < children.size(); next++) {
+                var child = children.get(next);
+                var edge = out.get(next);
+                // Construct the accepted receipt BEFORE DATA publication:
+                // no metadata allocation may turn a successful mailbox write
+                // into an apparently failed admission.
+                var accepted = new Admission(edges.get(edge), child.receiver(),
+                        child.flowId(), child.routeId(), true, null);
+                try {
+                    owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child);
+                    result.add(accepted);
+                } catch (RuntimeException failure) {
+                    ActorPipelineRouteSession.retireDelivered(child);
+                    result.add(new Admission(edges.get(edge), child.receiver(),
+                            child.flowId(), child.routeId(), false, failure));
+                }
             }
+            return List.copyOf(result);
+        } catch (RuntimeException | Error failure) {
+            // Previously published branches retain their independent frames.
+            // The current and later frames have not been published if the
+            // error happened during receipt construction. A fatal error
+            // during send is treated as terminal runtime failure; session
+            // cleanup is idempotent and never claims a delivery succeeded.
+            for (int rest = next; rest < children.size(); rest++)
+                ActorPipelineRouteSession.retireDelivered(children.get(rest));
+            throw failure;
         }
-        return List.copyOf(result);
         });
     }
 
