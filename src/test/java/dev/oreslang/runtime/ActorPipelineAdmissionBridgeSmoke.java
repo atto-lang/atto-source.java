@@ -43,6 +43,20 @@ public final class ActorPipelineAdmissionBridgeSmoke {
                 });
         check(result.receipts().size() == 3 && result.admitted() == 1
                 && result.rejected() == 2, "partial-admission receipt mismatch");
+        check(result.receipts().get(0).target().equals("a")
+                && result.receipts().get(0).status()
+                    == ActorPipelineAdmissionBridge.Admission.ADMITTED
+                && result.receipts().get(1).target().equals("b")
+                && result.receipts().get(1).status()
+                    == ActorPipelineAdmissionBridge.Admission.FULL
+                && result.receipts().get(2).target().equals("c")
+                && result.receipts().get(2).status()
+                    == ActorPipelineAdmissionBridge.Admission.CLOSED,
+                "preallocated branch receipts changed ordered admission statuses");
+        check(result.receipts().stream().allMatch(r -> r.generation() == 9
+                        && r.flowId() == root.flowId())
+                && result.receipts().stream().map(r -> r.routeId()).distinct().count() == 3,
+                "preallocated receipt correlation lost branch identity");
         check(session.outstanding() == 2, "rejected route frames leaked");
         try {
             result.receipts().clear();
