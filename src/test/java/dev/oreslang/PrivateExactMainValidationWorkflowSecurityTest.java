@@ -361,6 +361,15 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
             assertTrue(proof.contains(executable), "missing fail-closed assertion: " + executable);
         }
         assertTrue(proof.contains("root.iter(\"testcase\")"));
+        assertTrue(hasExactLine(proof, 10,
+                "report_dir = Path(\"target/surefire-reports\")"),
+                "proof must use the single-module Maven output, not candidate fixtures");
+        assertTrue(proof.contains("report_dir.is_symlink()"),
+                "symlinked report folders are not trustworthy evidence");
+        assertTrue(proof.contains("report.is_symlink()"),
+                "symlinked report XML files are not trustworthy evidence");
+        assertFalse(proof.contains("rglob(\"TEST-*.xml\")"),
+                "recursive search can accept committed fake reports from nested fixtures");
         assertTrue(proof.contains("\"failure\", \"error\", \"skipped\""),
                 "failed, erroneous and skipped test cases must all be rejected");
         assertFalse(proof.contains("python3 scripts/"),
