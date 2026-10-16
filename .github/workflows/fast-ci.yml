@@ -20,6 +20,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          # PR default checkout is GitHub's synthetic merge commit. This gate
+          # must test the immutable PR-head tree to support exact-tree evidence.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Record exact PR-head commit and source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='${{ github.event.pull_request.head.sha || github.sha }}'
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$expected"
+          test -z "$(git status --porcelain)"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          printf 'ORESLANG_SOURCE_COMMIT=%s\nORESLANG_SOURCE_TREE=%s\n' "$actual" "$tree" >> "$GITHUB_ENV"
+          printf 'source_commit=%s\nsource_tree=%s\n' "$actual" "$tree" >> "$GITHUB_STEP_SUMMARY"
       - name: Verify pinned Sendable Serializable DATA CONTROL contract
         run: python3 scripts/verify_serde_contract.py
       - name: Set up GraalVM
