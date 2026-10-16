@@ -3083,7 +3083,7 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parseConditional();
+        Ast.Expr expr = parsePipeline();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
@@ -3091,6 +3091,48 @@ public final class Parser {
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
+    }
+
+    /**
+     * Value pipelines are ordinary, eager calls. The leading value is
+     * evaluated once as the first argument. Namespace combinators
+     * (Option.map, Result.map_err, etc.) lower to receiver members so that
+     * the normal sum-type checker and ownership rules apply unchanged.
+     */
+    private Ast.Expr parsePipeline() {
+        Ast.Expr value = parseConditional();
+        while (match(PIPE_FORWARD)) {
+            Token operator = previous();
+            Ast.Expr stage = parsePostfix();
+            if (stage instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr namespace
+                        && (namespace.name().equals("Option") || namespace.name().equals("Result"))) {
+                    value = new Ast.CallExpr(new Ast.MemberExpr(value, member.member()),
+                            call.typeArguments(), call.typeArgumentsPresent(),
+                            call.arguments());
+                } else if (isPipelineCallable(call.callee())) {
+                    List<Ast.Expr> args = new ArrayList<>();
+                    args.add(value);
+                    args.addAll(call.arguments());
+                    value = new Ast.CallExpr(call.callee(), call.typeArguments(),
+                            call.typeArgumentsPresent(), args);
+                } else {
+                    throw error(operator, "pipeline stage must call a named function or Option/Result combinator");
+                }
+            } else if (isPipelineCallable(stage)) {
+                value = new Ast.CallExpr(stage, List.of(value));
+            } else {
+                throw error(operator, "pipeline stage must be a named callable");
+            }
+        }
+        return value;
+    }
+
+    private static boolean isPipelineCallable(Ast.Expr stage) {
+        return stage instanceof Ast.NameExpr
+                || (stage instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr);
     }
 
     private Ast.Expr parseConditional() {
