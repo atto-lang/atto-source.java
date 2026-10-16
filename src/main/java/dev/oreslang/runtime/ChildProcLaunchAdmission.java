@@ -117,6 +117,28 @@ final class ChildProcLaunchAdmission {
         return new Plan(executableReal, argv, cwdReal, environment);
     }
 
+    /**
+     * Construct (but DO NOT START) a host-side builder from a preauthorized
+     * plan. In particular, ProcessBuilder inherits the parent environment by
+     * default, which would bypass per-key ENV permissions unless cleared.
+     *
+     * <p>The future actor-owned worker is responsible for bounded pipe I/O,
+     * cancellation, reaping and OS sandboxing where required; it must never
+     * call start() on an actor carrier thread.</p>
+     */
+    static ProcessBuilder newProcessBuilder(Plan plan) {
+        Objects.requireNonNull(plan, "plan");
+        ProcessBuilder builder = new ProcessBuilder(plan.argv());
+        builder.directory(plan.cwd().toFile());
+        builder.environment().clear();
+        builder.environment().putAll(plan.environment());
+        builder.redirectInput(ProcessBuilder.Redirect.PIPE);
+        builder.redirectOutput(ProcessBuilder.Redirect.PIPE);
+        builder.redirectError(ProcessBuilder.Redirect.PIPE);
+        builder.redirectErrorStream(false);
+        return builder;
+    }
+
     private static String checked(String value, String label) {
         Objects.requireNonNull(value, label);
         if (value.indexOf('\0') >= 0) {
