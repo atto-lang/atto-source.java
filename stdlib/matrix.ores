@@ -54,6 +54,12 @@ define module matrix as
     if left.size != rows * shared || right.size != shared * cols; do
       return Err("matrix element count does not match dimensions");
     fi
+    // Explicit work cap: decimal cells can contain up to a million digits.
+    // Even a shape within 128x128 can otherwise require millions of
+    // allocation-heavy exact multiply/add operations per guest call.
+    if rows * shared * cols > 65536; do
+      return Err("matrix multiplication exceeds exact-operation work budget");
+    fi
     let mut Array<decimal> result = new Array<decimal>();
     for (let i = 0; i < rows; i = i + 1) {
       for (let j = 0; j < cols; j = j + 1) {
@@ -112,6 +118,9 @@ define module matrix as
     fi
     if values.size != rows * cols; do
       return Err("matrix element count does not match dimensions");
+    fi
+    if precision <= 0 || precision > 4096; do
+      return Err("decimal norm precision must be within 1..4096");
     fi
     let decimal squares = 0d;
     for const value of values do
