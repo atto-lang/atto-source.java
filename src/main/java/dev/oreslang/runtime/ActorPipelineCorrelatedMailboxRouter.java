@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
 
 /**
  * Host-only integration of the checked route ledger and real ActorRuntime
@@ -41,6 +43,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<ActorPipelineRoutePlan.Edge, Integer> edges;
+    // Host retirement has exclusive publication authority. A guest actor
+    // must never PARK its carrier waiting for this host-controlled gate.
+    private final ReentrantReadWriteLock publicationGate =
+            new ReentrantReadWriteLock(true);
 
     ActorPipelineCorrelatedMailboxRouter(
             ActorRuntime runtime,
@@ -77,19 +83,42 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         session = new ActorPipelineRouteSession(plan, generation, maxActiveFrames);
     }
 
+    /**
+     * A selection and its actual mailbox publication share a nonblocking
+     * read lease. If CLOSE is waiting, do not park an actor's physical carrier
+     * and do not publish a DATA envelope after the terminal barrier.
+     */
+    private <R> R inLiveGeneration(Supplier<R> action) {
+        var read = publicationGate.readLock();
+        if (publicationGate.hasQueuedThreads() || !read.tryLock()) {
+            throw new IllegalStateException("pipeline retirement is pending");
+        }
+        try {
+            if (session.closed()) {
+                throw new IllegalStateException("pipeline generation is retired");
+            }
+            return action.get();
+        } finally {
+            read.unlock();
+        }
+    }
+
     /** The ONLY entry to a new flow: an authorized supervisor-selected root. */
     void ingress(String root, M message) {
         owner.requirePipelineRegistrationHostAuthority();
-        Objects.requireNonNull(message, "pipeline payload");
-        // Verify the root before reserving a frame or publishing any mail.
-        graph.requireIngressRoot(root);
-        var frame = session.ingress(root);
-        try {
-            owner.sendWithPipelineFrame(targets.get(root), message, frame);
-        } catch (RuntimeException | Error failed) {
-            ActorPipelineRouteSession.retireDelivered(frame);
-            throw failed;
-        }
+        inLiveGeneration(() -> {
+            Objects.requireNonNull(message, "pipeline payload");
+            // Verify the root before reserving a frame or publishing any mail.
+            graph.requireIngressRoot(root);
+            var frame = session.ingress(root);
+            try {
+                owner.sendWithPipelineFrame(targets.get(root), message, frame);
+            } catch (RuntimeException | Error failed) {
+                ActorPipelineRouteSession.retireDelivered(frame);
+                throw failed;
+            }
+            return null;
+        });
     }
 
     private ActorPipelineRouteSession.MailFrame current() {
@@ -117,23 +146,31 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
     int outstanding() { return session.outstanding(); }
 
     void forward(M value) {
-        var frame = current();
-        sendChild(session.forward(frame), value);
+        inLiveGeneration(() -> {
+            sendChild(session.forward(current()), value);
+            return null;
+        });
     }
 
     void forwardRoundRobin(M value) {
-        var frame = current();
-        sendChild(session.forwardRoundRobin(frame), value);
+        inLiveGeneration(() -> {
+            sendChild(session.forwardRoundRobin(current()), value);
+            return null;
+        });
     }
 
     void forwardTo(String target, M value) {
-        var frame = current();
-        sendChild(session.forwardTo(frame, target), value);
+        inLiveGeneration(() -> {
+            sendChild(session.forwardTo(current(), target), value);
+            return null;
+        });
     }
 
     void forwardByKey(String key, M value) {
-        var frame = current();
-        sendChild(session.forwardByKey(frame, key), value);
+        inLiveGeneration(() -> {
+            sendChild(session.forwardByKey(current(), key), value);
+            return null;
+        });
     }
 
     /** A typed host reply travels exactly ONE edge upstream along the
@@ -142,13 +179,16 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
      * A full origin reply is composed of these hops; source self.reply is
      * not enabled until compiler-owned backward message handlers exist. */
     void backward(M value) {
-        var frame = current();
-        sendChild(session.returnOneHop(frame), value);
+        inLiveGeneration(() -> {
+            sendChild(session.returnOneHop(current()), value);
+            return null;
+        });
     }
 
     /** Every recipient gets an independent admission result; earlier
      * successes are not rolled back when a later mailbox is full or stopped. */
     List<Admission> forwardAll(M value) {
+        return inLiveGeneration(() -> {
         var frame = current();
         Objects.requireNonNull(value, "pipeline payload");
         var children = session.forwardAll(frame);
@@ -176,6 +216,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
             }
         }
         return List.copyOf(result);
+        });
     }
 
     private void sendChild(ActorPipelineRouteSession.MailFrame child, M value) {
@@ -192,6 +233,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
      * still reach recipients; no guest lowering is enabled by this method. */
     void close() {
         owner.requirePipelineRegistrationHostAuthority();
-        session.close();
+        var write = publicationGate.writeLock();
+        write.lock();
+        try {
+            session.close();
+        } finally {
+            write.unlock();
+        }
     }
 }
