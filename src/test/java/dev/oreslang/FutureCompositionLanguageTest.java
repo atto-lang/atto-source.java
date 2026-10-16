@@ -84,6 +84,54 @@ final class FutureCompositionLanguageTest {
         assertEquals("21", run(program));
     }
 
+    @Test
+    void mapAdoptsFutureValuedCallbackInsteadOfReturningNestedFuture() throws Exception {
+        String program = """
+                async fnc base(): int {
+                  return 5;
+                }
+
+                async fnc twice(int x): int {
+                  return x * 2;
+                }
+
+                pub fnc main(): void {
+                  val Future<int> mapped = base().map(|int v| -> {
+                    return twice(v);
+                  });
+                  stdio.stdout.write(await mapped);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("10", run(program));
+    }
+
+    @Test
+    void declarationsAndReturnsCanonicalizeThreeDeepFutureType() throws Exception {
+        String program = """
+                async fnc leaf(): int {
+                  return 9;
+                }
+
+                async fnc middle(): Future<int> {
+                  return leaf();
+                }
+
+                async fnc top(): Future<Future<int>> {
+                  return middle();
+                }
+
+                pub fnc main(): void {
+                  val Future<int> normalized = top();
+                  stdio.stdout.write(await normalized);
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("9", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "future-compose.ores")
