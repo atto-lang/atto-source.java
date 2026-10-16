@@ -1,6 +1,9 @@
 package dev.oreslang.runtime;
 
+import java.util.AbstractList;
 import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicIntegerArray;
@@ -44,6 +47,44 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
 
     public static void main(String[] args) throws InterruptedException {
         ActorPipelineRoutePlan plan = makePlan();
+
+        // A List's Count/size is NOT a bound on its iterator. The trusted
+        // graph parser must read only each indexed slot, once, and must not
+        // revisit caller-owned lists after taking its immutable snapshot.
+        var indexedStages = List.of(
+                new ActorPipelineRoutePlan.Stage("index-source", "Producer",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                new ActorPipelineRoutePlan.Stage("index-sink", "Worker",
+                        ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""));
+        var indexedEdges = List.of(
+                new ActorPipelineRoutePlan.Edge("index-source", "index-sink", "Event"));
+        AtomicInteger stageReads = new AtomicInteger();
+        AtomicInteger edgeReads = new AtomicInteger();
+        List<ActorPipelineRoutePlan.Stage> hostileStages = new AbstractList<>() {
+            @Override public int size() { return indexedStages.size(); }
+            @Override public ActorPipelineRoutePlan.Stage get(int index) {
+                stageReads.incrementAndGet();
+                return indexedStages.get(index);
+            }
+            @Override public Iterator<ActorPipelineRoutePlan.Stage> iterator() {
+                throw new AssertionError("actor DAG stages unexpectedly iterated");
+            }
+        };
+        List<ActorPipelineRoutePlan.Edge> hostileEdges = new AbstractList<>() {
+            @Override public int size() { return indexedEdges.size(); }
+            @Override public ActorPipelineRoutePlan.Edge get(int index) {
+                edgeReads.incrementAndGet();
+                return indexedEdges.get(index);
+            }
+            @Override public Iterator<ActorPipelineRoutePlan.Edge> iterator() {
+                throw new AssertionError("actor DAG edges unexpectedly iterated");
+            }
+        };
+        var bounded = new ActorPipelineRoutePlan(hostileStages, hostileEdges);
+        check(bounded.forward("index-source").target().equals("index-sink"),
+                "bounded index-only graph snapshot chose wrong destination");
+        check(stageReads.get() == 2 && edgeReads.get() == 1,
+                "actor DAG read caller-owned slot more than once");
         // The same 3-consumer selector fixtures are also used by .net,
         // .wasm and .forge; this is a host-only selector conformance test.
         var three = new ActorPipelineRoutePlan(
