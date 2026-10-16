@@ -101,6 +101,20 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void complexMultiplicationAvoidsOverflowCancellationAndPrematureUnderflow() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      return ((1e308 + 1e308i) * (1e308 + 1e308i))
+                          eq ((1e308 * 1e308i) + (1e308 * 1e308i))
+                        && ((1.3e-162 + 1.3e-162i) * (1.3e-162 + 1.3e-162i))
+                          eq 5e-324i;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void complexDivisionAvoidsIntermediateOverflowAndUnderflow() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
