@@ -14,6 +14,7 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'scripts/test-actor-pipeline-route-plan.sh'
+      - 'scripts/test-actor-pipeline-router-host-gate.sh'
       - '.github/workflows/actor-pipeline-routing.yml'
   push:
     branches: [main]
@@ -30,6 +31,7 @@ on:
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'scripts/test-actor-pipeline-route-plan.sh'
+      - 'scripts/test-actor-pipeline-router-host-gate.sh'
       - '.github/workflows/actor-pipeline-routing.yml'
 permissions:
   contents: read
@@ -55,5 +57,6 @@ jobs:
           java -version
           javac -version
           sh scripts/test-actor-pipeline-route-plan.sh
+          sh scripts/test-actor-pipeline-router-host-gate.sh
           mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
             -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineRoutingAdmissionTest test
