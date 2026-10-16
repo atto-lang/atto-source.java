@@ -53,15 +53,27 @@ final class ActorPipelineRouteSession {
         private final long flowId;
         private final long routeId;
         private final List<String> actorPath;
+        private final int receiverIndex;
+        private final boolean returning;
         private MailFrame(ActorPipelineRouteSession session, long generation,
                           long flowId, long routeId, List<String> actorPath) {
+            this(session, generation, flowId, routeId, actorPath,
+                    actorPath.size() - 1, false);
+        }
+        private MailFrame(ActorPipelineRouteSession session, long generation,
+                          long flowId, long routeId, List<String> actorPath,
+                          int receiverIndex, boolean returning) {
             this.session = session;
             this.generation = generation;
             this.flowId = flowId;
             this.routeId = routeId;
             this.actorPath = List.copyOf(actorPath);
+            if (receiverIndex < 0 || receiverIndex >= this.actorPath.size())
+                throw new IllegalArgumentException("route receiver index out of bounds");
+            this.receiverIndex = receiverIndex;
+            this.returning = returning;
         }
-        public String receiver() { return actorPath.getLast(); }
+        public String receiver() { return actorPath.get(receiverIndex); }
         public long generation() { return generation; }
         public long flowId() { return flowId; }
         public long routeId() { return routeId; }
@@ -108,12 +120,12 @@ final class ActorPipelineRouteSession {
     }
 
     public synchronized MailFrame forward(MailFrame current) {
-        requireActive(current);
+        requireForward(current);
         return child(current, graph.forward(current.receiver()));
     }
 
     public synchronized MailFrame forwardRoundRobin(MailFrame current) {
-        requireActive(current);
+        requireForward(current);
         List<ActorPipelineRoutePlan.Edge> options = graph.forwardAll(current.receiver());
         int cursor = roundRobin.getOrDefault(current.receiver(), 0);
         roundRobin.put(current.receiver(), cursor + 1 == options.size() ? 0 : cursor + 1);
@@ -122,19 +134,19 @@ final class ActorPipelineRouteSession {
     }
 
     public synchronized MailFrame forwardTo(MailFrame current, String target) {
-        requireActive(current);
+        requireForward(current);
         return child(current, graph.forwardTo(current.receiver(), target));
     }
 
     public synchronized MailFrame forwardByKey(MailFrame current, String key) {
-        requireActive(current);
+        requireForward(current);
         return child(current, graph.forwardByKey(current.receiver(), key));
     }
 
     /** All-or-none frame allocation, NOT transactional mailbox admission.
      * Partial mailbox writes after this method remain independently reportable. */
     public synchronized List<MailFrame> forwardAll(MailFrame current) {
-        requireActive(current);
+        requireForward(current);
         List<ActorPipelineRoutePlan.Edge> edges = graph.forwardAll(current.receiver());
         reserve(edges.size());
         reserveRouteIds(edges.size());
@@ -160,8 +172,27 @@ final class ActorPipelineRouteSession {
         return result;
     }
 
+    /** VM-only actual reverse DATA hop. The original trusted path is carried
+     * intact across the return, with a decreasing receiver index. The branch
+     * keeps its flow ID while each hop receives a distinct one-shot route ID.
+     * The previous frame is consumed only when its child frame is published.
+     * This is NOT an actor-controlled named destination or reverse broadcast. */
+    synchronized MailFrame returnOneHop(MailFrame current) {
+        requireActive(current);
+        if (current.receiverIndex == 0)
+            throw new IllegalStateException("pipeline origin has no upstream return hop");
+        reserveRouteIds(1);
+        MailFrame child = new MailFrame(this, generation, current.flowId,
+                nextRouteId, current.actorPath, current.receiverIndex - 1, true);
+        active.put(child, Boolean.TRUE);
+        active.remove(current);
+        nextRouteId++;
+        return child;
+    }
+
     /** Send to the immediate authenticated sender of the current message. */
     public synchronized ReturnPath backward(MailFrame current) {
+        requireForward(current);
         requireReplyable(current);
         List<String> path = current.actorPath;
         ReturnPath result = new ReturnPath(generation, current.flowId,
@@ -172,6 +203,7 @@ final class ActorPipelineRouteSession {
 
     /** Return through the authenticated reverse path, not a guessed actor ID. */
     public synchronized ReturnPath reply(MailFrame current) {
+        requireForward(current);
         requireReplyable(current);
         List<String> reversed = new ArrayList<>(current.actorPath);
         java.util.Collections.reverse(reversed);
@@ -247,6 +279,13 @@ final class ActorPipelineRouteSession {
                 || !active.containsKey(current)) {
             throw new IllegalStateException("stale, foreign or completed actor route frame");
         }
+    }
+
+    private void requireForward(MailFrame current) {
+        requireActive(current);
+        if (current.returning)
+            throw new IllegalStateException(
+                    "reverse DATA can only travel on its authenticated return path");
     }
 
     private void requireReplyable(MailFrame current) {
