@@ -1225,6 +1225,76 @@ final class MethodOverloadTest {
                 """));
     }
 
+    @Test
+    void methodBindingMetadataRejectsNullsAndForeignDeclarationIdentities() {
+        Ast.Program checked = TypeChecker.checkTypes(Parser.parse("""
+                define module m
+                  define class C as
+                    pub pick(int value): int { return value; }
+                  end
+                end
+                pub routine main(): void {
+                  val c = new m.C();
+                  c.pick(3);
+                }
+                """));
+        assertEquals(1, checked.boundMethodCalls().size());
+        var existing = checked.boundMethodCalls().entrySet().iterator().next();
+        var call = existing.getKey();
+        var binding = existing.getValue();
+        var entries =
+                new java.util.IdentityHashMap<Ast.CallExpr, Ast.MethodCallBinding>();
+        entries.put(call, null);
+        assertThrows(NullPointerException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+
+        entries.clear();
+        entries.put(null, binding);
+        assertThrows(NullPointerException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+
+        entries.clear();
+        var foreignOwner = new Ast.ClassDecl("C", Ast.Visibility.PRIVATE,
+                false, Ast.ActorKind.NONE, java.util.List.of(),
+                java.util.List.of(), java.util.List.of(),
+                java.util.List.of(), null, binding.staticReceiver().methods());
+        entries.put(call, new Ast.MethodCallBinding(
+                foreignOwner, binding.declaredMethod()));
+        var foreign = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(foreign.getMessage().contains("foreign declaration"),
+                foreign::getMessage);
+
+        entries.clear();
+        Ast.MethodDecl original = binding.declaredMethod();
+        Ast.MethodDecl structurallyEqualMethod = new Ast.MethodDecl(
+                original.name(), original.visibility(), original.isStatic(),
+                original.isAbstract(), original.async(), original.suspends(),
+                original.structural(), original.explicitReceiverType(),
+                original.genericParameters(), original.parameters(),
+                original.returnType(), original.annotations(), original.body());
+        assertNotSame(original, structurallyEqualMethod);
+        assertEquals(original, structurallyEqualMethod);
+        entries.put(call, new Ast.MethodCallBinding(
+                binding.staticReceiver(), structurallyEqualMethod));
+        foreign = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(foreign.getMessage().contains("foreign declaration"),
+                foreign::getMessage);
+
+        entries.clear();
+        entries.put(call, binding);
+        Ast.Program valid = new Ast.Program(checked.namespace(), checked.imports(),
+                checked.modules(), checked.boundDirectCalls(), entries);
+        entries.clear();
+        assertEquals(1, valid.boundMethodCalls().size(),
+                "published call-site bindings must not retain mutable input maps");
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "method-overload.ores")
