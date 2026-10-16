@@ -108,7 +108,7 @@ final class HighPrecisionDecimalTest {
 
     @Test
     void tinyNonzeroBinaryFloatLiteralsMustNotSilentlyBecomeZero() {
-        for (String literal : new String[] { "1e-9999", "-1e-9999", "4e-324" }) {
+        for (String literal : new String[] { "1e-9999", "-1e-9999", "2e-324" }) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse("fnc invalid(): float { return " + literal + "; }"));
             assertTrue(error.getMessage().contains("underflows binary64"),
