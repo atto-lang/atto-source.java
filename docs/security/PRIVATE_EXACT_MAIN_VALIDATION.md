@@ -129,3 +129,27 @@ remain necessary before enabling this workflow.
 
 **The workflow does not exist on source main until independently reviewed and
 merged. It is not executable merely because it appears in a PR branch.**
+
+## Publisher regression on the source-local runner
+
+The separate `.github/workflows/private-exact-publisher-validation.yml` adds a
+protected-main, manual-only verification path for publisher PR #1018. It
+requires reviewed repository variables
+`ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA`,
+`ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA`, and
+`ORESLANG_PRIVATE_PUBLISHER_APPROVED_TREE` in addition to the
+`ORESLANG_PRIVATE_EPHEMERAL_RUNNER=true` admission gate.
+
+An administrator must first require independent code-owner reviews on the
+private source main branch, merge the reviewed workflow and configure a
+single-use source-repository-scoped `oreslang-private-ephemeral` runner.
+Dispatch from protected main with `candidate_sha` equal to the approved
+publisher PR head. The workflow checks trusted workflow/candidate commit/tree
+identity, then syntax-checks the scripts, runs the complete Bash destination
+policy suite and runs all discovered Python publisher tests three times.
+It rejects fewer than 57 discovered tests or any incomplete/failed run.
+
+A successful publisher run is distinct from Java 25/GraalVM validation of
+PR #1034. This workflow does not copy source to another organization or
+authorize any mirror destination. Any transfer still requires independent
+approval through the protected-main private destination policy.
