@@ -428,7 +428,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             {"sha": B, "truncated": False, "tree": [
                 {"path": "../escape", "mode": "100644", "type": "blob", "sha": C}]},
             {"sha": B, "truncated": False, "tree": [
-                {"path": "null\\x00name", "mode": "100644",
+                {"path": "null\x00name", "mode": "100644",
                  "type": "blob", "sha": C}]},
         ]:
             with self.subTest(corrupted=corrupted):
