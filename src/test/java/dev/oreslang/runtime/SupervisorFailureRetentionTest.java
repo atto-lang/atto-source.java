@@ -65,7 +65,9 @@ final class SupervisorFailureRetentionTest {
                 supervisor, group, Runnable::run, 4,
                 n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.RESTART),
                 resolution -> fail("inline executor cannot make restart decisions"))) {
-            process.accept(notice(supervisor, group));
+            assertThrows(IllegalStateException.class,
+                    () -> process.accept(notice(supervisor, group)),
+                    "synchronous CONTROL scheduling failure must reject admission");
             assertFalse(process.healthy());
             assertTrue(process.failure().isPresent());
             assertEquals(1, process.undelivered());
@@ -74,4 +76,31 @@ final class SupervisorFailureRetentionTest {
             assertEquals(0, process.resolved(), "no fabricated restart receipt");
         }
     }
+    @Test
+    void supervisorLaneCannotReportHealthyAfterChildProcessRejectsDispatch() throws Exception {
+        var supervisor = ActorRuntime.SupervisorId.create();
+        var group = ActorRuntime.ActorGroupId.create();
+        try (var pool = Executors.newSingleThreadExecutor();
+             var process = new SupervisorProcess(
+                    supervisor, group, Runnable::run, 2,
+                    n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP),
+                    r -> fail("failed process must not resolve directives"))) {
+            var control = new SupervisorFailureControl(supervisor, group, pool, 2);
+            control.install(process::accept);
+            control.publish(notice(supervisor, group));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (control.failure().isEmpty() && System.nanoTime() < deadline)
+                Thread.sleep(2);
+            assertTrue(control.failure().isPresent(),
+                    "upstream lane must observe failed handoff");
+            assertEquals(1, control.undelivered());
+            assertEquals(0, control.queued());
+            assertEquals(1, process.undelivered());
+            assertEquals(0, process.queued());
+            assertEquals(0, process.resolved());
+            assertFalse(control.healthy());
+            assertFalse(process.healthy());
+        }
+    }
+
 }
