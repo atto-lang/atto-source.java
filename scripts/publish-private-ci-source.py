@@ -412,6 +412,28 @@ def verify_upstream_commit_tree(commit, expected_tree, relative_directory):
         raise Denied("source subtree not attested by original GitHub commit")
 
 
+def verify_private_ci_ref(repository, branch, commit_sha, created):
+    """Verify both creation acknowledgement and a fresh GitHub ref read-back."""
+    expected_ref = "refs/heads/" + branch
+    if not isinstance(created, dict):
+        raise Denied("GitHub did not confirm the exact new CI ref and commit")
+    created_object = created.get("object")
+    if (created.get("ref") != expected_ref
+            or not isinstance(created_object, dict)
+            or created_object.get("type") != "commit"
+            or created_object.get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm the exact new CI ref and commit")
+    readback = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    if not isinstance(readback, dict):
+        raise Denied("new private CI ref does not point to the verified commit")
+    pointed = readback.get("object")
+    if (readback.get("ref") != expected_ref
+            or not isinstance(pointed, dict)
+            or pointed.get("type") != "commit"
+            or pointed.get("sha") != commit_sha):
+        raise Denied("new private CI ref does not point to the verified commit")
+
+
 def publish(repository, source, branch, trusted_root,
             source_commit=None, source_tree=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
@@ -491,23 +513,8 @@ def publish(repository, source, branch, trusted_root,
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    # A successful HTTP response alone is not evidence that the new ref
-    # actually points to our immutable destination commit. Require both
-    # create-ref response identity and independent follow-up read-back.
-    expected_ref = "refs/heads/" + branch
-    created_object = created.get("object")
-    if (created.get("ref") != expected_ref
-            or not isinstance(created_object, dict)
-            or created_object.get("type") != "commit"
-            or created_object.get("sha") != commit_sha):
-        raise Denied("GitHub did not confirm the exact new CI ref and commit")
-    readback = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
-    pointed = readback.get("object")
-    if (readback.get("ref") != expected_ref
-            or not isinstance(pointed, dict)
-            or pointed.get("type") != "commit"
-            or pointed.get("sha") != commit_sha):
-        raise Denied("new private CI ref does not point to the verified commit")
+    # Confirm the exact created object by independent GitHub ref read-back.
+    verify_private_ci_ref(repository, branch, commit_sha, created)
     return commit_sha, len(files)
 
 
