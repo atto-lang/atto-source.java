@@ -30,10 +30,10 @@ public final class DopRegionSchedule {
         /** Trusted host call: bind root identity to a real owned allocation. */
         public static Root fromHostBuffer(DopKernelIR.HostBuffer buffer) {
             Objects.requireNonNull(buffer, "buffer");
-            var plan = buffer.layout();
-            // State identity, not wrapper identity, survives take().
-            var backing = buffer.regionBackingIdentity();
-            return new Root(plan.rows(), plan.fields(), backing);
+            // The token carries the immutable shape of one owned allocation.
+            // Capture token and liveness together, not via two owner calls.
+            var backing = buffer.regionToken();
+            return new Root(backing.rows(), backing.fields(), backing);
         }
         public boolean sameRoot(Root other) {
             Objects.requireNonNull(other, "other");
