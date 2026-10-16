@@ -31,6 +31,11 @@ until its own parser, resolver and linker/runtime pass the positive tests.
    complete source graph; the current scalar-only bridge must reject imports
    even when a stub would otherwise produce a valid scalar Wasm artifact.
 
+9. Entry-only explicit manifest/root overrides (`ORES_MANIFEST_PATH` and
+   `ORES_PROJECT_ROOT`, exposed via flags-2-env) must agree when both
+   provided, reject entrypoints outside the selected root, and never flow
+   into nested imported package resolution.
+
 ## Promotion gates
 
 - **A — safe admission:** all unsupported syntax rejected with no partial
