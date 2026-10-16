@@ -75,6 +75,8 @@ public final class DopKernelIR {
         public static final class RegionToken {
             private final State owner;
             private RegionToken(State owner) { this.owner = owner; }
+            public long rows() { return owner.layout.rows(); }
+            public int fields() { return owner.layout.fields(); }
             public boolean isLive() {
                 synchronized (owner) { return !owner.closed; }
             }
