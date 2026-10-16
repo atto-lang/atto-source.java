@@ -45,6 +45,9 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
 
     /** Never adopts mutable input, even if it has an unmodifiable wrapper. */
     private static void requireShareableValue(Object value) {
+        if (value == null) {
+            throw new IllegalArgumentException("persistent actor map values cannot be null");
+        }
         if (value instanceof String || value instanceof Boolean
                 || value instanceof Character || value instanceof Byte
                 || value instanceof Short || value instanceof Integer
