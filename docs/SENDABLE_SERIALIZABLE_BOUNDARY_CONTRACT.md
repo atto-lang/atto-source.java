@@ -99,3 +99,20 @@ A format-specific decoder receives a fixed, trusted descriptor from code/config 
 **Known current gaps:** generic trait evidence and derive; compile-owned cross-module schema registry; network JSON/Protobuf codec code generation; LLVM source actor codec lowering; portable `Option/Result` mailbox representation and full ABI parity; complete Graal native-image and stress verification. Host `ActorRuntime` freeze/copy semantics and standalone MessagePack codecs are useful components, not equivalent evidence of the complete design.
 
 Related: Java draft #1026, Java draft #623/#645, Java issue #899, LLVM messagepack transport audit and native codec tests.
+
+## 7. Incremental implementation on Java draft PR #1026 (2026-10-15)
+
+The following is **committed but has not passed exact-head Maven/JUnit**:
+
+- `TypeChecker.validateActorCallableBoundaryType` rejects `Option<T>`, `Result<T,E>` and `OptionUnwrapError` as actor DATA until verified recipient-bound tagged codecs are integrated. Nominal generic arity is validated separately. Unsupported primitive DATA shapes (notably decimal, complex, null) are rejected; source spelling/width preservation still requires the future schema IR gate.
+- `PortableCodecRegistry` is a per-compilation immutable descriptor registry with compiler-only registration and pinned lookup, format/purpose/type/schema/version identity, canonical field ordering and SHA-256 domain-separated registry fingerprints. It is **not** the existing MessagePack v2 wire shape hash or an authentication signature, and **does not** admit a message or invoke a codec.
+- It rejects duplicate/invalid JSON keys, schema ID reuse and conflicting type/schema/version registrations, invalid or duplicate/reserved Protobuf numeric tags, unsupported format mappings, unqualified identity and over-budget schemas. Registration is serialized across parallel compilation.
+- Current admitted **descriptor shapes** (not produced bytes): JSON scalar/list/fixed array/fixed list/closed record excluding implicit BYTES; MessagePack v2 scalar/list/fixed array/fixed list without records or BYTES; Protobuf tagged records with scalar/variable list/nested tagged records. Neither `oneof` nor Protobuf unknown-field policies, generated encoders or owned decode are implemented by this registry.
+- New JUnit cases cover schema determinism, collisions, pinned lookup, Protobuf reserved tags, bad shapes, depth limits, concurrent registration, actor codec arity and capability fail-closed admission.
+
+### Remaining integration gates
+
+1. Bind resolved source type identity and full generic/numeric-width metadata to compiler-created `PortableCodecRegistry.Descriptor`, with owned/Sendable evidence **distinct** from codec evidence. Never infer it from a user-chosen type string or generic interface.
+2. Connect descriptor lookup to verified format encoders/decoders with canonical or explicitly versioned serialization and bounded actual byte representations. No arbitrary runtime codec registration by guest.
+3. Add a receiver-pinned runtime DATA adapter and a separate privileged supervisor CONTROL envelope. Admission must prove actual codec availability; registry existence alone is insufficient.
+4. Execute exact-head Maven and JUnit, Graal native-image, LLVM CTest, sanitizers and end-to-end actor DATA/CONTROL tests. Current GitHub Actions runs report job failure with **no job steps executed**; that is not test execution and must not be treated as validation.
