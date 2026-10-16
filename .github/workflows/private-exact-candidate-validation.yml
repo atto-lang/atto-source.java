@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   deny-unapproved:
-    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != github.sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != inputs.candidate_sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE == '' }}
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != github.sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != inputs.candidate_sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -28,7 +28,7 @@ jobs:
           exit 1
 
   validate-approved-candidate:
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE != '' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE != '' }}
     runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 180
     env:
@@ -42,7 +42,9 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
           test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REF_PROTECTED" = 'true'
           test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
           test "$REQUESTED_CANDIDATE_SHA" = "$APPROVED_CANDIDATE_SHA"
           [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
