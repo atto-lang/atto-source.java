@@ -261,10 +261,10 @@ public final class NominalInheritedMethodSlots {
     }
 
     /**
-     * Stable, injective slot identity used to bridge the future bytecode/JIT
-     * call-site binding with the vtable implementation. The ABI owner is the
-     * declaration that originally contributes the slot, not the concrete
-     * receiver class, so overriding never changes the dispatch key.
+     * Stable, owner-qualified link symbol for the declaration selected at
+     * this static call site. Its nominal Slot stays unchanged across virtual
+     * overrides; the owner-qualified symbol identifies the static declaration
+     * and must NOT be used as a replacement for the receiver's virtual slot.
      *
      * <p>Never use the resulting symbol for runtime argument classification.
      */
