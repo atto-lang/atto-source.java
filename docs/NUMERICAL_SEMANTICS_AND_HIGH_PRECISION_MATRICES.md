@@ -185,3 +185,28 @@ This is runner availability evidence, not Java/LLVM Oreslang test verification.
 - Stage 4: `BigFloat` and `BigRational`; optimized CPU kernels and optional GPU accelerators behind conformance checks.
 
 Do not claim production-ready high-precision arithmetic/matrices until tests cover both compiled backends and the APIs are reachable from guest Oreslang source.
+
+### Candidate checked signed-i64 contract — cross-backend gap
+
+A targeted Java evaluator change uses `Math.addExact`,
+`Math.subtractExact`, `Math.multiplyExact` and `Math.negateExact`
+for fixed-width signed-i64 operations. Remainder explicitly rejects
+zero divisor and `INT64_MIN % -1`, avoiding the Java special-case zero
+result. `-9223372036854775808` remains a valid signed-minimum literal
+handled by the parser. This change is **draft and unverified by compiled
+Java/GraalVM guest CI**; its guest-level negative and positive tests are
+in `NumericCheckedI64ParityTest`.
+
+**This is not cross-backend parity yet.** Current LLVM codegen uses ordinary
+`CreateAdd/CreateSub/CreateMul/CreateNeg` and explicitly documents
+modulo-2^64 wrapping. LLVM-to-Wasm inherits the relevant native
+lowering where supported. .NET and Forge bootstraps already use
+checked i64 operators. The canonical error/effect transport also
+differs: Java's `ArithmeticException` is not the same as a native
+overflow trap or a recoverable actor `raise`. Do not mark
+`checked_i64_overflow` verified until a reviewed language-level
+overflow/error policy, native implementation, ownership cleanup, and
+executed cross-backend positive/negative guest tests agree.
+
+A **source-free** JDK25/Clang/LLVM intrinsic runner probe is useful for
+toolchain feasibility; it is not actual Oreslang compiler testing.
