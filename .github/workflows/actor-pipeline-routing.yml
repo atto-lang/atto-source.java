@@ -4,7 +4,9 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineMailboxRouterTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouterTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanStandaloneSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanTest.java'
@@ -21,7 +23,9 @@ on:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineMailboxRouterTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouterTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanStandaloneSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanTest.java'
@@ -59,4 +63,4 @@ jobs:
           sh scripts/test-actor-pipeline-route-plan.sh
           sh scripts/test-actor-pipeline-router-host-gate.sh
           mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
-            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineRoutingAdmissionTest test
+            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineRoutingAdmissionTest test
