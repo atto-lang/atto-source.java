@@ -54,6 +54,40 @@ final class PrivateExactPublisherAdmissionMutationTest {
         assertNotEquals(EXPECTED_DENIAL, EXPECTED_DENIAL + " || false");
     }
 
+    @Test
+    void publisherGatesMustBeMutualComplements() {
+        String allow = EXPECTED_ADMISSION.substring(4,
+                EXPECTED_ADMISSION.length() - 3);
+        String deny = EXPECTED_DENIAL.substring(4,
+                EXPECTED_DENIAL.length() - 3);
+        String[] approvals = allow.split(Pattern.quote(" && "));
+        String[] denials = deny.split(Pattern.quote(" || "));
+        assertEquals(11, approvals.length);
+        assertEquals(approvals.length, denials.length);
+        for (int i = 0; i < approvals.length; i++) {
+            String opposite = approvals[i]
+                    .replace(" != ", " @NOT_EQUALS@ ")
+                    .replace(" == ", " != ")
+                    .replace(" @NOT_EQUALS@ ", " == ");
+            assertEquals(opposite, denials[i],
+                    "missing exact negation for admission gate " + i);
+        }
+        // Exhaust the independent 11-bit predicate state space. Every state
+        // must be admitted XOR denied, including unreviewed/null approvals.
+        for (int combination = 0; combination < (1 << approvals.length);
+                combination++) {
+            boolean admitted = true;
+            boolean denied = false;
+            for (int predicate = 0; predicate < approvals.length; predicate++) {
+                boolean condition = (combination & (1 << predicate)) != 0;
+                admitted &= condition;
+                denied |= !condition;
+            }
+            assertNotEquals(admitted, denied,
+                    "incomplete or overlapping runner authorization");
+        }
+    }
+
     private static String singleIf(String job) {
         var matcher = Pattern.compile("(?m)^    if: ([^\\r\\n]+)$").matcher(job);
         assertTrue(matcher.find(), "exact runner admission expression missing");
