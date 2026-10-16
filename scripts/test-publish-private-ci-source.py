@@ -31,6 +31,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Ordinary fixture tests model a fully reviewed protected source main.
+        # Security-specific tests below call the unpatched guard directly.
+        self.origin_guard = pub.require_reviewed_origin_protection
+        self.origin_patch = patch.object(pub, "require_reviewed_origin_protection")
+        self.origin_patch.start()
+        self.addCleanup(self.origin_patch.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -57,6 +63,68 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_source_origin_must_have_immutable_identity_and_branch_protection(self):
+        good = {
+            "id": pub.SOURCE_REPO_ID,
+            "full_name": pub.SOURCE_REPO,
+            "private": True,
+            "visibility": "private",
+            "default_branch": pub.SOURCE_BRANCH,
+        }
+        protected = {"name": pub.SOURCE_BRANCH, "protected": True}
+        origin_route = "repos/" + pub.SOURCE_REPO
+        branch_route = origin_route + "/branches/" + pub.SOURCE_BRANCH
+
+        def require(metadata, branch):
+            def read(route, method="GET", payload=None):
+                self.assertEqual(method, "GET")
+                self.assertIsNone(payload)
+                if route == origin_route:
+                    return metadata
+                if route == branch_route:
+                    return branch
+                raise AssertionError("unexpected source protection API route")
+            with patch.object(pub, "gh_api", side_effect=read):
+                return self.origin_guard()
+
+        self.assertTrue(require(good, protected))
+        for value in (
+            dict(good, id=pub.SOURCE_REPO_ID + 1),
+            dict(good, full_name="lookalike/repo"),
+            dict(good, private=False),
+            dict(good, visibility="public"),
+            dict(good, default_branch="unreviewed"),
+        ):
+            with self.subTest(invalid=value):
+                with self.assertRaisesRegex(pub.Denied, "identity or privacy"):
+                    require(value, protected)
+        for value in (
+            {"name": pub.SOURCE_BRANCH, "protected": False},
+            {"name": pub.SOURCE_BRANCH, "protected": None},
+            {"name": "other", "protected": True},
+            {},
+        ):
+            with self.subTest(branch=value):
+                with self.assertRaisesRegex(pub.Denied, "not protected"):
+                    require(good, value)
+
+    def test_unprotected_origin_stops_without_source_read_or_api_write(self):
+        with patch.object(pub, "require_reviewed_origin_protection",
+                          side_effect=pub.Denied("origin unprotected")):
+            with patch.object(pub, "collect_source") as snapshot:
+                with self.assertRaisesRegex(pub.Denied, "origin unprotected"):
+                    self.publish()
+                snapshot.assert_not_called()
+        self.assertEqual(self.route_calls, [])
+
+    def test_origin_loses_protection_before_first_upload(self):
+        # The origin check runs once before preflight and again for each write.
+        with patch.object(pub, "require_reviewed_origin_protection",
+                          side_effect=[True, pub.Denied("lost protection")]):
+            with self.assertRaisesRegex(pub.Denied, "lost protection"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
