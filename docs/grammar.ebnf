@@ -216,14 +216,20 @@ condition_head  = condition
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
-match_stmt      = [ "do" ] "match" [ "first" ] expression [ ";" ]
-                  match_arm { match_arm } "end" ;
-match_arm       = ( pattern | "else" ) [ "when" expression ] "->" block ;
+match_stmt      = [ "do" ] "match" expression "over"
+                  ( "{" canonical_match_arm { canonical_match_arm } "}"
+                  | canonical_match_arm { canonical_match_arm } "end" )
+                | "match" [ "first" ] expression [ ";" ]
+                  legacy_match_arm { legacy_match_arm } "end" ;
+canonical_match_arm = "on" pattern [ "when" expression ] "->" block ;
+legacy_match_arm = ( pattern | "else" ) [ "when" expression ] "->" block ;
 pattern         = "_"
                 | literal
                 | IDENT
                 | IDENT "(" [ pattern { "," pattern } ] ")"
-                | "is" type_ref [ IDENT ] ;
+                | "is" type_ref [ IDENT ]
+                | "structural" type_ref [ IDENT ]
+                | "(" pattern "," pattern { "," pattern } ")" ;
 
 switch_stmt     = [ "do" ] "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
@@ -364,7 +370,14 @@ type_atom       = borrow_type
                 | "null" ;
 
 borrow_type     = "&" [ "mut" ] type_atom ;
-tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+tuple_type      = "[" [ type_ref { "," type_ref } ] "]"
+                | "tuple" "(" [ tuple_slot { "," tuple_slot } ] ")"
+                | "(" tuple_slot "," tuple_slot { "," tuple_slot } ")" ;
+tuple_slot      = type_ref [ "?" ] ;
+(* The '?' here means an omittable positional SLOT, not merely Option<T>.
+   It is only valid in a contiguous trailing suffix. The parser recognizes
+   v2 tuple syntax, but optional-slot and structural-width guest execution
+   MUST fail closed until checked ABI/view lowering is implemented. *)
 record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
@@ -583,10 +596,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      '.' in the member-name namespace.
    - "matches" evaluates a full pattern predicate; "as" is a checked cast and
      "as?" returns Option<T>.
-   - Plain match is exclusive and exhaustive: the static checker must prove
-     non-fallback arms disjoint and coverage complete. A final else/"_"/bare
-     binding is the complement fallback. "match first" explicitly requests
-     ordered first-success semantics when overlap is intentional.
+   - Legacy bare match requires exclusive/exhaustive proofs (or the
+     explicit "match first" ordered escape hatch). Canonical match ... over
+     uses source-ordered first-success arms introduced by "on"; a provably
+     unreachable later arm is rejected. Use "on _" for fallback coverage.
    - switch is equality/constant dispatch only. It has no pattern bindings,
      destructuring, or implicit fallthrough.
    - Unqualified "actor" declarations are private actors; "shared actor" opts

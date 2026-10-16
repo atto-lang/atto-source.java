@@ -1,125 +1,59 @@
-# Pattern matching, refinement, and casting
+# Pattern matching, structural matching and refinement
 
-Oreslang deliberately separates type refinement, full pattern matching, and
-value-case dispatch.
-
-## Surface syntax
-
-```ores
-if value is type Dog dog then
-  dog.bark();
-fi
-
-if result matches Some(value) then
-  use(value);
-fi
-
-val dog = animal as Dog;
-val maybeDog = animal as? Dog;
-
-match result
-  Some(value) -> { use(value); }
-  None -> { recover(); }
-end
-
-switch status
-  case 200, 201 -> { success(); }
-  default -> { failure(); }
-end
-```
-
-Every `if` closes with `fi`, including brace-bodied forms. Executable arms
-use the slim arrow `->`. The fat arrow `=>` remains type-level syntax for
-function types and interface callable signatures.
-
-## Semantic separation
-
-- `x is y` is reference/handle identity.
-- `x is type T` is a nominal type predicate and flow refinement.
-- `x is type T name` additionally introduces a lexical refinement alias.
-- Prefix `is T [name]` remains the compact type-pattern form inside `match`
-  arms, where it is syntactically unambiguous.
-- `x matches P` tests a complete pattern and exposes its bindings only on the
-  successful control-flow edge.
-- `x as T` is a checked cast. A failed runtime cast raises `CastError`.
-- `x as? T` is a non-panicking cast with type `Option<T>`.
-- `match x` is proof-checked pattern partitioning.
-- `match first x` is the explicit ordered/priority escape hatch.
-- `switch x` is constant/equality dispatch and never performs destructuring.
-
-A refinement binding is not a copy. If `dog` is introduced by
-`animal is type Dog dog`, both names identify the same ownership place. Moving
-through either name consumes the same move-only value.
-
-## Exclusive match proof obligation
-
-For a scrutinee domain `D`, each explicit arm is normalized to a predicate
-`P_i(x)`. A normal match is admitted only when the checker establishes:
-
-```text
-for every i != j:  D(x) && P_i(x) && P_j(x) is UNSAT
-exhaustiveness:    D(x) && !(P_1(x) || ... || P_n(x)) is UNSAT
-```
-
-An unguarded final `else`, `_`, or catch-all binding is not treated as an
-ordinary universal arm. It denotes the complement of all preceding explicit
-arms.
-
-The first proof engine is intentionally conservative. It has exact reasoning
-for:
-
-- booleans and literal equality;
-- `Option` constructors `Some` / `None`;
-- `Result` constructors `Ok` / `Err`;
-- nominal subtype/interface relations when a relation is provable;
-- simple numeric guard intervals using `< <= == >= >`;
-- wildcard/catch-all coverage.
-
-If disjointness cannot be proved, ordinary `match` is rejected rather than
-silently using source order. Code that deliberately needs priority semantics
-must say `match first`.
-
-This is the important semantic distinction:
+The canonical form is `match value over ... end`. Every canonical arm starts
+with contextual `on` and uses `->` before a block. The subject is evaluated
+once. Arms are considered **in source order**; the first matching pattern whose
+guard succeeds executes. A provably unreachable later arm is a compile-time
+error. A final `on _` covers remaining cases.
 
 ```ores
-match value
-  is Dog dog -> { dog.bark(); }
-  is Animal animal -> { handle(animal); }
-end
+fnc classify(Animal value): int {
+  match value over
+    on structural { name: string, age: int } detailed -> { return 2; }
+    on structural { name: string } named -> { return 1; }
+    on _ -> { return 0; }
+  end
+}
 ```
 
-is rejected because a `Dog` witnesses both predicates. The ordered form is
-explicit:
+Structural patterns test a value's **public shape**, not its `implements`
+edge. `structural Trait name` and `structural { field: Type } name` allow
+additional public fields and methods. Required methods must have compatible
+signatures, mutability and effect contracts. Recursive tuple patterns use
+exact positional arity, e.g. `on (structural {x: int} x, _) -> { ... }`.
+Match-list `[...]` patterns are unsupported. Canonical match has no
+`default` or `else` keyword; use `on _`.
 
-```ores
-match first value
-  is Dog dog -> { dog.bark(); }
-  is Animal animal -> { handle(animal); }
-end
-```
+A structural binding is a read-only view; pattern matching must never
+upgrade its capabilities, move the owner, erase an actor identity, or let a
+borrow escape across a suspension boundary. A contextual `when` guard
+cannot change those rules.
 
-Arbitrary calls inside guards are opaque to the proof engine unless a future
-verified predicate/contract system gives the compiler a sound logical summary.
-The checker must never infer exclusivity from undocumented function behavior.
+For callable **parameters**, write `fnc use(structural Shape value): ...`,
+`routine use(structural Shape value): ...`, or a class method with the same
+parameter syntax. Passing a compatible argument creates an **implicit
+read-only borrow**, and does not consume its owner. Unmarked `Shape`
+parameters remain nominal. Declaration-level `structural fnc`,
+`structural routine`, a `structural` method, or `@structural` mark the
+callable, not all of its parameters; these are distinct AST properties.
 
-## Lowering contract
+`match` used as an expression yields a value from each arm, and an optional
+`match<T>` constraint applies to its result. `do match` is procedural:
+arm `return` statements can exit the enclosing routine. The old spelling
+`match value ... end` remains a compatibility form using disjointness
+and coverage proofs unless written as `match first value`. Do **not**
+apply legacy exclusivity requirements to canonical `match ... over`.
 
-Patterns are represented by dedicated Oreslang AST nodes rather than generic
-binary operators. The compiler can therefore normalize them into a decision
-DAG and constraint representation before backend lowering.
+Related operations remain distinct: `x is y` tests identity;
+`x is type T` provides nominal refinement; `x matches P` is a pattern
+predicate with success-branch bindings; `x as T` and `x as? T` are
+casts. `switch` does equality dispatch, not destructuring.
+`infer struct{...}` creates an inferred type, not a structural pattern.
 
-The language contract is independent of Java object identity. A backend must
-implement Oreslang type tests through Oreslang type/constructor metadata:
-
-- stable type identity;
-- superclass/subtype edges;
-- implemented interface/trait edges;
-- constructor tags for sum types;
-- reified generic information only where the language declares it reifiable.
-
-The Java/Truffle evaluator is a reference/bootstrap backend. Its internal Java
-objects may represent Oreslang values, but Java `Class.isInstance`,
-reflection, or arbitrary host `instanceof` relationships are not Oreslang
-type semantics.
-
-See `NATIVE_RUNTIME_ABI.md` for the native/JNI boundary.
+Java/GraalVM is the reference/bootstrap backend. Matching must use guest
+type and public-member metadata, not arbitrary Java reflection identity.
+Other backends must implement shape checking, ownership, ordered reachability
+and typed bindings before accepting the feature, otherwise **fail closed**
+without emitting success-shaped output. See `docs/grammar.ebnf` and
+`StructuralCrossSurfaceParityTest`, `StructuralTypingHardeningTest`,
+and `StructuralTuplePatternMatchTest`.
