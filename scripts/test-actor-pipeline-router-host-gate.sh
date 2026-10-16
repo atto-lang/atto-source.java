@@ -122,8 +122,10 @@ public final class RouterHarness {
         var receipts = route.forwardAll("all");
         check(receipts.size() == 2
                 && receipts.stream().allMatch(
-                    ActorPipelineMailboxRouter.Admission::admitted),
-                "fanout must admit two independent copies");
+                    ActorPipelineMailboxRouter.Admission::admitted)
+                && receipts.get(0).edgeIndex() == 0
+                && receipts.get(1).edgeIndex() == 1,
+                "fanout must admit two independently indexed graph edges");
         route.forwardRoundRobin("rr1");
         route.forwardRoundRobin("rr2");
         check(a.received().equals(List.of("all", "rr1")), "first round robin");
@@ -149,8 +151,10 @@ public final class RouterHarness {
         runtime.enter(source, ActorRuntime.ActorKind.SHARED);
         var partial = route.forwardAll("partial");
         check(partial.get(0).admitted() && !partial.get(1).admitted()
+                && partial.get(0).edgeIndex() == 0
+                && partial.get(1).edgeIndex() == 1
                 && partial.get(1).failure() != null,
-                "fanout must report independent failures");
+                "fanout must report edge-indexed independent failures");
         denied(() -> route.forwardTo("arbitrary", "bad"),
                 IllegalArgumentException.class);
         runtime.leave();
