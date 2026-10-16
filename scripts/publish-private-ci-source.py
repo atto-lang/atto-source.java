@@ -384,7 +384,10 @@ def verify_upstream_commit_tree(commit, expected_tree, relative_directory):
     valid_sha(commit)
     valid_sha(expected_tree)
     commit_data = gh_api(f"repos/{SOURCE_REPOSITORY}/git/commits/{commit}")
-    root_tree = valid_sha(commit_data.get("tree", {}).get("sha"))
+    source_tree_ref = commit_data.get("tree")
+    if not isinstance(source_tree_ref, dict):
+        raise Denied("original source commit has no verifiable Git tree")
+    root_tree = valid_sha(source_tree_ref.get("sha"))
     current = root_tree
     if relative_directory:
         for name in relative_directory.split("/"):
