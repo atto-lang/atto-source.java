@@ -175,6 +175,7 @@ public final class NominalInheritedMethodSlots {
         if (argument instanceof Types.Primitive primitive) {
             return switch (primitive) {
                 case INT -> "int";
+                case FLOAT -> "f64";
                 case BOOL -> "bool";
                 case STRING -> "string";
                 default -> null;
