@@ -45,6 +45,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " || github.event.repository.id != 1400792274"
                 + " || github.event.repository.private != true"
                 + " || github.ref != 'refs/heads/main'"
+                + " || github.ref_protected != true"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == ''"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha"
@@ -67,6 +68,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " && github.event.repository.id == 1400792274"
                 + " && github.event.repository.private == true"
                 + " && github.ref == 'refs/heads/main'"
+                + " && github.ref_protected == true"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != ''"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha"
@@ -78,6 +80,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "no hosted or shared-runner fallback is permitted");
         assertTrue(hasExactLine(job, 10,
                 "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'"));
+        assertTrue(hasExactLine(job, 10,
+                "test \"$GITHUB_REF_PROTECTED\" = 'true'"));
         assertTrue(hasExactLine(job, 10,
                 "[[ \"$GITHUB_SHA\" =~ ^[a-f0-9]{40}$ ]]"));
         assertTrue(hasExactLine(job, 10,
@@ -154,6 +158,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "test \"$GITHUB_SHA\" = \"$APPROVED_SHA\"",
                 "test \"$(git rev-parse --verify HEAD^{tree})\" = \"$APPROVED_TREE\"",
                 "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'",
+                "test \"$GITHUB_REF_PROTECTED\" = 'true'",
                 "test -z \"$(git status --porcelain --untracked-files=all)\""
         }) {
             assertTrue(hasExactLine(job, 10, check));
@@ -203,6 +208,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " && github.event.repository.id == 1400792274"
                 + " && github.event.repository.private == true"
                 + " && github.ref == 'refs/heads/main'"
+                + " && github.ref_protected == true"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'"
                 + " && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != ''"
                 + " && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha"
@@ -214,6 +220,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + " || github.event.repository.id != 1400792274"
                 + " || github.event.repository.private != true"
                 + " || github.ref != 'refs/heads/main'"
+                + " || github.ref_protected != true"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'"
                 + " || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == ''"
                 + " || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != github.sha"
@@ -238,6 +245,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }
         assertTrue(allowed.contains("github.event.repository.id == 1400792274"));
         assertTrue(allowed.contains("github.ref == 'refs/heads/main'"));
+        assertTrue(allowed.contains("github.ref_protected == true"));
+        assertTrue(rejected.contains("github.ref_protected != true"));
         assertTrue(allowed.contains(
                 "vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha"));
         assertTrue(allowed.contains(
@@ -263,6 +272,10 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 < runner.indexOf("Verify immutable candidate and clean checkout"));
         assertTrue(runner.indexOf("Verify immutable candidate and clean checkout")
                 < runner.indexOf("graalvm/setup-graalvm@"));
+        assertTrue(hasExactLine(runner, 10,
+                "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'"));
+        assertTrue(hasExactLine(runner, 10,
+                "test \"$GITHUB_REF_PROTECTED\" = 'true'"));
         assertTrue(hasExactLine(runner, 10,
                 "test \"$GITHUB_SHA\" = \"$APPROVED_WORKFLOW_SHA\""));
         assertTrue(hasExactLine(runner, 10,
