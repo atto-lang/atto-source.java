@@ -180,4 +180,75 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             sink.getDone().get(5, TimeUnit.SECONDS);
         }
     }
+    @Test
+    void supervisorRetirementFencesAlreadyExecutingRoutedActorBeforePublication()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var routerRef = new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var completed = new CountDownLatch(1);
+            var denied = new AtomicInteger();
+            var unexpected = new AtomicReference<Throwable>();
+            var workerA = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var workerB = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                entered.countDown();
+                try {
+                    if (!release.await(8, TimeUnit.SECONDS))
+                        throw new AssertionError("retirement race release never arrived");
+                    // This is a legitimate routed receive with a valid frame,
+                    // but the host already sealed the graph. It must not
+                    // publish to a mailbox using a stale route generation.
+                    try {
+                        routerRef.get().forwardTo("worker-a", "late");
+                        unexpected.compareAndSet(null,
+                                new AssertionError("post-retirement DATA was admitted"));
+                    } catch (IllegalStateException expected) {
+                        denied.incrementAndGet();
+                    }
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                } finally {
+                    completed.countDown();
+                }
+            });
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", workerA,
+                            "worker-b", workerB, "sink", sink), 23, 16);
+            routerRef.set(router);
+            router.ingress("source", "begin");
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS),
+                        "source actor never began its routed receive");
+                // Closing here must not wait for the actor's physical carrier:
+                // it is executing user code but has no routing read lease yet.
+                Thread hostClose = Thread.ofPlatform()
+                        .name("route-retirement-host-test").start(router::close);
+                hostClose.join(3000);
+                assertFalse(hostClose.isAlive(),
+                        "host retirement blocked on an actor carrier");
+            } finally {
+                release.countDown();
+            }
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            assertNull(unexpected.get(), "source actor failed: " + unexpected.get());
+            assertEquals(1, denied.get());
+            assertEquals(0, router.outstanding(),
+                    "retirement must cancel all outstanding route credits");
+            assertThrows(IllegalStateException.class,
+                    () -> router.ingress("source", "new-flow-after-close"));
+            source.stop();
+            workerA.stop();
+            workerB.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            workerA.getDone().get(5, TimeUnit.SECONDS);
+            workerB.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
 }
