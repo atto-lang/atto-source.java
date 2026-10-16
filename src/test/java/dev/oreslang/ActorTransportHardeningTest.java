@@ -198,6 +198,40 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void changingSenderGraphCannotSmuggleDataOnlyUntrustedCapability() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                dev.oreslang.runtime.IsolatePolicy.developer())) {
+            var hidden = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+            java.util.concurrent.atomic.AtomicInteger observed =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var untrusted = runtime.<Object>spawnUntrusted(context ->
+                    (message, turn) -> observed.incrementAndGet());
+            List<Object> changing = new AbstractList<>() {
+                private int reads;
+                @Override public int size() { return 1; }
+                @Override public Object get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    // Six pre-copy traversals see safe DATA; isolation-copy
+                    // sees an ActorRef forbidden to the untrusted recipient.
+                    return ++reads <= 6 ? "safe" : hidden;
+                }
+            };
+            SecurityException rejection = assertThrows(SecurityException.class,
+                    () -> untrusted.send(changing));
+            assertTrue(rejection.getMessage().contains("data-only"),
+                    rejection.getMessage());
+            assertEquals(0, observed.get());
+            untrusted.send(List.of("recovered"));
+            untrusted.drain().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(1, observed.get());
+            untrusted.stop();
+            untrusted.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            hidden.stop();
+            hidden.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void actorStartupFailureDoesNotLeaveUsableRefOrActorQuota() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             java.util.concurrent.CountDownLatch attempted = new java.util.concurrent.CountDownLatch(1);
