@@ -111,8 +111,15 @@ public final class ActorPipelineMailboxRouter<M> {
     }
 
     private <R> R inLiveRoutingGeneration(Supplier<R> operation) {
+        // A host retire() may own or be queued for the exclusive gate.
+        // Never PARK an actor carrier waiting for that host operation.
+        // Reject new sends once retirement is queued; the write lease still
+        // waits for admissions which already acquired the shared lease.
         var read = retirementGate.readLock();
-        read.lock();
+        if (retirementGate.hasQueuedThreads() || !read.tryLock()) {
+            throw new IllegalStateException(
+                    "pipeline routing is unavailable during graph retirement");
+        }
         try {
             if (retired) {
                 throw new IllegalStateException("pipeline routing generation is retired");
