@@ -191,6 +191,30 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void resolvedIpv4DenialCannotBeBypassedByPermittedHostname() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+        assertTrue(policy.allows(RuntimePermissions.Permission.NET,
+                "api.example.com:443"), "requested hostname may be allowed before DNS");
+        assertFalse(policy.allowsNetworkConnection("api.example.com:443", "127.0.0.1:443"));
+        assertTrue(policy.allowsNetworkConnection("api.example.com:443", "203.0.113.7:443"));
+        assertFalse(policy.allowsNetworkConnection("api.example.com:443", "203.0.113.7:444"));
+        assertFalse(policy.allowsNetworkConnection("api.example.com:443", "evil.example:443"));
+        assertFalse(policy.allowsNetworkConnection("api.example.com:443", "127.1:443"));
+        assertFalse(policy.allowsNetworkConnection("api.example.com:443", "[::1]:443"));
+        assertFalse(policy.allowsNetworkConnection("api.example.com", "203.0.113.7:443"));
+        assertFalse(policy.allowsNetworkConnection("other.example.com:443", "203.0.113.7:443"));
+        // The port-specific selected IP deny must also win over a wildcard
+        // hostname grant when the actual socket connects to that IP:port.
+        RuntimePermissions denyPort = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:443");
+        assertFalse(denyPort.allowsNetworkConnection("api.example.com:443", "127.0.0.1:443"));
+        assertTrue(denyPort.allowsNetworkConnection("api.example.com:444", "127.0.0.1:444"));
+    }
+
+    @Test
     void numericIpv4MixedHexMatrixHasSameCanonicalAdmissionAsNativeBackends() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .allowAll(RuntimePermissions.Permission.NET);
