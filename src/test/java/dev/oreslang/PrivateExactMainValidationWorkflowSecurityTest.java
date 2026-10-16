@@ -695,7 +695,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "libraries=()",
                     "for candidate in target/oresvm.so target/liboresvm.so; do",
                     "if test -e \"$candidate\" || test -L \"$candidate\"; then",
-                    "test -f \"$candidate\" && test ! -L \"$candidate\" && test -s \"$candidate\"",
+                    "if ! test -f \"$candidate\" || test -L \"$candidate\" || ! test -s \"$candidate\"; then",
+                    "echo \"::error::Reject invalid native isolate artifact: $candidate\" >&2",
+                    "exit 1",
                     "libraries+=(\"$candidate\")",
                     "test \"${#libraries[@]}\" -eq 1",
                     "lib=\"${libraries[0]}\"",
@@ -703,7 +705,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
             }) {
                 assertTrue(hasExactLine(nativeStage, 10, command)
                         || hasExactLine(nativeStage, 12, command)
-                        || hasExactLine(nativeStage, 14, command),
+                        || hasExactLine(nativeStage, 14, command)
+                        || hasExactLine(nativeStage, 16, command),
                         "missing executable isolate library proof: " + command);
             }
             assertFalse(nativeStage.contains("find target -maxdepth 1"),
