@@ -4517,6 +4517,14 @@ public final class TypeChecker {
         }
     }
 
+    // Portable resource screening is based on final resolved type segments;
+    // source modules and C++/linker namespaces cannot launder DATA authority.
+    static String actorCapabilitySimpleName(String resolvedName) {
+        int dot = resolvedName.lastIndexOf('.');
+        int scope = resolvedName.lastIndexOf("::");
+        return resolvedName.substring(Math.max(dot, scope < 0 ? -1 : scope + 1) + 1);
+    }
+
     private void validateActorCallableBoundaryType(
             Type type,
             Ast.ActorKind actorKind,
@@ -4564,11 +4572,7 @@ public final class TypeChecker {
 
         // The resolved nominal may be module-qualified. A prefix cannot
         // turn built-in runtime/codec authority into ordinary DATA.
-        String capabilityName = named.name();
-        int dot = capabilityName.lastIndexOf('.');
-        int scope = capabilityName.lastIndexOf("::");
-        capabilityName = capabilityName.substring(
-                Math.max(dot, scope < 0 ? -1 : scope + 1) + 1);
+        String capabilityName = actorCapabilitySimpleName(named.name());
 
         if (capabilityName.equals("TcpConnection") || capabilityName.equals("HttpExchange") || capabilityName.equals("HttpServer") || capabilityName.equals("HttpHandler")
                 || capabilityName.equals("Mutex") || capabilityName.equals("MutexGuard") || capabilityName.equals("Future")
