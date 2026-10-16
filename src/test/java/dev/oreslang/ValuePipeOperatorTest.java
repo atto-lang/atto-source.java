@@ -371,4 +371,31 @@ final class ValuePipeOperatorTest {
                 failure::toString);
     }
 
+    @Test
+    void rejectsSuspendingNamedCallbackAndItsFirstClassAlias() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                suspends fnc step(int n): int { return n + 1; }
+                suspends fnc valid(int n): int { return step(n); }
+                """)));
+
+        IllegalArgumentException direct = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    suspends fnc step(int n): int { return n + 1; }
+                    fnc invalid(Option<int> value): Option<int> {
+                      return value |> Option.map(step);
+                    }
+                    """)));
+        assertTrue(direct.getMessage().contains("first-class callable"), direct::toString);
+
+        IllegalArgumentException aliased = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    suspends fnc step(int n): int { return n + 1; }
+                    fnc invalid(Result<int,String> value): Result<int,String> {
+                      val cb = step;
+                      return value |> Result.map(cb);
+                    }
+                    """)));
+        assertTrue(aliased.getMessage().contains("first-class callable"), aliased::toString);
+    }
+
 }
