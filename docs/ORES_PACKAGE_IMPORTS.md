@@ -56,7 +56,9 @@ http = "acme/ores-http"
 ```
 
 The package manifest's location defines the project root; it cannot redirect
-the root using `project.root`. `[dependencies]` declares aliases; each value
+the root using `project.root`. Its `entrypoints.main`, when declared, must be a
+nonblank project-relative path whose normalized location stays inside that root;
+legacy `.oreslangc.cfg.toml` entrypoint semantics are unchanged. `[dependencies]` declares aliases; each value
 must be a zed-pkg `org/name` or `{ zed = "org/name" }`. Package aliases are
 not automatically injected into bare-path imports, preventing package
 shadowing of local sources.
