@@ -21,6 +21,14 @@ must stay synchronized (the publisher's offline regression suite checks this).
 Do not insert an ID into a bare-slug allowlist line; it violates the policy
 parser. An ID hardcoded in software is not itself permission to export.
 
+The currently proposed private carrier in review PR #1031,
+`ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra`,
+was observed under immutable repository ID `1412142815`. The Bash and Python
+checks pin this candidate only to prevent a reviewed approval from referring
+to a different repository. **No source export is permitted** merely by adding
+this pin: the source main policy remains deny-by-default, and independent
+approval, protected-main checks, and verified stepful private CI are required.
+
 The Bash preflight is a separate, testable CLI convenience. The privileged
 Python publisher **does not execute** that script from a candidate checkout:
 it checks the policy through no-follow directory descriptors and verifies the
