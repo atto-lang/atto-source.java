@@ -118,17 +118,21 @@ jobs:
           if (not report_dir.is_dir() or report_dir.is_symlink()
                   or report_dir.parent.is_symlink()):
               raise SystemExit("Missing or symlinked Maven Surefire report directory")
-          reports = list(report_dir.glob("TEST-*.xml"))
-          if not reports:
-              raise SystemExit("No Maven Surefire XML reports; tests did not execute")
-          for report in reports:
+          # Ignore unrelated suites: each expected test class must have its
+          # own real Maven report, with matching suite and testcase identity.
+          # Never accept a forged testcase tucked inside an unrelated report.
+          for classname in sorted(required):
+              report = report_dir / f"TEST-{classname}.xml"
               if report.is_symlink() or not report.is_file():
-                  raise SystemExit(f"Invalid Maven Surefire report: {report}")
+                  raise SystemExit(f"Missing required Surefire report: {report}")
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit(f"Empty or oversized Surefire report: {report}")
               root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit(f"Invalid Surefire suite identity: {report}")
               for case in root.iter("testcase"):
-                  classname = case.get("classname", "")
-                  if classname not in executed:
-                      continue
+                  if case.get("classname") != classname:
+                      raise SystemExit(f"Mismatched Surefire testcase: {report}")
                   if any(case.find(tag) is not None
                          for tag in ("failure", "error", "skipped")):
                       raise SystemExit(f"Unsuccessful required test in {classname}")
