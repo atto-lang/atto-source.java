@@ -33,8 +33,10 @@ final class RecursiveOptionFlattenLanguageTest {
 
     @Test
     void flattenMovesAffineOptionExactlyOnce() {
+        // Full front-end admission is essential: TypeChecker alone does NOT
+        // enforce ownership and can miss a repeated move.
         assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
+                OresCompiler.parseAndTypeCheck("""
                         define class Box as
                         end
 
@@ -44,7 +46,7 @@ final class RecursiveOptionFlattenLanguageTest {
                           val Option<Box> second = nested.flatten();
                           return;
                         }
-                        """)));
+                        """));
     }
 
     @Test
