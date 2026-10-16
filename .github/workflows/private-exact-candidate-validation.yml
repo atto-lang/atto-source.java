@@ -94,8 +94,8 @@ jobs:
           rm -rf -- target/surefire-reports
           test ! -e target/surefire-reports
       - name: Focused permissions and scoped host interop regressions
-        run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' clean test
-      - name: Prove all six security JUnit classes executed
+        run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest,VerifiedTcpSocketTest,NativeSocketBoundaryTest' clean test
+      - name: Prove all eight security JUnit classes executed
         shell: bash
         run: |
           set -euo pipefail
@@ -112,6 +112,8 @@ jobs:
               "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
               "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
               "dev.oreslang.runtime.ScopedPermissionInteropTest",
+              "dev.oreslang.runtime.VerifiedTcpSocketTest",
+              "dev.oreslang.runtime.NativeSocketBoundaryTest",
           }
           executed = {name: 0 for name in required}
           # This is a single-module Maven project. Never accept reports
@@ -185,6 +187,8 @@ jobs:
               "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
               "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
               "dev.oreslang.runtime.ScopedPermissionInteropTest",
+              "dev.oreslang.runtime.VerifiedTcpSocketTest",
+              "dev.oreslang.runtime.NativeSocketBoundaryTest",
           }
           report_dir = Path("target/surefire-reports")
           if (not report_dir.is_dir() or report_dir.is_symlink()
