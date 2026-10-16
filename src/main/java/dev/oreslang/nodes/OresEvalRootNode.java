@@ -4235,6 +4235,10 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return prepareTypedMapInvocation(map, member, args, env);
+            }
+
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -4351,6 +4355,54 @@ public final class OresEvalRootNode extends RootNode {
                         "member is not callable: " + member.member());
             }
             return invokableInvocation(invokable, args);
+        }
+
+        private Invocation prepareTypedMapInvocation(
+                OresKeyedMap<?, ?> map,
+                Ast.MemberExpr member,
+                List<Object> args,
+                Env env) {
+            String operation = member.member();
+            if (!java.util.Set.of("has", "get", "take", "remove").contains(operation)) {
+                throw new IllegalArgumentException(
+                        "unknown typed Map operation '" + operation + "'");
+            }
+            if (args.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Map." + operation + " expects exactly one key argument");
+            }
+            Object key = args.getFirst();
+            if (operation.equals("take") || operation.equals("remove")) {
+                if (!(member.receiver() instanceof Ast.NameExpr owner)
+                        || !env.canWriteMap(owner.name(), map)) {
+                    throw new SecurityException(
+                            "Map." + operation
+                                    + " requires a directly owned let mut or val binding");
+                }
+            }
+
+            return invokableInvocation(ignored -> switch (operation) {
+                case "has" -> map.containsKey(key);
+                case "get" -> {
+                    OresKeyedMap.Lookup<?> found = map.lookup(key);
+                    yield new OptionValue(found.present(), found.value());
+                }
+                case "take" -> {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> owned =
+                            (OresKeyedMap<Object, Object>) map;
+                    OresKeyedMap.Lookup<Object> found = owned.take(key);
+                    yield new OptionValue(found.present(), found.value());
+                }
+                case "remove" -> {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> owned =
+                            (OresKeyedMap<Object, Object>) map;
+                    yield owned.take(key).present();
+                }
+                default -> throw new IllegalStateException(
+                        "unreachable typed Map operation " + operation);
+            }, List.of());
         }
 
         // Runtime key-domain check mirrors TypeChecker's deliberately narrow
@@ -5887,6 +5939,10 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof OresKeyedMap<?, ?> map) {
+                    return prepareTypedMapInvocation(map, methodCall, args, env);
+                }
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
