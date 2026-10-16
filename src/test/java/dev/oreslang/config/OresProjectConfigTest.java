@@ -600,4 +600,44 @@ final class OresProjectConfigTest {
         assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(unrelated.resolve("other.ores"),
                 Map.of(OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString())));
     }
+
+    @Test
+    void rootedImportsRespectPhysicalBoundariesEvenWithSymlinks() throws Exception {
+        Path project = temp.resolve("root-symlink-guard");
+        Path local = project.resolve("src");
+        Path dependency = project.resolve("zed_modules/acme/math");
+        Path outside = temp.resolve("outside.ores");
+        Files.createDirectories(local);
+        Files.createDirectories(dependency.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n[dependencies]\nmath = \"acme/math\"\n");
+        Path safe = Files.writeString(local.resolve("safe.ores"),
+                "pub fnc safe():int {return 1;}\n");
+        Path depSafe = Files.writeString(dependency.resolve("src/safe.ores"),
+                "pub fnc safe():int {return 2;}\n");
+        Files.writeString(outside, "pub fnc safe():int {return 3;}\n");
+        try {
+            Files.createSymbolicLink(local.resolve("alias.ores"), safe);
+            Files.createSymbolicLink(local.resolve("escape.ores"), outside);
+            Files.createSymbolicLink(dependency.resolve("src/alias.ores"), depSafe);
+            Files.createSymbolicLink(dependency.resolve("src/escape.ores"), outside);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+
+        OresProjectConfig config = OresProjectConfig.discover(
+                project.resolve("src/main.ores"), Map.of());
+        assertEquals(safe.toRealPath(),
+                config.resolveImport(project.resolve("src/main.ores"),
+                        "+/src/alias").orElseThrow());
+        assertEquals(depSafe.toRealPath(),
+                config.resolveImport(project.resolve("src/main.ores"),
+                        "pkg:math/src/alias").orElseThrow());
+        IllegalArgumentException localEscape = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/main.ores"), "+/src/escape"));
+        assertTrue(localEscape.getMessage().contains("physical package root"));
+        IllegalArgumentException depEscape = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/main.ores"), "pkg:math/src/escape"));
+        assertTrue(depEscape.getMessage().contains("physical package root"));
+    }
 }
