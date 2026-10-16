@@ -787,7 +787,25 @@ public final class ActorRuntime implements AutoCloseable {
             return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
         }
 
-        private synchronized MemoryReservation reserve(long bytes, String purpose) {
+        private MemoryReservation reserve(long bytes, String purpose) {
+            // SHARED mailbox/output admission holds lifecycleLock. Take that
+            // lock *before* this slice monitor, also during local allocation,
+            // so concurrent send and actor-local allocations cannot jointly
+            // oversubscribe the actor's policy. Finalization uses this order.
+            if (ownerKind != ActorKind.SHARED) {
+                return reserveUnderSliceLock(bytes, purpose, null);
+            }
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || cell.memorySlice != this || cell.kind != ActorKind.SHARED) {
+                throw new IllegalStateException("shared actor-local allocation requires owner turn");
+            }
+            synchronized (cell.lifecycleLock) {
+                return reserveUnderSliceLock(bytes, purpose, cell);
+            }
+        }
+
+        private synchronized MemoryReservation reserveUnderSliceLock(
+                long bytes, String purpose, ActorCell<?> sharedCell) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
             if (bytes == 0) return new MemoryReservation(this, 0);
@@ -799,9 +817,15 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " accounting overflow");
             }
-            if (next > limitBytes) {
+            long actorLimit = limitBytes;
+            if (sharedCell != null) {
+                actorLimit = Math.max(0L, limitBytes
+                        - sharedCell.sharedMailboxBytes.get()
+                        - sharedCell.outputBytes.get());
+            }
+            if (next > actorLimit) {
                 throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
+                        + ": requested=" + bytes + " used=" + current + " limit=" + actorLimit);
             }
 
             if (ownerKind == ActorKind.SHARED) {
