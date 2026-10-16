@@ -161,6 +161,49 @@ final class PersistentActorMapTest {
     }
 
     @Test
+    void identicalSharedRootsStillConsumePerMailboxQuotaAndReleaseOnDrain() throws Exception {
+        var limited = new IsolatePolicy(IsolatePolicy.developer().capabilities(),
+                16L * 1024 * 1024, 8192, java.time.Duration.ofSeconds(30));
+        PersistentActorMap root = PersistentActorMap.empty();
+        for (int i = 0; i < 5_000; i++) root = root.with("field-" + i, i);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Object>spawnShared(limited, () -> (message, context) -> {
+                entered.countDown();
+                assertTrue(release.await(15, TimeUnit.SECONDS),
+                        "held actor must only finish after the test releases it");
+            });
+            ref.send(root);
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "actor did not enter its receive");
+            long bytesAfterOne = runtime.sharedMemoryBytes();
+            assertTrue(bytesAfterOne > 0, "the initial persistent root consumes a logical quota");
+            boolean rejected = false;
+            for (int i = 0; i < 120; i++) {
+                try {
+                    ref.send(root); // Exactly the same immutable object identity each time.
+                } catch (IllegalStateException full) {
+                    assertTrue(full.getMessage().contains("memory"),
+                            "failure must be a logical mailbox memory quota: " + full);
+                    rejected = true;
+                    break;
+                }
+            }
+            assertTrue(rejected, "zero-copy must not bypass the actor's logical mailbox quota");
+            assertTrue(runtime.sharedMemoryBytes() > bytesAfterOne,
+                    "queued copies must reserve distinct mailbox credits");
+            release.countDown();
+            ref.drain().get(10, TimeUnit.SECONDS);
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "processed messages must return all shared mailbox credits");
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void sharedMailboxPreservesRootButPrivateMailboxStillIsolates() throws Exception {
         var payload = PersistentActorMap.empty()
                 .with("id", "pipeline-1")
