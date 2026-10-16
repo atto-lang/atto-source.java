@@ -95,8 +95,10 @@ final class RecursiveFutureFlattenTest {
                 }
             });
             begin.countDown();
-            publisher.join();
-            canceller.join();
+            publisher.join(5_000);
+            canceller.join(5_000);
+            assertFalse(publisher.isAlive(), "publisher stalled in round " + round);
+            assertFalse(canceller.isAlive(), "canceller stalled in round " + round);
             assertTrue(flattened.isCancelled(), "round " + round);
             assertEquals(0, outer.pendingRuntimeWaiterCount(), "outer round " + round);
             assertEquals(0, middle.pendingRuntimeWaiterCount(), "middle round " + round);
