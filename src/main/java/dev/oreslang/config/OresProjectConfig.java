@@ -90,7 +90,7 @@ public final class OresProjectConfig {
         Path nearestLegacy = null;
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
             if (physicalBoundary != null && !cursor.startsWith(physicalBoundary)) break;
-            // @/ must always bind the nearest package manifest, even when a
+            // +/ must always bind the nearest package manifest, even when a
             // legacy compiler config exists in a lower source directory.
             Path packageManifest = cursor.resolve(PACKAGE_MANIFEST_NAME);
             if (Files.isRegularFile(packageManifest)) {
@@ -147,7 +147,7 @@ public final class OresProjectConfig {
         }
 
         Path manifestDir = absoluteManifest.getParent();
-        // @/ always means the directory containing .ores.pkg.toml.
+        // +/ always means the directory containing .ores.pkg.toml.
         // Legacy compiler manifests keep their explicit project.root behavior.
         String explicitRoot = optionalString(toml, "project.root");
         if (explicitRoot == null && toml.get("project.root") != null) {
@@ -209,7 +209,7 @@ public final class OresProjectConfig {
 
     /**
      * Physical source identity alone is insufficient when a symlinked unit
-     * could be parsed with different @/ or pkg: meanings. This immutable
+     * could be parsed with different +/ or pkg: meanings. This immutable
      * context identifies the owning resolver namespace for one compilation.
      */
     public record ImportContext(Path projectRoot, Path manifestPath, Path packageBoundary) { }
@@ -242,7 +242,7 @@ public final class OresProjectConfig {
                 return this;
             }
             // An ambient ORES_PATHS source with no own manifest must retain
-            // the consumer's bare search paths, but must NOT acquire its @/
+            // the consumer's bare search paths, but must NOT acquire its +/
             // root or pkg: dependency aliases as an ambient capability.
             return new OresProjectConfig(null, found.projectRoot, null, null,
                     sourceRoots, importPaths, environmentPaths, Map.of(),
@@ -281,7 +281,7 @@ public final class OresProjectConfig {
      *   <li>java: imports are not filesystem imports.</li>
      *   <li>./ and ../ imports resolve only relative to the importing file.</li>
      *   <li>absolute imports resolve directly.</li>
-     *   <li>@/ imports use the nearest package manifest directory.</li>
+     *   <li>+/ imports use the nearest package manifest directory.</li>
      *   <li>pkg: aliases use declared zed dependency roots.</li>
      *   <li>bare imports search project roots, ORES_PATHS, then ORESLANG_PATH.</li>
      * </ul>
@@ -294,9 +294,9 @@ public final class OresProjectConfig {
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
         String unix = importPath.replace('\\', '/');
-        if (unix.startsWith("@/")) {
+        if (unix.startsWith("+/")) {
             if (manifestPath == null || !PACKAGE_MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
-                throw new IllegalArgumentException("@/ imports require a " + PACKAGE_MANIFEST_NAME);
+                throw new IllegalArgumentException("+/ imports require a " + PACKAGE_MANIFEST_NAME);
             }
             return rootedSource(projectRoot, unix.substring(2), importPath);
         }
@@ -313,6 +313,10 @@ public final class OresProjectConfig {
             }
             validateInstalledPackage(dependency);
             return rootedSource(dependency, remainder.substring(slash + 1), importPath);
+        }
+        if (unix.startsWith("+")) {
+            throw new IllegalArgumentException("invalid project-root import '" + importPath
+                    + "': expected +/<path> (for example +/src/lib/store)");
         }
         if (unix.startsWith("@") || unix.startsWith("pkg:")) {
             throw new IllegalArgumentException("invalid import prefix: " + importPath);
