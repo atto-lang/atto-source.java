@@ -6526,7 +6526,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (mode.equals("none")) {
             // Non-affine actor domains can admit independent runnable actor
             // turns on demand. Physical single-flight per actor is unchanged.
-            int max = Integer.getInteger("ores.actor.dispatch.max.parallelism", 20);
+            int max = Integer.getInteger("ores.actor.dispatch.max.parallelism",
+                    Math.max(20, parallelism));
             if (max < parallelism || max > 256) {
                 throw new IllegalArgumentException(
                         "ores.actor.dispatch.max.parallelism must be between domain minimum and 256");
