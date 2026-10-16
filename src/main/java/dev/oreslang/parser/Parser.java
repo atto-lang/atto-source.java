@@ -3649,9 +3649,15 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         if (match(NLEX)) {
+            if (check(LBRACKET)) return parseSelectiveLambda(Ast.LambdaCapturePolicy.DENY);
             if (check(PIPE)) return parsePipeLambda(true);
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
+        }
+        // 'lex' remains contextual so existing symbols named lex are unaffected.
+        if (isContextualIdentifier("lex") && checkNext(LBRACKET)) {
+            advance();
+            return parseSelectiveLambda(Ast.LambdaCapturePolicy.ALLOW);
         }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
@@ -3721,6 +3727,36 @@ public final class Parser {
                 ? "expected '}' after explicit struct initializer"
                 : "expected '}' after infer struct literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
+    }
+
+    private Ast.LambdaExpr parseSelectiveLambda(Ast.LambdaCapturePolicy policy) {
+        consume(LBRACKET, "expected '[' after lex or nlex");
+        List<String> names = new ArrayList<>();
+        java.util.Set<String> unique = new java.util.HashSet<>();
+        if (!check(RBRACKET)) {
+            do {
+                Token name;
+                if (check(SELF)) name = advance();
+                else name = consume(IDENT, "capture list entries must be lexical binding names");
+                if (!unique.add(name.lexeme())) {
+                    throw error(name, "duplicate capture binding '" + name.lexeme() + "'");
+                }
+                names.add(name.lexeme());
+            } while (match(COMMA));
+        }
+        consume(RBRACKET, "expected ']' after lambda capture list");
+        Ast.LambdaExpr body;
+        if (check(PIPE)) body = parsePipeLambda(false);
+        else if (check(LPAREN) && looksLikeLambda()) body = parseLambda(false);
+        else throw error(peek(), "lex[...] and nlex[...] must prefix a lambda");
+        for (Ast.Param param : body.parameters()) {
+            if (unique.contains(param.name())) {
+                throw error(previous(), "lambda parameter '" + param.name()
+                        + "' conflicts with an explicit outer capture");
+            }
+        }
+        return new Ast.LambdaExpr(body.parameters(), body.expressionBody(),
+                body.blockBody(), false, policy, names);
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
