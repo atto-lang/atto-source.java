@@ -103,7 +103,7 @@ final class ValuePipeOperatorTest {
                 fnc fail(String s): String { return s + "!"; }
                 fnc maybe(int n): Option<int> { return Some(n + 1); }
                 fnc checked(int n): Result<int, String> { return Ok(n + 1); }
-                fnc recover(String s): Result<int, String> { return Ok(12); }
+                fnc recover_error(String s): Result<int, String> { return Ok(12); }
                 fnc positive(int n): bool { return n > 0; }
                 pub fnc main(): void {
                   stdio.println(3 |> double);
@@ -114,7 +114,7 @@ final class ValuePipeOperatorTest {
                   stdio.println(Some(7) |> Option.and_then(maybe) |> Option.unwrap_or(0));
                   stdio.println(Some(-3) |> Option.filter(positive) |> Option.unwrap_or(99));
                   stdio.println(Ok(20) |> Result.and_then(checked) |> Result.unwrap_or(0));
-                  stdio.println(Err("oops") |> Result.or_else(recover) |> Result.unwrap_or(0));
+                  stdio.println(Err("oops") |> Result.or_else(recover_error) |> Result.unwrap_or(0));
                   stdio.println(Some(Ok(42)) |> Option.transpose());
                   stdio.println(Ok(33) |> Result.ok() |> Option.unwrap_or(0));
                   return;
