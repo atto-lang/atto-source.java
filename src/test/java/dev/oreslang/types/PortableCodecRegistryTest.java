@@ -14,6 +14,9 @@ import dev.oreslang.types.PortableCodecRegistry.Shape;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -174,4 +177,37 @@ final class PortableCodecRegistryTest {
                         Purpose.NETWORK_DATA, "app.Bad", "app.BadProto", 1,
                         new ObjectShape(List.of(new Field("nums", 1, fixed)))));
     }
+
+    @Test
+    void concurrentRegistrationPublishesOneCoherentSchema() throws Exception {
+        Registry registry = new Registry();
+        try (var pool = Executors.newFixedThreadPool(8)) {
+            List<Callable<Descriptor>> tasks = java.util.stream.IntStream.range(0, 24)
+                    .<Callable<Descriptor>>mapToObj(i -> () ->
+                            registry.registerCompilerDescriptor(Format.JSON, Purpose.NETWORK_DATA,
+                                    "app.User", "app.UserWire", 1,
+                                    new ObjectShape(List.of(jsonField("name", utf8()),
+                                            jsonField("age", integer())))))
+                    .toList();
+            List<Future<Descriptor>> results = pool.invokeAll(tasks);
+            Descriptor initial = results.getFirst().get();
+            for (Future<Descriptor> result : results) {
+                assertSame(initial, result.get());
+            }
+            assertEquals(1, registry.size());
+        }
+    }
+
+    @Test
+    void differentCompilerInstancesNeverShareMutableDescriptorTables() {
+        Registry first = new Registry();
+        Registry second = new Registry();
+        first.registerCompilerDescriptor(Format.JSON, Purpose.NETWORK_DATA,
+                "app.User", "app.UserWire", 1, utf8());
+        assertEquals(1, first.size());
+        assertEquals(0, second.size());
+        assertThrows(IllegalArgumentException.class,
+                () -> second.requirePinned(Format.JSON, Purpose.NETWORK_DATA, "app.User", 1));
+    }
+
 }
