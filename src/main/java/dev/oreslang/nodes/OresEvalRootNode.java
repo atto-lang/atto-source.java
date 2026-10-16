@@ -1250,7 +1250,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             // The scheduler task can return another Future. Its entire
             // completion chain is the observable async function result.
-            return function.async() ? OresFutures.flatten(future) : future;
+            return function.async() ? OresFutures.flattenOwned(future) : future;
         }
 
         private OresFuture<Object> startSourceBlockTask(
@@ -1283,7 +1283,7 @@ public final class OresEvalRootNode extends RootNode {
                         : context.vm().rootScheduler()).start(task);
             }
             // Method async results follow the same completion contract.
-            return method.async() ? OresFutures.flatten(future) : future;
+            return method.async() ? OresFutures.flattenOwned(future) : future;
         }
 
         private OresFuture<Object> startFutureChainTask(
@@ -4681,7 +4681,7 @@ public final class OresEvalRootNode extends RootNode {
                                                         delivered)));
 
                 return fn.async()
-                        ? completion
+                        ? OresFutures.flattenOwned(completion)
                         : returnSourceTaskResult(completion, false);
             }
 
