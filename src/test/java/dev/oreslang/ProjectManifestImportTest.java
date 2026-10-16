@@ -682,4 +682,50 @@ final class ProjectManifestImportTest {
                 conflicting.getMessage());
     }
 
+
+    @Test
+    void oresPathsLinksRealSymlinkedSourcesWithProjectRootsTakingPrecedence() throws Exception {
+        Path project = temp.resolve("ores-paths-e2e");
+        Path src = project.resolve("src");
+        Path shared = temp.resolve("shared-ores-sources");
+        Path ambient = temp.resolve("ores-path-link");
+        Files.createDirectories(src.resolve("common"));
+        Files.createDirectories(shared.resolve("common"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(src.resolve("common/local.ores"), """
+                pub fnc local(): string { return "project-priority"; }
+                """);
+        Files.writeString(shared.resolve("common/local.ores"), """
+                pub fnc local(): string { return "wrong-ambient"; }
+                """);
+        Files.writeString(shared.resolve("common/remote.ores"), """
+                pub fnc remote(): string { return "symlink-path"; }
+                """);
+        try {
+            Files.createSymbolicLink(ambient, shared);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        Path main = src.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc local from "common/local";
+                import fnc remote from "common/remote";
+                pub fnc main(): void {
+                  stdio.println(local() + ":" + remote());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var built = LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(),
+                Map.of(OresProjectConfig.ENV_ORES_PATHS, ambient + ":" + temp.resolve("absent")),
+                out, new ByteArrayOutputStream());
+        assertEquals(3, built.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("project-priority:symlink-path"));
+    }
+
 }
