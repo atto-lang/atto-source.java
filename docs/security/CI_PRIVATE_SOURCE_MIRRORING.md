@@ -36,7 +36,9 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --source-commit <REVIEWED_GIT_COMMIT_SHA> \
+  --source-tree <REVIEWED_SUBTREE_SHA>
 ```
 
 The checked-in policy file must explicitly list the destination. The
@@ -51,6 +53,22 @@ in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
+
+An independently reviewed workflow or security owner must pin **both** the
+40-character source commit and the Git tree of the selected source directory
+in the original private repository before invoking the publisher. The
+publisher rejects missing or malformed pins; checks that the trusted checkout
+has exactly that `HEAD^{commit}` and `HEAD:<source-directory>` tree; and
+compares every collected in-memory source path, Git executable mode and blob
+hash with `git ls-tree -r -z`. Extra, missing, modified and untracked files
+fail **before the first GitHub API write**. The newly created isolated private
+destination subtree's returned SHA must equal the reviewed source subtree SHA
+**before any new commit or ref is created**. This makes the source-subtree
+proof stronger than per-blob transport checks. The approval variables/CLI
+arguments are *not* themselves independent authorization: their provenance
+must be protected by security-owner-reviewed workflows, protected branches,
+immutable repository IDs and the still-required destination allowlist. This
+publisher does not grant permission to run unreviewed source on any runner.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file, requires the source directory to remain **inside the trusted
