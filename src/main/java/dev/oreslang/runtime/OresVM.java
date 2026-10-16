@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -28,6 +29,8 @@ public final class OresVM implements AutoCloseable {
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
+    /** VM-owned selector domain: a single reactor starts before guest work. */
+    private final NioReadinessGroup nioReadiness;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
 
@@ -61,6 +64,15 @@ public final class OresVM implements AutoCloseable {
                 turnExecutor);
         try {
             startup();
+            // Selector creation may perform OS operations, so finish before
+            // publishing this VM to an OresContext or admitting guest turns.
+            // Pending watches do not create threads: NIO scaling is separate
+            // from runnable CONTROL/actor carrier expansion.
+            this.nioReadiness = new NioReadinessGroup();
+        } catch (IOException ioFailure) {
+            rootScheduler.close();
+            controlExecutor.shutdownNow();
+            throw new IllegalStateException("unable to bootstrap VM NIO reactor", ioFailure);
         } catch (RuntimeException | Error failure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
@@ -125,6 +137,14 @@ public final class OresVM implements AutoCloseable {
         return controlExecutor.getPoolSize();
     }
 
+    /** Trusted runtime only; guest access requires its own network grant. */
+    NioReadinessGroup nioReadiness() {
+        if (!started()) throw new IllegalStateException("NIO VM is not running");
+        return nioReadiness;
+    }
+
+    int nioReactorCount() { return nioReadiness.reactorCount(); }
+
     public OresScheduler rootScheduler() {
         if (!started()) {
             throw new IllegalStateException(
@@ -173,6 +193,10 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
+            // Fence NIO registration before retiring CONTROL. Reactor
+            // completions may enqueue runtime wakeups but never guest callbacks
+            // on selector threads.
+            nioReadiness.close();
             try {
                 rootScheduler.close();
             } finally {
