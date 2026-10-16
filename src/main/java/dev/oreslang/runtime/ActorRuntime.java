@@ -7634,6 +7634,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // Drain all committed user-message envelopes, including after close.
             }
             sourceReceiveSuspended = false;
+            // An actor can STOP while a source receive is suspended and its
+            // continuation is never rescheduled. Retire that claimed frame
+            // here as well as the unclaimed queued envelopes drained above.
+            ActorPipelineRouteSession.retireDelivered(activePipelineFrame);
+            activePipelineFrame = null;
             activeMail = null;
         }
 
