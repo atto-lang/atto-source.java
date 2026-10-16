@@ -168,3 +168,19 @@ A revoked or advanced source mainline aborts the transfer. Earlier Git objects
 might already have been created; their containment still requires a separate
 security decision. None of this authorizes private-source export while source
 main remains unprotected or the reviewed allowlist is empty.
+
+## Destination root-tree attestation before commit publication
+
+The publisher verifies the complete source snapshot against the source Git
+tree, then checks the destination upload tree SHA. It additionally GETs the
+assembled destination **root** Git tree and requires a nontruncated response
+whose immutable Git tree SHA matches the new root and which contains exactly
+one `private-oreslang-source` tree entry of mode `040000` referencing the
+source tree SHA. Missing, duplicate, incorrectly typed, or substituted entries
+abort before a destination commit or CI branch is created.
+
+Subsequent checks independently attest the destination commit's root tree and
+single expected parent, and read back the created CI ref. These extra readbacks
+provide defense-in-depth but do not replace protected source-main approval or
+a separate destination access-control review. Previously uploaded loose Git
+objects require retention/incident handling if a late check fails.
