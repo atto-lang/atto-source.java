@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import org.graalvm.polyglot.PolyglotException;
 
 final class DynamicSelectOptionLanguageTest {
 
@@ -46,6 +48,39 @@ final class DynamicSelectOptionLanguageTest {
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
         assertEquals("true:7:true:9", run(program));
+    }
+
+    @Test
+    void synchronouslyCompletedDynamicSelectDoesNotSwallowLaterGuestFailure()
+            throws Exception {
+        // A buffered selection can deliver immediately. Its continuation may
+        // continue running guest statements before selectAsync returns. A
+        // thrown downstream exception must not be caught by the select setup
+        // handler and mistaken for a second completion.
+        String program = """
+                pub fnc main(): void {
+                  val Channel<int> incoming = Channel.new<int>(1);
+                  writech incoming, 7;
+                  val SelectSet cases =
+                      SelectSet.new([SelectCase.read(incoming)]);
+                  val Option<SelectResult> choice = select incoming from cases;
+                  stdio.stdout.write("selected:");
+                  stdio.stdout.write(choice.unwrap().value);
+                  val int zero = 0;
+                  stdio.stdout.write(7 / zero);
+                  stdio.stdout.write(":unreachable");
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            Source source = Source.newBuilder(OresLanguage.ID, program,
+                    "dynamic-select-downstream-exception.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build();
+            assertThrows(PolyglotException.class, () -> context.eval(source));
+        }
+        assertEquals("selected:7", output.toString(StandardCharsets.UTF_8));
     }
 
     private static String run(String program) throws Exception {
