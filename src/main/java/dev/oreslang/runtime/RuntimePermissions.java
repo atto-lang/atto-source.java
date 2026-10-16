@@ -203,11 +203,40 @@ public final class RuntimePermissions {
 
     public void require(Permission permission, String resource, String api) {
         if (!allows(permission, resource)) {
-            String rendered = resource == null || resource.isBlank() ? "<all>" : resource;
             throw new SecurityException(
                     "Oreslang permission denied: " + permission.cliName()
-                            + " access to '" + rendered + "' required by " + api);
+                            + " access to '" + diagnosticResource(resource) + "' required by " + api);
         }
+    }
+
+    /**
+     * Denied paths, endpoints and token strings may be guest-controlled.
+     * Never let them inject terminal controls, extra log lines, or unbounded
+     * content into permission-denial diagnostics.
+     */
+    private static String diagnosticResource(String resource) {
+        if (resource == null || resource.isBlank()) return "<all>";
+        final int maxCodeUnits = 256;
+        int length = Math.min(resource.length(), maxCodeUnits);
+        StringBuilder rendered = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            char c = resource.charAt(i);
+            if (Character.isISOControl(c) || Character.isSurrogate(c)
+                    || c == '\u2028' || c == '\u2029') {
+                String hex = Integer.toHexString(c);
+                rendered.append("\\u");
+                for (int zero = hex.length(); zero < 4; zero++) rendered.append('0');
+                rendered.append(hex);
+            } else if (c == '\\') {
+                rendered.append("\\\\");
+            } else if (c == '\'') {
+                rendered.append("\\'");
+            } else {
+                rendered.append(c);
+            }
+        }
+        if (resource.length() > maxCodeUnits) rendered.append("...(truncated)");
+        return rendered.toString();
     }
 
     public boolean allows(Permission permission, String resource) {
