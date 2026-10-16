@@ -72,6 +72,25 @@ final class HighPrecisionDecimalTest {
     }
 
     @Test
+    void integerOverflowDoesNotWrapIntoAValidNumericResult() {
+        for (String expression : new String[] {
+                "9223372036854775807 + 1",
+                "-9223372036854775808 - 1",
+                "9223372036854775807 * 2",
+                "-(-9223372036854775808)"
+        }) {
+            Exception error = assertThrows(Exception.class, () -> eval("""
+                    pub routine main(): void {
+                      stdio.stdout.write(%s);
+                      return;
+                    }
+                    """.formatted(expression)), expression);
+            assertTrue(error.toString().contains("overflow"),
+                    () -> "expected explicit overflow for " + expression + ", got " + error);
+        }
+    }
+
+    @Test
     void binaryFloatAndDecimalCannotMixImplicitly() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
