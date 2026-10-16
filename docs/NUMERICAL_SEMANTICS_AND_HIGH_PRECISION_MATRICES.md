@@ -95,6 +95,26 @@ that guest arithmetic uses the exact host implementation. Thus the helper is
 an exact *runtime carrier boundary*, not a claim of completed source-level
 arbitrary precision.
 
+### Exact guest carrier propagation (draft, awaiting GraalVM execution)
+
+The Java evaluator now constructs bounded `BigInteger` and `BigDecimal`
+carriers for explicitly declared `bigint`/`decimal` locals, callable
+parameters and returned values. Mutable bindings whose current carrier is
+exact preserve it across reassignment, rejecting implicit Float/Double
+conversion. Runtime `is decimal` recognizes `BigDecimal` rather than
+binary floats; `is bigint` recognizes `BigInteger` (and compatible
+fixed-width integers). The static arithmetic join now rejects mixing
+Decimal with binary floating-point/complex operands without conversion.
+
+`NumericExactGuestBoundaryTest` exercises these cases through the guest
+parser and GraalVM runtime, including integers above 2^53 and an int64
+maximum-value BigInt increment. **This suite has not yet executed on the
+exact compiler PR head.** The current TypeChecker still collapses
+`bigint` to the primitive integer type and `f32` to the primitive float
+type, so this is preliminary runtime hardening, **not completed nominal
+BigInt/f32 typing or LLVM equivalence**. In particular, host JDK and
+source-free oracle results cannot substitute for guest execution.
+
 ### Resource and CI admission updates
 
 `DecimalMatrix` now bounds total significant digits per matrix in addition
