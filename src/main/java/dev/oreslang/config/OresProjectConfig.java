@@ -322,14 +322,32 @@ public final class OresProjectConfig {
 
     private OresProjectConfig withDiscoveryBoundary(Path boundary) {
         if (boundary == null) return this;
-        // A compiler manifest inside a dependency must not redirect its
-        // declared project root upward into the importing application.
-        if (!projectRoot.toAbsolutePath().normalize().startsWith(boundary.toAbsolutePath().normalize())) {
+        // A legacy manifest inside a dependency can name a project root that
+        // is lexically nested but physically escapes via a directory symlink.
+        // For generated roots, canonicalize the closest existing ancestor.
+        if (!physicalProjectedPath(projectRoot).startsWith(contextIdentity(boundary))) {
             throw new IllegalArgumentException("imported project root escapes installed package: " + projectRoot);
         }
         return new OresProjectConfig(manifestPath, projectRoot, projectName, projectVersion,
                 sourceRoots, importPaths, environmentPaths, dependencyRoots, mainEntrypoint,
                 environment, boundary);
+    }
+
+    private static Path physicalProjectedPath(Path source) {
+        Path absolute = source.toAbsolutePath().normalize();
+        Path ancestor = absolute;
+        while (ancestor != null && !Files.exists(ancestor)) {
+            if (Files.isSymbolicLink(ancestor)) {
+                throw new IllegalArgumentException("imported project root has a dangling symlink: " + source);
+            }
+            ancestor = ancestor.getParent();
+        }
+        if (ancestor == null) throw new IllegalArgumentException("cannot locate physical ancestor: " + source);
+        try {
+            return ancestor.toRealPath().resolve(ancestor.relativize(absolute)).normalize();
+        } catch (IOException error) {
+            throw new IllegalArgumentException("cannot resolve imported project root: " + source, error);
+        }
     }
 
     /** Re-evaluate the nearest manifest without crossing an installed package boundary. */
