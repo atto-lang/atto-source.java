@@ -14,7 +14,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
-A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
+A, B, C, D, E, F = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40, "f"*40)
 
 
 class DestinationBoundPublisherTests(unittest.TestCase):
@@ -93,10 +93,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
+        if route == "repos/trusted/ci/git/trees/" + E:
+            return {"sha": E, "truncated": False, "tree": [
+                {"path": pub.PREFIX, "mode": "040000",
+                 "type": "tree", "sha": D}]}
+        if route == "repos/trusted/ci/git/commits/" + F:
+            return {"sha": F, "tree": {"sha": E}, "parents": [{"sha": A}]}
+        if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+            return {"ref": "refs/heads/ci/oreslang-test",
+                    "object": {"type": "commit", "sha": F}}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
-            "repos/trusted/ci/git/commits": {"sha": A},
+            "repos/trusted/ci/git/commits": {"sha": F},
             "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
         }
         if route not in mapping:
@@ -329,7 +338,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
-        self.assertEqual((sha, count), (A, 1))
+        self.assertEqual((sha, count), (F, 1))
         writes = [(m, r, p) for m, r, p in self.route_calls if m == "POST"]
         self.assertEqual([r for _, r, _ in writes], [
             "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
@@ -346,6 +355,83 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertIn("Source-Commit: " + A, writes[3][2]["message"])
         self.assertIn("Source-Tree: " + D, writes[3][2]["message"])
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+
+    def test_destination_root_tree_readback_rejects_mismatch_before_commit(self):
+        original = self.fake_api
+        for tamper in [
+            {"sha": E, "truncated": True, "tree": [
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}]},
+            {"sha": E, "truncated": False, "tree": [
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": B}]},
+            {"sha": E, "truncated": False, "tree": []},
+            {"sha": E, "truncated": False, "tree": [
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D},
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}]},
+            {"sha": B, "truncated": False, "tree": [
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": D}]},
+        ]:
+            with self.subTest(tree=tamper):
+                self.route_calls.clear()
+                def mutate(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/trees/" + E:
+                        return tamper
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=mutate):
+                    with self.assertRaisesRegex(pub.Denied, "destination root"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A, D)
+                self.assertFalse(any(r in (
+                    "repos/trusted/ci/git/commits", "repos/trusted/ci/git/refs")
+                    for method, r, _ in self.route_calls if method == "POST"))
+
+    def test_destination_commit_readback_rejects_mismatch_before_ref(self):
+        original = self.fake_api
+        for tamper in [
+            {"sha": F, "tree": {"sha": B}, "parents": [{"sha": A}]},
+            {"sha": F, "tree": {"sha": E}, "parents": [{"sha": B}]},
+            {"sha": F, "tree": {"sha": E}, "parents": []},
+            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": A}]},
+        ]:
+            with self.subTest(commit=tamper):
+                self.route_calls.clear()
+                def mutate(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/commits/" + F:
+                        return tamper
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=mutate):
+                    with self.assertRaisesRegex(pub.Denied, "destination commit"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A, D)
+                self.assertFalse(any(
+                    method == "POST" and route == "repos/trusted/ci/git/refs"
+                    for method, route, _ in self.route_calls))
+
+    def test_ref_readback_rejects_mismatched_new_branch_target(self):
+        original = self.fake_api
+        for tamper in [
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "commit", "sha": A}},
+            {"ref": "refs/heads/main",
+             "object": {"type": "commit", "sha": F}},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "tag", "sha": F}},
+        ]:
+            with self.subTest(ref=tamper):
+                self.route_calls.clear()
+                def mutate(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                        return tamper
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=mutate):
+                    with self.assertRaisesRegex(pub.Denied, "created private CI branch"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A, D)
+                self.assertTrue(any(
+                    method == "POST" and route == "repos/trusted/ci/git/refs"
+                    for method, route, _ in self.route_calls))
+                # A post-create mismatch may leave a ref requiring an
+                # independent cleanup; do not report successful publication.
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
@@ -913,7 +999,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with patch.object(pub, "gh_api", side_effect=self.fake_api):
                 sha, count = pub.publish(
                     "trusted/ci", candidate, "ci/oreslang-test", self.root, A, D)
-            self.assertEqual((sha, count), (A, 1))
+            self.assertEqual((sha, count), (F, 1))
             blob_writes = [payload for method, route, payload in self.route_calls
                            if method == "POST" and route.endswith("/git/blobs")]
             self.assertEqual(len(blob_writes), 1)
@@ -963,7 +1049,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                   side_effect=authenticated_synthetic_api):
                     result = pub.publish("trusted/ci", candidate,
                                          "ci/oreslang-test", self.root, commit, tree)
-                    self.assertEqual(result, (A, 1))
+                    self.assertEqual(result, (F, 1))
                 self.assertEqual(verifier.call_count, 1)
 
             # Changing the source after its commit is rejected before export.
@@ -1083,7 +1169,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.source / ".git").mkdir()
         (self.source / ".git" / "config").write_text("not source content")
         sha, count = self.publish()
-        self.assertEqual((sha, count), (A, 1))
+        self.assertEqual((sha, count), (F, 1))
         source_paths = [
             entry["path"] for method, route, payload in self.route_calls
             if method == "POST" and route.endswith("/git/trees")
