@@ -427,6 +427,45 @@ final class OresProjectConfigTest {
 
 
     @Test
+    void packageEntrypointCannotEscapeItsManifestRootButLegacyEntrypointsKeepCompatibility() throws Exception {
+        Path project = temp.resolve("rooted-entrypoint");
+        Files.createDirectories(project);
+        Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+
+        for (String invalidMain : List.of("../outside/main.ores",
+                "src/../../outside.ores", temp.resolve("absolute.ores").toString(), " ")) {
+            Files.writeString(manifest, """
+                    schema_version = "1"
+                    [entrypoints]
+                    main = "%s"
+                    """.formatted(invalidMain));
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> OresProjectConfig.load(manifest, Map.of()));
+            assertTrue(rejected.getMessage().contains("entrypoints.main"),
+                    rejected.getMessage());
+        }
+
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [entrypoints]
+                main = "src/../src/main.ores"
+                """);
+        assertEquals(project.resolve("src/main.ores"),
+                OresProjectConfig.load(manifest, Map.of()).mainEntrypoint().orElseThrow());
+
+        // Legacy manifests can intentionally point at an external entrypoint.
+        Path legacy = project.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.writeString(legacy, """
+                schema_version = "1"
+                [entrypoints]
+                main = "../outside/main.ores"
+                """);
+        assertEquals(temp.resolve("outside/main.ores"),
+                OresProjectConfig.load(legacy, Map.of()).mainEntrypoint().orElseThrow());
+    }
+
+
+    @Test
     void explicitlyEmptySourceRootsDoNotSilentlyExposeProjectFiles() throws Exception {
         Path project = temp.resolve("no-implicit-roots");
         Files.createDirectories(project);
