@@ -182,6 +182,13 @@ class CorePerfTest {
         assertTrue(output.contains("\"recorded\":256,\"reserved\":256,\"saturated\":true"));
     }
 
+    @Test void relativeMonotonicOffsetsNeverWrapNegativeOrBecomeMisleading() {
+        assertEquals(0L, CorePerf.Recorder.relativeNanos(9L, 10L));
+        assertEquals(0L, CorePerf.Recorder.relativeNanos(Long.MIN_VALUE, Long.MAX_VALUE));
+        assertEquals(100L, CorePerf.Recorder.relativeNanos(110L, 10L));
+        assertEquals(Long.MAX_VALUE, CorePerf.Recorder.relativeNanos(Long.MAX_VALUE, Long.MIN_VALUE));
+    }
+
     @Test void invalidSamplesFailClosed() {
         var recorder = new CorePerf.Recorder(1);
         assertThrows(IllegalArgumentException.class, () -> recorder.record(0, 1L, 2L));
