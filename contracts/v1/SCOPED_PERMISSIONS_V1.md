@@ -45,12 +45,14 @@ continue to deny network access rather than claim host-I/O parity.
 Java `http.listen(host, 0, ...)` requests an OS-assigned port. Port 0 is an API
 sentinel, not a valid `net` permission-scope port. Before binding, the runtime
 requires a port-independent grant for the requested host and checks the
-resolved numeric IPv4 address. Any matching denial for either host or IP,
-including a denial for an individual port, prevents dynamic-port listening.
+resolved numeric IPv4 address. While port selection and DNS aliases cannot be
+proved disjoint from every denied endpoint, **any configured NET denial**
+prevents a port-zero listener, even if the denial appears unrelated.
 The all-interfaces address `0.0.0.0` is not one selected IP and is rejected
 for dynamic ports. A fixed-port-only grant does not authorize a dynamic-port listener.
 
 Unsupported listener address families remain denied until implemented.
+
 ## Canonical test-vector integrity
 
 The checked-in reference data is pinned to SHA-256
