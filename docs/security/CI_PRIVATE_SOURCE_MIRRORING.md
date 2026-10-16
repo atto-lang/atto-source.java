@@ -51,9 +51,13 @@ GitHub reports source `main` as protected and permits inspection of its branch
 protection rules. It requires code-owner review, stale-review dismissal, at
 least one approval, strict nonempty required CI, administrator enforcement,
 and disabled force pushes/deletions; GitHub must explicitly require the
-`preflight-regressions` CI context (or an app-scoped equivalent with a positive
-GitHub App ID). Unrelated required CI jobs or a wildcard-app check cannot
-satisfy the policy. Failure to read these settings is a denial.
+`preflight-regressions` check **bound to the GitHub Actions App ID 15368**
+in `required_status_checks.checks[]`. Legacy `contexts` entries alone are
+not trusted because another actor can publish the same context name. A check
+with an arbitrary positive App ID, an absent App ID, or a wildcard `-1` is
+also denied. Multiple entries for the same security context must all be
+bound to GitHub Actions. Configure app-scoped branch protection before
+approving a private transfer; unrelated required CI jobs cannot satisfy it. Failure to read these settings is a denial.
 This checks current enforcement settings, not the authenticity of a particular
 reviewer's decision or an exemption outside the reported rules. A pending
 allowlist PR never authorizes a transfer. The security owner must independently
