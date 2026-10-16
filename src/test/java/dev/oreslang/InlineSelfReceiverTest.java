@@ -57,14 +57,21 @@ final class InlineSelfReceiverTest {
 
     @Test
     void inlineSelfAndImplicitClassReceiverAreDuplicateMethodSlots() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
-                TypeChecker.check(Parser.parse("""
-                        define class Foo as
-                          pub read(): int { return 1; }
-                          pub read(self): int { return 2; }
-                        end
-                        """)));
-        assertTrue(error.getMessage().contains("already has arity 0"), error::getMessage);
+        // Declaration order must not change receiver identity or arity.
+        for (String methods : new String[] {
+                """
+                pub read(): int { return 1; }
+                pub read(self): int { return 2; }
+                """,
+                """
+                pub read(self): int { return 2; }
+                pub read(): int { return 1; }
+                """
+        }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                    TypeChecker.check(Parser.parse("define class Foo as\n" + methods + "\nend")));
+            assertTrue(error.getMessage().contains("already has arity 0"), error::getMessage);
+        }
     }
 
     @Test
