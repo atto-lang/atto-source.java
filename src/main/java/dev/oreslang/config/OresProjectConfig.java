@@ -187,6 +187,17 @@ public final class OresProjectConfig {
     public Map<String, Path> dependencyRoots() { return dependencyRoots; }
     public Optional<Path> mainEntrypoint() { return Optional.ofNullable(mainEntrypoint); }
 
+    /**
+     * Physical source identity alone is insufficient when a symlinked unit
+     * could be parsed with different @/ or pkg: meanings. This immutable
+     * context identifies the owning resolver namespace for one compilation.
+     */
+    public record ImportContext(Path projectRoot, Path manifestPath, Path packageBoundary) { }
+
+    public ImportContext importContext() {
+        return new ImportContext(projectRoot, manifestPath, discoveryBoundary);
+    }
+
     private OresProjectConfig withDiscoveryBoundary(Path boundary) {
         if (boundary == null) return this;
         // A compiler manifest inside a dependency must not redirect its
