@@ -101,6 +101,28 @@ public final class MessagePackWireV2Harness {
     reject(() -> new Shape(MessagePackWireV2.Kind.TUPLE, oversizedShape));
     reject(() -> new Shape(MessagePackWireV2.Kind.LIST, oversizedShape));
     reject(() -> new Shape(MessagePackWireV2.Kind.LIST, null));
+    // Only read the admitted number of shape members, independent of a
+    // caller-supplied collection's subsequent size() or iterator().
+    List<Shape> mutableDescriptor = new AbstractList<>() {
+      int sizeReads;
+      @Override public int size() {
+        return ++sizeReads == 1 ? 1 : MessagePackWireV2.MAX_ELEMENTS + 1;
+      }
+      @Override public Shape get(int index) {
+        if (index != 0) throw new IndexOutOfBoundsException(index);
+        return Shape.string();
+      }
+      @Override public Iterator<Shape> iterator() {
+        throw new AssertionError("unexpected second-pass descriptor iterator");
+      }
+    };
+    Shape snapshot = new Shape(MessagePackWireV2.Kind.LIST, mutableDescriptor);
+    if (snapshot.members().size() != 1)
+      throw new AssertionError("descriptor snapshot changed size");
+    byte[] encoded = MessagePackWireV2.encode("demo.Snapshot.v1", snapshot, List.of("ok"));
+    if (!MessagePackWireV2.decode("demo.Snapshot.v1", snapshot, encoded).equals(List.of("ok")))
+      throw new AssertionError("descriptor snapshot wire round-trip");
+    cases++;
     System.out.println("PASS MessagePack v2 Java portable golden/negative assertions="+cases);
   }
 }
