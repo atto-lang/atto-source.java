@@ -87,7 +87,7 @@ perturb very short operations. Always compare both enabled and disabled runs.
 
 ## Architecture boundary and backend parity
 
-CorePerf/CoreDebug are **host-owned diagnostic flight recorders**, not a guest
+CorePerf/CoreDebug/CoreLog are **host-owned diagnostic flight recorders**, not a guest
 standard-library logging API and not an implementation of OpenTelemetry.
 The shared cross-backend contract is tracked in
 [core logging / OTel separation](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/audit/core-logging-separation-2026-10-16/docs/CORE_LOGGING_AND_OTEL.md).
@@ -108,9 +108,9 @@ A separate host-owned numeric flight recorder is controlled by
 `--core-log-level=off|error|warn|info|debug|trace` (default `off`),
 `--no-core-log`, or `ORES_CORE_LOG_LEVEL`. CLI options take precedence over the
 environment and the **last** explicit CLI option wins. Invalid levels fail as
-usage errors, before guest source execution. `off` suppresses diagnostic
-timers, recording and output; normal program errors and guest output are
-independent. The fixed-ID `CoreLog` path allocates no event objects and performs
+usage errors, before guest source execution. `off` suppresses **CoreLog**
+recording and export only; it does not disable independently configured
+`--core-perf` or `--core-debug`. Normal guest errors and output are independent. The fixed-ID `CoreLog` path allocates no event objects and performs
 no formatting or I/O; its first 8192 records are serialized to **stderr** at
 normal JVM shutdown **only if still enabled**, schema `ores-core-log.v1`.
 Explicit `off` discards the current buffer and prevents its shutdown export;
@@ -124,3 +124,21 @@ a numeric counter only, never guest arguments, exception text, headers, paths,
 identifiers, stack traces or serialized data. More diagnostic sites should
 follow the same rule. These switches **do not affect `oreslang-otel`**, which
 remains a user-imported telemetry library with independent severity policy.
+
+## Audit evidence and shutdown boundaries (2026-10-16)
+
+CoreLog export is synchronized with configuration: disabling logging returns
+only after any already-running cold-path export completes. Newly enabled sessions
+start empty. Recorder export reports `reserved`, `recorded`, and `unpublished`
+counts, so partial reservations are visible without disclosing half-written
+events. The producer uses fixed event identifiers and numeric values only.
+
+- [Native AOT executable and CLI smoke passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38929690187): GraalVM 25.3; exact 96-blob Java module mirror
+- [Java actor/CLI/OTel regression tests 50/50 passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38929064534)
+- [Expanded async I/O and CLI failure tests 59/59 passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38945844351): exact 98-blob source mirror, including real failure/rejection and prevention of exception-text disclosure
+- The guest telemetry smoke executes real `oreslang-otel` code and validates nine JSONL records. This is not OTLP exporter verification.
+
+No complete Git root-tree SHA match is claimed: the full-tree transfer
+encountered a connector restriction. The native AOT and JDK regression evidence
+is for SHA-verified source subsets only, with native pthread profile disabled.
+Backend parity and whole-repository validation remain independent requirements.
