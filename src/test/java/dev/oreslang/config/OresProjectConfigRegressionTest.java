@@ -139,15 +139,20 @@ final class OresProjectConfigRegressionTest {
     void rootedImportsRejectParentComponentsEvenWhenNormalizedInsideRoot() throws Exception {
         Path project = temp.resolve("rooted-component-policy");
         Files.createDirectories(project.resolve("src/lib"));
+        Files.createDirectories(project.resolve("zed_modules/acme/tools/src"));
         Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
-                "schema_version = \"1\"\n");
+                "schema_version = \"1\"\n[dependencies]\ntools = \"acme/tools\"\n");
+        Path dependencyHelper = Files.writeString(project.resolve("zed_modules/acme/tools/src/helper.ores"),
+                "pub fnc helper(): int { return 2; }");
         Path source = Files.writeString(project.resolve("src/lib/helper.ores"),
                 "pub fnc helper(): int { return 1; }");
         OresProjectConfig config = OresProjectConfig.discover(source, Map.of());
         assertEquals(source.toRealPath(),
                 config.resolveImport(source, "+/src/lib/helper").orElseThrow());
+        assertEquals(dependencyHelper.toRealPath(),
+                config.resolveImport(source, "pkg:tools/src/helper").orElseThrow());
         for (String invalid : List.of("+/src/../src/lib/helper",
-                "+/../src/lib/helper", "pkg:unused/src/../helper")) {
+                "+/../src/lib/helper", "pkg:tools/src/../src/helper")) {
             assertThrows(IllegalArgumentException.class,
                     () -> config.resolveImport(source, invalid), invalid);
         }
