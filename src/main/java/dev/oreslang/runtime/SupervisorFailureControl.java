@@ -41,8 +41,26 @@ public final class SupervisorFailureControl {
     }
 
     private static String bounded(String text) {
-        if (text.length() <= 1024) return text;
-        return text.substring(0, 1024);
+        // A Java-char limit is not a UTF-8 wire budget: 1024 supplementary
+        // characters can encode to 4096 bytes. Also reject log-line/control
+        // injection and invalid isolated surrogate code units.
+        StringBuilder safe = new StringBuilder(Math.min(text.length(), 1024));
+        int bytes = 0;
+        for (int offset = 0; offset < text.length();) {
+            int cp = text.codePointAt(offset);
+            offset += Character.charCount(cp);
+            if (cp >= 0xd800 && cp <= 0xdfff
+                    || Character.isISOControl(cp)
+                    || Character.getType(cp) == Character.LINE_SEPARATOR
+                    || Character.getType(cp) == Character.PARAGRAPH_SEPARATOR) {
+                cp = ' ';
+            }
+            int width = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+            if (bytes + width > 1024) break;
+            safe.appendCodePoint(cp);
+            bytes += width;
+        }
+        return safe.toString();
     }
 
     private final ActorRuntime.SupervisorId supervisorId;
@@ -82,8 +100,8 @@ public final class SupervisorFailureControl {
         scheduleLocked();
     }
 
-    /** Child termination never invokes guest/supervisor code on this thread. */
-    public synchronized void publish(Notice notice) {
+    /** Runtime-only publication; public callers cannot forge terminal CONTROL. */
+    synchronized void publish(Notice notice) {
         Objects.requireNonNull(notice);
         if (!supervisorId.equals(notice.supervisorId())
                 || !groupId.equals(notice.groupId())) {
@@ -95,6 +113,22 @@ public final class SupervisorFailureControl {
         }
         pending.addLast(notice);
         scheduleLocked();
+    }
+
+    /**
+     * The owning actor polls immutable notices on its own single-flight turn.
+     * A host-installed handler and actor polling are mutually exclusive: two
+     * consumers must never split or duplicate one supervisor CONTROL stream.
+     */
+    synchronized Optional<Notice> poll() {
+        if (handler != null) {
+            throw new IllegalStateException(
+                    "supervisor CONTROL has a registered process/handler");
+        }
+        if (handlerFailure != null) {
+            throw new IllegalStateException("supervisor CONTROL lane failed", handlerFailure);
+        }
+        return Optional.ofNullable(pending.pollFirst());
     }
 
     public synchronized int queued() { return pending.size(); }
