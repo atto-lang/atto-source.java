@@ -237,6 +237,13 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                     List.of("worker-a", "worker-b", "worker-c").get(i % 3)),
                     "canonical RR sequence differs from other backends");
         }
+        // Long-sequence fairness from the exact v1 three-consumer graph;
+        // the source-side cursor wraps without choosing a different endpoint.
+        for (int i = 0; i < 12000; ++i) {
+            String expected = List.of("worker-a", "worker-b", "worker-c").get(i % 3);
+            check(canonicalThree.forwardRoundRobin("producer-1").target().equals(expected),
+                    "12k canonical round-robin parity/fairness regression");
+        }
         String[] keys = {"customer-7", "alpha", "beta", "🌍", "",
                 String.valueOf((char) 0)};
         String[] destinations = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c", "worker-a"};
