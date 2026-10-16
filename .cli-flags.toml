@@ -13,3 +13,9 @@ aliases = ["core-debug"]
 type = "bool"
 default = "false"
 help = "Record bounded core-only numeric diagnostic events; dump JSONL to stderr on exit."
+
+[flags.project-root]
+env = "ORES_PROJECT_ROOT"
+aliases = ["project-root"]
+type = "string"
+help = "Select the directory containing .ores.pkg.toml (legacy .oreslangc.cfg.toml also supported)."
