@@ -499,7 +499,13 @@ def require_source_tree_match(source, trusted_root, files):
     return commit_sha, expected_tree
 
 
-def publish(repository, source, branch, trusted_root):
+def publish(repository, source, branch, trusted_root,
+            source_commit, source_tree):
+    # Caller-selected expected commit/tree must be explicit and immutable.
+    # The live checkout and pinned private source repository independently
+    # attest these exact values before any source-bearing write.
+    valid_sha(source_commit)
+    valid_sha(source_tree)
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
@@ -519,8 +525,10 @@ def publish(repository, source, branch, trusted_root):
     if source.is_symlink():
         raise Denied("candidate source checkout cannot be a symlink")
     files = collect_source(source, source, omit_checkout_metadata=True)
-    source_commit, exact_source_tree = require_source_tree_match(source, source, files)
-    checked_source_commit(source_commit, exact_source_tree)
+    actual_commit, exact_source_tree = require_source_tree_match(source, source, files)
+    if actual_commit != source_commit or exact_source_tree != source_tree:
+        raise Denied("candidate checkout differs from explicitly reviewed source commit/tree")
+    checked_source_commit(source_commit, source_tree)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -589,11 +597,16 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="independently reviewed exact source Git commit SHA")
+    p.add_argument("--source-tree", required=True,
+                   help="independently reviewed complete source Git tree SHA")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, args.source_commit, args.source_tree)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
