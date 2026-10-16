@@ -13,6 +13,7 @@ MODULE = Path(__file__).with_name("publish-private-ci-source.py")
 spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
+EXACT_VERIFIER = pub.verify_exact_source_snapshot
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -39,6 +40,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.preflight = patch.object(pub, "require_preflight")
         self.preflight.start()
         self.addCleanup(self.preflight.stop)
+        # Legacy simulated GitHub tests isolate destination-side checks.
+        # Exact commit/tree verification is exercised independently below.
+        self.source_snapshot = patch.object(
+            pub, "verify_exact_source_snapshot", return_value=D)
+        self.source_snapshot.start()
+        self.addCleanup(self.source_snapshot.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -71,6 +78,82 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_publisher_aborts_before_upload_when_git_snapshot_rejected(self):
+        with patch.object(pub, "verify_exact_source_snapshot",
+                          side_effect=pub.Denied("Git tree mismatch")):
+            with self.assertRaisesRegex(pub.Denied, "Git tree mismatch"):
+                self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
+
+    def test_uploaded_subtree_must_equal_verified_source_tree(self):
+        with patch.object(pub, "verify_exact_source_snapshot", return_value=C):
+            with self.assertRaisesRegex(pub.Denied, "destination subtree"):
+                self.publish()
+        routes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertIn("repos/trusted/ci/git/trees", routes)
+        self.assertNotIn("repos/trusted/ci/git/commits", routes)
+        self.assertNotIn("repos/trusted/ci/git/refs", routes)
+
+    def test_source_git_snapshot_requires_explicit_commit_and_tree(self):
+        with self.assertRaisesRegex(pub.Denied, "source commit SHA"):
+            EXACT_VERIFIER(self.source, self.root, [], None, D)
+        with self.assertRaisesRegex(pub.Denied, "Git tree SHA"):
+            EXACT_VERIFIER(self.source, self.root, [], A, None)
+
+    def test_exact_snapshot_verifier_rejects_dirty_or_untracked_files(self):
+        files = pub.collect_source(self.source, self.root)
+        blob = hashlib.sha1(b"blob " + str(len(files[0][1])).encode("ascii")
+                            + b"\0" + files[0][1]).hexdigest()
+        entry = ("100644 blob " + blob + "\tsource/hello.ores").encode() + b"\0"
+        expected = {
+            ("rev-parse", "--verify", "HEAD^{commit}"): A.encode() + b"\n",
+            ("rev-parse", "--verify", "HEAD:source"): D.encode() + b"\n",
+            ("ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", "source"): entry,
+        }
+        def metadata(root, *args):
+            self.assertEqual(root, self.root)
+            return expected[args]
+        with patch.object(pub, "git_snapshot_output", side_effect=metadata):
+            self.assertEqual(EXACT_VERIFIER(
+                self.source, self.root, files, A, D), D)
+            with self.assertRaisesRegex(pub.Denied, "checkout commit"):
+                EXACT_VERIFIER(self.source, self.root, files, B, D)
+            with self.assertRaisesRegex(pub.Denied, "Git tree differs"):
+                EXACT_VERIFIER(self.source, self.root, files, A, C)
+            with self.assertRaisesRegex(pub.Denied, "diverges"):
+                EXACT_VERIFIER(self.source, self.root,
+                               [("hello.ores", b"changed", "100644")], A, D)
+            with self.assertRaisesRegex(pub.Denied, "untracked"):
+                EXACT_VERIFIER(self.source, self.root,
+                               files + [("new.ores", b"untracked", "100644")],
+                               A, D)
+            with self.assertRaisesRegex(pub.Denied, "missing"):
+                EXACT_VERIFIER(self.source, self.root, [], A, D)
+            with self.assertRaisesRegex(pub.Denied, "diverges"):
+                EXACT_VERIFIER(self.source, self.root,
+                               [(files[0][0], files[0][1], "100755")], A, D)
+
+    def test_exact_snapshot_rejects_symlinks_and_gitlinks(self):
+        files = pub.collect_source(self.source, self.root)
+        for mode, kind in (("120000", "blob"), ("160000", "commit")):
+            entry = (mode + " " + kind + " " + A
+                     + "\tsource/hello.ores").encode() + b"\0"
+            def metadata(root, *args):
+                if args[0] == "rev-parse":
+                    return (A if "HEAD^{commit}" in args else D).encode() + b"\n"
+                return entry
+            with patch.object(pub, "git_snapshot_output", side_effect=metadata):
+                with self.assertRaisesRegex(pub.Denied, "unexportable"):
+                    EXACT_VERIFIER(self.source, self.root, files, A, D)
+
+    def test_wrapper_requires_explicit_git_provenance(self):
+        script = MODULE.with_name("run-in-private-ci-destination.sh").read_text()
+        self.assertIn("source-commit", script)
+        self.assertIn("source-tree", script)
+        self.assertIn("[[ $# -ne 9", script)
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
