@@ -11,6 +11,7 @@ import java.util.Iterator;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -141,7 +142,12 @@ public final class NioReadinessGroup implements AutoCloseable {
             this.channel = channel;
             this.interests = interests;
             this.reactor = reactor;
-            this.future = new OresFuture<>(() -> true, () -> reactor.selector.wakeup());
+            // Only cancelled watches need rechecking. Outstanding Future
+            // admission bounds this queue: each Future cancels at most once.
+            this.future = new OresFuture<>(() -> true, () -> {
+                reactor.cancellations.add(this);
+                reactor.selector.wakeup();
+            });
         }
     }
 
@@ -149,6 +155,7 @@ public final class NioReadinessGroup implements AutoCloseable {
         final Selector selector;
         final ArrayBlockingQueue<Watch> commands;
         final ConcurrentHashMap<Watch, Boolean> admitted = new ConcurrentHashMap<>();
+        final ConcurrentLinkedQueue<Watch> cancellations = new ConcurrentLinkedQueue<>();
         final CountDownLatch stopped = new CountDownLatch(1);
         final AtomicBoolean stopping = new AtomicBoolean();
         final Thread thread;
@@ -197,11 +204,18 @@ public final class NioReadinessGroup implements AutoCloseable {
                         }
                     }
                     if (stopping.get()) break;
+                    int cancellationQuantum = 0;
+                    while (cancellationQuantum++ < 128
+                            && (watch = cancellations.poll()) != null) {
+                        if (watch.future.isCancelled())
+                            retire(watch, null, new IOException("NIO watch cancelled"));
+                    }
                     // A hot socket population must not monopolize the
                     // reactor: bound readiness dispatch just like commands.
                     // Selected keys left over from the previous quantum must
                     // be served without parking for another select timeout.
-                    if (selector.selectedKeys().isEmpty())
+                    if (commands.isEmpty() && cancellations.isEmpty()
+                            && selector.selectedKeys().isEmpty())
                         selector.select(1000); // dedicated reactor only
                     else selector.selectNow();
                     Iterator<SelectionKey> selected = selector.selectedKeys().iterator();
@@ -214,12 +228,8 @@ public final class NioReadinessGroup implements AutoCloseable {
                         if (!key.isValid()) retire(watchReady, null, new CancelledKeyException());
                         else retire(watchReady, key.readyOps(), null);
                     }
-                    // Cancellation itself only wakes the selector, avoiding a
-                    // separate unbounded queue of cancellation commands.
-                    for (Watch registered : admitted.keySet()) {
-                        if (registered.future.isCancelled())
-                            retire(registered, null, new IOException("NIO watch cancelled"));
-                    }
+                    // Remaining cancellation notifications are processed
+                    // next iteration without a full scan of all idle watches.
                 }
             } catch (Throwable failure) {
                 terminal = failure;
