@@ -179,11 +179,8 @@ public final class OresVM implements AutoCloseable {
 
     @Override
     public void close() {
-        // A CONTROL/root task cannot wait for its own carrier to leave. Reject
-        // BEFORE setting CLOSED or revoking dispatch; otherwise the scheduler's
-        // own close guard throws after the VM has been irreversibly poisoned.
-        // An ordinary actor/Mailman must likewise delegate blocking VM teardown
-        // to its supervising host after its turn finishes.
+        // External trusted host only. Carrier callbacks must never wait for
+        // their own scheduler or selector to terminate.
         if (OresScheduler.current() != null
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
@@ -193,24 +190,33 @@ public final class OresVM implements AutoCloseable {
         synchronized (this) {
             if (!closed.compareAndSet(false, true)) return;
             startupState = StartupState.CLOSED;
-            // Fence NIO registration before retiring CONTROL. Reactor
-            // completions may enqueue runtime wakeups but never guest callbacks
-            // on selector threads.
+            // First fence NIO registrations, then wait for its terminal
+            // completion publications while CONTROL is still alive.
             nioReadiness.close();
             try {
-                rootScheduler.close();
-            } finally {
-                controlExecutor.shutdownNow();
-                try {
-                    if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException(
-                                "Oreslang CONTROL scheduler carriers did not terminate");
-                    }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
+                if (!nioReadiness.awaitStopped(5, TimeUnit.SECONDS))
                     throw new IllegalStateException(
-                            "interrupted while closing Oreslang CONTROL scheduler",
-                            interrupted);
+                            "Oreslang NIO reactors did not quiesce before CONTROL shutdown");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(
+                        "interrupted while closing Oreslang NIO reactor", interrupted);
+            } finally {
+                try {
+                    rootScheduler.close();
+                } finally {
+                    controlExecutor.shutdownNow();
+                    try {
+                        if (!controlExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException(
+                                    "Oreslang CONTROL scheduler carriers did not terminate");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(
+                                "interrupted while closing Oreslang CONTROL scheduler",
+                                interrupted);
+                    }
                 }
             }
         }
