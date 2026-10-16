@@ -34,6 +34,34 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void selectedSocketBurstBeyondOneQuantumMakesProgress() throws Exception {
+        // One reactor, 144 simultaneously readable sockets, 128 ready events
+        // per quantum. Leftover keys must not wait for another kernel edge.
+        try (var reactor = NativeNioFutureReactor.loopback(0, 256, 160, 384)) {
+            var peers = new java.util.ArrayList<Socket>();
+            var connections = new java.util.ArrayList<NativeNioFutureReactor.Connection>();
+            var reads = new java.util.ArrayList<OresFuture<byte[]>>();
+            try {
+                for (int i = 0; i < 144; ++i) {
+                    var accepted = reactor.acceptAsync();
+                    var peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort());
+                    peers.add(peer);
+                    var connection = accepted.get(5, TimeUnit.SECONDS);
+                    connections.add(connection);
+                    reads.add(connection.readAsync(1));
+                }
+                for (var peer : peers) peer.getOutputStream().write(0x41);
+                for (var read : reads)
+                    assertArrayEquals(new byte[] {65}, read.get(5, TimeUnit.SECONDS));
+                for (var connection : connections)
+                    connection.closeAsync().get(5, TimeUnit.SECONDS);
+                assertEquals(0, reactor.outstandingFutures());
+            } finally {
+                for (var peer : peers) peer.close();
+            }
+        }
+    }
+
     @Test void stalledSocketDoesNotBlockOtherConnectionOrClose() throws Exception {
         try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(0, 32, 2, 16)) {
             var firstAccept = reactor.acceptAsync();
