@@ -208,7 +208,10 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             forget(slot);
             slot.ready.completeExceptionally(failedSubmission);
         }
-        return slot.ready;
+        // Never hand the actor the registry's mutable completion authority:
+        // callers may cancel or complete their own observer, but cannot forge
+        // the process handle or cancel the host's in-flight launch bookkeeping.
+        return slot.ready.minimalCompletionStage().toCompletableFuture();
     }
 
     private void start(Slot slot, ChildProcLaunchAdmission.Plan plan, Thread callingActorCarrier) {
