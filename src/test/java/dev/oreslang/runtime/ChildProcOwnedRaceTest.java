@@ -116,4 +116,83 @@ final class ChildProcOwnedRaceTest {
             }
         }
     }
+    @Test
+    void rejectedHostExecutorReleasesPendingCapacityForRetry() throws Exception {
+        try (ExecutorService workers = Executors.newSingleThreadExecutor()) {
+            java.util.concurrent.atomic.AtomicInteger submissions = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.Executor executor = command -> {
+                if (submissions.getAndIncrement() == 0) {
+                    throw new java.util.concurrent.RejectedExecutionException("host worker unavailable");
+                }
+                workers.execute(command);
+            };
+            try (ChildProcOwnedRuntime manager =
+                         new ChildProcOwnedRuntime(allow(), executor, 1, 1024)) {
+                var first = manager.spawnAsync(printfSpec("unused"));
+                assertThrows(ExecutionException.class, () -> first.get(3, TimeUnit.SECONDS));
+                var second = manager.spawnAsync(printfSpec("retried"))
+                        .get(5, TimeUnit.SECONDS);
+                assertEquals(0, second.waitAsync().get(5, TimeUnit.SECONDS).code());
+            }
+        }
+    }
+
+    @Test
+    void processStartFailureDoesNotStrandOwnerSlot() throws Exception {
+        java.util.concurrent.atomic.AtomicInteger attempts = new java.util.concurrent.atomic.AtomicInteger();
+        ChildProcOwnedRuntime.ProcessStarter starter = plan -> {
+            if (attempts.getAndIncrement() == 0) {
+                throw new IOException("host process start failed");
+            }
+            return ChildProcLaunchAdmission.newProcessBuilder(plan).start();
+        };
+        try (ExecutorService workers = Executors.newSingleThreadExecutor();
+             ChildProcOwnedRuntime manager =
+                     new ChildProcOwnedRuntime(allow(), workers, 1, 1024, starter)) {
+            var first = manager.spawnAsync(printfSpec("unused"));
+            assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS));
+            var second = manager.spawnAsync(printfSpec("working"))
+                    .get(5, TimeUnit.SECONDS);
+            assertEquals("working", new String(second.waitAsync()
+                    .get(5, TimeUnit.SECONDS).stdout(), java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void shutdownCanFinishWhileCompletionCallbackWaitsForAnotherThread() throws Exception {
+        java.util.ArrayDeque<Runnable> pendingWork = new java.util.ArrayDeque<>();
+        try (ExecutorService workers = Executors.newSingleThreadExecutor();
+             ChildProcOwnedRuntime manager =
+                     new ChildProcOwnedRuntime(allow(), pendingWork::addLast, 1, 1024)) {
+            var future = manager.spawnAsync(printfSpec("unused"));
+            java.util.concurrent.atomic.AtomicBoolean callbackRan = new java.util.concurrent.atomic.AtomicBoolean();
+            future.whenComplete((value, failed) -> {
+                // Runs synchronously during close(). Another thread must be
+                // able to enter the registry monitor without deadlocking.
+                try {
+                    workers.submit(() -> {
+                        try { manager.spawnAsync(printfSpec("denied")); }
+                        catch (IllegalStateException expected) { return; }
+                        catch (IOException error) { throw new AssertionError(error); }
+                        throw new AssertionError("closed registry accepted launch");
+                    }).get(3, TimeUnit.SECONDS);
+                    callbackRan.set(true);
+                } catch (Exception error) {
+                    throw new AssertionError("completion callback ran under registry lock", error);
+                }
+            });
+            manager.close();
+            assertTrue(callbackRan.get());
+            assertTrue(future.isCompletedExceptionally());
+            pendingWork.removeFirst().run();
+        }
+    }
+
+    private static ChildProcLaunchAdmission.Spec printfSpec(String text) {
+        Path executable = Path.of("/usr/bin/printf");
+        org.junit.jupiter.api.Assumptions.assumeTrue(Files.isExecutable(executable));
+        return new ChildProcLaunchAdmission.Spec(executable.toString(), List.of(text),
+                Path.of("").toAbsolutePath().toString(), Map.of());
+    }
+
 }
