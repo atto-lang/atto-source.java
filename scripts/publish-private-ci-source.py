@@ -31,7 +31,10 @@ PREFIX = "private-oreslang-source"
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
+    # Identity pins alone do NOT approve any source export. The separate,
+    # security-reviewed policy file remains empty until authorization.
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
+    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
 
