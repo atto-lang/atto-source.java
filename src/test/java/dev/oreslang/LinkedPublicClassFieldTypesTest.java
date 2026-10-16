@@ -121,6 +121,30 @@ final class LinkedPublicClassFieldTypesTest {
     }
 
     @Test
+    void importedTypedOpenMapSchemaFailsClosedUntilLinkedIdentityIsQualified() {
+        Map<String, String> files = new LinkedHashMap<>();
+        files.put("src/settings.ores", """
+                pub define class Settings extends Map<string, unknown> as
+                  key name: Option<string>;
+                end
+                """);
+        files.put("src/consumer.ores", """
+                import class Settings from './settings';
+                pub fnc make(): void {
+                  val settings = new Settings();
+                  settings["name"] = "ok";
+                  return;
+                }
+                """);
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> new IncrementalCompiler().compile(files));
+        assertTrue(denied.getMessage().contains("source-qualified linked schema identity"),
+                denied.getMessage());
+    }
+
+    @Test
     void importedReadOnlyFieldCannotGainMutationThroughProjection() {
         var files = sources();
         files.put("src/decoder.ores", """
