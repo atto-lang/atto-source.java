@@ -206,4 +206,27 @@ final class SendableActorBoundaryTest {
         }
     }
 
+
+    @Test
+    void actorCallableSharedMutexCapabilityFailsClosedAcrossActorKinds() {
+        for (String actorKind : java.util.List.of("actor", "isoactor")) {
+            for (String argument : java.util.List.of(
+                    "SharedMutex<int>",
+                    "Option<SharedMutex<int>>",
+                    "Result<String, SharedMutex<int>>")) {
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(
+                                actorKind + " fnc invalid(" + argument
+                                        + " value): void { return; }")));
+                assertTrue(failure.getMessage().contains("SharedMutex"),
+                        failure.getMessage());
+            }
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "actor fnc valid(int value): int { return value; }")));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
+                "isoactor fnc valid(String value): String { return value; }")));
+    }
+
 }
