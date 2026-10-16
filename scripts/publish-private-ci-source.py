@@ -45,9 +45,6 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
-    # Candidate only. A code pin does NOT authorize transfer: protected-main
-    # reviewed allowlist and source-main branch protection still gate export.
-    "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
 
