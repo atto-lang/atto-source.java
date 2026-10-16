@@ -53,3 +53,54 @@ and is not permission to bypass issue #991 or security review of PR #992.
   mirroring still requires explicit prior review and destination approval.
 - If no ephemeral runner can be provisioned, leave the validation **blocked**
   and report that status; no tests passed is preferable to fabricated CI.
+
+## Pre-merge candidate verification without cross-org copies
+
+The original `private-exact-main-validation.yml` intentionally checks **only**
+a reviewed mainline commit. It cannot validate an unmerged permissions PR.
+The separately reviewed `.github/workflows/private-exact-candidate-validation.yml`
+permits **only a manually approved immutable commit in this same private
+repository** to run on a fresh repository-scoped disposable runner. The workflow
+definition itself MUST already have been independently reviewed and merged
+into source `main`; no `pull_request` or `pull_request_target` event executes
+candidate-provided workflows.
+
+Before each run, an administrator/security owner must independently review the
+candidate branch diff and explicitly set repository variables (not secrets):
+
+- `ORESLANG_PRIVATE_EPHEMERAL_RUNNER=true` only while a dedicated **single-use**
+  repository runner is provisioned.
+- `ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA=<reviewed current main workflow commit SHA>`
+  pins the **trusted workflow definition**. A mainline change invalidates
+  the approval.
+- `ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA=<reviewed candidate 40-hex commit SHA>`
+  identifies the **one** source-repo candidate authorized to execute.
+- `ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE=<Git tree SHA of that exact candidate>`
+  binds the complete immutable candidate contents.
+
+On trusted main, dispatch **Private exact-candidate Java/Native validation**
+with `candidate_sha` matching the approved candidate SHA. The workflow
+rejects other repositories, repository IDs, visibility, refs, workflow commits
+or candidate SHAs *before checking out any candidate code*. Its pinned
+read-only checkout then requires the selected commit, Git tree, and clean
+worktree to match the approvals before GraalVM setup or Maven/guest execution.
+The workflow runs the targeted Deno-style permissions, network-policy and
+host-interop regression suites, full Java 25 `verify`, and native AOT/hybrid/
+strict-isolate guest smoke tests. Capture actual workflow job steps, exit
+codes, SHA/tree prints and complete test results; **a queued, skipped or
+zero-step job is never passing evidence**.
+
+Important limitations: the approved candidate contains code that will execute
+on the self-hosted runner. This workflow does **not** sandbox arbitrary
+malicious candidate code and does not prove that the machine is ephemeral;
+security owners must review the candidate and provision an isolated,
+single-use disposable host with no unrelated credentials, local data,
+long-lived tokens or access to other repositories. Administrators must
+securely tear it down and clear the three candidate approval variables
+and runner flag after each run. Do not add GitHub-hosted/shared runner fallback,
+external source mirrors, reusable permission-approval inputs, or artifacts
+containing private source. `main` branch protection and code-owner review
+remain necessary before enabling this workflow.
+
+**The workflow does not exist on source main until independently reviewed and
+merged. It is not executable merely because it appears in a PR branch.**
