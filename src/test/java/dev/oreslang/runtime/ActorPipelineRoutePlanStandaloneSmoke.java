@@ -60,8 +60,8 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                     new ActorPipelineRoutePlan.Edge("source", "worker-a", "Event"),
                     new ActorPipelineRoutePlan.Edge("source", "worker-b", "Event"),
                     new ActorPipelineRoutePlan.Edge("source", "worker-c", "Event")));
-        String[] fixtureKeys = {"customer-7", "alpha", "beta", "🌍", ""};
-        String[] fixtureTargets = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c"};
+        String[] fixtureKeys = {"customer-7", "alpha", "beta", "🌍", "", "\0"};
+        String[] fixtureTargets = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c", "worker-a"};
         for (int i = 0; i < fixtureKeys.length; i++) {
             check(three.forwardByKey("source", fixtureKeys[i]).target().equals(fixtureTargets[i]),
                     "five-backend canonical FNV-1a64 vector mismatch");
