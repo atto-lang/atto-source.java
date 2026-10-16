@@ -59,6 +59,55 @@ final class NumericExactGuestBoundaryTest {
     }
 
     @Test
+    void mutableExactNumericBindingsNeverRevertToBinary64OrLong() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      let decimal exact = 1;
+                      exact = 9007199254740993;
+                      let bigint big = 1;
+                      big = 9223372036854775807;
+                      return (exact / 1) eq 9007199254740993
+                        && (big + 1) > 9223372036854775807;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
+    void exactFunctionArgumentsArePromotedBeforeNumericOperations() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    fnc identityThroughDecimalDivision(decimal n): decimal {
+                      return n / 1;
+                    }
+                    fnc incrementBigInt(bigint n): bigint {
+                      return n + 1;
+                    }
+                    pub routine main(): bool {
+                      return identityThroughDecimalDivision(9007199254740993)
+                           eq 9007199254740993
+                        && incrementBigInt(9223372036854775807)
+                           > 9223372036854775807;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
+    void preciseCarrierAdmissionRejectsFloatAndExtremeScale() {
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.math.ExactScalarMath.admitDecimal(0.1d));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.math.ExactScalarMath.admitInteger(0.1d));
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.math.ExactScalarMath.admitDecimal(
+                        new java.math.BigDecimal("1e-20000")));
+        assertEquals(new java.math.BigInteger("9223372036854775807"),
+                dev.oreslang.math.ExactScalarMath.admitInteger(Long.MAX_VALUE));
+    }
+
+    @Test
     void exactNumericsPropagateThroughDeclaredFunctionReturnTypes() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
