@@ -66,13 +66,28 @@ final class OresProjectConfigRegressionTest {
         OresProjectConfig imported = consumer.forImportedPackage(source, "pkg:tools/src/a");
         assertEquals(dependency.toRealPath(), imported.projectRoot().toRealPath());
         assertEquals("tools", imported.projectName().orElseThrow());
-        OresProjectConfig windowsSeparators = consumer.forImportedPackage(source, "pkg:tools\\src\\a");
-        assertEquals(dependency.toRealPath(), windowsSeparators.projectRoot().toRealPath());
+        IllegalArgumentException windowsSeparators = assertThrows(IllegalArgumentException.class,
+                () -> consumer.forImportedPackage(source, "pkg:tools\\src\\a"));
+        assertTrue(windowsSeparators.getMessage().contains("forward-slash"));
         assertEquals(source.toRealPath(),
                 imported.resolveImport(source, "+/src/a").orElseThrow());
         IllegalArgumentException retiredMarker = assertThrows(IllegalArgumentException.class,
                 () -> imported.resolveImport(source, "@/src/a"));
         assertTrue(retiredMarker.getMessage().contains("invalid import prefix"));
+
+        Path sibling = Files.writeString(dependency.resolve("src/b.ores"),
+                "pub fnc b(): int { return 2; }");
+        Path outside = Files.writeString(temp.resolve("foreign-source.ores"),
+                "pub fnc foreign(): int { return 3; }");
+        for (Path forbidden : List.of(sibling, outside)) {
+            IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                    () -> consumer.forImportedPackage(forbidden, "pkg:tools/src/a"));
+            assertTrue(mismatch.getMessage().contains("imported source does not match"),
+                    mismatch.getMessage());
+        }
+        IllegalArgumentException nonexistent = assertThrows(IllegalArgumentException.class,
+                () -> consumer.forImportedPackage(source, "pkg:tools/src/missing"));
+        assertTrue(nonexistent.getMessage().contains("does not resolve to a source"));
     }
 
     @Test
