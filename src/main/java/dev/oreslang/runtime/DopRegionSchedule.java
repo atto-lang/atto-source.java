@@ -40,7 +40,7 @@ public final class DopRegionSchedule {
             return this == other || (backing != null && backing == other.backing);
         }
         public boolean isLiveOwned() {
-            return backing != null && DopKernelIR.HostBuffer.isBackingLive(backing);
+            return backing != null && backing.isLive();
         }
         public long rows() { return rows; }
         public int fields() { return fields; }
