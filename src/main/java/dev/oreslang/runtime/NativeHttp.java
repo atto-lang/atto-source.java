@@ -295,6 +295,10 @@ public final class NativeHttp implements AutoCloseable {
         // first forced closer may tear down the JDK transport and state.
         private final AtomicBoolean forcedCloseClaimed = new AtomicBoolean();
         private boolean transportStopped, pooledBarrierStarted;
+        // Arbitration is under this listener's monitor, but Future callbacks
+        // must be invoked only after dropping that monitor. A forced close
+        // therefore cannot race an already-selected success into the promise.
+        private boolean drainOutcomeClaimed;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
 
@@ -442,7 +446,7 @@ public final class NativeHttp implements AutoCloseable {
                         // callbacks. Otherwise the last State.release() could
                         // settle drained successfully before this thread
                         // reports the failure.
-                        if (stopFailure != null) drained.failFromRuntime(stopFailure);
+                        if (stopFailure != null) failDrain(stopFailure);
                         // Do not publish transportStopped until every accepted
                         // exchange has been visited by abort cleanup. Otherwise
                         // an asynchronous State.release() can finish a successful
@@ -458,27 +462,32 @@ public final class NativeHttp implements AutoCloseable {
                 // The HTTP executor can close after the drain Future is
                 // published but before the transport-stop task is admitted.
                 // Never strand awaiters on a stop operation that cannot run.
-                drained.failFromRuntime(unavailable);
+                failDrain(unavailable);
             }
             return result;
         }
-        private synchronized void completeDrain() {
-            if (!readyForCarrierBarrier(transportStopped, active.isEmpty(), releasesInProgress.get())
-                    || drained == null || pooledBarrierStarted) {
-                return;
+        private void completeDrain() {
+            List<Handler.Worker> workers;
+            boolean skipBarrier;
+            synchronized (this) {
+                if (!readyForCarrierBarrier(
+                        transportStopped, active.isEmpty(), releasesInProgress.get())
+                        || drained == null || pooledBarrierStarted) {
+                    return;
+                }
+                pooledBarrierStarted = true;
+                // Claim the worker snapshot under this listener's monitor,
+                // never settle an OresFuture or subscribe a runtime callback
+                // while holding it. Stop/close can otherwise deadlock callbacks.
+                workers = List.copyOf(pooledWorkers);
+                pooledWorkers.clear();
+                skipBarrier = drainOutcomeClaimed || drained.isDone();
             }
-            pooledBarrierStarted = true;
-            // A transport-complete response is not an actor-carrier-exit proof.
-            // Snapshot the workers used by THIS server. Never cancel a shared
-            // handler pool simply because one of its listeners is stopping.
-            List<Handler.Worker> workers = List.copyOf(pooledWorkers);
-            pooledWorkers.clear();
             for (Handler.Worker worker : workers) worker.served.remove(this);
-            // An already-failed or cancelled drain does not need fresh
-            // timers or I/O jobs. The references above are still retired.
-            if (drained.isDone()) return;
+            // Always retire references, including after exceptional teardown.
+            if (skipBarrier) return;
             if (workers.isEmpty()) {
-                drained.completeFromRuntime(null);
+                succeedDrain();
                 return;
             }
             // The runtime processes a bounded HTTP deadline, but a user actor
@@ -488,7 +497,7 @@ public final class NativeHttp implements AutoCloseable {
                     Math.min(30_000L, Math.max((long) deadlineMillis, 0L)));
             final ScheduledFuture<?> timeout;
             try {
-                timeout = timers.schedule(() -> drained.failFromRuntime(
+                timeout = timers.schedule(() -> failDrain(
                         new TimeoutException("HTTP pooled actor carrier did not quiesce")),
                         waitMillis, TimeUnit.MILLISECONDS);
                 // The actor's physical-quiescence Future may outlive a timed-
@@ -517,8 +526,8 @@ public final class NativeHttp implements AutoCloseable {
                                         }
                                         if (pending.decrementAndGet() == 0) {
                                             Throwable error = firstError.get();
-                                            if (error == null) drained.completeFromRuntime(null);
-                                            else drained.failFromRuntime(error);
+                                            if (error == null) succeedDrain();
+                                            else failDrain(error);
                                         }
                                     });
                             subscriptions.add(registration);
@@ -528,15 +537,38 @@ public final class NativeHttp implements AutoCloseable {
                         } catch (RuntimeException failure) {
                             firstError.compareAndSet(null, failure);
                             if (pending.decrementAndGet() == 0) {
-                                drained.failFromRuntime(firstError.get());
+                                failDrain(firstError.get());
                             }
                         }
                     }
                 });
             } catch (RejectedExecutionException unavailable) {
-                drained.failFromRuntime(unavailable);
+                failDrain(unavailable);
             }
         }
+
+        /** Reserve successful shutdown atomically against a concurrent forced close. */
+        private void succeedDrain() {
+            OresFuture<Object> completion;
+            synchronized (this) {
+                if (forcedCloseClaimed.get() || drainOutcomeClaimed || drained == null) return;
+                drainOutcomeClaimed = true;
+                completion = drained;
+            }
+            completion.completeFromRuntime(null);
+        }
+
+        /** Reserve exceptional shutdown without invoking subscribers under the monitor. */
+        private void failDrain(Throwable failure) {
+            OresFuture<Object> completion;
+            synchronized (this) {
+                if (drainOutcomeClaimed || drained == null) return;
+                drainOutcomeClaimed = true;
+                completion = drained;
+            }
+            completion.failFromRuntime(failure);
+        }
+
         /**
          * Exhaustive shutdown cleanup: ConcurrentHashMap's weakly consistent
          * iterator is unnecessary once admission is sealed. Snapshot all
@@ -547,9 +579,7 @@ public final class NativeHttp implements AutoCloseable {
         private void abortAllActiveOnShutdown() {
             RuntimeException firstFailure = abortEveryAccepted(
                     List.copyOf(active), state -> state.abort(503));
-            if (firstFailure != null && drained != null) {
-                drained.failFromRuntime(firstFailure);
-            }
+            if (firstFailure != null) failDrain(firstFailure);
         }
 
         /** Caller holds this server's monitor; never settle the waiter here. */
@@ -565,17 +595,20 @@ public final class NativeHttp implements AutoCloseable {
             // race on the same listener. Duplicate callers must not stop a
             // transport or re-abort already released state a second time.
             OresFuture<Object> acceptToFail;
+            OresFuture<Object> drainToFail = null;
             synchronized (this) {
                 if (!claimForcedClose(forcedCloseClaimed)) return;
                 acceptToFail = stopAcceptingLocked();
-                // Keep the close claim, admission seal and exceptional drain
-                // publication under ONE listener monitor. Otherwise a
-                // transport-stop callback can publish successful shutdown
-                // between the two operations.
-                if (drained != null && !drained.isDone()) {
-                    drained.failFromRuntime(new IllegalStateException(
-                            "HTTP runtime closed before pooled actor quiescence"));
+                // Seal failure atomically with forced close, but publish
+                // outside the monitor so host callbacks never run locked.
+                if (drained != null && !drainOutcomeClaimed) {
+                    drainOutcomeClaimed = true;
+                    drainToFail = drained;
                 }
+            }
+            if (drainToFail != null) {
+                drainToFail.failFromRuntime(new IllegalStateException(
+                        "HTTP runtime closed before pooled actor quiescence"));
             }
             if (acceptToFail != null) {
                 failOutsideMonitor(this, acceptToFail,
