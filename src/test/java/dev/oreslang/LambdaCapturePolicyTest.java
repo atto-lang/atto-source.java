@@ -138,8 +138,9 @@ final class LambdaCapturePolicyTest {
     void selectiveCaptureDoesNotBypassBorrowedSelfSafety() {
         String program = """
                 define actor Foo as
+                  fnc helper(): int { return 1; }
                   receive(int value): void {
-                    val callback = lex[self] || -> self.receive(value);
+                    val callback = lex[self] || -> self.helper();
                     return;
                   }
                 end
@@ -149,6 +150,39 @@ final class LambdaCapturePolicyTest {
             TypeChecker.check(ast);
             OwnershipChecker.check(ast);
         });
+    }
+
+    @Test
+    void nestedLambdaCannotRecoverAnOuterDeniedBinding() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc invalid(): int {
+                          val int hidden = 7;
+                          val outer = nlex[hidden] || -> {
+                            val inner = lex[hidden] || -> hidden;
+                            return inner();
+                          };
+                          return outer();
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("hidden"), error::getMessage);
+    }
+
+    @Test
+    void allowlistedSelfIsResolvedButStillSubjectToBorrowChecking() {
+        Ast.Program program = Parser.parse("""
+                define class Counter as
+                  pub read(): int { return 5; }
+                  pub make(): void {
+                    val callback = lex[self] || -> self.read();
+                    return;
+                  }
+                end
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program),
+                "lex[self] admits the receiver into name resolution");
+        assertThrows(IllegalArgumentException.class, () -> OwnershipChecker.check(program),
+                "borrowed self must not silently become an escaping closure capture");
     }
 
     private static String run(String program) throws Exception {
