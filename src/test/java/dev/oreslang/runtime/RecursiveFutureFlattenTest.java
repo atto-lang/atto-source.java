@@ -151,6 +151,21 @@ final class RecursiveFutureFlattenTest {
     }
 
     @Test
+    void twoNodeCycleFailsAndClearsSubscribers() {
+        OresFuture<Object> first = new OresFuture<>();
+        OresFuture<Object> second = new OresFuture<>();
+        OresFuture<Integer> observer = OresFutures.flatten(first);
+        first.completeFromRuntime(second);
+        assertFalse(observer.isDone());
+        second.completeFromRuntime(first);
+        CompletionException failure = assertThrows(CompletionException.class, observer::join);
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("cyclic"));
+        assertEquals(0, first.pendingRuntimeWaiterCount());
+        assertEquals(0, second.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void cyclicNestedFutureFailsClosedInsteadOfWaitingForever() {
         OresFuture<Object> self = new OresFuture<>();
         OresFuture<Integer> flattened = OresFutures.flatten(self);
