@@ -8702,7 +8702,10 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal) {
+            // A runtime BigInteger must never drop into the double fallback,
+            // where values beyond 2^53 lose exact digits.
+            if (a instanceof java.math.BigDecimal || b instanceof java.math.BigDecimal
+                    || a instanceof java.math.BigInteger || b instanceof java.math.BigInteger) {
                 if (a instanceof Float || a instanceof Double || b instanceof Float || b instanceof Double)
                     throw new IllegalArgumentException("decimal and binary float arithmetic requires explicit conversion");
                 java.math.BigDecimal x = exactDecimal(a), y = exactDecimal(b);
@@ -8762,6 +8765,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)
                 return Math.negateExact(((Number) value).longValue());
             if (value instanceof java.math.BigDecimal decimal) return decimal.negate();
+            if (value instanceof java.math.BigInteger integer) return integer.negate();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
