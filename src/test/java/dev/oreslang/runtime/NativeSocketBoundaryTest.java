@@ -58,6 +58,30 @@ final class NativeSocketBoundaryTest {
     }
 
     @Test
+    void actualPortZeroListenerAddressSelectionFailsClosedUnderAliasDenials() throws Exception {
+        RuntimePermissions allowed = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+        InetSocketAddress selected = NativeIo.resolveAuthorizedListenerAddress(
+                allowed, "127.0.0.1", 0);
+        assertEquals(0, selected.getPort());
+        assertEquals("127.0.0.1", selected.getAddress().getHostAddress());
+
+        RuntimePermissions aliasDenied = allowed.withDenied(
+                RuntimePermissions.Permission.NET, "localhost:443");
+        assertThrows(SecurityException.class,
+                () -> NativeIo.resolveAuthorizedListenerAddress(
+                        aliasDenied, "127.0.0.1", 0));
+        RuntimePermissions unrelatedDenied = allowed.withDenied(
+                RuntimePermissions.Permission.NET, "203.0.113.15:123");
+        assertThrows(SecurityException.class,
+                () -> NativeIo.resolveAuthorizedListenerAddress(
+                        unrelatedDenied, "127.0.0.1", 0));
+        assertThrows(SecurityException.class,
+                () -> NativeIo.resolveAuthorizedListenerAddress(
+                        allowed, "0.0.0.0", 0));
+    }
+
+    @Test
     void httpMustNotPerformUnpinnedHostnameResolution() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*")
