@@ -7256,6 +7256,14 @@ public final class OresEvalRootNode extends RootNode {
             return switch (name) {
                 case "is_some" -> (Invokable) args -> { requireZero(args, "Option.is_some"); return option.present(); };
                 case "is_none" -> (Invokable) args -> { requireZero(args, "Option.is_none"); return !option.present(); };
+                case "flatten" -> (Invokable) args -> {
+                    requireZero(args, "Option.flatten");
+                    OptionValue flattened = option;
+                    while (flattened.present() && flattened.value() instanceof OptionValue inner) {
+                        flattened = inner;
+                    }
+                    return flattened;
+                };
                 case "unwrap" -> (Invokable) args -> {
                     requireZero(args, "Option.unwrap");
                     if (!option.present()) throw new OresPanic("called Option::unwrap() on a None value");
