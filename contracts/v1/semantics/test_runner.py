@@ -49,6 +49,34 @@ class DiagnosticProof(unittest.TestCase):
                 self.assertEqual(case["backends"]["llvm"], "pending")
                 self.assertTrue(case["pending_reason"])
 
+    def test_validate_mode_rejects_all_execution_only_flags(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        # Regression: a command that looks like a real conformance run must
+        # never be silently accepted as a manifest-only --validate run.
+        flags = (
+            ("--backend", "graal"),
+            ("--command", "compiler {source}"),
+            ("--run-command", "guest {source}"),
+            ("--revision", "a" * 40),
+            ("--report", "report.json"),
+            ("--clang", "clang"),
+            ("--timeout", "30"),
+        )
+        with patch.object(sys, "argv", ["run.py", "--validate"]):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(run.main(), 0)
+            self.assertIn("Validated ", output.getvalue())
+        for option in flags:
+            with self.subTest(option=option[0]):
+                error = io.StringIO()
+                with patch.object(sys, "argv", ["run.py", "--validate", *option]):
+                    with redirect_stderr(error):
+                        with self.assertRaises(SystemExit) as raised:
+                            run.main()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("--validate cannot be combined", error.getvalue())
+
     def test_native_graal_contract_requires_a_real_guest_command(self):
         import io
         from contextlib import redirect_stderr
