@@ -6,6 +6,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * Host-only routing-turn ledger. Runtime owns MailFrame instances; guest code
@@ -88,6 +89,8 @@ final class ActorPipelineRouteSession {
     private long nextFlowId = 1;
     private long nextRouteId = 1;
     private boolean closed;
+    // VM-owned nonblocking mailbox publication scope, not a guest state loan.
+    private boolean publicationInProgress;
 
     ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
                                      long generation, int maxActiveFrames) {
@@ -236,9 +239,28 @@ final class ActorPipelineRouteSession {
         }
     }
 
+    /** Publish a bounded batch without permitting a supervisor generation
+     * fence to overtake it. The trusted callback must not await, block on
+     * mailbox credits, or schedule synchronous guest execution.
+     * Reentrant graph lifecycle changes are explicitly rejected. */
+    synchronized <T> T withAdmissionBarrier(MailFrame source, Supplier<T> action) {
+        Objects.requireNonNull(action);
+        requireActive(source);
+        if (publicationInProgress) {
+            throw new IllegalStateException("nested pipeline mailbox publication");
+        }
+        publicationInProgress = true;
+        try {
+            return action.get();
+        } finally {
+            publicationInProgress = false;
+        }
+    }
+
     /** A clean topology change is only allowed after every current message
      * has completed. In-flight actor messages must never silently disappear. */
     synchronized void advanceGeneration(long successor) {
+        rejectPublicationFence();
         validateSuccessor(successor);
         if (!active.isEmpty()) {
             throw new IllegalStateException(
@@ -252,12 +274,20 @@ final class ActorPipelineRouteSession {
      * and any actual mailbox writers must be failed/drained by the scheduler
      * before a replacement graph is published. This ledger is host-only. */
     synchronized int abortAndAdvanceGeneration(long successor) {
+        rejectPublicationFence();
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
         roundRobin.clear();
         generation = successor;
         return cancelled;
+    }
+
+    private void rejectPublicationFence() {
+        if (publicationInProgress) {
+            throw new IllegalStateException(
+                    "cannot fence pipeline generation during mailbox publication");
+        }
     }
 
     private void validateSuccessor(long successor) {
@@ -268,6 +298,7 @@ final class ActorPipelineRouteSession {
     }
 
     synchronized void close() {
+        rejectPublicationFence();
         closed = true;
         active.clear();
     }
