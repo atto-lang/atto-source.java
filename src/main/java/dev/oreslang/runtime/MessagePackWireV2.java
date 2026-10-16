@@ -25,7 +25,13 @@ public final class MessagePackWireV2 {
     public static final int MAX_DEPTH = 64;
     public enum Kind { BOOL, I64, F64, STRING, TUPLE, FIXED_ARRAY, FIXED_LIST, ARRAY, LIST }
     public record Shape(Kind kind, List<Shape> members) {
-        public Shape { if (kind == null) throw bad("missing shape kind"); members = List.copyOf(members); }
+        public Shape {
+            require(kind != null && members != null, "missing shape kind or members");
+            // Bound hostile or incorrectly compiler-generated descriptors before
+            // List.copyOf traverses/allocates from caller-supplied list sizes.
+            require(members.size() <= MAX_ELEMENTS, "shape member budget exceeded");
+            members = List.copyOf(members);
+        }
         public static Shape bool() { return new Shape(Kind.BOOL, List.of()); }
         public static Shape i64() { return new Shape(Kind.I64, List.of()); }
         public static Shape f64() { return new Shape(Kind.F64, List.of()); }
