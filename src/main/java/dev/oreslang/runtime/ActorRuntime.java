@@ -978,16 +978,20 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            ActorPipelineRouteSession.MailFrame pipelineFrame,
+            AtomicBoolean pipelineClaimed) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                ActorPipelineRouteSession.MailFrame pipelineFrame) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence,
+                    pipelineFrame, new AtomicBoolean());
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -996,16 +1000,29 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L, null, new AtomicBoolean());
         }
 
         private boolean isContinuation() {
             return continuation != null;
         }
 
+        /** Mark a route frame claimed by its actual recipient turn, not by
+         * queue admission or a caller-controlled message object. */
+        private void claimPipelineFrame() {
+            if (pipelineFrame != null) pipelineClaimed.set(true);
+        }
+
         @Override
         public void close() {
-            if (release != null) release.run();
+            try {
+                if (release != null) release.run();
+            } finally {
+                // STOP may discard admitted-but-undelivered DATA. An already
+                // claimed frame is owned by the active receive/continuation.
+                if (pipelineFrame != null && !pipelineClaimed.get())
+                    ActorPipelineRouteSession.retireDelivered(pipelineFrame);
+            }
         }
     }
 
@@ -1817,6 +1834,8 @@ public final class ActorRuntime implements AutoCloseable {
                     completedSequence = cell.activeMail == null
                             ? -1L : cell.activeMail.sequence();
                     cell.sourceReceiveSuspended = false;
+                    ActorPipelineRouteSession.retireDelivered(cell.activePipelineFrame);
+                    cell.activePipelineFrame = null;
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
                 }
@@ -1839,6 +1858,8 @@ public final class ActorRuntime implements AutoCloseable {
                 synchronized (cell.lifecycleLock) {
                     if (!cell.stopped.get() && !cell.finalized) {
                         cell.sourceReceiveSuspended = false;
+                        ActorPipelineRouteSession.retireDelivered(cell.activePipelineFrame);
+                        cell.activePipelineFrame = null;
                         cell.activeMail = null;
                         failActor = true;
                     }
@@ -3607,6 +3628,22 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    ActorPipelineRouteSession.MailFrame currentPipelineRouteFrame() {
+        requireCurrentPipelineReceiveTurn();
+        if (currentActorKind() != ActorKind.SHARED) {
+            throw new SecurityException(
+                    "correlated host actor routing requires a SHARED actor receive");
+        }
+        ActorCell<?> cell = currentActor.get();
+        synchronized (cell.lifecycleLock) {
+            if (cell.activePipelineFrame == null) {
+                throw new SecurityException(
+                        "current DATA receive has no authenticated pipeline route frame");
+            }
+            return cell.activePipelineFrame;
+        }
+    }
+
     void requirePipelineRegistrationHostAuthority() {
         requireSupervisorContext("register actor pipeline routing");
         if (OresScheduler.current() != null) {
@@ -4968,8 +5005,16 @@ public final class ActorRuntime implements AutoCloseable {
         return ref.done();
     }
 
-    @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendWithPipelineFrame(ref, message, null);
+    }
+
+    /** Package-owned metadata lane: route frames never enter guest payloads.
+     * Only a validated host graph may install a frame on an actual mailbox. */
+    @SuppressWarnings("unchecked")
+    <M> void sendWithPipelineFrame(
+            ActorRef<M> ref, M message,
+            ActorPipelineRouteSession.MailFrame pipelineFrame) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5080,7 +5125,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
+                            prepared, release, sender, sequence, pipelineFrame);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new ActorMailboxFullException(ref.id());
                     }
@@ -6702,6 +6747,8 @@ public final class ActorRuntime implements AutoCloseable {
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
         private ActorInboxMail<M> activeMail;
+        /** Sealed VM metadata, never a component of user ActorInboxMail<M>. */
+        private ActorPipelineRouteSession.MailFrame activePipelineFrame;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -7473,6 +7520,8 @@ public final class ActorRuntime implements AutoCloseable {
                                     activeEnvelope.sequence(),
                                     (M) activeEnvelope.value());
                             activeMail = mail;
+                            activeEnvelope.claimPipelineFrame();
+                            activePipelineFrame = activeEnvelope.pipelineFrame();
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -7495,7 +7544,11 @@ public final class ActorRuntime implements AutoCloseable {
                                     behavior.onMessage(mail.value(), context);
                                 }
                             } finally {
-                                if (!sourceReceiveSuspended) activeMail = null;
+                                if (!sourceReceiveSuspended) {
+                                    ActorPipelineRouteSession.retireDelivered(activePipelineFrame);
+                                    activePipelineFrame = null;
+                                    activeMail = null;
+                                }
                             }
                         }
                         if (codeExecutor == null
