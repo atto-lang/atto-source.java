@@ -1153,6 +1153,11 @@ public final class TypeChecker {
             }
             resolve(parent, classGenerics, self);
             Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
+            if (resolvedParent != null && isTypedOpenMapClass(resolvedParent)) {
+                throw new IllegalArgumentException(
+                        "typed open Map schema class '" + resolvedParent.name()
+                                + "' cannot be subclassed until Map-backed inheritance lowering is implemented");
+            }
             if (resolvedParent != null && klass.actorKind() != resolvedParent.actorKind()) {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
