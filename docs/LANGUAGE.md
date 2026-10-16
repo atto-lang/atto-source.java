@@ -64,7 +64,7 @@ concern so strict isolates do not gain ambient filesystem access merely by using
 Import strings also support explicit project/package boundaries:
 
 ```ores
-import fnc shared from "@/src/shared";         // nearest .ores.pkg.toml root
+import fnc shared from "+/src/shared";         // nearest .ores.pkg.toml root
 import fnc parse from "pkg:json/src/parser";    // declared zed-pkg alias
 ```
 
