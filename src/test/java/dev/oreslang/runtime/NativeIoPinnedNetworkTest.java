@@ -137,4 +137,17 @@ final class NativeIoPinnedNetworkTest {
         assertThrows(SecurityException.class,
                 () -> NativeIo.requirePinnedHttpLiteral(denied, "127.0.0.1:443"));
     }
+
+    @Test
+    void inboundHttpResponseBodyHasStrictBoundedMemory() throws Exception {
+        byte[] boundary = new byte[8 * 1024 * 1024];
+        java.util.Arrays.fill(boundary, (byte) 'a');
+        assertEquals(boundary.length,
+                NativeIo.boundedHttpText(new java.io.ByteArrayInputStream(boundary)).length());
+        byte[] oversized = new byte[boundary.length + 1];
+        assertThrows(java.io.IOException.class,
+                () -> NativeIo.boundedHttpText(new java.io.ByteArrayInputStream(oversized)));
+        assertEquals("ok", NativeIo.boundedHttpText(
+                new java.io.ByteArrayInputStream("ok".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+    }
 }
