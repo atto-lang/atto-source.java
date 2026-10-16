@@ -17,7 +17,7 @@ import class ArrayList from "java:java.util.ArrayList";
 - `+/` is the canonical **project-root marker**. It refers to the
   directory containing the nearest `.ores.pkg.toml`, not the process cwd.
   `+/` never falls through to ambient search roots. Missing `.ores.pkg.toml`,
-  missing files, and attempts to escape via `..` are errors.
+  missing files, and any `..` path component (even one that normalizes inside the root) are errors.
 - `+lib/foo` (without `/` after `+`) is invalid; use `+/lib/foo`.
   Legacy experimental `@/` syntax is rejected, not silently reinterpreted.
 - `pkg:<alias>/<path>` is a manifest-declared dependency alias, resolved
