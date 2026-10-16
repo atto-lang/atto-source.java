@@ -22,6 +22,10 @@ import java.util.concurrent.TimeUnit;
 final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private final int minimum;
     private final Object admission = new Object();
+    // All submitted runnable turns, including queued and not-yet-active turns.
+    // Guarded by admission: getActiveCount() is only an approximation and can
+    // lag behind thread creation during a burst.
+    private int admittedTurns;
 
     AdaptiveCarrierExecutor(int minimum, int maximum, int queueCapacity,
                             ThreadFactory factory) {
@@ -54,21 +58,25 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         Objects.requireNonNull(task, "task");
         synchronized (admission) {
             if (isShutdown()) throw new RejectedExecutionException("carrier pool stopped");
-            // The JDK's standard bounded-queue policy expands only when full.
-            // Raise core size before submit instead, but only on runnable demand.
-            // Initial lazy startup remains limited to the configured minimum.
-            int live = getPoolSize();
-            int active = getActiveCount();
-            int queued = getQueue().size();
-            // Submissions may arrive faster than the newly created worker
-            // transitions to ACTIVE. Count previously queued runnable turns
-            // as demand too; otherwise a burst can leave all work stranded
-            // behind the minimum core pool while max capacity is idle.
-            if (live >= minimum && active + queued >= live
-                    && getCorePoolSize() < getMaximumPoolSize()) {
-                setCorePoolSize(getCorePoolSize() + 1);
+            // Track actual admitted runnable demand, not snapshots of busy
+            // workers. A new worker may not yet appear ACTIVE when a burst
+            // submits its next turn. Snapshot-based scaling can therefore
+            // strand ready work at 18/20 while the other two cores stay idle.
+            if (admittedTurns == Integer.MAX_VALUE)
+                throw new RejectedExecutionException("runnable admission counter exhausted");
+            int demand = admittedTurns + 1;
+            int target = Math.min(getMaximumPoolSize(), Math.max(minimum, demand));
+            if (getCorePoolSize() < target) setCorePoolSize(target);
+            try {
+                super.execute(task);
+                admittedTurns = demand;
+            } catch (RuntimeException rejected) {
+                int priorTarget = Math.min(getMaximumPoolSize(),
+                        Math.max(minimum, admittedTurns));
+                if (!isShutdown() && getCorePoolSize() > priorTarget)
+                    setCorePoolSize(priorTarget);
+                throw rejected;
             }
-            super.execute(task);
         }
     }
 
@@ -77,11 +85,13 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             super.afterExecute(task, failure);
         } finally {
             synchronized (admission) {
-                // Excess workers can retire after keepalive. A queued task or
-                // busy population above minimum retains the expanded capacity.
-                if (!isShutdown() && getQueue().isEmpty()
-                        && getActiveCount() <= minimum && getCorePoolSize() > minimum) {
-                    setCorePoolSize(minimum);
+                if (admittedTurns <= 0)
+                    throw new IllegalStateException("carrier runnable credit underflow");
+                int remaining = --admittedTurns;
+                if (!isShutdown()) {
+                    int target = Math.min(getMaximumPoolSize(),
+                            Math.max(minimum, remaining));
+                    if (getCorePoolSize() > target) setCorePoolSize(target);
                 }
             }
         }
