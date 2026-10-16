@@ -465,7 +465,9 @@ public final class RuntimePermissions {
         if ("*".equals(trimmed)) return "*";
 
         return switch (permission) {
-            case READ, WRITE, FFI, IMPORT -> normalizePath(trimmed);
+            // Filesystem paths are literal names. A trailing space in an
+            // allow/deny scope must never silently target a different file.
+            case READ, WRITE, FFI, IMPORT -> normalizePath(value);
             case NET -> {
                 NetworkScope scope = parseNetworkScope(trimmed, true);
                 if (scope == null) {
