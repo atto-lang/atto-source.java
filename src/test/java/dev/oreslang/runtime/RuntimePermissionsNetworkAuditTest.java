@@ -191,6 +191,29 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void numericIpv4MixedHexMatrixHasSameCanonicalAdmissionAsNativeBackends() {
+        RuntimePermissions policy = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+        String[] parts = {
+                "0", "00", "01", "1", "127", "0x0", "0x1", "0x7f",
+                "0X7F", "0xFF", "077", "255", "256"
+        };
+        java.util.Set<String> canonical = java.util.Set.of("0", "1", "127", "255");
+        for (String first : parts) {
+            for (String second : parts) {
+                for (String third : parts) {
+                    String endpoint = first + "." + second + "." + third + ".1:443";
+                    boolean expected = canonical.contains(first)
+                            && canonical.contains(second) && canonical.contains(third);
+                    assertEquals(expected, policy.allows(RuntimePermissions.Permission.NET,
+                                    endpoint),
+                            "noncanonical numeric IPv4 address admitted: " + endpoint);
+                }
+            }
+        }
+    }
+
+    @Test
     void hexadecimalIpv4AliasesCannotEvadeExactDenyOrBecomeRules() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*")
