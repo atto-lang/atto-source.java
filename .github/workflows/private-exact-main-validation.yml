@@ -69,7 +69,7 @@ jobs:
           mvn --version
           python3 --version
       - name: Focused Future/select and exception-isolation regression suites
-        run: mvn -B -ntp '-Dtest=ChannelCompletionPublicationIsolationTest,FutureSelectAttachmentPublicationBarrierTest,FutureChannelSelectTest,ChannelCommittedCompletionDrainTest,ChannelMappedCancellationStressTest,OresFutureHostWaiterDetachmentTest' test
+        run: mvn -B -ntp '-Dtest=ChannelCompletionPublicationIsolationTest,FutureSelectAttachmentPublicationBarrierTest,FutureChannelSelectTest,ChannelCommittedCompletionDrainTest,ChannelMappedCancellationStressTest,OresFutureHostWaiterDetachmentTest' clean test
       - name: Complete GraalVM JDK 25 Maven verification
         # A clean build prevents earlier focused-test reports from being
         # mistaken for actual full-suite execution.
