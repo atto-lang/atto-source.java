@@ -5776,6 +5776,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
