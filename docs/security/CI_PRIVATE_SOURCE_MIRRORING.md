@@ -119,3 +119,30 @@ Resetting branch references did **not** remove the Git objects: commits were
 still retrievable by SHA. Administrators must restrict public access and seek
 GitHub Support assistance for retained Git objects, Actions caches/logs, and
 other copies before resolving the incident.
+
+## Funded alternate-organization carrier identity and final ref attestation
+
+Two candidate private carriers are **identity-pinned, not source-export
+approved**:
+
+- `chapter-publishing-test/zed-pkg-integration-e2e` — immutable repository ID
+  `1344442382`
+- `ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra` —
+  immutable repository ID `1412142815`
+
+Successful Actions jobs in a candidate organization only demonstrate that
+the destination can execute workflows; they do **not** authorize a copy
+of source. Keep `.github/private-ci-approved-repositories.txt` empty until
+a security owner explicitly approves one exact private destination on
+protected source `main`. Both the Bash preflight and Python publisher must
+agree on its immutable repository ID. Revalidate private visibility, current
+runner health, retention and access controls before publishing.
+
+After GitHub creates a fresh isolated `ci/oreslang-*` branch, the publisher
+requires the create-ref response to identify the exact intended Git commit,
+then independently reads the ref back and checks the same branch and commit.
+Wrong names, object types, missing metadata and substituted SHAs are errors.
+This read-back check detects incorrect branch publication but does not
+eliminate the need for a post-run teardown/retention review. Branch creation
+does not imply that a CI build has executed; record actual step logs, the
+verified source tree and the destination commit before claiming test success.
