@@ -6197,6 +6197,14 @@ public final class TypeChecker {
     }
 
     private Type numericJoin(Type left, Type right, String op) {
+        // Runtime forbids implicit arbitrary-precision/binary arithmetic.
+        // A DECIMAL-FLOAT join would otherwise typecheck as Decimal but
+        // execute either binary64 arithmetic or throw at runtime.
+        if ((left == Primitive.DECIMAL && (right == Primitive.FLOAT || right == Primitive.COMPLEX))
+                || (right == Primitive.DECIMAL && (left == Primitive.FLOAT || left == Primitive.COMPLEX))) {
+            throw new IllegalArgumentException(
+                    "operator '" + op + "' cannot mix decimal with binary floating/complex; use explicit conversion");
+        }
         Type result = Types.numericJoin(left, right);
         if (result == Unknown.INSTANCE) throw new IllegalArgumentException("operator '" + op + "' needs numeric operands");
         return result;
