@@ -364,7 +364,14 @@ type_atom       = borrow_type
                 | "null" ;
 
 borrow_type     = "&" [ "mut" ] type_atom ;
-tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+tuple_type      = "[" [ type_ref { "," type_ref } ] "]"
+                | "tuple" "(" [ tuple_slot { "," tuple_slot } ] ")"
+                | "(" tuple_slot "," tuple_slot { "," tuple_slot } ")" ;
+tuple_slot      = type_ref [ "?" ] ;
+(* The '?' here means an omittable positional SLOT, not merely Option<T>.
+   It is only valid in a contiguous trailing suffix. The parser recognizes
+   v2 tuple syntax, but optional-slot and structural-width guest execution
+   MUST fail closed until checked ABI/view lowering is implemented. *)
 record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
 record_type_field
                 = ( IDENT | STRING_LITERAL ) ":" type_ref ;
