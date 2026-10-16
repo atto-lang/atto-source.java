@@ -1,6 +1,9 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.BuildOptions;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -10,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -37,6 +41,31 @@ final class TypedOpenMapKeySchemaLanguageTest {
         assertEquals("Option", klass.mapKeys().get(2).declaredType().name());
         assertEquals("Option",
                 klass.mapKeys().get(2).declaredType().arguments().getFirst().name());
+    }
+
+    @Test
+    void compilerTransformsPreserveKeySchemaMetadata() {
+        Ast.Program expanded = AnnotationExpander.expand(Parser.parse(SCHEMA));
+        Ast.ClassDecl expandedClass = (Ast.ClassDecl) expanded.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.ClassDecl.class::isInstance)
+                .findFirst().orElseThrow();
+        assertEquals(3, expandedClass.mapKeys().size());
+
+        var shaken = OresCompiler.compileForBuild(SCHEMA + """
+                pub fnc main(): void {
+                  val m = new Settings();
+                  m["name"] = "kept";
+                  return;
+                }
+                """, BuildOptions.executable(Map.of()));
+        Ast.ClassDecl shakenClass = (Ast.ClassDecl) shaken.program().modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(decl -> decl instanceof Ast.ClassDecl klass
+                        && klass.name().equals("Settings"))
+                .findFirst().orElseThrow();
+        assertEquals(3, shakenClass.mapKeys().size());
+        assertEquals("pending", shakenClass.mapKeys().get(2).name());
     }
 
     @Test
