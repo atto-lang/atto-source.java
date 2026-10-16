@@ -80,7 +80,7 @@ final class OresProjectConfigRegressionTest {
         Path real = temp.resolve("real-package");
         Files.createDirectories(real.resolve("src"));
         Files.writeString(real.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
-                "schema_version = \"1\"\\n[source]\\nroots = [\"src\"]\\n");
+                "schema_version = \"1\"\n[source]\nroots = [\"src\"]\n");
         Path main = Files.writeString(real.resolve("src/main.ores"),
                 "pub fnc main(): void { return; }");
         Path first = temp.resolve("first-link");
@@ -105,7 +105,7 @@ final class OresProjectConfigRegressionTest {
         Files.createDirectories(project.resolve("src"));
         Files.createDirectories(project.resolve("+lib"));
         Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
-                "schema_version = \"1\"\\n[source]\\nroots = [\".\"]\\n");
+                "schema_version = \"1\"\n[source]\nroots = [\".\"]\n");
         Files.writeString(project.resolve("+lib/helper.ores"), "pub fnc helper(): int { return 1; }");
         Path importer = Files.writeString(project.resolve("src/main.ores"),
                 "pub fnc main(): void { return; }");
