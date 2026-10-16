@@ -203,6 +203,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             EXACT_VERIFIER(self.source, self.root,
                            pub.collect_source(self.source, self.root), commit, tree)
 
+    def test_regular_git_pointer_to_external_metadata_is_rejected(self):
+        # A .git regular file may contain an external gitdir redirect.
+        # Git then reads a commit/tree from outside the trusted checkout,
+        # even when the collected files happen to match that external tree.
+        external = self.root / "external-git-metadata"
+        external.mkdir()
+        marker = self.root / ".git"
+        marker.write_text("gitdir: " + str(external) + "\n")
+        with self.assertRaisesRegex(pub.Denied, "real directory"):
+            pub.collect_source(self.root, self.root)
+        self.assertTrue(marker.is_file())
+
     def test_wrapper_requires_explicit_git_provenance(self):
         script = MODULE.with_name("run-in-private-ci-destination.sh").read_text()
         self.assertIn("source-commit", script)
