@@ -279,4 +279,42 @@ final class ActorSealedStateAdmissionHardeningTest {
         assertTrue(denied.getMessage().contains("malformed sealed actor state record schema"),
                 denied::getMessage);
     }
+
+    @Test void transformedStateDefaultsCannotSupplyAlternateStructLayout() {
+        Ast.Program parsed = source("0");
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.ObjectField value = Ast.ObjectField.named("value", new Ast.LiteralExpr(0L));
+        for (Ast.ObjectExpr forged : List.of(
+                new Ast.ObjectExpr(List.of(value), Ast.ObjectKind.EXPLICIT_STRUCT, List.of()),
+                new Ast.ObjectExpr(List.of(value), Ast.ObjectKind.EXPLICIT_STRUCT,
+                        List.of(new Ast.StructFieldSpec("value", Ast.TypeRef.simple("int")))))) {
+            Ast.FieldDecl changed = new Ast.FieldDecl(
+                    state.name(), state.visibility(), state.bindingKind(), state.type(),
+                    state.annotations(), forged, state.mutableReferent());
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(replaceStateField(parsed, changed)));
+            assertTrue(denied.getMessage().contains("canonical closed key/value aggregate"),
+                    denied::getMessage);
+        }
+        // The parser-owned inferred initializer must remain admissible.
+        assertDoesNotThrow(() -> ActorStateContract.verify(parsed));
+    }
+
+    @Test void nestedFreshExplicitLiteralDoesNotCreateAnAlternateTopLevelStateLayout() {
+        Ast.Program parsed = source("0");
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.ObjectExpr nested = new Ast.ObjectExpr(
+                List.of(Ast.ObjectField.named("item", new Ast.LiteralExpr(1L))),
+                Ast.ObjectKind.EXPLICIT_STRUCT,
+                List.of(new Ast.StructFieldSpec("item", Ast.TypeRef.simple("int"))));
+        Ast.ObjectExpr canonicalOuter = new Ast.ObjectExpr(
+                List.of(Ast.ObjectField.named("value", nested)));
+        Ast.FieldDecl changed = new Ast.FieldDecl(
+                state.name(), state.visibility(), state.bindingKind(), state.type(),
+                state.annotations(), canonicalOuter, state.mutableReferent());
+        // This is the AST admission check, not a type assignment test.
+        assertDoesNotThrow(() -> ActorStateContract.verify(replaceStateField(parsed, changed)));
+    }
 }
