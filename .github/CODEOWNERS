@@ -14,3 +14,4 @@
 /src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
 /docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware
 /.github/workflows/private-exact-candidate-validation.yml @ORESoftware
+/.github/workflows/private-exact-publisher-validation.yml @ORESoftware
