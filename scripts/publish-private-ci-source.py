@@ -491,8 +491,23 @@ def publish(repository, source, branch, trusted_root,
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
+    # A successful HTTP response alone is not evidence that the new ref
+    # actually points to our immutable destination commit. Require both
+    # create-ref response identity and independent follow-up read-back.
+    expected_ref = "refs/heads/" + branch
+    created_object = created.get("object")
+    if (created.get("ref") != expected_ref
+            or not isinstance(created_object, dict)
+            or created_object.get("type") != "commit"
+            or created_object.get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm the exact new CI ref and commit")
+    readback = gh_api(f"repos/{repository}/git/ref/heads/{branch}")
+    pointed = readback.get("object")
+    if (readback.get("ref") != expected_ref
+            or not isinstance(pointed, dict)
+            or pointed.get("type") != "commit"
+            or pointed.get("sha") != commit_sha):
+        raise Denied("new private CI ref does not point to the verified commit")
     return commit_sha, len(files)
 
 
