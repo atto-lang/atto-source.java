@@ -98,6 +98,16 @@ final class ActorSharedLocalMemoryTest {
                 assertTrue(error.getMessage().contains("block limit exceeded"));
                 assertEquals(1024L, local.usedBytes(),
                         "rejected handle allocation must not leak quota");
+                // Closing one block must release exactly one charged handle and
+                // permit a fresh allocation without reviving the old handle.
+                var oldHandle = stale.get();
+                oldHandle.close();
+                assertEquals(1023L, local.usedBytes());
+                var replacement = local.allocateActorLocalBytes(0);
+                assertEquals(0, replacement.capacity());
+                assertTrue(oldHandle.closed());
+                assertEquals(1024L, local.usedBytes());
+                stale.set(replacement);
                 checked.countDown();
                 turn.self().stop();
             });
