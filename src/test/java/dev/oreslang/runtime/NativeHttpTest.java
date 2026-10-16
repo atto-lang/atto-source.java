@@ -474,6 +474,33 @@ class NativeHttpTest {
         assertNull(NativeHttp.abortEveryAccepted(List.of(1, 2), ignored -> { }));
     }
 
+    @org.junit.jupiter.api.RepeatedTest(12)
+    @org.junit.jupiter.api.Timeout(15)
+    void shuttingDownIdleListenerFailsPendingAcceptAndCompletesDrain() throws Exception {
+        // End-to-end guest regression for Server.shutdown's two-phase
+        // admission sealing and off-monitor Future notifications. The client
+        // intentionally sends nothing: a waiter is registered before the
+        // transport stops and must fail, while its drain must still succeed.
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 2000);
+              stdio.println(server.port);
+              val waiting = server.accept();
+              await server.shutdown(0);
+              try {
+                await waiting;
+                stdio.println("ACCEPT-WAS-NOT-REVOKED");
+              } catch (err) {
+                stdio.println("accept-revoked");
+              }
+              stdio.println(server.active);
+              return;
+            }
+            """, port -> { /* Deliberately no accepted request. */ });
+        assertFalse(output.contains("ACCEPT-WAS-NOT-REVOKED"), output);
+        assertTrue(output.stripTrailing().endsWith("accept-revoked\n0"), output);
+    }
+
     @org.junit.jupiter.api.RepeatedTest(5)
     @org.junit.jupiter.api.Timeout(30)
     void pooledActorsReuseMailboxWithoutRetainingExchangeAdmission() throws Exception {
