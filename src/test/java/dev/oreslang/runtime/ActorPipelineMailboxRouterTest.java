@@ -227,6 +227,45 @@ final class ActorPipelineMailboxRouterTest {
     }
 
     @Test
+    void privateActorCannotUseCapturedMutableHostRoundRobinRouter() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorPipelineMailboxRouter<String>> routing =
+                    new AtomicReference<>();
+            AtomicInteger denied = new AtomicInteger();
+            CountDownLatch checked = new CountDownLatch(1);
+            CountDownLatch unexpectedDelivery = new CountDownLatch(1);
+            var a = runtime.<String>spawnShared(() -> (message, actor) ->
+                    unexpectedDelivery.countDown());
+            var b = runtime.<String>spawnShared(() -> (message, actor) ->
+                    unexpectedDelivery.countDown());
+            // The trusted private factory may capture a Java value, but
+            // the captured object must not turn into mutable shared state.
+            var privateSource = runtime.<String>spawnPrivateTrusted(
+                    context -> (message, actor) -> {
+                        try {
+                            routing.get().forwardRoundRobin(message);
+                        } catch (SecurityException blocked) {
+                            denied.incrementAndGet();
+                        } finally {
+                            checked.countDown();
+                        }
+                    });
+            routing.set(new ActorPipelineMailboxRouter<>(runtime, graph(),
+                    Map.of("producer", privateSource, "worker-a", a, "worker-b", b)));
+            privateSource.send("must-not-route");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertEquals(1, denied.get(), "private execution cannot own shared host cursor");
+            assertEquals(1L, unexpectedDelivery.getCount(), "private route leaked a delivery");
+            privateSource.stop();
+            a.stop();
+            b.stop();
+            privateSource.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void bindingRejectsMissingDuplicateAndForeignActorIdentities() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
