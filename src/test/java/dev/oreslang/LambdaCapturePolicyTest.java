@@ -135,6 +135,36 @@ final class LambdaCapturePolicyTest {
     }
 
     @Test
+    void denylistedSelfIsNeverVisibleInsideAClassLambda() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub read(): int { return 1; }
+                          pub invalid(): void {
+                            val callback = nlex[self] || -> self.read();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("self"), error::getMessage);
+    }
+
+    @Test
+    void allowedSelfDoesNotAccidentallyAllowOtherOuterNames() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          pub invalid(): void {
+                            val int extra = 3;
+                            val callback = lex[self] || -> extra;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("extra"), error::getMessage);
+    }
+
+    @Test
     void selectiveCaptureDoesNotBypassBorrowedSelfSafety() {
         String program = """
                 define actor Foo as
