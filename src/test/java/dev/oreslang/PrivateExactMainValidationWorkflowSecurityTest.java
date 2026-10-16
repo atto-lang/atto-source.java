@@ -142,6 +142,11 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 < job.indexOf("Ten deterministic Future/channel stress replays"));
         assertTrue(hasExactLine(proof, 10, "python3 - <<'PY'"),
                 "JUnit attestation must run from the trusted workflow");
+        String toolchain = section(workflow,
+                "      - name: Verify toolchain", 
+                "      - name: Focused Future/select and exception-isolation regression suites");
+        assertTrue(hasExactLine(toolchain, 10, "python3 --version"),
+                "exact-main must fail early if Python 3 is unavailable on the runner");
         for (String classname : new String[] {
                 "ChannelCompletionPublicationIsolationTest",
                 "FutureSelectAttachmentPublicationBarrierTest",
