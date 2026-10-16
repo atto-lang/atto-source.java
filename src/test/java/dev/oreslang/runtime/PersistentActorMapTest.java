@@ -99,6 +99,8 @@ final class PersistentActorMapTest {
         assertThrows(IllegalArgumentException.class, () -> parent.with("array", new byte[]{1}));
         assertThrows(IllegalArgumentException.class, () -> parent.with("map", Map.of("x", 1)));
         assertThrows(IllegalArgumentException.class, () -> parent.with("foreign", new Object()));
+        assertThrows(IllegalArgumentException.class,
+                () -> parent.with("subclass", new java.math.BigInteger("2") { }));
         assertThrows(IllegalArgumentException.class, () -> parent.with("null", null));
         assertThrows(NullPointerException.class, () -> parent.with(null, 2));
         assertThrows(NullPointerException.class, () -> parent.without(null));
