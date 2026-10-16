@@ -113,7 +113,9 @@ public final class PortableCodecRegistry {
 
     /**
      * Per-compilation registration; no global guest-writable registry and no
-     * decoding lookup by an incoming wire-selected type name.
+     * decoding lookup by an incoming wire-selected type name. Registration
+     * and pinned lookup are serialized so parallel module compilation cannot
+     * partially publish conflicting identities.
      */
     public static final class Registry {
         private final Map<TypeKey, Descriptor> byType = new HashMap<>();
@@ -123,7 +125,7 @@ public final class PortableCodecRegistry {
          * For trusted compiler integration only. Must be called after source
          * resolution and ownership analysis, not by a userland trait method.
          */
-        Descriptor registerCompilerDescriptor(Format format, Purpose purpose,
+        synchronized Descriptor registerCompilerDescriptor(Format format, Purpose purpose,
                                               String resolvedType, String schemaId,
                                               int version, Shape shape) {
             Objects.requireNonNull(format);
@@ -160,7 +162,7 @@ public final class PortableCodecRegistry {
         }
 
         /** The caller supplies compiler-pinned type identity, never bytes from the wire. */
-        Descriptor requirePinned(Format format, Purpose purpose,
+        synchronized Descriptor requirePinned(Format format, Purpose purpose,
                                  String resolvedType, int version) {
             Descriptor found = byType.get(new TypeKey(format, purpose, resolvedType, version));
             if (found == null) {
@@ -169,7 +171,7 @@ public final class PortableCodecRegistry {
             return found;
         }
 
-        public int size() { return byType.size(); }
+        public synchronized int size() { return byType.size(); }
     }
 
     private static boolean sameContract(Descriptor a, Descriptor b) {
