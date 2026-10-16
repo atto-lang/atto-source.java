@@ -81,6 +81,19 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void rejectsFirstClassCombinatorExtractionWithUninferredGenerics() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                    fnc bad(Option<int> input): void {
+                      val callback = input.map;
+                      return;
+                    }
+                    """)));
+        assertTrue(failure.getMessage().contains("first-class extraction"),
+                failure::toString);
+    }
+
+    @Test
     void rejectsPipelineAboveBoundedStageLimit() {
         String input = "fnc plus(int n): int { return n + 1; } "
                 + "fnc main(): int { return 1" + " |> plus".repeat(129) + "; }";
