@@ -73,6 +73,24 @@ final class PersistentActorMapTest {
     }
 
     @Test
+    void hashFloodFailsClosedWhileOldRootRemainsUsable() {
+        // Every 8-character combination of Aa/BB has the same String hash.
+        PersistentActorMap map = PersistentActorMap.empty();
+        for (int n = 0; n < 64; n++) {
+            StringBuilder key = new StringBuilder();
+            for (int i = 0; i < 6; i++)
+                key.append(((n >>> i) & 1) == 0 ? "Aa" : "BB");
+            map = map.with(key.toString(), n);
+        }
+        assertEquals(64, map.size());
+        var before = map;
+        assertThrows(IllegalArgumentException.class,
+                () -> before.with("AaAaAaAaAaAaAa", 65));
+        assertEquals(64, before.size());
+        assertEquals(0, before.get("AaAaAaAaAaAa"));
+    }
+
+    @Test
     void onlyImmutableDataMayBecomeSharedPersistentValues() {
         var leaf = PersistentActorMap.empty().with("v", new BigDecimal("1.25"));
         var parent = PersistentActorMap.empty().with("nested", leaf);
