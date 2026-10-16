@@ -114,4 +114,24 @@ final class OresProjectConfigRegressionTest {
                 () -> config.resolveImport(importer, "+lib/helper"));
         assertTrue(failure.getMessage().contains("expected +/<path>"));
     }
+
+    @Test
+    void explicitManifestOverrideRejectsSymlinkedEntrypointOutsidePackage() throws Exception {
+        Path project = temp.resolve("entry-package");
+        Files.createDirectories(project.resolve("src"));
+        Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, "schema_version = \"1\"\n");
+        Path outside = Files.writeString(temp.resolve("outside-entry.ores"),
+                "pub fnc main(): void { return; }");
+        Path linkedEntry = project.resolve("src/main.ores");
+        try {
+            Files.createSymbolicLink(linkedEntry, outside);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(linkedEntry,
+                        Map.of(OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString())));
+        assertTrue(rejected.getMessage().contains("outside explicitly selected package root"));
+    }
 }
