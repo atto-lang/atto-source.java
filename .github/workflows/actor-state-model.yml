@@ -25,3 +25,4 @@ jobs:
           python3 formal/check_sealed_actor_state.py
           # Optimized Python must not turn checks into no-ops.
           python3 -O formal/check_sealed_actor_state.py
+          python3 -OO formal/check_sealed_actor_state.py
