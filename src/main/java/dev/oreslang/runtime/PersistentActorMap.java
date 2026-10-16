@@ -6,6 +6,7 @@ import java.util.AbstractMap;
 import java.util.AbstractSet;
 import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -277,6 +278,19 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         // Only a leaf/collision can be hoisted across a trie level.
         if (shrunk.length == 1 && !(shrunk[0] instanceof Branch)) return shrunk[0];
         return new Branch(branch.bitmap & ~bit, shrunk);
+    }
+
+    // AbstractMap keySet()/values() inherit view mutators that can return
+    // false on an absent element, or run a removeIf predicate before throwing.
+    // Wrap both views to reject mutation attempts without invoking user code.
+    @Override
+    public Set<String> keySet() {
+        return Collections.unmodifiableSet(super.keySet());
+    }
+
+    @Override
+    public Collection<Object> values() {
+        return Collections.unmodifiableCollection(super.values());
     }
 
     /**
