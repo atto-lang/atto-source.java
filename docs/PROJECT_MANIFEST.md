@@ -1,14 +1,16 @@
-# Oreslang project manifest
+# Oreslang project manifest and root-anchored imports
 
-Oreslang projects may define compiler/project configuration in the nearest
-`.oreslangc.cfg.toml`. The compiler walks upward from the entry source file
-(or from the current working directory when no source file is supplied) and
-uses the first manifest it finds.
+The canonical package manifest is `.ores.pkg.toml`. Its parent directory is the
+default **project root**. The older `.oreslangc.cfg.toml` remains supported for
+existing projects. Discovery walks upward from the importing entry source file
+(or the current working directory when no source file is provided), choosing
+the nearest directory containing a manifest. When both names exist in the same
+directory, `.ores.pkg.toml` takes precedence.
 
-This is intentionally a project/compiler manifest: lighter than Maven's build
-lifecycle, but more project-aware than a source-only compiler switch file.
+The filesystem search does **not** depend on the process working directory
+when compiling an entry source file.
 
-## Supported v1 contract
+## Manifest
 
 ```toml
 schema_version = "1"
@@ -26,40 +28,88 @@ import_paths = ["lib", "vendor"]
 main = "src/main.ores"
 ```
 
-All manifest filesystem paths are resolved relative to `[project].root`,
-which itself is relative to the manifest directory unless absolute.
+All paths in the manifest resolve relative to `[project].root`; this value
+is relative to the manifest directory unless absolute. Omitting it uses the
+manifest directory. For new projects, prefer `root = "."` or omit it.
 
-The current implementation intentionally rejects unsupported schema versions
-and only assigns behavior to fields that the compiler/runtime actually
-consumes. Additional compiler, target, profile, dependency, workspace, and
-actor-policy sections should be added version-by-version rather than accepted
-and silently ignored.
+Unrecognized schema versions are rejected. Only existing supported sections
+are interpreted; package registries, workspaces, and dependency pinning are
+separate features, not silently inferred from arbitrary TOML fields.
 
-## Import resolution
+## Import syntax
 
-Oreslang source identity remains filesystem/path based. The manifest does not
-create a Java-style package namespace and source files do not need a top-level
-`module` declaration.
+```ores
+import module telemetry from "+/lib/telemetry";
+import module store from "+/lib/store";
+import module relative from "./local";
+import module sibling from "../sibling";
+```
 
-Resolution order is:
+The prefix `+/` is reserved for **project-root-anchored** imports. The path
+after the prefix is relative to the resolved project root, regardless of the
+importing source file's depth, and has no dependence on `source.roots`,
+`source.import_paths`, or `ORESLANG_PATH`.
 
-1. `./foo` and `../foo`: only relative to the importing file.
-2. Absolute source path: exactly that path.
-3. Bare path such as `pkg/http`: each `source.roots` entry in order.
-4. Each `source.import_paths` entry in order.
-5. Each `ORESLANG_PATH` entry in order.
+The spelling `+lib/store` is intentionally unsupported. Use `+/lib/store`
+only. A bare `+`, an empty suffix, empty segments, `.` and `..` segments
+are invalid. On every platform, use forward slashes in source imports.
 
-For a path without an extension, the resolver tries the exact file and then
-`.ores` and `.java`.
+`+/` requires a project manifest. An unresolved project-root import is an
+error: it must **not** silently fall through to an external dependency
+resolver. Existing files are also checked after resolving symbolic links,
+preventing `+/` from escaping the project root.
 
-Project-local roots intentionally precede ambient `ORESLANG_PATH` entries so
-a developer machine cannot silently shadow a dependency pinned by the project.
+Root-anchored paths resolve exactly, then with `.ores`, then with `.java`
+for suffixless paths, preserving the existing file-probing contract.
+
+To use `+/lib/store` as shown above, place `lib/store.ores` directly under
+the project root. If the file instead lives in `src/lib/store.ores`, use
+`+/src/lib/store`.
+
+## Other import resolution
+
+Existing rules remain:
+
+1. `java:` host imports use capability-gated host interop.
+2. Compiler-owned `std/` imports use the sealed core/standard-library resolver.
+3. `+/` imports resolve only under the selected project root.
+4. `./` and `../` imports resolve relative to the importing source file.
+5. Absolute filesystem imports resolve directly to the named path.
+6. Bare paths search `source.roots`, then `source.import_paths`,
+   then `ORESLANG_PATH` in order. Unresolved bare paths retain the
+   existing package-resolver boundary.
+
+Existing import targets are recorded during source-closure collection and
+used again during static and runtime linking; execution must not reselect
+a different module for the same import.
+
+## Explicit root selection and CLI flags
+
+To compile from another directory or from an editor/build host, specify
+the root explicitly:
+
+```bash
+oreslang-compiler --project-root=/path/to/my-app src/main.ores
+ORES_PROJECT_ROOT=/path/to/my-app oreslang-compiler src/main.ores
+```
+
+When `--project-root` is provided, it overrides `ORES_PROJECT_ROOT`;
+without a CLI override, `ORES_PROJECT_ROOT` overrides automatic discovery.
+An explicitly selected root must exist and contain one of the recognized
+manifests; missing manifests fail immediately. Relative overrides are
+resolved against the invoking process working directory.
+
+The canonical `.cli-flags.toml` maps the string flag `project-root` to
+`ORES_PROJECT_ROOT`. This is configuration for the CLI, **not** a new module
+import namespace or a second project-root marker.
+
+Precedence: `--project-root` > `ORES_PROJECT_ROOT` > nearest manifest
+found by source-relative upward discovery.
 
 ## ORESLANG_PATH
 
-`ORESLANG_PATH` is the ambient Oreslang import/search path. It is a list of
-directories separated by the host OS path-list separator, exactly like
-`PATH`:
+`ORESLANG_PATH` is the ambient search list for *bare* imports, separated
+by the host OS path-list separator. It never overrides `+/`.
 
 ```bash
 # macOS / Linux
@@ -69,10 +119,5 @@ export ORESLANG_PATH="$HOME/.oreslang/lib:/opt/oreslang/lib"
 $env:ORESLANG_PATH = 'C:\\oreslang\\lib;D:\\shared\\ores'
 ```
 
-Relative entries are resolved from the compiler process working directory.
-Empty entries are ignored and never mean the current directory; this avoids
-accidental dependency injection from a leading/trailing separator or `::`.
-
-The compiler records the resolved target for every loaded import and reuses
-that exact mapping during static linking and runtime linking. Compilation and
-execution therefore cannot disagree about which file a bare import names.
+Relative entries are interpreted from the compiler process working directory.
+Empty entries are ignored and do not implicitly name that directory.
