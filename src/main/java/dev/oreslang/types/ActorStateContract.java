@@ -29,8 +29,33 @@ public final class ActorStateContract {
         return null;
     }
 
+    /**
+     * Require the exact compiler-generated closed record layout. A bare
+     * readonly/inferred record, duplicate key, reordered or malformed
+     * $field$ entry cannot be used as a hidden mutable storage schema by
+     * a later AST producer. The parser emits sorted canonical records.
+     */
+    private static Ast.TypeRef canonicalStateSchema(Ast.TypeRef schema) {
+        if (schema == null || !schema.name().equals("$record$") || schema.inferArguments()) {
+            throw new IllegalArgumentException("actor state requires canonical closed record schema");
+        }
+        try {
+            Map<String, Ast.TypeRef> members = schema.recordMembers();
+            if (members.keySet().stream().anyMatch(String::isBlank)
+                    || !schema.equals(Ast.TypeRef.recordType(members))) {
+                throw new IllegalArgumentException("actor state requires canonical closed record schema");
+            }
+        } catch (IllegalStateException malformed) {
+            throw new IllegalArgumentException("malformed sealed actor state record schema", malformed);
+        }
+        return schema;
+    }
+
     public static Ast.TypeRef keySchema(Ast.FieldDecl field) {
         Ast.TypeRef type = field.type();
+        if (type == null) {
+            throw new IllegalArgumentException("actor state requires canonical closed record schema");
+        }
         if (type.name().equals("$actor_state_map$")) {
             // A later AST producer must not forge a closed schema while
             // substituting an unverified dynamic-map substrate. Reject
@@ -47,12 +72,12 @@ public final class ActorStateContract {
                     || !schema.name().equals("$record$") || schema.inferArguments()) {
                 throw new IllegalArgumentException("noncanonical sealed actor state map schema");
             }
-            return schema;
+            return canonicalStateSchema(schema);
         }
         // A completely dynamic homogeneous Map has no statically named keys.
         // It remains sealed; its dynamic get/set operations need separate lowering.
         if (type.name().equals("Map")) return Ast.TypeRef.recordType(Map.of());
-        return type;
+        return canonicalStateSchema(type);
     }
 
     public static void verify(Ast.Program program) {
