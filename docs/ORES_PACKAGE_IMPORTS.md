@@ -142,8 +142,10 @@ alone does not validate semver locks or artifact provenance.
 
 `ORES_PATHS` uses `:` as its delimiter. Each segment is an import root,
 not a filename. Empty segments are ignored; duplicates are removed in first
-appearance order. Relative segments are resolved from the compiler's cwd.
-No `~` or environment-variable interpolation is performed inside a segment.
+appearance order. Nonempty path segments are literal and **not trimmed**:
+leading or trailing spaces can be part of a directory name. Relative segments
+are resolved from the compiler's cwd. No `~` or environment-variable
+interpolation is performed inside a segment.
 
 ```sh
 export ORES_PATHS="/work/ores:/usr/local/share/ores:/some/link-to-ores"
