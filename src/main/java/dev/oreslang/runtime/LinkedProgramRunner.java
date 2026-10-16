@@ -423,9 +423,11 @@ public final class LinkedProgramRunner {
 
             String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            // Every source uses its nearest manifest, even when an imported
-            // nested package was reached through a relative or bare path.
-            OresProjectConfig nextConfig = projectConfig.forImportedSource(resolvedTarget);
+            // pkg: introduces a bounded package context; ordinary imports
+            // inherit that boundary but still discover nested manifests.
+            OresProjectConfig nextConfig = raw.startsWith("pkg:")
+                    ? projectConfig.forImportedPackage(resolvedTarget, raw)
+                    : projectConfig.forImportedSource(resolvedTarget);
             collectImportClosure(resolvedTarget, units, nextConfig, importResolutions,
                     budget, depth + 1);
         }
