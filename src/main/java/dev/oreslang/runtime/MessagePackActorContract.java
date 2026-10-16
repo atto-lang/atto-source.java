@@ -58,7 +58,8 @@ public final class MessagePackActorContract {
             // Both Java and native actor mail pin the same bounded canonical
             // descriptor. Reject oversized/overdeep declarations here, before
             // accepting a compiled contract or any message payload.
-            int length = descriptorLength(alternative.shape(), 0);
+            int length = MessagePackCollectionCodec.shapeDescriptorByteLength(
+                    alternative.shape());
             if (length > MAX_DESCRIPTOR_BYTES) {
                 throw new IllegalArgumentException("actor shape descriptor exceeds native limit");
             }
@@ -72,31 +73,6 @@ public final class MessagePackActorContract {
         this.domain = domain;
         this.byId = Map.copyOf(ids);
         this.bySchema = Map.copyOf(schemas);
-    }
-
-    private static int descriptorLength(Shape shape, int depth) {
-        if (depth > MessagePackCollectionCodec.MAX_DEPTH) {
-            throw new IllegalArgumentException("actor shape descriptor exceeds depth limit");
-        }
-        if (shape instanceof MessagePackCollectionCodec.Scalar) return 1;
-        MessagePackCollectionCodec.Sequence seq = (MessagePackCollectionCodec.Sequence) shape;
-        int length = switch (seq.kind()) {
-            case TUPLE, ARRAY, LIST -> 3; // T[...], A[...] or L[...]
-            case FIXED_ARRAY, FIXED_LIST -> 4; // FA[...] or FL[...]
-        };
-        if (seq.kind() == MessagePackCollectionCodec.SequenceKind.TUPLE
-                || seq.kind() == MessagePackCollectionCodec.SequenceKind.FIXED_ARRAY
-                || seq.kind() == MessagePackCollectionCodec.SequenceKind.FIXED_LIST) {
-            for (int i = 0; i < seq.slots().size(); ++i) {
-                length += descriptorLength(seq.slots().get(i), depth + 1);
-                if (i > 0) length++;
-                if (length > MAX_DESCRIPTOR_BYTES)
-                    throw new IllegalArgumentException("actor shape descriptor exceeds native limit");
-            }
-        } else {
-            length += descriptorLength(seq.element(), depth + 1);
-        }
-        return length;
     }
 
     public String domain() { return domain; }
