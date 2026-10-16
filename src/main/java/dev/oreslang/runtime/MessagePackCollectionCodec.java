@@ -252,6 +252,20 @@ public final class MessagePackCollectionCodec {
      * under incompatible type/arity assumptions. Hashing does NOT authenticate
      * an untrusted sender: caller schemas must be compiler-owned.
      */
+    /**
+     * Exact canonical shape grammar size, excluding the SHA-256 domain
+     * separator. Actor mailbox descriptors have a stricter native 4096-byte
+     * contract than the generic codec. Reuse the canonical emitter so nested
+     * nominal enums cannot bypass registration limits or cause a cast failure.
+     */
+    public static int shapeDescriptorByteLength(Shape shape) {
+        Objects.requireNonNull(shape, "shape");
+        StringBuilder descriptor = new StringBuilder();
+        appendShape(descriptor, shape, 0, new int[]{0});
+        // All admitted identifiers and grammar tokens are canonical ASCII.
+        return descriptor.length();
+    }
+
     public static byte[] shapeDigest(Shape shape) {
         Objects.requireNonNull(shape, "shape");
         StringBuilder descriptor = new StringBuilder("oreslang.actor.shape.v2/");
