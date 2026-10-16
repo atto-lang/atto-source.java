@@ -84,6 +84,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
 
+    def test_git_snapshot_refuses_missing_or_redirected_root_metadata(self):
+        marker = self.root / ".git"
+        with patch.object(pub.subprocess, "run") as called:
+            with self.assertRaisesRegex(pub.Denied, "anchored Git metadata"):
+                pub.git_snapshot_output(self.root, "rev-parse", "HEAD")
+            called.assert_not_called()
+            marker.write_text("gitdir: /untrusted/git")
+            with self.assertRaisesRegex(pub.Denied, "anchored Git metadata"):
+                pub.git_snapshot_output(self.root, "rev-parse", "HEAD")
+            called.assert_not_called()
+            marker.unlink()
+            marker.symlink_to(self.source, target_is_directory=True)
+            with self.assertRaisesRegex(pub.Denied, "anchored Git metadata"):
+                pub.git_snapshot_output(self.root, "rev-parse", "HEAD")
+            called.assert_not_called()
+
     def test_upstream_commit_tree_requires_original_github_objects(self):
         source_root = "repos/" + pub.SOURCE_REPOSITORY
         def exact(route, method="GET", payload=None):
