@@ -155,6 +155,10 @@ public final class SupervisorFailureControl {
             handlerFailure = dispatchFailure;
             draining = false;
             undelivered.addAndGet(pending.size());
+            // The failed lane will never deliver these payloads. Drop its
+            // references after recording loss so group lifetimes do not retain
+            // arbitrarily many terminal notices.
+            pending.clear();
         }
     }
 
@@ -178,6 +182,7 @@ public final class SupervisorFailureControl {
                 synchronized (this) {
                     handlerFailure = failure;
                     undelivered.addAndGet(pending.size());
+                    pending.clear();
                     draining = false;
                 }
                 return;
