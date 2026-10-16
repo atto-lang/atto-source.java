@@ -165,7 +165,74 @@ jobs:
               print(f"VERIFIED_SECURITY_JUNIT {name}: {count} executed")
           PY
       - name: Full Java 25 Maven candidate verification
-        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+        # Clean again so focused six-class reports cannot masquerade as a
+        # complete full-suite verification run.
+        run: mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify
+      - name: Prove full Maven suite executed beyond focused security classes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          focused = {
+              "dev.oreslang.launcher.DenoCliDefaultPermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsNetworkAuditTest",
+              "dev.oreslang.runtime.RuntimePermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
+              "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
+              "dev.oreslang.runtime.ScopedPermissionInteropTest",
+          }
+          report_dir = Path("target/surefire-reports")
+          if (not report_dir.is_dir() or report_dir.is_symlink()
+                  or report_dir.parent.is_symlink()):
+              raise SystemExit("Full Maven suite has no trustworthy report directory")
+          reports = list(report_dir.glob("TEST-*.xml"))
+          if len(reports) <= len(focused):
+              raise SystemExit("Full Maven suite did not produce broader JUnit reports")
+          executed = set()
+          focused_seen = set()
+          for report in reports:
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit(f"Invalid full-suite report: {report}")
+              if not 0 < report.stat().st_size <= 16 * 1024 * 1024:
+                  raise SystemExit(f"Empty or oversized full-suite report: {report}")
+              classname = report.name[len("TEST-"):-len(".xml")]
+              root = ElementTree.parse(report).getroot()
+              if root.tag != "testsuite" or root.get("name") != classname:
+                  raise SystemExit(f"Mismatched full-suite identity: {report}")
+              cases = root.findall("testcase")
+              try:
+                  declared = int(root.get("tests", "-1"))
+                  totals = [int(root.get(k, "-1"))
+                            for k in ("failures", "errors", "skipped")]
+              except ValueError:
+                  raise SystemExit(f"Invalid full-suite JUnit totals: {report}")
+              if declared != len(cases) or any(n < 0 for n in totals):
+                  raise SystemExit(f"Inconsistent full-suite JUnit totals: {report}")
+              successful = 0
+              for case in cases:
+                  if case.get("classname") != classname:
+                      raise SystemExit(f"Incorrect testcase identity: {report}")
+                  if any(case.find(k) is not None for k in
+                         ("failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError")):
+                      continue
+                  successful += 1
+              if successful:
+                  executed.add(classname)
+                  if classname in focused:
+                      focused_seen.add(classname)
+          if focused_seen != focused:
+              raise SystemExit("Full Maven verification omitted focused classes: "
+                               + ", ".join(sorted(focused - focused_seen)))
+          extra = executed - focused
+          if not extra:
+              raise SystemExit("No executable full-suite tests beyond security subset")
+          print(f"VERIFIED_FULL_JUNIT_CLASSES={len(executed)}")
+          print(f"VERIFIED_FULL_JUNIT_EXTRA_CLASSES={len(extra)}")
+          PY
       - name: Native AOT candidate build and guest execution
         shell: bash
         run: |
