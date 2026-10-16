@@ -138,8 +138,7 @@ public final class OresMain {
                     rootOption = arg.substring("--project-root=".length());
                     if (rootOption.isBlank()) throw new UsageException("--project-root requires a directory");
                     Path.of(rootOption);
-                }
-                else if (arg.startsWith("--allow=")) {
+                } else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
                     if (raw.isBlank()) {
                         throw new UsageException("--allow requires a comma-separated capability list");
@@ -360,6 +359,7 @@ public final class OresMain {
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
                         + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
+                        + "[--manifest-path=FILE] [--project-root=DIR] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
     }
