@@ -487,4 +487,22 @@ final class NominalInheritedMethodSlotsTest {
         assertTrue(rejected.getMessage().contains("method declaration limit"),
                 rejected::getMessage);
     }
+
+    @Test
+    void singleCandidateDoesNotTurnUnknownTypeIntoNominalProof() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Only as
+                    pub pick(Color x): int { return 1; }
+                end
+                """);
+        var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
+        // The arity-only checker may handle the single declaration, but
+        // the nominal-overload selection helper must not claim type proof.
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Only", Domain.INSTANCE, "pick",
+                        List.of(dev.oreslang.types.Types.Unknown.INSTANCE), registry));
+        assertTrue(rejected.getMessage().contains("requires multiple candidates"),
+                rejected::getMessage);
+    }
 }
