@@ -29,6 +29,54 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void immutableDataSnapshotsRetainNullableElements() {
+        java.util.List<Object> sender = new ArrayList<>();
+        sender.add(null);
+        sender.add(new ArrayList<>(java.util.Arrays.asList(null, "before")));
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> frozen = (java.util.List<Object>) ActorRuntime.freeze(sender);
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> nested = (java.util.List<Object>) frozen.get(1);
+        sender.set(0, "changed");
+        ((java.util.List<Object>) sender.get(1)).set(1, "after");
+
+        assertNull(frozen.get(0));
+        assertEquals(java.util.Arrays.asList(null, "before"), nested);
+        assertThrows(UnsupportedOperationException.class, () -> frozen.set(0, "modified"));
+        assertThrows(UnsupportedOperationException.class, () -> nested.set(1, "modified"));
+
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> fromArray =
+                (java.util.List<Object>) ActorRuntime.freeze(new Object[]{null, "ok"});
+        assertEquals(java.util.Arrays.asList(null, "ok"), fromArray);
+        assertThrows(UnsupportedOperationException.class, () -> fromArray.set(0, "changed"));
+    }
+
+    @Test
+    void sharedMailboxCopiesNullableDataWithoutLeakingSenderAliases() throws Exception {
+        java.util.concurrent.atomic.AtomicReference<java.util.List<?>> received =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<java.util.List<?>>spawnShared(() ->
+                    (message, context) -> received.set(message));
+            java.util.List<Object> source = new ArrayList<>(
+                    java.util.Arrays.asList(null, "before"));
+            ref.send(source);
+            source.set(1, "after");
+            ref.drain().get(5, java.util.concurrent.TimeUnit.SECONDS);
+
+            assertEquals(java.util.Arrays.asList(null, "before"), received.get());
+            assertNotSame(source, received.get());
+            @SuppressWarnings("unchecked")
+            java.util.List<Object> actual = (java.util.List<Object>) received.get();
+            assertThrows(UnsupportedOperationException.class, () -> actual.set(1, "leak"));
+            ref.stop();
+            ref.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void actorRefsCannotCrossRuntimeCapabilityBoundaries() {
         try (ActorRuntime runtimeA = new ActorRuntime();
              ActorRuntime runtimeB = new ActorRuntime()) {
