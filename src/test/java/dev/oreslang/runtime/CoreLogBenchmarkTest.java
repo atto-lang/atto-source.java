@@ -72,34 +72,45 @@ final class CoreLogBenchmarkTest {
     }
 
     @Test void measureActorQueueLatencyWithCoreLogOffAndOn() throws Exception {
-        for (var level : new CoreLog.Level[] {CoreLog.Level.OFF, CoreLog.Level.ERROR}) {
-            CoreLog.configure(level);
-            try (var runtime = new ActorRuntime()) {
-                var observed = new long[ACTOR_MESSAGES];
-                var sequence = new AtomicInteger();
-                var received = new CountDownLatch(ACTOR_MESSAGES);
-                var ref = runtime.<Long>spawn(() -> (sentAt, ctx) -> {
-                    int i = sequence.getAndIncrement();
-                    observed[i] = Math.max(0L, System.nanoTime() - sentAt);
-                    if (level != CoreLog.Level.OFF)
-                        CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
-                    received.countDown();
-                    if (i == ACTOR_MESSAGES - 1) ctx.self().stop();
-                });
-                long start = System.nanoTime();
-                for (int i = 0; i < ACTOR_MESSAGES; i++) ref.send(System.nanoTime());
-                assertTrue(received.await(15, TimeUnit.SECONDS));
-                assertTrue(ref.awaitTermination(15, TimeUnit.SECONDS));
-                long elapsed = System.nanoTime() - start;
-                Arrays.sort(observed);
-                System.out.println("CORE_LOG_ACTOR_BENCH level=" + level.name().toLowerCase()
-                        + " events=" + ACTOR_MESSAGES
-                        + " queue_latency_p50_ns=" + percentile(observed, 50)
-                        + " queue_latency_p95_ns=" + percentile(observed, 95)
-                        + " queue_latency_p99_ns=" + percentile(observed, 99)
-                        + " duration_ns=" + elapsed);
-            } finally {
-                CoreLog.configure(CoreLog.Level.OFF);
+        // Deliberately alternate observation order so the first configuration
+        // does not consistently pay JVM warm-up and actor pool initialization.
+        // Discard two full paired rounds as warm-up. These measurements do
+        // not establish a causal performance delta on shared CI hosts.
+        for (int round = 0; round < 6; round++) {
+            CoreLog.Level[] order = (round & 1) == 0
+                    ? new CoreLog.Level[] {CoreLog.Level.OFF, CoreLog.Level.ERROR}
+                    : new CoreLog.Level[] {CoreLog.Level.ERROR, CoreLog.Level.OFF};
+            for (var level : order) {
+                CoreLog.configure(level);
+                try (var runtime = new ActorRuntime()) {
+                    var observed = new long[ACTOR_MESSAGES];
+                    var sequence = new AtomicInteger();
+                    var received = new CountDownLatch(ACTOR_MESSAGES);
+                    var ref = runtime.<Long>spawn(() -> (sentAt, ctx) -> {
+                        int i = sequence.getAndIncrement();
+                        observed[i] = Math.max(0L, System.nanoTime() - sentAt);
+                        if (level != CoreLog.Level.OFF)
+                            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
+                        received.countDown();
+                        if (i == ACTOR_MESSAGES - 1) ctx.self().stop();
+                    });
+                    long start = System.nanoTime();
+                    for (int i = 0; i < ACTOR_MESSAGES; i++) ref.send(System.nanoTime());
+                    assertTrue(received.await(15, TimeUnit.SECONDS));
+                    assertTrue(ref.awaitTermination(15, TimeUnit.SECONDS));
+                    long elapsed = System.nanoTime() - start;
+                    Arrays.sort(observed);
+                    System.out.println("CORE_LOG_ACTOR_BENCH level=" + level.name().toLowerCase()
+                            + " round=" + round
+                            + " warmup=" + (round < 2)
+                            + " events=" + ACTOR_MESSAGES
+                            + " queue_latency_p50_ns=" + percentile(observed, 50)
+                            + " queue_latency_p95_ns=" + percentile(observed, 95)
+                            + " queue_latency_p99_ns=" + percentile(observed, 99)
+                            + " duration_ns=" + elapsed);
+                } finally {
+                    CoreLog.configure(CoreLog.Level.OFF);
+                }
             }
         }
     }
