@@ -4454,6 +4454,228 @@ public final class OresEvalRootNode extends RootNode {
             return invokableInvocation(invokable, args);
         }
 
+        private Invocation prepareTypedMapInvocation(
+                OresKeyedMap<?, ?> map,
+                Ast.MemberExpr member,
+                List<Object> args,
+                Env env) {
+            String operation = member.member();
+            if (!java.util.Set.of("has", "get", "take", "remove").contains(operation)) {
+                throw new IllegalArgumentException(
+                        "unknown typed Map operation '" + operation + "'");
+            }
+            if (args.size() != 1) {
+                throw new IllegalArgumentException(
+                        "Map." + operation + " expects exactly one key argument");
+            }
+            Object key = args.getFirst();
+            if (operation.equals("take") || operation.equals("remove")) {
+                if (!(member.receiver() instanceof Ast.NameExpr owner)
+                        || !env.canWriteMap(owner.name(), map)) {
+                    throw new SecurityException(
+                            "Map." + operation
+                                    + " requires a directly owned let mut or val binding");
+                }
+            }
+            return invokableInvocation(ignored -> switch (operation) {
+                case "has" -> map.containsKey(key);
+                case "get" -> {
+                    OresKeyedMap.Lookup<?> found = map.lookup(key);
+                    yield new OptionValue(found.present(), found.value());
+                }
+                case "take" -> {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> owned =
+                            (OresKeyedMap<Object, Object>) map;
+                    OresKeyedMap.Lookup<Object> found = owned.take(key);
+                    yield new OptionValue(found.present(), found.value());
+                }
+                case "remove" -> {
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> owned =
+                            (OresKeyedMap<Object, Object>) map;
+                    yield owned.take(key).present();
+                }
+                default -> throw new IllegalStateException(
+                        "unreachable typed Map operation " + operation);
+            }, List.of());
+        }
+
+        private OresKeyedMap.ValueDomain mapValueDomain(Ast.TypeRef value) {
+            if (value.isUnion() || value.isBorrow() || value.inferArguments()
+                    || !value.arguments().isEmpty()) {
+                throw new IllegalArgumentException("unsupported runtime Map value type");
+            }
+            return switch (value.name()) {
+                case "int" -> OresKeyedMap.ValueDomain.INT;
+                case "bool", "Bool" -> OresKeyedMap.ValueDomain.BOOL;
+                case "String", "string" -> OresKeyedMap.ValueDomain.STRING;
+                case "Symbol" -> OresKeyedMap.ValueDomain.SYMBOL;
+                default -> throw new IllegalArgumentException("unsupported runtime Map value type");
+            };
+        }
+
+        private static boolean isTypedOpenMapClass(Ast.ClassDecl klass) {
+            if (klass.parents().size() != 1) return false;
+            Ast.TypeRef parent = klass.parents().getFirst();
+            if (!parent.name().equals("Map") || parent.inferArguments()
+                    || parent.arguments().size() != 2) return false;
+            Ast.TypeRef key = parent.arguments().get(0);
+            Ast.TypeRef value = parent.arguments().get(1);
+            return !key.inferArguments() && key.arguments().isEmpty()
+                    && (key.name().equals("String") || key.name().equals("string"))
+                    && !value.inferArguments() && value.arguments().isEmpty()
+                    && value.name().equals("unknown");
+        }
+
+        private OresKeyedMap<String, Object> newGuestOpenMap(Ast.ClassDecl klass) {
+            if (!isTypedOpenMapClass(klass)) {
+                throw new IllegalArgumentException(
+                        "class is not a canonical typed open Map schema: " + klass.name());
+            }
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "typed Map allocation inside actors requires ownership and memory accounting");
+            }
+            return OresKeyedMap.stringKeys(
+                    OresKeyedMap.ValueDomain.ANY,
+                    (key, value) -> validateTypedOpenMapEntry(klass, key, value));
+        }
+
+        private void validateTypedOpenMapEntry(
+                Ast.ClassDecl klass,
+                Object rawKey,
+                Object value) {
+            if (!(rawKey instanceof String key)) {
+                throw new IllegalArgumentException("typed open Map key must be a String");
+            }
+            for (Ast.MapKeyDecl declared : klass.mapKeys()) {
+                if (!declared.name().equals(key)) continue;
+                Ast.TypeRef schema = declared.declaredType();
+                if (!schema.name().equals("Option") || schema.arguments().size() != 1
+                        || schema.inferArguments()) {
+                    throw new IllegalStateException(
+                            "malformed typed open Map schema for key '" + key + "'");
+                }
+                Ast.TypeRef stored = schema.arguments().getFirst();
+                if (!typedOpenMapStoredValueMatches(
+                        value, stored, new IdentityHashMap<>(), 0)) {
+                    throw new IllegalArgumentException(
+                            "typed open Map key '" + key
+                                    + "' does not satisfy stored type " + stored);
+                }
+                return;
+            }
+            if (!typedOpenMapOpenValueIsCopy(
+                    value, new IdentityHashMap<>(), 0)) {
+                throw new IllegalArgumentException(
+                        "typed open Map extra keys accept only recursively Copy scalar, Option or Result values");
+            }
+        }
+
+        private boolean typedOpenMapStoredValueMatches(
+                Object value,
+                Ast.TypeRef target,
+                IdentityHashMap<Object, Boolean> active,
+                int depth) {
+            if (value == null || depth > 64 || target.inferArguments()
+                    || target.isBorrow() || target.isUnion()
+                    || target.isTupleType() || target.isRecordType()) return false;
+            String name = target.name();
+            if (name.equals("int")) {
+                return value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long
+                        || value instanceof java.math.BigInteger;
+            }
+            if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
+            if (name.equals("string") || name.equals("String")) return value instanceof String;
+            if (name.equals("Symbol")) return value instanceof dev.oreslang.runtime.OresSymbol;
+            if (active.put(value, Boolean.TRUE) != null) return false;
+            try {
+                if (name.equals("Option") && target.arguments().size() == 1
+                        && value instanceof OptionValue option) {
+                    return !option.present()
+                            || typedOpenMapStoredValueMatches(
+                                    option.value(), target.arguments().getFirst(), active, depth + 1);
+                }
+                if (name.equals("Result") && target.arguments().size() == 2
+                        && value instanceof ResultValue result) {
+                    return typedOpenMapStoredValueMatches(
+                            result.value(),
+                            target.arguments().get(result.ok() ? 0 : 1),
+                            active,
+                            depth + 1);
+                }
+                return false;
+            } finally {
+                active.remove(value);
+            }
+        }
+
+        private boolean typedOpenMapOpenValueIsCopy(
+                Object value,
+                IdentityHashMap<Object, Boolean> active,
+                int depth) {
+            if (value == null || depth > 64) return false;
+            if (value instanceof String || value instanceof Boolean
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long
+                    || value instanceof java.math.BigInteger
+                    || value instanceof dev.oreslang.runtime.OresSymbol) {
+                return true;
+            }
+            if (active.put(value, Boolean.TRUE) != null) return false;
+            try {
+                if (value instanceof OptionValue option) {
+                    return !option.present()
+                            || typedOpenMapOpenValueIsCopy(option.value(), active, depth + 1);
+                }
+                if (value instanceof ResultValue result) {
+                    return typedOpenMapOpenValueIsCopy(result.value(), active, depth + 1);
+                }
+                return false;
+            } finally {
+                active.remove(value);
+            }
+        }
+
+        private Object newGuestMap(Ast.TypeRef type) {
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "typed Map allocation inside actors requires ownership and memory accounting");
+            }
+            if (type.inferArguments() || type.arguments().size() != 2) {
+                throw new IllegalArgumentException("Map<K,V> requires two explicit type arguments");
+            }
+            Ast.TypeRef key = type.arguments().getFirst();
+            OresKeyedMap.ValueDomain valueDomain = mapValueDomain(type.arguments().get(1));
+            if (!key.isUnion()) {
+                if (key.arguments().isEmpty() && !key.inferArguments()) {
+                    if (key.name().equals("Symbol")) return OresKeyedMap.symbolKeys(valueDomain);
+                    if (key.name().equals("String") || key.name().equals("string")) {
+                        return OresKeyedMap.stringKeys(valueDomain);
+                    }
+                }
+                throw new IllegalArgumentException("unsupported runtime Map key domain");
+            }
+            if (key.arguments().size() == 2) {
+                Ast.TypeRef a = key.arguments().get(0);
+                Ast.TypeRef b = key.arguments().get(1);
+                boolean aSymbol = a.name().equals("Symbol")
+                        && a.arguments().isEmpty() && !a.inferArguments();
+                boolean bSymbol = b.name().equals("Symbol")
+                        && b.arguments().isEmpty() && !b.inferArguments();
+                boolean aString = (a.name().equals("String") || a.name().equals("string"))
+                        && a.arguments().isEmpty() && !a.inferArguments();
+                boolean bString = (b.name().equals("String") || b.name().equals("string"))
+                        && b.arguments().isEmpty() && !b.inferArguments();
+                if ((aSymbol && bString) || (bSymbol && aString)) {
+                    return OresKeyedMap.stringOrSymbolKeys(valueDomain);
+                }
+            }
+            throw new IllegalArgumentException("unsupported runtime Map key union");
+        }
+
         private static int sequenceIndex(Object value) {
             // Dynamic/host values still cross this check. Number.longValue()
             // would silently truncate floating-point indices (including NaN).
@@ -4465,6 +4687,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object indexValue(Object receiver, Object index) {
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return map.getRequired(index);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4546,6 +4771,18 @@ public final class OresEvalRootNode extends RootNode {
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
                 Object key = eval(index.index(), env);
+                if (receiver instanceof OresKeyedMap<?, ?> map) {
+                    if (!(index.receiver() instanceof Ast.NameExpr owner)
+                            || !env.canWriteMap(owner.name(), map)) {
+                        throw new SecurityException(
+                                "typed Map indexed write requires directly owned let mut or val binding");
+                    }
+                    @SuppressWarnings("unchecked")
+                    OresKeyedMap<Object, Object> typed =
+                            (OresKeyedMap<Object, Object>) map;
+                    typed.put(key, value);
+                    return value;
+                }
                 if (receiver instanceof List<?> raw) {
                     @SuppressWarnings("unchecked")
                     List<Object> list = (List<Object>) raw;
@@ -6259,6 +6496,18 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
+                    if (receiver instanceof OresKeyedMap<?, ?> map) {
+                        if (!(target.receiver() instanceof Ast.NameExpr owner)
+                                || !env.canWriteMap(owner.name(), map)) {
+                            throw new SecurityException(
+                                    "typed Map indexed write requires directly owned let mut or val binding");
+                        }
+                        @SuppressWarnings("unchecked")
+                        OresKeyedMap<Object, Object> typed =
+                                (OresKeyedMap<Object, Object>) map;
+                        typed.put(index, value);
+                        return value;
+                    }
                     int i = sequenceIndex(index);
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
@@ -6402,6 +6651,13 @@ public final class OresEvalRootNode extends RootNode {
                 return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "new Map<K,V>() takes no constructor arguments");
+                    }
+                    return newGuestMap(created.type());
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
