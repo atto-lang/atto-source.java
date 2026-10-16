@@ -95,7 +95,7 @@ public final class DopKernelIR {
         public Object regionBackingIdentity() {
             synchronized (state) {
                 active();
-                return state;
+                return state.regionToken;
             }
         }
         public DopRegionSchedule.Root regionRoot() {
