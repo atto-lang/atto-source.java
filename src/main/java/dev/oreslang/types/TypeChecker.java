@@ -186,7 +186,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "std", "process", "actor", "fs", "File", "network", "net", "http", "env",
-                "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps",
+                "print", "Some", "None", "Ok", "Err", "And", "Or", "Xor", "BooleanOps", "DecimalOps",
                 "Mutex", "SharedMutex", "Channel", "SelectCase", "SelectSet", "SelectResult", "Object", "List", "Option", "Result", "Future",
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
@@ -2102,6 +2102,9 @@ public final class TypeChecker {
             if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                 return new Named("$BooleanOps", List.of());
             }
+            if (name.name().equals("DecimalOps") && !modules.containsKey("DecimalOps")) {
+                return new Named("$DecimalOps", List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -3205,6 +3208,21 @@ public final class TypeChecker {
             return fn.result();
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr decimalNamespace
+                    && decimalNamespace.name().equals("DecimalOps")
+                    && env.lookup("DecimalOps") == null
+                    && !modules.containsKey("DecimalOps")) {
+                return switch (member.member()) {
+                    case "divide" -> new Function(
+                            List.of(Primitive.DECIMAL, Primitive.DECIMAL, Primitive.INT, Primitive.STRING),
+                            Primitive.DECIMAL);
+                    case "round", "sqrt" -> new Function(
+                            List.of(Primitive.DECIMAL, Primitive.INT, Primitive.STRING),
+                            Primitive.DECIMAL);
+                    default -> throw new IllegalArgumentException(
+                            "unknown DecimalOps intrinsic '" + member.member() + "'");
+                };
+            }
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
                     && !modules.containsKey("BooleanOps")
