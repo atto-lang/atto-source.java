@@ -88,6 +88,16 @@ final class OresProjectConfigRegressionTest {
         IllegalArgumentException nonexistent = assertThrows(IllegalArgumentException.class,
                 () -> consumer.forImportedPackage(source, "pkg:tools/src/missing"));
         assertTrue(nonexistent.getMessage().contains("does not resolve to a source"));
+
+        // A public context transition cannot accept noncanonical rooted
+        // paths even when their normalized filesystem target would match.
+        for (String malformed : List.of("pkg:tools/src//a", "pkg:tools/src/./a",
+                "pkg:tools/src/../src/a")) {
+            IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                    () -> consumer.forImportedPackage(source, malformed), malformed);
+            assertTrue(invalid.getMessage().contains("empty/dot/traversal"),
+                    invalid.getMessage());
+        }
     }
 
     @Test
