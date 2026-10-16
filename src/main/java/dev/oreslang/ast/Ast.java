@@ -1046,7 +1046,7 @@ public final class Ast {
         }
     }
 
-    public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT }
+    public enum ObjectKind { INFERRED_STRUCT, EXPLICIT_STRUCT, RECORD }
 
     /** A field declaration in the closed shape of an explicit anonymous struct. */
     public record StructFieldSpec(String name, TypeRef type) {
@@ -1092,6 +1092,8 @@ public final class Ast {
         }
         public boolean inferredStruct() { return kind == ObjectKind.INFERRED_STRUCT; }
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
+        /** A closed immutable, labeled product rather than an inferred struct. */
+        public boolean recordLiteral() { return kind == ObjectKind.RECORD; }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {

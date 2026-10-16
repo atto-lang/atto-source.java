@@ -42,7 +42,14 @@ public final class Types {
      * regained through aliases while preserving ordinary shape matching.
      */
     public record Record(Map<String, Type> members, boolean readOnly) implements Type {
-        public Record { members = Map.copyOf(members); }
+        public Record {
+            // A record's labels define identity; lexical iteration order is
+            // nevertheless needed to preserve evaluation/ABI slot provenance.
+            // Snapshot without permitting null fields or external mutation.
+            Map.copyOf(members);
+            members = java.util.Collections.unmodifiableMap(
+                    new java.util.LinkedHashMap<>(members));
+        }
         public Record(Map<String, Type> members) { this(members, false); }
     }
 

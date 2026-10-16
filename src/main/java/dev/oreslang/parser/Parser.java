@@ -3627,6 +3627,18 @@ public final class Parser {
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
+            // Named parenthesized fields represent a closed record, not a tuple
+            // or an inferred mutable struct. Preserve initializer source order.
+            if (check(IDENT) && checkNext(COLON)) {
+                List<Ast.ObjectField> fields = new ArrayList<>();
+                do {
+                    String name = consume(IDENT, "expected record field name").lexeme();
+                    consume(COLON, "expected ':' after record field name");
+                    fields.add(Ast.ObjectField.named(name, parseExpression()));
+                } while (match(COMMA));
+                consume(RPAREN, "expected ')' after record literal");
+                return new Ast.ObjectExpr(fields, Ast.ObjectKind.RECORD, List.of());
+            }
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
                 List<Ast.Expr> items = new ArrayList<>();
