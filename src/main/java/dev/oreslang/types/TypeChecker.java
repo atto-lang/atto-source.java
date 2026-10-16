@@ -6122,7 +6122,13 @@ public final class TypeChecker {
                         operation.equals("and_then") ? 1 : 0);
                 requireAssignable(actual, invariant, "Result." + operation + " invariant");
                 requireAssignable(invariant, actual, "Result." + operation + " invariant");
-                yield mapped;
+                // A success-only Ok(...) callback has an unbound error slot;
+                // an error-only Err(...) callback has an unbound success slot.
+                // The untouched branch still carries the receiver's original
+                // type, never the callback constructor's Unknown parameter.
+                yield operation.equals("and_then")
+                        ? new Named("Result", List.of(nested.arguments().getFirst(), error))
+                        : new Named("Result", List.of(input, nested.arguments().get(1)));
             }
             default -> throw new IllegalArgumentException("unknown Result member '" + operation + "'");
         };
