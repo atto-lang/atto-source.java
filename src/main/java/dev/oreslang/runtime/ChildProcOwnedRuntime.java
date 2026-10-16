@@ -26,9 +26,16 @@ import java.util.concurrent.RejectedExecutionException;
  * must enforce OS confinement if hostile subprocesses are supported.</p>
  */
 final class ChildProcOwnedRuntime implements AutoCloseable {
-    private final OresContext context;
-    private final ActorRuntime runtime;
-    private final ActorRuntime.ActorId owner;
+    /**
+     * Trusted-host admission boundary; never expose or implement in guest code.
+     * Real actor integrations bind it to the captured ActorRuntime and ActorId.
+     */
+    interface Admission {
+        void requireOwner();
+        ChildProcLaunchAdmission.Plan admit(ChildProcLaunchAdmission.Spec spec) throws IOException;
+    }
+
+    private final Admission admission;
     private final Executor ioExecutor;
     private final int maxChildren;
     private final int maxOutputBytes;
@@ -73,27 +80,28 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         boolean kill() { return signal(this, true); }
     }
 
-    private ChildProcOwnedRuntime(OresContext context, ActorRuntime.ActorId owner,
-                                  Executor ioExecutor, int maxChildren, int maxOutputBytes) {
-        this.context = context;
-        this.runtime = context.actors();
-        this.owner = owner;
-        this.ioExecutor = ioExecutor;
-        this.maxChildren = maxChildren;
-        this.maxOutputBytes = maxOutputBytes;
-    }
-
-    /** Call only on the initial owning actor turn. The executor must be host-owned. */
-    static ChildProcOwnedRuntime forCurrentActor(OresContext context, Executor ioExecutor,
-                                                  int maxChildren, int maxOutputBytes) {
-        Objects.requireNonNull(context, "context");
-        Objects.requireNonNull(ioExecutor, "ioExecutor");
+    /**
+     * Host-only backend constructor. The host must supply admission that
+     * validates ownership and permissions on every calling actor turn.
+     */
+    ChildProcOwnedRuntime(Admission admission, Executor ioExecutor,
+                          int maxChildren, int maxOutputBytes) {
+        this.admission = Objects.requireNonNull(admission, "admission");
+        this.ioExecutor = Objects.requireNonNull(ioExecutor, "ioExecutor");
         if (maxChildren < 1 || maxChildren > 64) {
             throw new IllegalArgumentException("maxChildren must be in 1..64");
         }
         if (maxOutputBytes < 1 || maxOutputBytes > 16 * 1024 * 1024) {
             throw new IllegalArgumentException("maxOutputBytes must be in 1..16 MiB");
         }
+        this.maxChildren = maxChildren;
+        this.maxOutputBytes = maxOutputBytes;
+    }
+
+    /** Capture the owner identity in a trusted host actor turn. */
+    static ChildProcOwnedRuntime forCurrentActor(OresContext context, Executor ioExecutor,
+                                                  int maxChildren, int maxOutputBytes) {
+        Objects.requireNonNull(context, "context");
         if (!ActorRuntime.inActorExecution()
                 || ActorRuntime.currentActorRuntime() != context.actors()
                 || ActorRuntime.currentActorId().isEmpty()) {
@@ -104,16 +112,28 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
                 || ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot create child process registries");
         }
-        return new ChildProcOwnedRuntime(context, ActorRuntime.currentActorId().orElseThrow(),
-                ioExecutor, maxChildren, maxOutputBytes);
+        ActorRuntime runtime = context.actors();
+        ActorRuntime.ActorId owner = ActorRuntime.currentActorId().orElseThrow();
+        Admission actorAdmission = new Admission() {
+            @Override public void requireOwner() {
+                if (!ActorRuntime.inActorExecution()
+                        || ActorRuntime.currentActorRuntime() != runtime
+                        || ActorRuntime.currentActorId().filter(owner::equals).isEmpty()) {
+                    throw new SecurityException("child process operation belongs to a different actor");
+                }
+            }
+
+            @Override public ChildProcLaunchAdmission.Plan admit(
+                    ChildProcLaunchAdmission.Spec spec) throws IOException {
+                requireOwner();
+                return ActorChildProcAdmission.admit(context, spec);
+            }
+        };
+        return new ChildProcOwnedRuntime(actorAdmission, ioExecutor, maxChildren, maxOutputBytes);
     }
 
     private void requireOwner() {
-        if (!ActorRuntime.inActorExecution()
-                || ActorRuntime.currentActorRuntime() != runtime
-                || !ActorRuntime.currentActorId().filter(owner::equals).isPresent()) {
-            throw new SecurityException("child process operation belongs to a different actor");
-        }
+        admission.requireOwner();
     }
 
     /**
@@ -129,7 +149,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
                 throw new IllegalStateException("child process registry capacity exceeded");
             }
         }
-        ChildProcLaunchAdmission.Plan plan = ActorChildProcAdmission.admit(context, spec);
+        ChildProcLaunchAdmission.Plan plan = admission.admit(spec);
         final Slot slot;
         synchronized (lock) {
             if (closed) throw new IllegalStateException("child process registry is closed");
@@ -143,7 +163,8 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             slots.put(slot.generation, slot);
         }
         try {
-            ioExecutor.execute(() -> start(slot, plan));
+            Thread callingActorCarrier = Thread.currentThread();
+            ioExecutor.execute(() -> start(slot, plan, callingActorCarrier));
         } catch (RejectedExecutionException rejected) {
             forget(slot);
             slot.ready.completeExceptionally(rejected);
@@ -154,11 +175,12 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         return slot.ready;
     }
 
-    private void start(Slot slot, ChildProcLaunchAdmission.Plan plan) {
+    private void start(Slot slot, ChildProcLaunchAdmission.Plan plan, Thread callingActorCarrier) {
         // Executor implementations are caller supplied. A direct/inline executor
         // must NOT turn the async API into a blocking ProcessBuilder.start() on
         // the actor carrier or on another actor's execution turn.
-        if (ActorRuntime.isActorCarrierThread() || ActorRuntime.inActorExecution()) {
+        if (Thread.currentThread() == callingActorCarrier
+                || ActorRuntime.isActorCarrierThread() || ActorRuntime.inActorExecution()) {
             forget(slot);
             slot.ready.completeExceptionally(new IllegalStateException(
                     "subprocess launch worker must not execute on an actor carrier"));
