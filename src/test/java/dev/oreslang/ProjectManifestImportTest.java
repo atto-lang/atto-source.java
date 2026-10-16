@@ -481,6 +481,28 @@ final class ProjectManifestImportTest {
     }
 
     @Test
+    void directIncrementalMappingsCannotSanitizeMalformedPackageSyntax() {
+        for (String malformed : List.of("+src/helper", "+/src//helper",
+                "+/src/./helper", "+/src/../src/helper",
+                "pkg:tools\\src\\helper", "pkg:tools/src/../helper",
+                "pkg:tools//src/helper", "pkg:/src/helper", "@/src/helper")) {
+            Map<String, String> sources = Map.of(
+                    "src/main.ores", """
+                            import fnc helper from "%s";
+                            pub fnc main(): void { return; }
+                            """.formatted(malformed),
+                    "src/helper.ores", "pub fnc helper(): int { return 42; }"
+            );
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> new IncrementalCompiler().compile(sources,
+                            Map.of("src/main.ores", Map.of(malformed, "src/helper.ores"))),
+                    malformed);
+            assertTrue(rejected.getMessage().contains("import"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
     void deepRestRouteImportsModulesThroughPackageRootAndExecutes() throws Exception {
         Path project = temp.resolve("deep-rest-demo");
         Path lib = project.resolve("src/lib");
