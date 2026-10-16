@@ -41,12 +41,27 @@ public final class OresFutures {
      * and async return-path adoption require separate language integration.</p>
      */
     public static <T> OresFuture<T> flatten(OresFuture<?> source) {
+        return flatten(source, false);
+    }
+
+    /**
+     * Adopt a task produced and owned by this caller. Cancellation must
+     * revoke the owned outer task as well as detach its observation.
+     * Adopted child Futures remain shared unless their own ownership is
+     * separately established.
+     */
+    public static <T> OresFuture<T> flattenOwned(OresFuture<?> source) {
+        return flatten(source, true);
+    }
+
+    private static <T> OresFuture<T> flatten(OresFuture<?> source, boolean ownSource) {
         Objects.requireNonNull(source, "source");
         AtomicReference<OresFuture.RuntimeWaiterRegistration<?>> active =
                 new AtomicReference<>();
         OresFuture<T> result = new OresFuture<>(() -> {
             OresFuture.RuntimeWaiterRegistration<?> waiter = active.getAndSet(null);
             if (waiter != null) waiter.detach();
+            if (ownSource) source.cancel(true);
         });
         ConcurrentLinkedQueue<OresFuture<?>> pending = new ConcurrentLinkedQueue<>();
         AtomicInteger draining = new AtomicInteger();
