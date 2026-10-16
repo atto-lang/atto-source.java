@@ -88,6 +88,46 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                         "worker-b", "Worker", ActorPipelineRoutePlan.Role.WRITABLE, "Event", "")), wrong),
                 "duplicate edge should fail");
 
+        // Cross-backend canonical graph strings use strict UTF-8 byte budgets,
+        // not Java UTF-16 code-unit lengths or replacement characters.
+        var source = new ActorPipelineRoutePlan.Stage(
+                "source", "Source", ActorPipelineRoutePlan.Role.READABLE, "", "Event");
+        var sink = new ActorPipelineRoutePlan.Stage(
+                "sink", "Sink", ActorPipelineRoutePlan.Role.WRITABLE, "Event", "");
+        var simpleEdge = new ActorPipelineRoutePlan.Edge("source", "sink", "Event");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(
+                new ActorPipelineRoutePlan.Stage("é".repeat(129), "Source",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"), sink),
+                List.of(simpleEdge)), "UTF-8 multibyte instance ID exceeded 256 bytes");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(
+                new ActorPipelineRoutePlan.Stage("source", "é".repeat(129),
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"), sink),
+                List.of(simpleEdge)), "UTF-8 multibyte nominal type exceeded 256 bytes");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(
+                new ActorPipelineRoutePlan.Stage("source", "Source",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event".repeat(52)), sink),
+                List.of(simpleEdge)), "oversized output port tag accepted");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(source,
+                new ActorPipelineRoutePlan.Stage("sink", "Sink",
+                        ActorPipelineRoutePlan.Role.WRITABLE, "Event".repeat(52), "")),
+                List.of(simpleEdge)), "oversized input port tag accepted");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(source, sink), List.of(
+                new ActorPipelineRoutePlan.Edge("source", "sink", "E\\0vent"))),
+                "NUL in link payload type accepted");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(source, sink), List.of(
+                new ActorPipelineRoutePlan.Edge("source\\0alias", "sink", "Event"))),
+                "NUL in link source accepted");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(
+                new ActorPipelineRoutePlan.Stage("source", "Source",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                new ActorPipelineRoutePlan.Stage("sink", "Sink",
+                        ActorPipelineRoutePlan.Role.WRITABLE, "\\uD800", "")),
+                List.of(simpleEdge)), "unpaired surrogate in port type accepted");
+        rejects(() -> new ActorPipelineRoutePlan(List.of(
+                new ActorPipelineRoutePlan.Stage("source\\0alias", "Source",
+                        ActorPipelineRoutePlan.Role.READABLE, "", "Event"), sink),
+                List.of(simpleEdge)), "NUL in actor instance ID accepted");
+
         var cycle = List.of(
                 new ActorPipelineRoutePlan.Stage(
                         "a", "A", ActorPipelineRoutePlan.Role.TRANSFORM, "E", "E"),
@@ -136,6 +176,6 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                 "concurrent round-robin lost selections");
 
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
-                + " cases=12 concurrent_selections=" + (writers * sendsEach));
+                + " cases=20 concurrent_selections=" + (writers * sendsEach));
     }
 }
