@@ -59,6 +59,44 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void rejectsPipelineAboveBoundedStageLimit() {
+        String input = "fnc plus(int n): int { return n + 1; } "
+                + "fnc main(): int { return 1" + " |> plus".repeat(129) + "; }";
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(input));
+        assertTrue(failure.getMessage().contains("pipeline exceeds 128 stages"),
+                failure::toString);
+    }
+
+    @Test
+    void rejectsErrorTypeMutationByAndThen() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                fnc badNext(int n): Result<int,int> { return Err(5); }
+                fnc broken(Result<int,String> input): Result<int,String> {
+                  return input |> Result.and_then(badNext);
+                }
+                """)));
+        assertTrue(failure.getMessage().contains("invariant"), failure::toString);
+    }
+
+    @Test
+    void rejectsNonBooleanFilterAndNonOptionFlatMap() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid(int n): int { return n + 1; }
+                fnc broken(Option<int> input): Option<int> {
+                  return input |> Option.filter(invalid);
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid(int n): int { return n + 1; }
+                fnc broken(Option<int> input): Option<int> {
+                  return input |> Option.and_then(invalid);
+                }
+                """)));
+    }
+
+    @Test
     void executesOptionAndResultCombinators() throws Exception {
         String program = """
                 fnc double(int n): int { return n * 2; }
