@@ -99,6 +99,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
+            "repos/trusted/ci/git/trees/"+E: {
+                "sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "mode": "040000", "type": "tree",
+                     "sha": D}]},
             # The synthetic fixture reuses A for existing test compatibility.
             # Distinguish each publish's main-commit lookup from its new
             # commit readback, even when one test invokes publish repeatedly.
@@ -126,6 +130,53 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A, D)
+
+    def test_root_tree_attestation_rejects_wrong_or_ambiguous_prefix(self):
+        correct = {"sha": E, "truncated": False,
+                   "tree": [{"path": pub.PREFIX, "mode": "040000",
+                             "type": "tree", "sha": D}]}
+        with patch.object(pub, "gh_api", return_value=correct) as api:
+            pub.verify_private_ci_root_tree("trusted/ci", E, D)
+            api.assert_called_once_with("repos/trusted/ci/git/trees/" + E)
+        malformed = [
+            {},
+            {"sha": A, "truncated": False, "tree": correct["tree"]},
+            {"sha": E, "truncated": True, "tree": correct["tree"]},
+            {"sha": E, "truncated": False, "tree": None},
+            {"sha": E, "truncated": False, "tree": []},
+            {"sha": E, "truncated": False, "tree": [
+                {"path": pub.PREFIX, "mode": "100644", "type": "blob", "sha": D}]},
+            {"sha": E, "truncated": False, "tree": [
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": B}]},
+            {"sha": E, "truncated": False, "tree": correct["tree"] * 2},
+            {"sha": E, "truncated": False, "tree": [
+                {"path": "not-the-source", "mode": "040000", "type": "tree",
+                 "sha": D}]},
+        ]
+        for malformed_reply in malformed:
+            with self.subTest(reply=malformed_reply):
+                with patch.object(pub, "gh_api", return_value=malformed_reply):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_private_ci_root_tree("trusted/ci", E, D)
+
+    def test_wrong_destination_root_tree_blocks_commit_and_ref(self):
+        original = self.fake_api
+        def substituted(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees/" + E:
+                self.route_calls.append((method, route, payload))
+                return {"sha": E, "truncated": False,
+                        "tree": [{"path": pub.PREFIX, "mode": "040000",
+                                  "type": "tree", "sha": B}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=substituted):
+            with self.assertRaisesRegex(pub.Denied, "root tree missing exact"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, A, D)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertEqual(writes, [
+            "repos/trusted/ci/git/blobs", "repos/trusted/ci/git/trees",
+            "repos/trusted/ci/git/trees"])
 
     def test_destination_commit_attestation_requires_exact_tree_and_parent(self):
         route = "repos/trusted/ci/git/commits/" + A
