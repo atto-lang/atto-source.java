@@ -90,6 +90,8 @@ class NumericParityAdmissionTest(unittest.TestCase):
         elif b == "llvm":
             self.assertNotEqual(c["bigint_exact"], "verified_compiled")
         elif b == "java":
+            self.assertEqual(c["checked_i64_overflow"], "implemented_unverified",
+                             "Java guest checked-i64 implementation still lacks executed CI")
             self.assertNotEqual(c["binary32_arithmetic"], "verified_compiled")
 
 
