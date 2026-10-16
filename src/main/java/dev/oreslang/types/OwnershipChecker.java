@@ -3525,7 +3525,14 @@ public final class OwnershipChecker {
                     List.of(element),
                     false);
         }
-        if (async) return new Ast.TypeRef("Future", List.of(result), false);
+        if (async) {
+            Ast.TypeRef eventual = result;
+            while (eventual.name().equals("Future")
+                    && eventual.arguments().size() == 1) {
+                eventual = eventual.arguments().getFirst();
+            }
+            return new Ast.TypeRef("Future", List.of(eventual), false);
+        }
         return result;
     }
 
