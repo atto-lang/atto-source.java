@@ -131,19 +131,19 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_only_protected_main_file_can_authorize_local_policy(self):
-        data = b"trusted/ci\\n"
+        data = b"trusted/ci\n"
         digest = hashlib.sha256(data).digest()
         blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
                             + bytes([0]) + data).hexdigest()
         good = {"type":"file", "encoding":"base64", "size":len(data),
-                "content":base64.b64encode(data).decode("ascii") + "\\n",
+                "content":base64.b64encode(data).decode("ascii") + "\n",
                 "sha":blob}
         with patch.object(pub, "gh_api", return_value=good):
             self.assertTrue(self.origin_policy(digest))
         # A locally forged allowlist cannot claim the approval on main.
         with patch.object(pub, "gh_api", return_value=good):
             with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
-                self.origin_policy(hashlib.sha256(b"other/ci\\n").digest())
+                self.origin_policy(hashlib.sha256(b"other/ci\n").digest())
         for mutation in (
             dict(good, sha="0"*40),
             dict(good, encoding="utf-8"),
