@@ -8727,7 +8727,16 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                // Checked signed-i64 arithmetic is required for parity with
+                // Forge/.NET. Silent Java long wraparound corrupts numeric
+                // algorithms and masks matrix index/size overflow.
+                return switch (op) {
+                    case '+' -> Math.addExact(x, y);
+                    case '-' -> Math.subtractExact(x, y);
+                    case '*' -> Math.multiplyExact(x, y);
+                    case '%' -> x % y;
+                    default -> throw new IllegalArgumentException("bad numeric operator");
+                };
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -8750,7 +8759,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)
+                return Math.negateExact(((Number) value).longValue());
             if (value instanceof java.math.BigDecimal decimal) return decimal.negate();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
