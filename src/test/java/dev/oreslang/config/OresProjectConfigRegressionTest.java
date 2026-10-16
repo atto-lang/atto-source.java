@@ -66,6 +66,8 @@ final class OresProjectConfigRegressionTest {
         OresProjectConfig imported = consumer.forImportedPackage(source, "pkg:tools/src/a");
         assertEquals(dependency.toRealPath(), imported.projectRoot().toRealPath());
         assertEquals("tools", imported.projectName().orElseThrow());
+        OresProjectConfig windowsSeparators = consumer.forImportedPackage(source, "pkg:tools\\src\\a");
+        assertEquals(dependency.toRealPath(), windowsSeparators.projectRoot().toRealPath());
         assertEquals(source.toRealPath(),
                 imported.resolveImport(source, "@/src/a").orElseThrow());
     }
