@@ -1533,12 +1533,14 @@ public final class Parser {
             return parseFunctionTypeSignature();
         }
 
-        if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
-        if (match(LPAREN)) {
-            Ast.TypeRef grouped = parseTypeRef();
-            consume(RPAREN, "expected ')' after grouped type");
-            return grouped;
+        // 'tuple' is contextual in type position; never reserve it as a name.
+        if (isContextualIdentifier("tuple") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after tuple in type position");
+            return parsePositionalTupleType(true);
         }
+        if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
+        if (match(LPAREN)) return parsePositionalTupleType(false);
 
         String name;
         if (match(VOID)) name = "void";
@@ -1590,6 +1592,41 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    /**
+     * Parenthesized singleton types remain grouping; two or more elements
+     * are a positional tuple type. Explicit 'tuple (...)' permits even an
+     * empty/one-slot tuple type without overloading grouped-type syntax.
+     *
+     * The '?' marker is omittable positional *slot* syntax and may appear
+     * only in a trailing suffix. The type checker must prove target ABI
+     * support before admitting or executing any such slot.
+     */
+    private Ast.TypeRef parsePositionalTupleType(boolean explicit) {
+        List<Ast.TypeRef> slots = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do {
+                Ast.TypeRef element = parseTypeRef();
+                if (match(QUESTION)) element = Ast.TypeRef.omittableTupleSlot(element);
+                slots.add(element);
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after positional tuple type");
+        if (!explicit && slots.size() == 1 && !slots.getFirst().isOmittableTupleSlot()) {
+            return slots.getFirst();
+        }
+        if (!explicit && slots.size() < 2) {
+            throw error(previous(), "parenthesized tuple shorthand requires at least two slots");
+        }
+        boolean optionalSeen = false;
+        for (Ast.TypeRef slot : slots) {
+            if (optionalSeen && !slot.isOmittableTupleSlot()) {
+                throw error(previous(), "omittable tuple slots must be a trailing suffix");
+            }
+            optionalSeen |= slot.isOmittableTupleSlot();
+        }
+        return Ast.TypeRef.tupleType(slots);
     }
 
     private Ast.TypeRef parseMetaValue() {
