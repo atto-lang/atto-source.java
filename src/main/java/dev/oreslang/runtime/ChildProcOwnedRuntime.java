@@ -229,13 +229,23 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             throw fatal;
         }
 
+        final boolean retiredDuringStart;
         synchronized (lock) {
-            if (closed || slots.get(slot.generation) != slot) {
+            retiredDuringStart = closed || slots.get(slot.generation) != slot;
+            if (!retiredDuringStart) slot.process = process;
+        }
+        if (retiredDuringStart) {
+            // Never perform operating-system process operations or complete a
+            // future while holding the actor registry monitor. The launch
+            // worker itself owns this cleanup, so actor close can return.
+            slot.terminationRequested = true;
+            try {
                 destroyTree(process, true);
-                slot.ready.completeExceptionally(new IllegalStateException("child process registry closed"));
-                return;
+            } finally {
+                slot.ready.completeExceptionally(
+                        new IllegalStateException("child process registry closed during launch"));
             }
-            slot.process = process;
+            return;
         }
 
         try {
