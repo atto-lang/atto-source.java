@@ -42,6 +42,14 @@ public final class Ast {
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED, UNTRUSTED }
 
+    /** Compiler policy, distinct from actor-group aggregate parallelism. */
+    public enum MaxActorThreads {
+        LOW(1), MEDIUM(2), HIGH(3);
+        private final int value;
+        MaxActorThreads(int value) { this.value = value; }
+        public int value() { return value; }
+    }
+
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
     }
@@ -328,13 +336,27 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            MaxActorThreads maxActorThreads) implements Decl {
         public ClassDecl {
+            java.util.Objects.requireNonNull(maxActorThreads, "maxActorThreads");
+            if (actorKind == ActorKind.NONE && maxActorThreads != MaxActorThreads.LOW)
+                throw new IllegalArgumentException("non-actor classes cannot have parallel actor turns");
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+
+        /** Existing AST producers and unannotated actors remain single-flight. */
+        public ClassDecl(String name, Visibility visibility, boolean isAbstract,
+                         ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, ConstructorDecl constructor,
+                         List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, MaxActorThreads.LOW);
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
