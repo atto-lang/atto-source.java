@@ -6890,7 +6890,16 @@ public final class TypeChecker {
             Type element = generatorYieldType(async, result);
             return new Named(async ? "AsyncIterator" : "Iterator", List.of(element));
         }
-        return async ? new Named("Future", List.of(result)) : result;
+        // async declarations describe the eventual T; nested Future layers
+        // are an adoption chain, never an observable Future<Future<T>>.
+        if (!async) return result;
+        Type value = result;
+        while (value instanceof Named nested
+                && nested.name().equals("Future")
+                && nested.arguments().size() == 1) {
+            value = nested.arguments().getFirst();
+        }
+        return new Named("Future", List.of(value));
     }
 
     private Function functionType(
@@ -8034,8 +8043,13 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                // Future<void> is the canonical completion type for nb writech.
-                // OresFuture supports a null terminal payload, so void is valid here.
+                // Future<void> remains legal. Canonicalize nested futures
+                // without flattening Option, Result, or other constructors.
+                while (element instanceof Named nested
+                        && nested.name().equals("Future")
+                        && nested.arguments().size() == 1) {
+                    element = nested.arguments().getFirst();
+                }
                 yield new Named("Future", List.of(element));
             }
             case "Generator", "AsyncGenerator", "Iterator", "AsyncIterator", "IteratorResult" -> {
