@@ -100,3 +100,24 @@ GC or borrow-checking critical section.
 The implemented Java switches remain `--core-perf` and `--core-debug`.
 The LLVM, .NET, Forge and Wasm backends do not currently implement matching
 native logging/OTel features; do not infer runtime parity from this document.
+
+## Severity-aware core diagnostics
+
+A separate host-owned numeric flight recorder is controlled by
+`--core-log-level=off|error|warn|info|debug|trace` (default `off`),
+`--no-core-log`, or `ORES_CORE_LOG_LEVEL`. CLI options take precedence over the
+environment and the **last** explicit CLI option wins. Invalid levels fail as
+usage errors, before guest source execution. `off` suppresses diagnostic
+timers, recording and output; normal program errors and guest output are
+independent. The fixed-ID `CoreLog` path allocates no event objects and performs
+no formatting or I/O; its first 8192 records are serialized to **stderr** at
+normal JVM shutdown, schema `ores-core-log.v1`. Recording saturation stops
+future writes, preserving cold-start evidence. SIGKILL/crashes bypass shutdown
+export.
+
+Initially instrumented sites: async native I/O rejection/failure and actor
+dispatcher initialization failure. Recording uses fixed event identifiers and
+a numeric counter only, never guest arguments, exception text, headers, paths,
+identifiers, stack traces or serialized data. More diagnostic sites should
+follow the same rule. These switches **do not affect `oreslang-otel`**, which
+remains a user-imported telemetry library with independent severity policy.
