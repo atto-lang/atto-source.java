@@ -192,7 +192,7 @@ public final class TypeChecker {
                 "HttpServer", "HttpExchange", "HttpHandler", "TcpConnection",
                 "ActorMail", "ActorOutput", "ActorOutputStream", "ActorId", "ActorKind",
                 "Iterator", "AsyncIterator", "IteratorResult", "Generator", "AsyncGenerator",
-                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "Map", "void",
+                "int", "uint", "float", "decimal", "complex", "bool", "boolean", "String", "Symbol", "Map", "unknown", "void",
                 "self", "null"));
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -228,9 +228,9 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            if (module.name().equals("Map")) {
+            if (module.name().equals("Map") || module.name().equals("unknown")) {
                 throw new IllegalArgumentException(
-                        "module 'Map' conflicts with the reserved built-in Map type");
+                        "module '" + module.name() + "' conflicts with a reserved built-in type");
             }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
@@ -239,8 +239,8 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     if (klass.name().equals("Symbol")) throw new IllegalArgumentException(
                             "Symbol is a reserved built-in value type, not a class name");
-                    if (klass.name().equals("Map")) throw new IllegalArgumentException(
-                            "Map is a reserved built-in collection type");
+                    if (klass.name().equals("Map") || klass.name().equals("unknown")) throw new IllegalArgumentException(
+                            klass.name() + " is a reserved built-in type");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
@@ -253,8 +253,8 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("Symbol")) throw new IllegalArgumentException(
                             "Symbol is a reserved built-in value type, not a type alias name");
-                    if (alias.name().equals("Map")) throw new IllegalArgumentException(
-                            "Map is a reserved built-in collection type");
+                    if (alias.name().equals("Map") || alias.name().equals("unknown")) throw new IllegalArgumentException(
+                            alias.name() + " is a reserved built-in type");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
@@ -8796,6 +8796,9 @@ public final class TypeChecker {
             }
             if (name.equals("Map")) {
                 throw new IllegalArgumentException("generic 'Map' shadows the built-in Map type in " + owner);
+            }
+            if (name.equals("unknown")) {
+                throw new IllegalArgumentException("generic 'unknown' shadows the built-in open value type in " + owner);
             }
             if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
         }
