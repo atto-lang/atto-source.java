@@ -434,4 +434,57 @@ final class NominalInheritedMethodSlotsTest {
         assertTrue(rejected.getMessage().contains("structural methods"),
                 rejected::getMessage);
     }
+
+    @Test
+    void resolvedEnumTypesSelectInheritedTargetWithoutCallerSuppliedSymbolIds() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color x): int { return 11; }
+                end
+                define class Child extends Base as
+                    pub pick(Mode x): int { return 22; }
+                end
+                """);
+        var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
+        var color = NominalInheritedMethodSlots.selectResolved(
+                program, "Child", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())), registry);
+        var mode = NominalInheritedMethodSlots.selectResolved(
+                program, "Child", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Mode", List.of())), registry);
+        assertEquals("Base", color.owner().name());
+        assertEquals("Child", mode.owner().name());
+        IllegalArgumentException unknown = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(dev.oreslang.types.Types.Unknown.INSTANCE), registry));
+        assertTrue(unknown.getMessage().contains("cannot prove nominal enum identity"),
+                unknown::getMessage);
+        assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(new dev.oreslang.types.Types.Named("Impostor", List.of())),
+                        registry));
+    }
+
+    @Test
+    void hugeSingleClassMethodInventoryIsRejectedBeforeSignatureScan() {
+        var method = new Ast.MethodDecl(
+                "pick", Ast.Visibility.PUBLIC, false, false, false, false,
+                false, null, List.of(), List.of(),
+                Ast.TypeRef.simple("int"), List.of(), List.of());
+        var klass = new Ast.ClassDecl(
+                "Excessive", Ast.Visibility.PRIVATE, false,
+                Ast.ActorKind.NONE, List.of(), List.of(), List.of(),
+                List.of(), null, java.util.Collections.nCopies(
+                        dev.oreslang.types.NominalMethodSlots.MAX_LOCAL_METHOD_DECLARATIONS + 1,
+                        method));
+        var program = new Ast.Program(List.of(
+                new Ast.ModuleDecl("root", List.of(klass))));
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.prove(
+                        program, "Excessive", Domain.INSTANCE, "pick", 0));
+        assertTrue(rejected.getMessage().contains("method declaration limit"),
+                rejected::getMessage);
+    }
 }
