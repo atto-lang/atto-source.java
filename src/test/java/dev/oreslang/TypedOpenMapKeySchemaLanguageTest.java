@@ -144,7 +144,7 @@ final class TypedOpenMapKeySchemaLanguageTest {
         TypeChecker.check(Parser.parse("""
                 fnc valid(): void {
                   val m = new Map<Symbol, Result<int, String>>();
-                  val Option<Result<int, String>> result = m.get(Symbol.process("job"));
+                  val Option<Result<int, String>> result = m.get(#job);
                   return;
                 }
                 """));
