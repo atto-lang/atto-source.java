@@ -564,6 +564,18 @@ public final class OresProjectConfig {
         // Installed dependency mounts may themselves be symlinks, but a +/
         // or pkg: source may not traverse a symlink OUT of its selected
         // physical package root. Canonicalize both sides, not just the file.
+        // Check the spelled path before canonicalization: a child package
+        // symlink back to a parent-owned file still crosses the child's
+        // namespace and must not borrow authority from the parent package.
+        for (Path parent = candidate.getParent();
+                parent != null && !parent.equals(normalizedRoot);
+                parent = parent.getParent()) {
+            if (Files.exists(parent.resolve(PACKAGE_MANIFEST_NAME),
+                    java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "rooted import crosses nested package boundary: " + importPath);
+            }
+        }
         Optional<Path> resolved = existingSource(candidate);
         if (resolved.isPresent()) {
             Path physicalRoot = realPath(normalizedRoot);
