@@ -121,6 +121,22 @@ final class DecimalMatrixReferenceTest {
     }
 
     @Test
+    void oversizedRoundingContextRejectedBeforeAllocatingOrChangingDestination() {
+        DecimalMatrix left = DecimalMatrix.fromStrings(1, 1, "0.25");
+        DecimalMatrix right = DecimalMatrix.fromStrings(1, 1, "4");
+        DecimalMatrix output = DecimalMatrix.fromStrings(1, 1, "17");
+        MathContext unboundedRequest = new MathContext(1_000_000, RoundingMode.HALF_EVEN);
+        assertThrows(IllegalArgumentException.class, () ->
+                DecimalMatrix.multiply(left, right, unboundedRequest));
+        assertThrows(IllegalArgumentException.class, () ->
+                DecimalMatrix.multiplyInto(output, left, right, unboundedRequest));
+        equalDecimal("17", output.get(0, 0));
+        // Precision zero remains legal for exact decimal multiplication.
+        equalDecimal("1", DecimalMatrix.multiply(
+                left, right, MathContext.UNLIMITED).get(0, 0));
+    }
+
+    @Test
     void rejectMismatchesAliasesAndUnboundedAllocations() {
         DecimalMatrix left = DecimalMatrix.fromStrings(1, 2, "1", "2");
         DecimalMatrix wrong = DecimalMatrix.fromStrings(1, 2, "3", "4");
