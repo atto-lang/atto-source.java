@@ -84,7 +84,10 @@ final class ActorChildProcessRegistryTest {
                         starting.await();
                         table.register(new Object(), registry);
                     } catch (IllegalStateException expectedShutdown) {
-                        // Close won the race and rejected registration.
+                        // Mirror the production forCurrentActor adapter:
+                        // rejected registration must close its unregistered
+                        // process registry before returning to the actor.
+                        registry.close();
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new AssertionError(interrupted);
