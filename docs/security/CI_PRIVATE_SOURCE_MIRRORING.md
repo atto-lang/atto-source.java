@@ -93,8 +93,20 @@ then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
-Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
-branches, including `main`, are never updated.
+Before creating the commit, the publisher **reads back** the destination
+root Git tree and requires an untruncated response with exactly one
+`private-oreslang-source` subtree bound to the reviewed source tree SHA.
+It then reads back the destination commit and requires the same root tree
+and exactly the expected destination base parent. After creating the isolated
+ref, it reads that ref back and verifies the expected immutable commit.
+These checks are distinct from trusting the GitHub POST receipts.
+Existing branches, including `main`, are never updated.
+
+If the final ref readback fails, a newly created branch may already exist.
+Treat the publication as **unverified**, quarantine the destination branch,
+review the branch and retained Git objects, and obtain independent approval
+before cleanup or retry. Do not report that snapshot as CI-ready or infer a
+green result from the publisher's create-ref response.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file. The reviewed publisher's code and approval policy remain in its own
