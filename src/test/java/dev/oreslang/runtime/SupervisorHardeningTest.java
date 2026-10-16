@@ -234,4 +234,22 @@ final class SupervisorHardeningTest {
                 "actor polling cannot consume host-owned CONTROL");
     }
 
+
+    @Test
+    void untrustedActorCannotMintSupervisorGroupOrReserveControlLane() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            // The policy has no ACTOR_SPAWN capability. Merely opening an
+            // empty supervisor group must not bypass the capability check.
+            ActorRuntime.ActorRef<String> actor = runtime.spawnUntrusted(
+                    factory -> (message, context) -> context.runtime().createActorGroup());
+            actor.getReady().get(5, TimeUnit.SECONDS);
+            actor.send("try-create-supervisor");
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isPresent(),
+                    "supervisor authority denial must terminate the offending actor turn");
+            assertEquals(0, runtime.actorGroupCount(),
+                    "failed untrusted supervisor admission may not reserve a CONTROL lane");
+        }
+    }
+
 }
