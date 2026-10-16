@@ -1,5 +1,11 @@
 # Oreslang project manifest
 
+> **New package manifest:** `.ores.pkg.toml` is supported alongside
+> `.oreslangc.cfg.toml`. The package manifest adds `@/` root imports,
+> `pkg:alias/path` zed-pkg aliases, and `ORES_PATHS` colon-delimited roots.
+> See [ORES_PACKAGE_IMPORTS.md](ORES_PACKAGE_IMPORTS.md). Legacy behavior
+> remains available for existing projects.
+
 Oreslang projects may define compiler/project configuration in the nearest
 `.oreslangc.cfg.toml`. The compiler walks upward from the entry source file
 (or from the current working directory when no source file is supplied) and
