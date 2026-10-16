@@ -36,12 +36,15 @@ the authenticated Contents API response for the pinned source repository's
 runs before private-source export and again before every Git object write. A
 branch-local approval file alone cannot grant its own export rights.
 
-Exact-tree provenance is a separate condition: the published source subtree
-must match the entire checkout's committed `HEAD^{tree}`, and its commit SHA
-and tree SHA must be authenticated against the pinned private source GitHub
-repository before the first source-bearing write. Only checkout-root `.git`
+Exact-tree provenance is a separate condition: operators must supply the
+independently reviewed `--source-commit` and **complete checkout-root**
+`--source-tree`. The collected candidate snapshot must match its entire
+committed `HEAD^{tree}` and equal those supplied immutable SHAs; the commit and
+tree SHAs must also be authenticated against the pinned private source GitHub
+repository before the first source-bearing write. The published destination
+subtree must equal the same reviewed complete-tree SHA. Only checkout-root `.git`
 metadata may be omitted; nested Git metadata or source symlinks are rejected.
-`GIT_*` environment overrides cannot redirect this provenance check.
+`GIT_*` environment overrides, Git replacement objects, and caller-provided global/system Git configuration cannot redirect this provenance check.
 
 **Required independent gate:** the publisher now denies any transfer unless
 GitHub reports source `main` as protected and permits inspection of its branch
@@ -71,7 +74,9 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --branch ci/oreslang-verified-20261013 \
+  --source-commit <REVIEWED_SOURCE_COMMIT_SHA> \
+  --source-tree <REVIEWED_COMPLETE_SOURCE_TREE_SHA>
 ```
 
 The checked-in policy file must explicitly list the destination. The
