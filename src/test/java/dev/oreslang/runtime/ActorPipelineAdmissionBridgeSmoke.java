@@ -53,8 +53,9 @@ public final class ActorPipelineAdmissionBridgeSmoke {
                 && result.receipts().get(2).status()
                     == ActorPipelineAdmissionBridge.Admission.CLOSED,
                 "preallocated branch receipts changed ordered admission statuses");
+        long firstFlowId = root.flowId();
         check(result.receipts().stream().allMatch(r -> r.generation() == 9
-                        && r.flowId() == root.flowId())
+                        && r.flowId() == firstFlowId)
                 && result.receipts().stream().map(r -> r.routeId()).distinct().count() == 3,
                 "preallocated receipt correlation lost branch identity");
         check(session.outstanding() == 2, "rejected route frames leaked");
