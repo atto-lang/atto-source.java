@@ -5763,6 +5763,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("Symbol is not visible to untrusted actor");
         }
         if (value == null || isScalar(value)) return;
+        if (value instanceof OresKeyedMap<?, ?>) {
+            throw new SecurityException(
+                    "typed Map values are not data-only and cannot cross an untrusted actor boundary");
+        }
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
@@ -5885,6 +5889,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ChannelRuntime.Channel<?>) {
             throw new IllegalArgumentException(
                     "channel capability is execution-domain local and cannot cross actor mailboxes");
+        }
+        if (value instanceof OresKeyedMap<?, ?>) {
+            throw new IllegalArgumentException(
+                    "typed Map values cannot cross actor boundaries until isolated transport is supported");
         }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
