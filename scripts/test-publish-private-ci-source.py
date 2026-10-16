@@ -3,6 +3,7 @@
 import importlib.util
 import base64
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 import tempfile
@@ -186,6 +187,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "not approved"):
                 self.publish()
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_shell_and_python_immutable_destination_pins_agree(self):
+        # The CLI preflight must not approve a slug that the publisher's
+        # immutable reviewed-code binding would reject.
+        script = MODULE.with_name("check-private-ci-destination.sh").read_text()
+        listed = re.findall(
+            r"^  ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)[)] expected_id=([0-9]+) ;;$",
+            script, flags=re.MULTILINE)
+        self.assertEqual({name: int(repo_id) for name, repo_id in listed},
+                         pub.PINNED_DESTINATION_IDS)
+
+    def test_candidate_id_pin_is_not_local_policy_approval(self):
+        candidate = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
+        self.approval.write_text("# intentionally no private CI destinations\\n")
+        with patch.object(pub, "gh_api", side_effect=AssertionError(
+                "no network/API call allowed for denied policy")):
+            with self.assertRaisesRegex(pub.Denied, "approval was revoked or absent"):
+                pub.checked_policy_fingerprint(self.root, candidate)
+        self.assertEqual([], self.route_calls)
 
     def test_candidate_destination_requires_separate_policy_approval(self):
         candidate = ("ores-dummy-org-oreslang-stack/"
