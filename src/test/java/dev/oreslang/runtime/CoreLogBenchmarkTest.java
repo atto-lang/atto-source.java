@@ -34,7 +34,8 @@ final class CoreLogBenchmarkTest {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
         long begin = System.nanoTime();
         for (int i = 0; i < DISABLED_EVENTS; i++) {
-            assertFalse(CoreLog.enabled(CoreLog.Level.ERROR));
+            if (CoreLog.enabled(CoreLog.Level.ERROR))
+                throw new AssertionError("disabled logger unexpectedly enabled");
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
         }
         report("disabled", DISABLED_EVENTS, System.nanoTime() - begin);
