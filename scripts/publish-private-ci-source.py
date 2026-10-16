@@ -665,9 +665,13 @@ def publish(repository, source, branch, trusted_root,
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
     })
-    if created.get("ref") != "refs/heads/" + branch:
-        raise Denied("GitHub did not confirm creation of requested isolated CI branch")
-    # A successful create-ref response is not a confirmed destination state.
+    created_object = created.get("object")
+    if (created.get("ref") != "refs/heads/" + branch
+            or not isinstance(created_object, dict)
+            or created_object.get("type") != "commit"
+            or created_object.get("sha") != commit_sha):
+        raise Denied("GitHub did not confirm creation of exact isolated CI commit ref")
+    # A valid create-ref acknowledgement alone is not confirmed GitHub state.
     checked_repo(repository)
     verify_created_snapshot_ref(repository, branch, commit_sha)
     return commit_sha, len(files)
