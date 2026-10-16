@@ -121,6 +121,23 @@ final class ActorStateModeContractsTest {
     }
 
     @Test
+    void exceptionalAndAmbientEffectsCannotBeSmuggledIntoCommandDescriptions() {
+        for (Effect invalid : List.of(Effect.PANIC, Effect.RAISE,
+                Effect.THROW, Effect.CANCELLATION, Effect.SYNCHRONIZATION,
+                Effect.AMBIENT_READ)) {
+            rejects("INVALID_COMMAND_EFFECT",
+                    new ActorModel(Mode.PURE_REDUCER,
+                            List.of(messageReducer(Set.of(), Set.of(invalid))),
+                            Set.of(invalid)));
+        }
+        assertDoesNotThrow(() -> ActorStateModeContracts.validate(
+                new ActorModel(Mode.PURE_REDUCER,
+                        List.of(messageReducer(Set.of(),
+                                Set.of(Effect.ACTOR, Effect.EXTERNAL_WRITE))),
+                        Set.of(Effect.ACTOR, Effect.EXTERNAL_WRITE))));
+    }
+
+    @Test
     void pureControlReducerIsValidatedButPreservesSingleMessageReducer() {
         var control = new Handler("Counter.onControl", HandlerRole.CONTROL_REDUCER,
                 Set.of(), Set.of(Effect.ACTOR), false, false, false, true);
