@@ -78,14 +78,14 @@ nearest `.ores.pkg.toml`. Compilation may select a different entry package
 through the flags-2-env schema in `.cli-flags.toml`:
 
 ```sh
-oreslang --manifest-path /work/app/.ores.pkg.toml src/main.ores
+oreslang --manifest-path=/work/app/.ores.pkg.toml src/main.ores
 # equivalent manifest-directory selection
-oreslang --project-root /work/app src/main.ores
+oreslang --project-root=/work/app src/main.ores
 ```
 
 The corresponding parser variables are `ORES_MANIFEST_PATH` and
 `ORES_PROJECT_ROOT`. If both are set they must name the same package root.
-The entry source must be lexically inside the selected package directory.
+An existing entry source must resolve physically inside the selected package directory; missing entry paths require a matching lexical location.
 Overrides only select the entry package; nested/imported package sources
 discover their own nearest manifest, including across symlinks. A missing
 or invalid manifest fails closed; overrides never create an implicit package.
