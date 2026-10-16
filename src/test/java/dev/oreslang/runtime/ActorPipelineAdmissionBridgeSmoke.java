@@ -2,6 +2,10 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Standalone JDK21 admission contract (not guest-language execution). */
 public final class ActorPipelineAdmissionBridgeSmoke {
@@ -96,6 +100,84 @@ public final class ActorPipelineAdmissionBridgeSmoke {
         }
         session.complete(root);
         check(session.outstanding() == 0, "source retained an active frame");
+        // An adapter must not be able to invalidate the epoch while a
+        // partial fan-out is publishing, even by reentering the Java monitor.
+        var reentrant = new ActorPipelineRouteSession(graph, 40, 4);
+        var reentrantRoot = reentrant.ingress("source");
+        var denials = new AtomicInteger();
+        var rejectedBatch = ActorPipelineAdmissionBridge.forwardAll(
+                reentrant, reentrantRoot, "publish", (child, value) -> {
+                    try {
+                        reentrant.abortAndAdvanceGeneration(41);
+                        throw new AssertionError("reentrant abort accepted");
+                    } catch (IllegalStateException expected) {
+                        denials.incrementAndGet();
+                    }
+                    try {
+                        reentrant.close();
+                        throw new AssertionError("reentrant STOP accepted");
+                    } catch (IllegalStateException expected) {
+                        denials.incrementAndGet();
+                    }
+                    return ActorPipelineAdmissionBridge.Admission.FULL;
+                });
+        check(rejectedBatch.rejected() == 3 && denials.get() == 6
+                        && reentrant.generation() == 40 && reentrant.outstanding() == 1,
+                "reentrant epoch change broke fan-out publication");
+        reentrant.complete(reentrantRoot);
+
+        // A concurrent supervisor abort must wait until an admitted batch
+        // finishes; no new-generation fence may overtake an edge publication.
+        var concurrent = new ActorPipelineRouteSession(graph, 50, 4);
+        var concurrentRoot = concurrent.ingress("source");
+        var inAdapter = new CountDownLatch(1);
+        var releaseAdapter = new CountDownLatch(1);
+        var attemptAbort = new CountDownLatch(1);
+        var aborted = new CountDownLatch(1);
+        var failures = new AtomicReference<Throwable>();
+        var cancelled = new AtomicInteger(-1);
+        Thread publisher = new Thread(() -> {
+            try {
+                ActorPipelineAdmissionBridge.forwardAll(
+                        concurrent, concurrentRoot, "payload", (child, value) -> {
+                            inAdapter.countDown();
+                            try {
+                                if (!releaseAdapter.await(5, TimeUnit.SECONDS))
+                                    throw new IllegalStateException("test publication gate timed out");
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(interrupted);
+                            }
+                            return ActorPipelineAdmissionBridge.Admission.FULL;
+                        });
+            } catch (Throwable failure) {
+                failures.compareAndSet(null, failure);
+            }
+        });
+        Thread supervisor = new Thread(() -> {
+            try {
+                attemptAbort.countDown();
+                cancelled.set(concurrent.abortAndAdvanceGeneration(51));
+            } catch (Throwable failure) {
+                failures.compareAndSet(null, failure);
+            } finally {
+                aborted.countDown();
+            }
+        });
+        publisher.start();
+        check(inAdapter.await(5, TimeUnit.SECONDS), "publisher never entered adapter");
+        supervisor.start();
+        check(attemptAbort.await(5, TimeUnit.SECONDS), "supervisor did not start");
+        check(!aborted.await(100, TimeUnit.MILLISECONDS),
+                "concurrent abort overtook an in-flight mailbox publication");
+        releaseAdapter.countDown();
+        publisher.join(5000);
+        supervisor.join(5000);
+        check(!publisher.isAlive() && !supervisor.isAlive() && failures.get() == null,
+                "epoch publication race deadlocked or failed");
+        check(cancelled.get() == 1 && concurrent.generation() == 51
+                        && concurrent.outstanding() == 0,
+                "concurrent abort did not retire exactly the uncompleted source");
         System.out.println("ORES_ACTOR_ADMISSION_BRIDGE_OK batches=10000");
     }
 }
