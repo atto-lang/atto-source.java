@@ -33,20 +33,30 @@ final class RecursiveOptionFlattenLanguageTest {
 
     @Test
     void flattenMovesAffineOptionExactlyOnce() {
-        // Full front-end admission is essential: TypeChecker alone does NOT
-        // enforce ownership and can miss a repeated move.
-        assertThrows(IllegalArgumentException.class, () ->
-                OresCompiler.parseAndTypeCheck("""
-                        define class Box as
-                        end
+        // Future<int> is an already-known move-only payload, avoiding a
+        // spurious class-construction error masking the actual ownership test.
+        String source = """
+                fnc invalid(Option<Option<Future<int>>> nested): Option<Future<int>> {
+                  val Option<Future<int>> first = nested.flatten();
+                  return nested.flatten();
+                }
+                """;
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(source));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                failure.getMessage().contains("use of moved value 'nested'"),
+                () -> "expected ownership double-move rejection, got: " + failure);
+    }
 
-                        fnc bad(): void {
-                          val Option<Option<Box>> nested = Some(Some(new Box()));
-                          val Option<Box> first = nested.flatten();
-                          val Option<Box> second = nested.flatten();
-                          return;
-                        }
-                        """));
+    @Test
+    void singleAffineFlattenRemainsValid() {
+        String source = """
+                fnc valid(Option<Option<Future<int>>> nested): Option<Future<int>> {
+                  return nested.flatten();
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
     }
 
     @Test
