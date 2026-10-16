@@ -78,6 +78,33 @@ final class ExactScalarMathTest {
     }
 
     @Test
+    void preflightRejectsLargeProductsAndDecimalAlignmentBeforeAllocation() {
+        BigInteger large = new BigInteger("9".repeat(3000));
+        BigInteger other = new BigInteger("9".repeat(2000));
+        IllegalArgumentException bigint = assertThrows(IllegalArgumentException.class,
+                () -> ExactScalarMath.evaluate(large, other, '*'));
+        assertTrue(bigint.getMessage().contains("multiplication digit budget"));
+
+        IllegalArgumentException decimal = assertThrows(IllegalArgumentException.class,
+                () -> ExactScalarMath.evaluate(new BigDecimal("9".repeat(3000)),
+                        new BigDecimal("9".repeat(2000)), '*'));
+        assertTrue(decimal.getMessage().contains("product digit budget"));
+
+        IllegalArgumentException alignment = assertThrows(IllegalArgumentException.class,
+                () -> ExactScalarMath.evaluate(BigDecimal.ONE,
+                        new BigDecimal("1e-10000"), '+'));
+        assertTrue(alignment.getMessage().contains("scale-alignment budget"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                ExactScalarMath.evaluate(new BigDecimal("1e16000"),
+                        new BigDecimal("1e-16000"), '/'));
+
+        // Small exact inputs with different scales remain accepted.
+        sameDecimal("1.0001", ExactScalarMath.evaluate(
+                BigDecimal.ONE, new BigDecimal("0.0001"), '+'));
+    }
+
+    @Test
     void enforceScalarBudgetsBeforeImplicitGrowth() {
         assertThrows(IllegalArgumentException.class, () ->
                 ExactScalarMath.evaluate(new BigInteger("9".repeat(4096)), 1L, '+'));
