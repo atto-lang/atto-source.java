@@ -96,8 +96,9 @@ message construction with `should_log`. It currently serializes JSON and writes
 stdout synchronously; never call it from a scheduler, actor mailbox admission,
 GC or borrow-checking critical section.
 
-`--core-log-level` is a proposed future CLI flag, **not accepted today**.
-The implemented Java switches remain `--core-perf` and `--core-debug`.
+Java now implements `--core-log-level=off|error|warn|info|debug|trace`,
+`--no-core-log`, and `ORES_CORE_LOG_LEVEL` independently of the existing
+`--core-perf` and `--core-debug` switches.
 The LLVM, .NET, Forge and Wasm backends do not currently implement matching
 native logging/OTel features; do not infer runtime parity from this document.
 
@@ -111,7 +112,9 @@ usage errors, before guest source execution. `off` suppresses diagnostic
 timers, recording and output; normal program errors and guest output are
 independent. The fixed-ID `CoreLog` path allocates no event objects and performs
 no formatting or I/O; its first 8192 records are serialized to **stderr** at
-normal JVM shutdown, schema `ores-core-log.v1`. Recording saturation stops
+normal JVM shutdown **only if still enabled**, schema `ores-core-log.v1`.
+Explicit `off` discards the current buffer and prevents its shutdown export;
+a later enable starts an empty session. Recording saturation stops
 future writes, preserving cold-start evidence. SIGKILL/crashes bypass shutdown
 export.
 
