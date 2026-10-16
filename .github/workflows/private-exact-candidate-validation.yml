@@ -256,7 +256,10 @@ jobs:
           libraries=()
           for candidate in target/oresvm.so target/liboresvm.so; do
             if test -e "$candidate" || test -L "$candidate"; then
-              test -f "$candidate" && test ! -L "$candidate" && test -s "$candidate"
+              if ! test -f "$candidate" || test -L "$candidate" || ! test -s "$candidate"; then
+                echo "::error::Reject invalid native isolate artifact: $candidate" >&2
+                exit 1
+              fi
               libraries+=("$candidate")
             fi
           done
