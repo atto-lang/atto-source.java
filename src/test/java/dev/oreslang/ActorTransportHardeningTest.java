@@ -171,14 +171,14 @@ final class ActorTransportHardeningTest {
                     (message, context) -> received.set(message));
 
             // send() checks a caller-owned container multiple times. Supply
-            // ordinary DATA for all six pre-copy reads, then a cross-runtime
-            // ActorRef when it builds the immutable envelope payload.
+            // ordinary DATA for the five shared pre-copy traversals, then a
+            // cross-runtime ActorRef during the immutable envelope snapshot.
             List<Object> changing = new AbstractList<>() {
                 private int reads;
                 @Override public int size() { return 1; }
                 @Override public Object get(int index) {
                     if (index != 0) throw new IndexOutOfBoundsException(index);
-                    return ++reads <= 6 ? "safe" : foreign;
+                    return ++reads <= 5 ? "safe" : foreign;
                 }
             };
             IllegalArgumentException rejection = assertThrows(
