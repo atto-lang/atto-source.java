@@ -4987,6 +4987,19 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // All checks above examine a caller-owned, potentially mutable graph.
+        // A hostile collection can change between validation and copying.
+        // Revalidate the actual sealed snapshot before any quota reservation
+        // or mailbox publication; the authorization must cover enqueued DATA.
+        validateMessageGraph(prepared);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
@@ -5945,7 +5958,11 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        Object frozen = freeze(value, new IdentityHashMap<>(), 0);
+        // The input may change during the multiple traversals above. Verify
+        // the returned immutable graph rather than trusting a previous read.
+        rejectDataFreezeCapabilities(frozen, new IdentityHashMap<>(), 0);
+        return frozen;
     }
 
     private static Object freezeForTransport(Object value) {
