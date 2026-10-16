@@ -3,9 +3,11 @@ package dev.oreslang.runtime;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.AbstractMap;
-import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.AbstractSet;
+import java.util.ArrayDeque;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 
@@ -241,21 +243,60 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         return new Branch(branch.bitmap & ~bit, shrunk);
     }
 
-    private static void visit(Node node, Set<Map.Entry<String, Object>> entries) {
-        if (node == null) return;
-        if (node instanceof Leaf leaf) {
-            entries.add(Map.entry(leaf.key, leaf.value));
-        } else if (node instanceof Collision collision) {
-            for (Leaf leaf : collision.leaves) entries.add(Map.entry(leaf.key, leaf.value));
-        } else {
-            for (Node child : ((Branch) node).children) visit(child, entries);
-        }
-    }
-
+    /**
+     * Iteration uses a bounded HAMT-depth stack, not an eagerly materialized
+     * second Map/Set. Actor transport still verifies every logical member,
+     * but does not allocate O(n) temporary entries merely to walk the map.
+     */
     @Override
     public Set<Map.Entry<String, Object>> entrySet() {
-        LinkedHashSet<Map.Entry<String, Object>> entries = new LinkedHashSet<>();
-        visit(root, entries);
-        return Collections.unmodifiableSet(entries);
+        return new AbstractSet<>() {
+            @Override
+            public int size() {
+                return count;
+            }
+
+            @Override
+            public Iterator<Map.Entry<String, Object>> iterator() {
+                return new Iterator<>() {
+                    private final ArrayDeque<Node> pending = new ArrayDeque<>();
+                    private Leaf ready;
+                    {
+                        if (root != null) pending.push(root);
+                    }
+
+                    private void prepare() {
+                        while (ready == null && !pending.isEmpty()) {
+                            Node node = pending.pop();
+                            if (node instanceof Leaf leaf) {
+                                ready = leaf;
+                            } else if (node instanceof Collision collision) {
+                                for (int i = collision.leaves.length - 1; i >= 0; i--)
+                                    pending.push(collision.leaves[i]);
+                            } else {
+                                Node[] children = ((Branch) node).children;
+                                for (int i = children.length - 1; i >= 0; i--)
+                                    pending.push(children[i]);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public boolean hasNext() {
+                        prepare();
+                        return ready != null;
+                    }
+
+                    @Override
+                    public Map.Entry<String, Object> next() {
+                        prepare();
+                        if (ready == null) throw new NoSuchElementException();
+                        Leaf leaf = ready;
+                        ready = null;
+                        return Map.entry(leaf.key, leaf.value);
+                    }
+                };
+            }
+        };
     }
 }
