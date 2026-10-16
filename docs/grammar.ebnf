@@ -72,9 +72,12 @@ class_decl      = visibility "define" [ "abstract" ] "class" IDENT [ generic_par
 
 class_member    = field_decl
                 | type_first_class_field_decl
+                | map_key_decl
                 | constructor_decl
                 | method_decl
                 | static_function_decl ;
+
+map_key_decl    = "key" IDENT ":" type_ref stmt_terminator ;
 
 constructor_decl
                 = { annotation } visibility "constructor"
