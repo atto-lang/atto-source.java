@@ -7597,9 +7597,17 @@ public final class TypeChecker {
         Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
+        // Keep the result of the inference pass. Re-checking an unchanged,
+        // non-lambda argument below duplicates its entire call subtree.
+        // A chain of N nested calls then takes exponential rather than linear
+        // typechecking time (the 128-stage value-pipeline boundary exposed it).
+        // Preserve a second context-sensitive pass for lambdas and for
+        // arguments whose expected type changes after generic inference.
+        List<Type> inferredArgumentTypes = new ArrayList<>(expanded.size());
         for (int i = 0; i < expanded.size(); i++) {
             Type actual = expandedCallArgumentType(
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
+            inferredArgumentTypes.add(actual);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         GenericCallArguments.applyDefaults(
@@ -7622,8 +7630,12 @@ public final class TypeChecker {
             if (argument.expression() != null) {
                 validateLambdaArgument(argument.expression(), expected, env, callerGenerics, callerSelf);
             }
-            Type actual = expandedCallArgumentType(
-                    argument, expected, env, callerGenerics, callerSelf);
+            Type actual = argument.expression() != null
+                    && !(argument.expression() instanceof Ast.LambdaExpr)
+                    && expected.equals(patterns.get(i))
+                    ? inferredArgumentTypes.get(i)
+                    : expandedCallArgumentType(
+                            argument, expected, env, callerGenerics, callerSelf);
             if (!params.get(i).structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,
