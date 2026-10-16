@@ -357,7 +357,7 @@ def verify_exact_source_snapshot(source, trusted_root, files, commit, tree):
 
 
 def publish(repository, source, branch, trusted_root,
-            source_commit, source_tree):
+            source_commit=None, source_tree=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
