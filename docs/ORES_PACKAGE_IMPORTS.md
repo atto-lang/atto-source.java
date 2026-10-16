@@ -80,9 +80,13 @@ different paths to the same file. At a `pkg:` boundary, manifest discovery stops
 at the installed package's canonical physical root; it cannot accidentally
 pick up the consumer's project manifest. A dependency with no `.ores.pkg.toml`
 cannot import `@/` from its consumer. Nested package manifests reached through
-relative or bare imports are discovered as distinct source roots. Symlink traversal can resolve files outside
-the project root. These rules are **import discovery**, not filesystem
-confinement or a defense against a hostile concurrent filesystem mutator.
+relative or bare imports are discovered as distinct source roots. If two different
+package contexts refer to the **same physical file**, the linker rejects the
+ambiguity rather than silently compiling the file with whichever `@/` or
+`pkg:` namespace was visited first. Symlink traversal can still resolve
+files outside the project root. These rules are **import discovery**, not
+filesystem confinement or a defense against a hostile concurrent filesystem
+mutator.
 
 A typical development flow is:
 
@@ -123,7 +127,8 @@ Tests added alongside this proposal cover project-root precedence, legacy
 manifest compatibility, manifest-less transitive resolution, ordered path lists,
 symlinked roots, installed package identity, customized zed install directories,
 malformed manifests, traversal rejection, nested project boundaries,
-whole-program linking, and symlinked self-imports.
+conflicting source contexts, whole-program linking, end-to-end ORES_PATHS
+lookup, and symlinked self-imports.
 
 Outstanding: exact-head JDK25/JUnit execution, Graal/native validation,
 LLVM frontend/linker parity, lockfile/version consistency checks, and
