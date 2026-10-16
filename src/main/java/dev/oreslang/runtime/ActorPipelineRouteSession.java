@@ -131,11 +131,26 @@ public final class ActorPipelineRouteSession {
         List<ActorPipelineRoutePlan.Edge> edges = graph.forwardAll(current.receiver());
         reserve(edges.size());
         reserveRouteIds(edges.size());
-        List<MailFrame> created = new ArrayList<>(edges.size());
+        // Prepare every identity and immutable path before publication. A
+        // failed allocation must never leave an invisible live branch in the
+        // host ledger (mailbox admission remains separately non-atomic).
+        List<MailFrame> prepared = new ArrayList<>(edges.size());
+        long routeId = nextRouteId;
         for (ActorPipelineRoutePlan.Edge edge : edges) {
-            created.add(newFrame(current.flowId, extend(current.actorPath, edge.target())));
+            prepared.add(new MailFrame(this, generation, current.flowId,
+                    routeId++, extend(current.actorPath, edge.target())));
         }
-        return List.copyOf(created);
+        List<MailFrame> result = List.copyOf(prepared);
+        try {
+            for (MailFrame child : result) {
+                active.put(child, Boolean.TRUE);
+            }
+        } catch (RuntimeException | Error failure) {
+            for (MailFrame child : result) active.remove(child);
+            throw failure;
+        }
+        nextRouteId = routeId;
+        return result;
     }
 
     /** Send to the immediate authenticated sender of the current message. */
