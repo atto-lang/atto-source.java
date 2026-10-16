@@ -86,11 +86,12 @@ public final class Lexer {
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
             case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
-                if (match('/')) while (peek() != '\n' && !isAtEnd()) advance();
+                if (match('/')) while (peek() != '\n' && peek() != '\r' && !isAtEnd()) advance();
                 else if (match('*')) blockComment();
                 else add(SLASH);
             }
-            case ' ', '\r', '\t' -> { }
+            case ' ', '\t' -> { }
+            case '\r' -> { if (peek() != '\n') newline(); }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
             case '#' -> symbol();
@@ -162,7 +163,7 @@ public final class Lexer {
         while (depth > 0) {
             if (isAtEnd()) throw error("unterminated block comment");
             char c = advance();
-            if (c == '\n') newline();
+            if (c == '\n' || c == '\r' && peek() != '\n') newline();
             else if (c == '/' && match('*')) depth++;
             else if (c == '*' && match('/')) depth--;
         }
@@ -172,7 +173,11 @@ public final class Lexer {
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
             char c = advance();
-            if (c == '\n') { newline(); value.append('\n'); continue; }
+            if (c == '\n' || c == '\r') {
+                if (c == '\n' || peek() != '\n') newline();
+                value.append(c);
+                continue;
+            }
             if (c == '\\') {
                 if (isAtEnd()) throw error("unterminated string escape");
                 char escaped = advance();
