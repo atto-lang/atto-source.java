@@ -733,6 +733,13 @@ public final class TypeChecker {
                         // contracts still advertise this slot to callers (including through
                         // a base-typed receiver). A private override would typecheck as
                         // public and then fail runtime access checks.
+                        if (parentMethod.isAbstract()
+                                && parentMethod.visibility() == Ast.Visibility.PRIVATE
+                                && local.visibility() != Ast.Visibility.PRIVATE) {
+                            throw new IllegalArgumentException("private abstract method '"
+                                    + methodOriginLabel(origin) + "." + local.name()
+                                    + "' cannot be made public by an override in " + klass.name());
+                        }
                         if (parentMethod.visibility() == Ast.Visibility.PUBLIC
                                 && local.visibility() != Ast.Visibility.PUBLIC) {
                             String kind = staticNamespace ? "static function" : "method";
@@ -885,12 +892,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "static class functions cannot be abstract: " + klass.name() + "." + method.name());
             }
-            if (method.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException(
-                        "abstract method '" + klass.name() + "." + method.name()
-                                + "' with arity " + method.arity()
-                                + " must be public so subclasses can satisfy the slot");
-            }
+            // A private abstract slot is implementable by a subclass, but
+            // callable only from the class that originally declared the slot.
+            // Unlike Java private methods, it participates in virtual dispatch.
         }
 
         if (klass.isAbstract()) return;
@@ -3046,6 +3050,7 @@ public final class TypeChecker {
                         int methodArity = fixedCallArity(
                                 call.arguments(), env, generics, self,
                                 "method " + named.name() + "." + member.member());
+                        requireUserCallableMethodSlot(klass, member.member(), methodArity);
                         ResolvedMethod target = findMethodTarget(
                                 klass, named, member.member(), methodArity, new LinkedHashSet<>());
                         if (target == null) {
@@ -3464,6 +3469,13 @@ public final class TypeChecker {
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
+                    // Private abstract slots and actor lifecycle handlers are
+                    // never exposed as method values, even to the implementing class.
+                    if (klass.actorKind() != Ast.ActorKind.NONE
+                            && member.member().equals("receive")) {
+                        throw new IllegalArgumentException(
+                                "actor receive is runtime-managed and cannot be referenced from user code");
+                    }
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
                         requireClassMemberVisible(
@@ -6690,6 +6702,37 @@ public final class TypeChecker {
             if (parent != null) collectInterfaceMethodNames(parent, names, seen);
         }
         seen.remove(iface);
+    }
+
+    private Ast.ClassDecl privateAbstractSlotOwner(
+            Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> visited) {
+        if (!visited.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.isAbstract()
+                    && method.visibility() == Ast.Visibility.PRIVATE
+                    && method.matchesArity(name, arity)) return klass;
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.ClassDecl owner = privateAbstractSlotOwner(parent, name, arity, visited);
+            if (owner != null) return owner;
+        }
+        return null;
+    }
+
+    private void requireUserCallableMethodSlot(Ast.ClassDecl klass, String name, int arity) {
+        if (klass.actorKind() != Ast.ActorKind.NONE && name.equals("receive")) {
+            throw new IllegalArgumentException(
+                    "actor receive is runtime-managed; send a message rather than invoke it");
+        }
+        Ast.ClassDecl origin = privateAbstractSlotOwner(
+                klass, name, arity, new LinkedHashSet<>());
+        if (origin != null && currentClassOwner != origin) {
+            throw new IllegalArgumentException(
+                    "private abstract method '" + origin.name() + "." + name
+                            + "' is callable only by its declaring superclass");
+        }
     }
 
     private void requireClassMemberVisible(
