@@ -35,7 +35,14 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         ChildProcLaunchAdmission.Plan admit(ChildProcLaunchAdmission.Spec spec) throws IOException;
     }
 
+    /** Host-only injection point for deterministic close-vs-launch tests. */
+    @FunctionalInterface
+    interface ProcessStarter {
+        Process start(ChildProcLaunchAdmission.Plan plan) throws IOException;
+    }
+
     private final Admission admission;
+    private final ProcessStarter processStarter;
     private final Executor ioExecutor;
     private final int maxChildren;
     private final int maxOutputBytes;
@@ -94,7 +101,14 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
      */
     ChildProcOwnedRuntime(Admission admission, Executor ioExecutor,
                           int maxChildren, int maxOutputBytes) {
+        this(admission, ioExecutor, maxChildren, maxOutputBytes,
+                plan -> ChildProcLaunchAdmission.newProcessBuilder(plan).start());
+    }
+
+    ChildProcOwnedRuntime(Admission admission, Executor ioExecutor,
+                          int maxChildren, int maxOutputBytes, ProcessStarter starter) {
         this.admission = Objects.requireNonNull(admission, "admission");
+        this.processStarter = Objects.requireNonNull(starter, "starter");
         this.ioExecutor = Objects.requireNonNull(ioExecutor, "ioExecutor");
         if (maxChildren < 1 || maxChildren > 64) {
             throw new IllegalArgumentException("maxChildren must be in 1..64");
@@ -216,7 +230,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         }
         Process process;
         try {
-            process = ChildProcLaunchAdmission.newProcessBuilder(plan).start();
+            process = processStarter.start(plan);
         } catch (IOException | RuntimeException failed) {
             forget(slot);
             slot.ready.completeExceptionally(failed);
