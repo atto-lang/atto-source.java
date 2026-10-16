@@ -45,7 +45,7 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
-    # Candidate identity pin only; protected-main source approval remains separate.
+    # Immutable candidate identity pin is NOT transfer authorization.
     "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
@@ -521,6 +521,29 @@ def require_source_tree_match(source, trusted_root, files):
     return commit_sha, expected_tree
 
 
+def verify_private_ci_root_tree(repository, root_tree_sha, subtree_sha):
+    """Read back the assembled root tree before creating any CI commit.
+
+    GitHub's tree-creation SHA alone does not independently attest that the
+    requested source subtree was actually installed at the expected prefix.
+    A truncated or ambiguous tree response must fail closed.
+    """
+    valid_sha(root_tree_sha)
+    valid_sha(subtree_sha)
+    response = gh_api(f"repos/{repository}/git/trees/{root_tree_sha}")
+    entries = response.get("tree")
+    if (response.get("sha") != root_tree_sha
+            or response.get("truncated") is not False
+            or not isinstance(entries, list)):
+        raise Denied("destination CI root tree attestation unavailable")
+    matching = [item for item in entries
+                if isinstance(item, dict) and item.get("path") == PREFIX]
+    if (len(matching) != 1 or matching[0].get("type") != "tree"
+            or matching[0].get("mode") != "040000"
+            or matching[0].get("sha") != subtree_sha):
+        raise Denied("destination CI root tree missing exact source subtree")
+
+
 def verify_private_ci_commit(repository, commit_sha, expected_tree, expected_parent):
     """Attest the destination commit object before exposing a new CI ref.
 
@@ -637,6 +660,8 @@ def publish(repository, source, branch, trusted_root,
                           {"path": PREFIX, "mode": "040000", "type": "tree",
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
+    authorize_write()
+    verify_private_ci_root_tree(repository, new_tree_sha, isolated_sha)
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": ("ci: source snapshot from approved private Oreslang checkout\n\n"
