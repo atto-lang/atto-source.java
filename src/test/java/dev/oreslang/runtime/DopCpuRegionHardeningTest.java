@@ -122,4 +122,67 @@ final class DopCpuRegionHardeningTest {
                 () -> DopKernelIR.executeCpuRegion(kernel(shape), input, output, src, dst));
         input.close();
     }
+
+    @Test
+    void tokenIsOpaqueTypedAndIdenticalAcrossOwnershipTransfer() throws Exception {
+        var shape = plan(DataOrientedLayout.Kind.SOA);
+        var owner = new DopKernelIR.HostBuffer(shape);
+        var token = owner.regionToken();
+        assertEquals(7L, token.rows());
+        assertEquals(3, token.fields());
+        assertTrue(token.isLive());
+        assertEquals(0, DopKernelIR.HostBuffer.RegionToken.class.getConstructors().length,
+                "guest code must not be able to mint a buffer identity");
+        assertThrows(NoSuchMethodException.class,
+                () -> DopKernelIR.HostBuffer.class.getMethod("regionBackingIdentity"),
+                "generic State escape hatch must not be part of the public API");
+        var root = owner.regionRoot();
+        var moved = owner.take();
+        assertSame(token, moved.regionToken());
+        assertTrue(root.sameRoot(moved.regionRoot()));
+        assertThrows(IllegalStateException.class, owner::regionToken);
+        assertThrows(IllegalStateException.class, owner::regionRoot);
+        owner.close();
+        assertTrue(token.isLive());
+        moved.close();
+        assertFalse(token.isLive());
+        assertFalse(root.isLiveOwned());
+        assertThrows(IllegalStateException.class, moved::regionToken);
+    }
+
+    @Test
+    void simultaneousRegionCaptureAndTakeNeverMintsASecondIdentity() throws Exception {
+        var shape = plan(DataOrientedLayout.Kind.AOS);
+        for (int trial = 0; trial < 96; trial++) {
+            var owner = new DopKernelIR.HostBuffer(shape);
+            var start = new CountDownLatch(1);
+            var captured = new java.util.concurrent.atomic.AtomicReference<DopRegionSchedule.Root>();
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            var thread = new Thread(() -> {
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) return;
+                    try {
+                        captured.set(owner.regionRoot());
+                    } catch (IllegalStateException expected) {
+                        // Transfer may win admission.
+                    }
+                } catch (Throwable unexpected) {
+                    failure.set(unexpected);
+                }
+            });
+            thread.start();
+            start.countDown();
+            var moved = owner.take();
+            thread.join(5000);
+            assertFalse(thread.isAlive(), "capture did not terminate");
+            assertNull(failure.get(), "unexpected concurrent capture failure");
+            if (captured.get() != null) {
+                assertTrue(captured.get().sameRoot(moved.regionRoot()));
+            }
+            moved.close();
+            if (captured.get() != null) {
+                assertFalse(captured.get().isLiveOwned());
+            }
+        }
+    }
 }
