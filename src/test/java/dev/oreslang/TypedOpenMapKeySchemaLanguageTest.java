@@ -255,6 +255,30 @@ final class TypedOpenMapKeySchemaLanguageTest {
     }
 
     @Test
+    void unreifiedSchemaNominalTestsAndOpenTopTestsFailClosed() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(SCHEMA + """
+                        fnc invalid(): bool {
+                          val m = new Settings();
+                          return m is Settings;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(SCHEMA + """
+                        fnc invalid(): Settings {
+                          val m = new Settings();
+                          return m as Settings;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc invalid(unknown value): bool {
+                          return value is unknown;
+                        }
+                        """)));
+    }
+
+    @Test
     void runtimeUsesHardenedKeyedStorageForSchemaInstances() throws Exception {
         String source = SCHEMA + """
                 pub fnc main(): void {
