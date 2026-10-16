@@ -134,7 +134,7 @@ def strict_github_api_json(raw):
     try:
         data = json.loads(raw, object_pairs_hook=unique_keys,
                           parse_constant=reject_nonstandard_number)
-    except json.JSONDecodeError as exc:
+    except (ValueError, RecursionError) as exc:
         raise Denied("invalid GitHub API JSON response") from exc
     if not isinstance(data, dict):
         raise Denied("unexpected GitHub response shape")
