@@ -164,7 +164,7 @@ def main():
     p.add_argument("--validate", action="store_true")
     p.add_argument("--backend", choices=["llvm", "graal"])
     p.add_argument("--command", help="shell-free argv with one {source} placeholder")
-    p.add_argument("--clang", default="")
+    p.add_argument("--clang", default=None)
     p.add_argument("--run-command", help="Graal OresMain guest process argv with one {source}")
     p.add_argument("--revision", help="40-character Git commit SHA for the compiled backend")
     p.add_argument("--timeout", type=int, default=None,
@@ -175,7 +175,8 @@ def main():
     if args.validate:
         if (args.backend is not None or args.command is not None or
                 args.report is not None or args.run_command is not None or
-                args.revision is not None or args.clang or args.timeout is not None):
+                args.revision is not None or args.clang is not None or
+                args.timeout is not None):
             p.error("--validate cannot be combined with an execution option")
         print(f"Validated {len(suite['cases'])} semantic cases, SHA256={checksum}")
         return 0
