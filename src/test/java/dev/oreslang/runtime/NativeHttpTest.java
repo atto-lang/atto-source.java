@@ -76,6 +76,132 @@ class NativeHttpTest {
         }
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    @org.junit.jupiter.api.Timeout(10)
+    void concurrentForcedListenerCloseHasExactlyOneWinner() throws Exception {
+        // This is the same claim used by Server.close(). Every losing caller
+        // must return without invoking transport.stop or state cleanup.
+        var claimed = new java.util.concurrent.atomic.AtomicBoolean();
+        var winners = new java.util.concurrent.atomic.AtomicInteger();
+        var start = new CountDownLatch(1);
+        var ready = new CountDownLatch(64);
+        var threads = new java.util.ArrayList<Thread>();
+        for (int i = 0; i < 64; i++) {
+            threads.add(Thread.ofVirtual().start(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) return;
+                    if (NativeHttp.claimForcedClose(claimed)) winners.incrementAndGet();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        for (Thread thread : threads) {
+            thread.join(5_000);
+            assertFalse(thread.isAlive(), "concurrent close did not return");
+        }
+        assertEquals(1, winners.get(), "transport stop must have a single owner");
+        assertTrue(claimed.get());
+        assertFalse(NativeHttp.claimForcedClose(claimed),
+                "a repeated forced close cannot claim another shutdown");
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(25)
+    void acceptFutureSubscribersNeverRunUnderListenerMonitor() throws Exception {
+        // This exercises the exact production publication gate and Future
+        // notification implementation (not a Boolean lifecycle predicate).
+        // An accept callback can synchronously wait for another thread to
+        // take the listener monitor, so completing under it would deadlock.
+        Object listenerMonitor = new Object();
+        OresFuture<Object> accepted = new OresFuture<>(() -> false, () -> { });
+        Object exchange = new Object();
+        CountDownLatch delivered = new CountDownLatch(1);
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        var received = new java.util.concurrent.atomic.AtomicReference<Object>();
+        var receivedFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var heldMonitor = new java.util.concurrent.atomic.AtomicBoolean();
+        var blockedPeer = new java.util.concurrent.atomic.AtomicBoolean();
+        accepted.whenCompleteRuntime((value, failure) -> {
+            callbacks.incrementAndGet();
+            received.set(value);
+            receivedFailure.set(failure);
+            if (Thread.holdsLock(listenerMonitor)) heldMonitor.set(true);
+            CountDownLatch peerAcquired = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> {
+                synchronized (listenerMonitor) { peerAcquired.countDown(); }
+            });
+            try {
+                if (!peerAcquired.await(2, TimeUnit.SECONDS)) blockedPeer.set(true);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                blockedPeer.set(true);
+            } finally {
+                delivered.countDown();
+            }
+        });
+        synchronized (listenerMonitor) {
+            assertThrows(IllegalStateException.class, () ->
+                    NativeHttp.publishOutsideMonitor(listenerMonitor, accepted, exchange));
+            assertFalse(accepted.isDone(),
+                    "a rejected under-lock publication must not settle the accept");
+        }
+        NativeHttp.publishOutsideMonitor(listenerMonitor, accepted, exchange);
+        assertTrue(delivered.await(5, TimeUnit.SECONDS));
+        assertTrue(accepted.isDone());
+        assertSame(exchange, accepted.get(5, TimeUnit.SECONDS));
+        assertSame(exchange, received.get(), "accept callback received the wrong exchange");
+        assertNull(receivedFailure.get());
+        assertEquals(1, callbacks.get(), "accept callback must run exactly once");
+        assertFalse(heldMonitor.get(), "accept callback executed inside listener monitor");
+        assertFalse(blockedPeer.get(),
+                "accept callback blocked another thread's listener operation");
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(25)
+    void pendingAcceptFailsAfterListenerMonitorIsReleased() throws Exception {
+        Object listenerMonitor = new Object();
+        OresFuture<Object> pending = new OresFuture<>(() -> false, () -> { });
+        var failure = new IllegalStateException("HTTP listener sealed");
+        var observedFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var observedHeldLock = new java.util.concurrent.atomic.AtomicBoolean();
+        var peerBlocked = new java.util.concurrent.atomic.AtomicBoolean();
+        CountDownLatch callbackExited = new CountDownLatch(1);
+        pending.whenCompleteRuntime((ignored, rejected) -> {
+            observedFailure.set(rejected);
+            if (Thread.holdsLock(listenerMonitor)) observedHeldLock.set(true);
+            CountDownLatch peerEntered = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> {
+                synchronized (listenerMonitor) { peerEntered.countDown(); }
+            });
+            try {
+                if (!peerEntered.await(2, TimeUnit.SECONDS)) peerBlocked.set(true);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                peerBlocked.set(true);
+            } finally {
+                callbackExited.countDown();
+            }
+        });
+        synchronized (listenerMonitor) {
+            assertThrows(IllegalStateException.class, () ->
+                    NativeHttp.failOutsideMonitor(listenerMonitor, pending, failure));
+            assertFalse(pending.isDone(), "under-lock rejection must not fail an accept");
+        }
+        NativeHttp.failOutsideMonitor(listenerMonitor, pending, failure);
+        assertTrue(callbackExited.await(5, TimeUnit.SECONDS));
+        var thrown = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pending.get(5, TimeUnit.SECONDS));
+        assertSame(failure, thrown.getCause());
+        assertSame(failure, observedFailure.get());
+        assertFalse(observedHeldLock.get(),
+                "shutdown accept failure callback ran while listener was locked");
+        assertFalse(peerBlocked.get(),
+                "shutdown accept failure callback blocked competing listener admission");
+    }
+
     @Test void noActorDispatchOrTransferAfterRuntimeOrListenerClose() {
         assertTrue(NativeHttp.mayBeginDispatch(false, false));
         for (boolean runtimeClosed : new boolean[] {false, true}) {
@@ -212,6 +338,116 @@ class NativeHttpTest {
         }
     }
 
+    @Test void abortNeverCancelsAWorkerSharedByOtherListeners() {
+        // A worker generation can be simultaneously referenced by two HTTP
+        // listeners. Neither a single deadline nor a forced listener shutdown
+        // may cancel that actor; only a fresh per-request actor is owned.
+        for (boolean cancelOwner : new boolean[] {false, true}) {
+            for (boolean pooled : new boolean[] {false, true}) {
+                assertEquals(cancelOwner && !pooled,
+                        NativeHttp.shouldCancelActorForAbort(cancelOwner, pooled),
+                        "cancelOwner=" + cancelOwner + ", pooled=" + pooled);
+            }
+        }
+        assertFalse(NativeHttp.shouldCancelActorForAbort(true, true),
+                "aborting listener A must not cancel the worker for listener B");
+        assertTrue(NativeHttp.shouldCancelActorForAbort(true, false),
+                "aborting a fresh actor must still request cancellation");
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(100)
+    void cancellationFailureStillClosesTransportAndReleasesAdmission() {
+        var calls = new java.util.ArrayList<String>();
+        var cancelFailure = new IllegalStateException("actor cancellation failed");
+        var closeFailure = new IllegalStateException("socket closure failed");
+
+        assertSame(cancelFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> { calls.add("cancel"); throw cancelFailure; },
+                        () -> calls.add("release"))));
+        assertEquals(List.of("cancel", "release"), calls);
+        calls.clear();
+
+        assertSame(cancelFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> { calls.add("cancel"); throw cancelFailure; },
+                        () -> { calls.add("release"); throw closeFailure; })));
+        assertEquals(List.of("cancel", "release"), calls);
+        assertArrayEquals(new Throwable[] {closeFailure}, cancelFailure.getSuppressed());
+        calls.clear();
+
+        assertSame(closeFailure, assertThrows(IllegalStateException.class, () ->
+                NativeHttp.runCancellationThenCleanup(
+                        () -> calls.add("cancel"),
+                        () -> { calls.add("release"); throw closeFailure; })));
+        assertEquals(List.of("cancel", "release"), calls);
+        calls.clear();
+
+        NativeHttp.runCancellationThenCleanup(
+                () -> calls.add("cancel"), () -> calls.add("release"));
+        assertEquals(List.of("cancel", "release"), calls);
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(100)
+    void timeoutDetachesPendingPhysicalQuiescenceCallback() {
+        OresFuture<Void> waitingOnStalledActor = new OresFuture<>();
+        OresFuture<Object> listenerDrain = new OresFuture<>();
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        var reg = waitingOnStalledActor.whenCompleteRuntimeCancellable(
+                (ignored, failure) -> callbacks.incrementAndGet());
+        assertEquals(1, waitingOnStalledActor.pendingRuntimeWaiterCount());
+
+        listenerDrain.whenCompleteRuntime((ignored, failure) -> reg.detach());
+        assertTrue(listenerDrain.failFromRuntime(
+                new TimeoutException("actor carrier did not quiesce")));
+        assertEquals(0, waitingOnStalledActor.pendingRuntimeWaiterCount(),
+                "timed-out server must not remain retained by a live actor's Future");
+        assertTrue(waitingOnStalledActor.completeFromRuntime(null));
+        assertEquals(0, callbacks.get(),
+                "late actor quiescence must not replay a timed-out listener callback");
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(100)
+    void quiescenceSubscriptionRegistrationRacingTimeoutStillDetaches()
+            throws Exception {
+        OresFuture<Void> actorQuiescence = new OresFuture<>();
+        OresFuture<Object> drain = new OresFuture<>();
+        var subscribers = new ConcurrentLinkedQueue<
+                OresFuture.RuntimeWaiterRegistration<Void>>();
+        drain.whenCompleteRuntime((ignored, failure) -> {
+            for (var subscription : subscribers) subscription.detach();
+            subscribers.clear();
+        });
+        CountDownLatch registrationReady = new CountDownLatch(1);
+        CountDownLatch publishRegistration = new CountDownLatch(1);
+        try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> registration = workers.submit(() -> {
+                var sub = actorQuiescence.whenCompleteRuntimeCancellable(
+                        (ignored, failure) -> { });
+                registrationReady.countDown();
+                try {
+                    if (!publishRegistration.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("test registration gate timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(interrupted);
+                }
+                subscribers.add(sub);
+                if (drain.isDone()) sub.detach();
+            });
+            try {
+                assertTrue(registrationReady.await(5, TimeUnit.SECONDS));
+                assertTrue(drain.failFromRuntime(new TimeoutException("listener stopped")));
+            } finally {
+                publishRegistration.countDown();
+            }
+            registration.get(5, TimeUnit.SECONDS);
+        }
+        assertEquals(0, actorQuiescence.pendingRuntimeWaiterCount(),
+                "subscribers registered after timeout callback must detach");
+    }
+
     @Test void rejectedAbortAlwaysRunsReleaseEvenWhenTransportCloseThrows() {
         var order = new java.util.ArrayList<String>();
         var closeFailure = new IllegalStateException("socket close failed");
@@ -241,6 +477,33 @@ class NativeHttpTest {
                 "a failed abort must not skip later accepted exchanges");
         assertArrayEquals(new Throwable[] { second }, result.getSuppressed());
         assertNull(NativeHttp.abortEveryAccepted(List.of(1, 2), ignored -> { }));
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(12)
+    @org.junit.jupiter.api.Timeout(15)
+    void shuttingDownIdleListenerFailsPendingAcceptAndCompletesDrain() throws Exception {
+        // End-to-end guest regression for Server.shutdown's two-phase
+        // admission sealing and off-monitor Future notifications. The client
+        // intentionally sends nothing: a waiter is registered before the
+        // transport stops and must fail, while its drain must still succeed.
+        String output = run("""
+            pub async routine main(): void {
+              val server = http.listen("127.0.0.1", 0, 1, 1024, 2000);
+              stdio.println(server.port);
+              val waiting = server.accept();
+              await server.shutdown(0);
+              try {
+                await waiting;
+                stdio.println("ACCEPT-WAS-NOT-REVOKED");
+              } catch (err) {
+                stdio.println("accept-revoked");
+              }
+              stdio.println(server.active);
+              return;
+            }
+            """, port -> { /* Deliberately no accepted request. */ });
+        assertFalse(output.contains("ACCEPT-WAS-NOT-REVOKED"), output);
+        assertTrue(output.stripTrailing().endsWith("accept-revoked\n0"), output);
     }
 
     @org.junit.jupiter.api.RepeatedTest(5)
@@ -389,6 +652,59 @@ class NativeHttpTest {
                     assertEquals("yes", after.headers().firstValue("X-Reused").orElseThrow());
                 });
             assertTrue(output.contains("first-shutdown"), output);
+            assertTrue(output.stripTrailing().endsWith("1\n1\n0\n0"), output);
+        }
+    }
+
+    @org.junit.jupiter.api.RepeatedTest(3)
+    @org.junit.jupiter.api.Timeout(30)
+    void abortingRequestOnFirstListenerKeepsSharedWorkerForSecondListener()
+            throws Exception {
+        for (String kind : List.of("actor", "isoactor")) {
+            String output = runTwoPorts("""
+                define %s Worker as
+                  let int uses = 0;
+                  receive(ActorMail<String> mail): void {
+                    self.uses = self.uses + 1;
+                    val request = http.claim(mail.value);
+                    if request.target == "/abort"; then
+                      request.abort();
+                    else
+                      request.set_header("X-Reused", self.uses > 1 ? "yes" : "no");
+                      await request.respond(200, "text/plain", "ok");
+                    fi
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val first = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  val second = http.listen("127.0.0.1", 0, 2, 1024, 5000);
+                  val handler = http.handler("Worker").pooled(1);
+                  stdio.println(first.port);
+                  stdio.println(second.port);
+                  val firstRequest = await first.accept();
+                  val firstCompletion = firstRequest.completion;
+                  handler.dispatch(rt borrow mut firstRequest);
+                  await firstCompletion;
+                  await first.shutdown(0);
+                  val secondRequest = await second.accept();
+                  val secondCompletion = secondRequest.completion;
+                  handler.dispatch(rt borrow mut secondRequest);
+                  await secondCompletion;
+                  await second.shutdown(0);
+                  stdio.println(handler.created);
+                  stdio.println(handler.reused);
+                  stdio.println(first.active);
+                  stdio.println(second.active);
+                  return;
+                }
+                """.formatted(kind), (first, second) -> {
+                    assertEquals(500, request(first, "GET", "/abort", "").statusCode());
+                    var following = request(second, "GET", "/ok", "");
+                    assertEquals(200, following.statusCode());
+                    assertEquals("yes", following.headers()
+                            .firstValue("X-Reused").orElseThrow());
+                });
             assertTrue(output.stripTrailing().endsWith("1\n1\n0\n0"), output);
         }
     }

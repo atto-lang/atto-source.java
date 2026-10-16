@@ -6692,6 +6692,14 @@ public final class ActorRuntime implements AutoCloseable {
         // Unlike pendingDrains, these observe the physical TurnExecutor exit,
         // not merely mail processing. Used for context-safe HTTP shutdown.
         private final ArrayList<DrainWaiter> pendingCarrierQuiescence = new ArrayList<>();
+        // Terminal observers must NOT publish callbacks from finalizeStopLocked:
+        // Future runtime listeners execute synchronously on the completing thread.
+        // Child finalization can also nest parent and child lifecycle monitors.
+        private List<OresFuture<Void>> finalizedCarrierNotifications;
+        // Set under lifecycleLock at physical finalization. The terminal
+        // Futures must be settled by the outermost caller, after all actor
+        // and ancestor lifecycle monitors have been released.
+        private boolean terminalFuturePublicationPending;
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -6854,11 +6862,16 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (finalized) return OresFuture.completed(null);
                 if (stopped.get()) {
-                    // Do not expose the internal finalizedFuture's default
-                    // cancellation capability through this shutdown observer.
+                    // A stopped-but-unfinalized actor still owns its physical
+                    // carrier/children. Reuse the bounded observer registry:
+                    // finalizedFuture completes under lifecycleLock and would
+                    // otherwise invoke this observer's host callbacks inline.
+                    if (pendingCarrierQuiescence.size() >= MAX_PENDING_DRAIN_WAITERS) {
+                        return OresFuture.failed(
+                                new ActorResourceExhaustedException(ref.id()));
+                    }
                     OresFuture<Void> observer = new OresFuture<>(() -> false, () -> { });
-                    finalizedFuture.whenCompleteRuntime(
-                            (ignored, failure) -> observer.completeFromRuntime(null));
+                    pendingCarrierQuiescence.add(new DrainWaiter(-1L, observer));
                     return observer;
                 }
                 final long target = nextUserMessageSequence - 1L;
@@ -7046,6 +7059,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get()) finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            if (stopped.get()) publishFinalizedCarrierNotifications();
         }
 
         private void finalizeStopLocked() {
@@ -7084,25 +7098,65 @@ public final class ActorRuntime implements AutoCloseable {
             }
             // Finalization is authoritative even when cancellation prevented
             // previously admitted messages from running.
-            List<OresFuture<Void>> quiesced = new ArrayList<>();
-            collectCarrierQuiescenceLocked(quiesced);
-            for (OresFuture<Void> waiter : quiesced) waiter.completeFromRuntime(null);
+            if (!pendingCarrierQuiescence.isEmpty()) {
+                // Zero allocation for actors without HTTP carrier observers.
+                // Terminal finalization runs once, so the collected list is
+                // published by the outer caller, never shared with live turns.
+                List<OresFuture<Void>> quiesced =
+                        new ArrayList<>(pendingCarrierQuiescence.size());
+                collectCarrierQuiescenceLocked(quiesced);
+                finalizedCarrierNotifications = quiesced;
+            }
             unregisterActor(this);
             if (parent != null) parent.childFinalized(this);
-            Throwable terminal = ref.terminationCause.get();
-            if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
-            }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
+            // Publishing these Futures from inside the monitor invokes
+            // arbitrary runtime subscribers synchronously. Defer as one
+            // terminal notification batch; the post-lock publisher also walks
+            // the parent chain when child finalization completed an ancestor.
+            terminalFuturePublicationPending = true;
             lifecycleLock.notifyAll();
+        }
+
+        /**
+         * Publish terminal observers and lifecycle Futures only AFTER exiting
+         * the outermost actor lifecycle monitor. A child can finalize its
+         * parent while holding its own monitor; walk that ancestor chain after
+         * the child's monitor has been dropped as well.
+         *
+         * Claim the terminal batch under the monitor before sending any
+         * callbacks. Competing teardown threads may call this concurrently,
+         * but at most one claims each actor's terminal publications.
+         */
+        private void publishFinalizedCarrierNotifications() {
+            for (ActorCell<?> cell = this; cell != null; cell = cell.parent) {
+                List<OresFuture<Void>> ready;
+                boolean publishTerminal;
+                synchronized (cell.lifecycleLock) {
+                    ready = cell.finalizedCarrierNotifications;
+                    cell.finalizedCarrierNotifications = null;
+                    publishTerminal = cell.terminalFuturePublicationPending;
+                    cell.terminalFuturePublicationPending = false;
+                }
+                if (ready != null) {
+                    for (OresFuture<Void> waiter : ready) {
+                        waiter.completeFromRuntime(null);
+                    }
+                }
+                if (!publishTerminal) continue;
+                Throwable terminal = cell.ref.terminationCause.get();
+                if (!cell.ref.readyFuture.isDone()) {
+                    // An initializer failure is authoritative; synthesize a
+                    // terminated error only for stop-before-ready without cause.
+                    cell.ref.readyFuture.failFromRuntime(
+                            terminal == null
+                                    ? new ActorTerminatedException(
+                                            cell.ref.id(), cell.kind, null)
+                                    : terminal);
+                }
+                if (terminal == null) cell.ref.doneFuture.completeFromRuntime(null);
+                else cell.ref.doneFuture.failFromRuntime(terminal);
+                cell.finalizedFuture.completeFromRuntime(null);
+            }
         }
 
         private void childFinalized(ActorCell<?> child) {
@@ -7140,6 +7194,7 @@ public final class ActorRuntime implements AutoCloseable {
                     lifecycleLock.notifyAll();
                 }
             }
+            if (stopped.get()) publishFinalizedCarrierNotifications();
         }
 
         private void reserveOutput(long bytes) {
@@ -7390,6 +7445,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
                 try {
+                    if (stopped.get()) publishFinalizedCarrierNotifications();
                     // Runtime-only completion, after TurnExecutor returned and
                     // physical carrier authority was dropped, never inline in
                     // the guest receive callback or under lifecycleLock.
@@ -7478,6 +7534,10 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                         behavior = created;
                     }
+                    // The readiness decision linearizes against stop under
+                    // lifecycleLock. This turn still owns activeTurns, so
+                    // cancellation cannot physically finalize the actor
+                    // between that decision and the publication below.
                     final Throwable readinessFailure;
                     synchronized (lifecycleLock) {
                         readinessFailure = stopped.get() || forceKillFenced
@@ -7486,8 +7546,8 @@ public final class ActorRuntime implements AutoCloseable {
                     // Runtime observers may acquire an HTTP ownership monitor
                     // while a concurrent supervisor holds that monitor and
                     // reserves actor mail. Never call them under lifecycleLock.
-                    // Finalization may race this publication; readyFuture's
-                    // first terminal settlement remains authoritative.
+                    // readyFuture's first terminal settlement remains
+                    // authoritative if another lifecycle outcome wins.
                     if (readinessFailure != null) {
                         ref.readyFuture.failFromRuntime(readinessFailure);
                     } else {
@@ -7686,6 +7746,7 @@ public final class ActorRuntime implements AutoCloseable {
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
             }
+            publishFinalizedCarrierNotifications();
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
             // Publish failure only after teardown has released lifecycleLock.

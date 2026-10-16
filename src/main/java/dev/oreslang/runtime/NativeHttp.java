@@ -10,6 +10,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -291,7 +292,14 @@ public final class NativeHttp implements AutoCloseable {
         private final Set<Handler.Worker> pooledWorkers = ConcurrentHashMap.newKeySet();
         private OresFuture<Object> waiter;
         private volatile boolean stopped;
+        // A graceful shutdown is distinct from a forced close; only the
+        // first forced closer may tear down the JDK transport and state.
+        private final AtomicBoolean forcedCloseClaimed = new AtomicBoolean();
         private boolean transportStopped, pooledBarrierStarted;
+        // Arbitration is under this listener's monitor, but Future callbacks
+        // must be invoked only after dropping that monitor. A forced close
+        // therefore cannot race an already-selected success into the promise.
+        private boolean drainOutcomeClaimed;
         private OresFuture<Object> drained;
         private final AtomicLong accepted = new AtomicLong(), rejected = new AtomicLong(), completed = new AtomicLong();
 
@@ -343,16 +351,41 @@ public final class NativeHttp implements AutoCloseable {
             try {
                 validateRequest(raw);
                 state = new State(this, raw);
+                OresFuture<Object> acceptWaiter = null;
+                Exchange acceptedExchange = null;
+                boolean refused;
                 synchronized (this) {
-                    if (stopped) { admission.release(); reject(raw, 503); return; }
-                    active.add(state); accepted.incrementAndGet();
-                    State timed = state;
-                    long schedulePerf = CorePerf.start();
-                    state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
-                    CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
-                    Exchange exchange = new Exchange(state, context, 0);
-                    if (waiter == null) pending.add(exchange);
-                    else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
+                    refused = stopped;
+                    if (!refused) {
+                        active.add(state); accepted.incrementAndGet();
+                        State timed = state;
+                        long schedulePerf = CorePerf.start();
+                        try {
+                            state.deadline = timers.schedule(
+                                    () -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
+                        } finally {
+                            CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
+                        }
+                        Exchange exchange = new Exchange(state, context, 0);
+                        if (waiter == null) pending.add(exchange);
+                        else {
+                            acceptWaiter = waiter;
+                            waiter = null;
+                            acceptedExchange = exchange;
+                        }
+                    }
+                }
+                if (refused) {
+                    admission.release();
+                    reject(raw, 503);
+                    return;
+                }
+                // Future runtime subscribers execute synchronously. Publish
+                // after the listener monitor has been released: otherwise a
+                // continuation that requires another listener operation can
+                // deadlock an HTTP receive carrier.
+                if (acceptWaiter != null) {
+                    publishOutsideMonitor(this, acceptWaiter, acceptedExchange);
                 }
             } catch (IllegalArgumentException invalid) {
                 admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
@@ -379,17 +412,28 @@ public final class NativeHttp implements AutoCloseable {
             String length = raw.getRequestHeaders().getFirst("Content-Length");
             if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
         }
-        public synchronized OresFuture<Object> shutdown(int graceMillis) {
+        public OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
             if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
-            if (drained != null) return drained;
-            // Server.close() may have already completed forced teardown
-            // without a guest shutdown Future. Never resurrect shutdown
-            // work or claim a successful drain for that closed listener.
-            if (stopped) return OresFuture.failed(
-                    new IllegalStateException("HTTP listener already closed"));
-            drained = new OresFuture<>(() -> false, () -> { });
-            stopAccepting();
+            OresFuture<Object> acceptToFail;
+            OresFuture<Object> result;
+            synchronized (this) {
+                if (drained != null) return drained;
+                // Server.close() may have already completed forced teardown
+                // without a guest shutdown Future. Never resurrect shutdown
+                // work or claim a successful drain for that closed listener.
+                if (stopped) return OresFuture.failed(
+                        new IllegalStateException("HTTP listener already closed"));
+                drained = new OresFuture<>(() -> false, () -> { });
+                result = drained;
+                acceptToFail = stopAcceptingLocked();
+            }
+            // Failing the outstanding accept Future invokes host subscribers
+            // synchronously. They must never run inside Server's monitor.
+            if (acceptToFail != null) {
+                failOutsideMonitor(this, acceptToFail,
+                        new IllegalStateException("HTTP server closed"));
+            }
             try {
                 io.execute(() -> {
                     RuntimeException stopFailure = null;
@@ -403,7 +447,7 @@ public final class NativeHttp implements AutoCloseable {
                         // callbacks. Otherwise the last State.release() could
                         // settle drained successfully before this thread
                         // reports the failure.
-                        if (stopFailure != null) drained.failFromRuntime(stopFailure);
+                        if (stopFailure != null) failDrain(stopFailure);
                         // Do not publish transportStopped until every accepted
                         // exchange has been visited by abort cleanup. Otherwise
                         // an asynchronous State.release() can finish a successful
@@ -419,27 +463,32 @@ public final class NativeHttp implements AutoCloseable {
                 // The HTTP executor can close after the drain Future is
                 // published but before the transport-stop task is admitted.
                 // Never strand awaiters on a stop operation that cannot run.
-                drained.failFromRuntime(unavailable);
+                failDrain(unavailable);
             }
-            return drained;
+            return result;
         }
-        private synchronized void completeDrain() {
-            if (!readyForCarrierBarrier(transportStopped, active.isEmpty(), releasesInProgress.get())
-                    || drained == null || pooledBarrierStarted) {
-                return;
+        private void completeDrain() {
+            List<Handler.Worker> workers;
+            boolean skipBarrier;
+            synchronized (this) {
+                if (!readyForCarrierBarrier(
+                        transportStopped, active.isEmpty(), releasesInProgress.get())
+                        || drained == null || pooledBarrierStarted) {
+                    return;
+                }
+                pooledBarrierStarted = true;
+                // Claim the worker snapshot under this listener's monitor,
+                // never settle an OresFuture or subscribe a runtime callback
+                // while holding it. Stop/close can otherwise deadlock callbacks.
+                workers = List.copyOf(pooledWorkers);
+                pooledWorkers.clear();
+                skipBarrier = drainOutcomeClaimed || drained.isDone();
             }
-            pooledBarrierStarted = true;
-            // A transport-complete response is not an actor-carrier-exit proof.
-            // Snapshot the workers used by THIS server. Never cancel a shared
-            // handler pool simply because one of its listeners is stopping.
-            List<Handler.Worker> workers = List.copyOf(pooledWorkers);
-            pooledWorkers.clear();
             for (Handler.Worker worker : workers) worker.served.remove(this);
-            // An already-failed or cancelled drain does not need fresh
-            // timers or I/O jobs. The references above are still retired.
-            if (drained.isDone()) return;
+            // Always retire references, including after exceptional teardown.
+            if (skipBarrier) return;
             if (workers.isEmpty()) {
-                drained.completeFromRuntime(null);
+                succeedDrain();
                 return;
             }
             // The runtime processes a bounded HTTP deadline, but a user actor
@@ -449,38 +498,78 @@ public final class NativeHttp implements AutoCloseable {
                     Math.min(30_000L, Math.max((long) deadlineMillis, 0L)));
             final ScheduledFuture<?> timeout;
             try {
-                timeout = timers.schedule(() -> drained.failFromRuntime(
+                timeout = timers.schedule(() -> failDrain(
                         new TimeoutException("HTTP pooled actor carrier did not quiesce")),
                         waitMillis, TimeUnit.MILLISECONDS);
-                drained.whenCompleteRuntime((ignored, failure) -> timeout.cancel(false));
+                // The actor's physical-quiescence Future may outlive a timed-
+                // out listener indefinitely. Detach its runtime callbacks as
+                // soon as the listener's drain settles, so stalled actors
+                // cannot retain server shutdown closures or old listeners.
+                var subscriptions = new ConcurrentLinkedQueue<
+                        OresFuture.RuntimeWaiterRegistration<Void>>();
+                drained.whenCompleteRuntime((ignored, failure) -> {
+                    timeout.cancel(false);
+                    for (var registration : subscriptions) registration.detach();
+                    subscriptions.clear();
+                });
                 io.execute(() -> {
                     AtomicInteger pending = new AtomicInteger(workers.size());
                     AtomicReference<Throwable> firstError = new AtomicReference<>();
                     for (Handler.Worker worker : workers) {
+                        if (drained.isDone()) break;
                         try {
-                            context.actors().quiesceAcceptedMessages(worker.actor)
-                                    .whenCompleteRuntime((ignored, failure) -> {
-                                if (failure != null) {
-                                    firstError.compareAndSet(null, OresFuture.unwrap(failure));
-                                }
-                                if (pending.decrementAndGet() == 0) {
-                                    Throwable error = firstError.get();
-                                    if (error == null) drained.completeFromRuntime(null);
-                                    else drained.failFromRuntime(error);
-                                }
-                            });
+                            OresFuture<Void> quiescence =
+                                    context.actors().quiesceAcceptedMessages(worker.actor);
+                            var registration = quiescence.whenCompleteRuntimeCancellable(
+                                    (ignored, failure) -> {
+                                        if (failure != null) {
+                                            firstError.compareAndSet(null, OresFuture.unwrap(failure));
+                                        }
+                                        if (pending.decrementAndGet() == 0) {
+                                            Throwable error = firstError.get();
+                                            if (error == null) succeedDrain();
+                                            else failDrain(error);
+                                        }
+                                    });
+                            subscriptions.add(registration);
+                            // Covers settlement between the drain callback's
+                            // iteration and this new registration's enqueue.
+                            if (drained.isDone()) registration.detach();
                         } catch (RuntimeException failure) {
                             firstError.compareAndSet(null, failure);
                             if (pending.decrementAndGet() == 0) {
-                                drained.failFromRuntime(firstError.get());
+                                failDrain(firstError.get());
                             }
                         }
                     }
                 });
             } catch (RejectedExecutionException unavailable) {
-                drained.failFromRuntime(unavailable);
+                failDrain(unavailable);
             }
         }
+
+        /** Reserve successful shutdown atomically against a concurrent forced close. */
+        private void succeedDrain() {
+            OresFuture<Object> completion;
+            synchronized (this) {
+                if (forcedCloseClaimed.get() || drainOutcomeClaimed || drained == null) return;
+                drainOutcomeClaimed = true;
+                completion = drained;
+            }
+            completion.completeFromRuntime(null);
+        }
+
+        /** Reserve exceptional shutdown without invoking subscribers under the monitor. */
+        private void failDrain(Throwable failure) {
+            OresFuture<Object> completion;
+            synchronized (this) {
+                if (drainOutcomeClaimed || drained == null) return;
+                drainOutcomeClaimed = true;
+                completion = drained;
+            }
+            completion.failFromRuntime(failure);
+        }
+
         /**
          * Exhaustive shutdown cleanup: ConcurrentHashMap's weakly consistent
          * iterator is unnecessary once admission is sealed. Snapshot all
@@ -491,26 +580,40 @@ public final class NativeHttp implements AutoCloseable {
         private void abortAllActiveOnShutdown() {
             RuntimeException firstFailure = abortEveryAccepted(
                     List.copyOf(active), state -> state.abort(503));
-            if (firstFailure != null && drained != null) {
-                drained.failFromRuntime(firstFailure);
-            }
+            if (firstFailure != null) failDrain(firstFailure);
         }
 
-        private synchronized void stopAccepting() {
+        /** Caller holds this server's monitor; never settle the waiter here. */
+        private OresFuture<Object> stopAcceptingLocked() {
             stopped = true;
-            if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
+            OresFuture<Object> pendingAccept = waiter;
+            waiter = null;
             pending.clear();
+            return pendingAccept;
         }
         @Override public void close() {
-            stopAccepting();
-            // Fail the pending guest shutdown promise before transportStopped
-            // or active.remove can let concurrent request cleanup settle it
-            // successfully. A forced context close is not an idle guarantee.
+            // Claim exactly once, even if multiple supervisors/teardown paths
+            // race on the same listener. Duplicate callers must not stop a
+            // transport or re-abort already released state a second time.
+            OresFuture<Object> acceptToFail;
+            OresFuture<Object> drainToFail = null;
             synchronized (this) {
-                if (drained != null && !drained.isDone()) {
-                    drained.failFromRuntime(new IllegalStateException(
-                            "HTTP runtime closed before pooled actor quiescence"));
+                if (!claimForcedClose(forcedCloseClaimed)) return;
+                acceptToFail = stopAcceptingLocked();
+                // Seal failure atomically with forced close, but publish
+                // outside the monitor so host callbacks never run locked.
+                if (drained != null && !drainOutcomeClaimed) {
+                    drainOutcomeClaimed = true;
+                    drainToFail = drained;
                 }
+            }
+            if (drainToFail != null) {
+                drainToFail.failFromRuntime(new IllegalStateException(
+                        "HTTP runtime closed before pooled actor quiescence"));
+            }
+            if (acceptToFail != null) {
+                failOutsideMonitor(this, acceptToFail,
+                        new IllegalStateException("HTTP server closed"));
             }
             try {
                 transport.stop(0);
@@ -568,21 +671,33 @@ public final class NativeHttp implements AutoCloseable {
             }
             // Never perform socket I/O or actor cancellation while holding the ownership monitor.
             if (alreadyClosed && poolWorker != null) { release(); return; }
-            if (actor != null && cancelOwner) actor.cancel();
-            if (alreadyClosed) { release(); return; }
-            try { io.execute(() -> { try { if (send) reject(raw, status); else raw.close(); } finally { synchronized (this) { transportClosed = true; } release(); } }); }
-            catch (RejectedExecutionException closed) {
-                // No I/O worker remains to close this aborted transport.
-                // Merely invoking release() here is ineffective because it
-                // refuses to reclaim an exchange with transportClosed=false.
-                // Close as an emergency host fallback, always retire the
-                // admission slot, and never leave server.shutdown() waiting
-                // forever for an impossible executor task.
-                retireRejectedAbort(raw::close, () -> {
-                    synchronized (this) { transportClosed = true; }
-                    release();
-                });
-            }
+            // A pooled actor can serve unrelated listeners and concurrent
+            // requests. Aborting one exchange must NEVER cancel that worker.
+            // Fresh per-request actors, however, are owned by the exchange.
+            // Always close/release the socket even if cancellation fails.
+            runCancellationThenCleanup(
+                    () -> {
+                        if (actor != null && shouldCancelActorForAbort(
+                                cancelOwner, poolWorker != null)) actor.cancel();
+                    },
+                    () -> {
+                        if (alreadyClosed) { release(); return; }
+                        try {
+                            io.execute(() -> {
+                                try { if (send) reject(raw, status); else raw.close(); }
+                                finally {
+                                    synchronized (this) { transportClosed = true; }
+                                    release();
+                                }
+                            });
+                        } catch (RejectedExecutionException closed) {
+                            // An executor rejection must not strand admission.
+                            retireRejectedAbort(raw::close, () -> {
+                                synchronized (this) { transportClosed = true; }
+                                release();
+                            });
+                        }
+                    });
         }
         void finish() {
             synchronized (this) { if (terminal) return; terminal = true; }
@@ -842,6 +957,37 @@ public final class NativeHttp implements AutoCloseable {
         return transportStopped && activeEmpty && releasesInProgress == 0;
     }
 
+    /** Exactly-once forced listener close; independent from graceful shutdown. */
+    static boolean claimForcedClose(AtomicBoolean owner) {
+        Objects.requireNonNull(owner, "owner");
+        return owner.compareAndSet(false, true);
+    }
+
+    /** A pooled worker is shared ownership: one aborted HTTP exchange cannot cancel it. */
+    static boolean shouldCancelActorForAbort(boolean cancelOwner, boolean pooledWorker) {
+        return cancelOwner && !pooledWorker;
+    }
+
+    /**
+     * Even a failing actor cancellation must not strand the socket and request
+     * admission. Preserve cancellation failure and suppress cleanup failure.
+     */
+    static void runCancellationThenCleanup(Runnable cancel, Runnable cleanup) {
+        Objects.requireNonNull(cancel, "cancel");
+        Objects.requireNonNull(cleanup, "cleanup");
+        RuntimeException cancellationFailure = null;
+        try { cancel.run(); }
+        catch (RuntimeException failure) { cancellationFailure = failure; }
+        try { cleanup.run(); }
+        catch (RuntimeException cleanupFailure) {
+            if (cancellationFailure == null) throw cleanupFailure;
+            if (cancellationFailure != cleanupFailure) {
+                cancellationFailure.addSuppressed(cleanupFailure);
+            }
+        }
+        if (cancellationFailure != null) throw cancellationFailure;
+    }
+
     /** Only an active runtime/listener can admit a new actor transfer. */
     static boolean mayBeginDispatch(boolean runtimeClosed, boolean listenerStopping) {
         return !runtimeClosed && !listenerStopping;
@@ -901,6 +1047,31 @@ public final class NativeHttp implements AutoCloseable {
             }
         }
         return first;
+    }
+
+    /** Guard the producer side of HTTP accept notifications against lock re-entry. */
+    static <T> void publishOutsideMonitor(
+            Object monitor, OresFuture<T> observer, T value) {
+        Objects.requireNonNull(monitor, "monitor");
+        Objects.requireNonNull(observer, "observer");
+        if (Thread.holdsLock(monitor)) {
+            throw new IllegalStateException(
+                    "HTTP accept Future cannot settle while listener monitor is held");
+        }
+        observer.completeFromRuntime(value);
+    }
+
+    /** Mirror accept publication's lock boundary for pending accept failures. */
+    static <T> void failOutsideMonitor(
+            Object monitor, OresFuture<T> observer, Throwable failure) {
+        Objects.requireNonNull(monitor, "monitor");
+        Objects.requireNonNull(observer, "observer");
+        Objects.requireNonNull(failure, "failure");
+        if (Thread.holdsLock(monitor)) {
+            throw new IllegalStateException(
+                    "HTTP accept Future cannot fail while listener monitor is held");
+        }
+        observer.failFromRuntime(failure);
     }
 
     private static byte[] byteBuffer(List<?> values, int maximum) {
