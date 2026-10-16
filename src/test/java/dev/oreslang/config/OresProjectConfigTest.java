@@ -671,4 +671,27 @@ final class OresProjectConfigTest {
         assertEquals(project.toAbsolutePath().normalize(),
                 OresProjectConfig.discover(project.resolve("src/generated.ores"), override).projectRoot());
     }
+
+    @Test
+    void packageManifestSymlinkMustRemainInPhysicalPackageDirectory() throws Exception {
+        Path project = temp.resolve("manifest-authority");
+        Files.createDirectories(project);
+        Path outsideManifest = Files.writeString(temp.resolve("foreign-manifest.toml"),
+                "schema_version = \"1\"\n");
+        Path localManifest = Files.writeString(project.resolve("real-manifest.toml"),
+                "schema_version = \"1\"\n");
+        Path selected = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        try {
+            Files.createSymbolicLink(selected, outsideManifest);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(selected, Map.of()));
+        assertTrue(failure.getMessage().contains("physically reside"));
+        Files.delete(selected);
+        Files.createSymbolicLink(selected, localManifest);
+        assertEquals(project.toAbsolutePath().normalize(),
+                OresProjectConfig.load(selected, Map.of()).projectRoot());
+    }
 }
