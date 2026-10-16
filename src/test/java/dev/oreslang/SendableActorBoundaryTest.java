@@ -19,11 +19,8 @@ final class SendableActorBoundaryTest {
         IllegalArgumentException rejected = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define actor Child as
-                          receive(ActorMail<String> mail): void { return; }
-                        end
                         define actor Supervisor as
-                          receive(ActorMail<ActorRef<Child>> mail): void { return; }
+                          receive(ActorMail<ActorRef<Supervisor>> mail): void { return; }
                         end
                         """)));
         assertTrue(rejected.getMessage().contains("proven local Sendable capability transport"),
