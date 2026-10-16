@@ -124,6 +124,22 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "invalid source subtree"):
                 UPSTREAM_VERIFIER(A, E, "../source")
 
+    def test_upstream_commit_rejects_missing_or_invalid_tree_metadata(self):
+        route = "repos/" + pub.SOURCE_REPOSITORY + "/git/commits/" + A
+        for response, expected_message in [
+            ({}, "no verifiable Git tree"),
+            ({"tree": None}, "no verifiable Git tree"),
+            ({"tree": []}, "no verifiable Git tree"),
+            ({"tree": {"sha": "not-a-sha"}}, "invalid object SHA"),
+        ]:
+            with self.subTest(response=response):
+                def mocked(route_name, method="GET", payload=None):
+                    self.assertEqual(route_name, route)
+                    return response
+                with patch.object(pub, "gh_api", side_effect=mocked):
+                    with self.assertRaisesRegex(pub.Denied, expected_message):
+                        UPSTREAM_VERIFIER(A, D, "")
+
     def test_upstream_github_tree_rejects_truncation_and_forged_metadata(self):
         source_root = "repos/" + pub.SOURCE_REPOSITORY
         for data, message in [
