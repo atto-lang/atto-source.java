@@ -1,7 +1,6 @@
 package dev.oreslang.runtime;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -36,9 +35,15 @@ final class ChildProcLaunchAdmission {
                 Map<String, String> environment) {
         Spec {
             Objects.requireNonNull(executable, "executable");
-            args = List.copyOf(Objects.requireNonNull(args, "args"));
+            Objects.requireNonNull(args, "args");
             Objects.requireNonNull(cwd, "cwd");
-            environment = Map.copyOf(Objects.requireNonNull(environment, "environment"));
+            Objects.requireNonNull(environment, "environment");
+            // Bound collection size before copying untrusted guest inputs.
+            if (args.size() > MAX_ARGS || environment.size() > MAX_ENV) {
+                throw new IllegalArgumentException("child process argument/environment count exceeds limit");
+            }
+            args = List.copyOf(args);
+            environment = Map.copyOf(environment);
         }
     }
 
@@ -126,10 +131,36 @@ final class ChildProcLaunchAdmission {
         return value;
     }
 
+    /**
+     * Count encoded UTF-8 bytes without allocating a second attacker-sized byte
+     * array. Fail early on the total bound and reject malformed UTF-16 instead
+     * of silently replacing surrogates with the platform encoder fallback.
+     */
     private static int addBytes(int previous, String value) {
-        int total = previous + value.getBytes(StandardCharsets.UTF_8).length;
-        if (total > MAX_SPEC_BYTES) {
-            throw new IllegalArgumentException("child process spec exceeds byte quota");
+        int total = previous;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            int width;
+            if (ch <= 0x7f) {
+                width = 1;
+            } else if (ch <= 0x7ff) {
+                width = 2;
+            } else if (Character.isHighSurrogate(ch)) {
+                if (i + 1 >= value.length()
+                        || !Character.isLowSurrogate(value.charAt(i + 1))) {
+                    throw new IllegalArgumentException("invalid UTF-16 surrogate in child process spec");
+                }
+                i++;
+                width = 4;
+            } else if (Character.isLowSurrogate(ch)) {
+                throw new IllegalArgumentException("invalid UTF-16 surrogate in child process spec");
+            } else {
+                width = 3;
+            }
+            if (total > MAX_SPEC_BYTES - width) {
+                throw new IllegalArgumentException("child process spec exceeds byte quota");
+            }
+            total += width;
         }
         return total;
     }
