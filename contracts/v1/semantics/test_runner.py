@@ -61,6 +61,7 @@ class DiagnosticProof(unittest.TestCase):
             ("--revision", "a" * 40),
             ("--report", "report.json"),
             ("--clang", "clang"),
+            ("--clang", ""),  # explicit empty override must not bypass --validate
             ("--timeout", "30"),
         )
         with patch.object(sys, "argv", ["run.py", "--validate"]):
