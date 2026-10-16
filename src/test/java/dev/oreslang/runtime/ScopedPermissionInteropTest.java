@@ -140,6 +140,37 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void publicNestedHostClassesCannotBypassEnclosingTypeDenials() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.THREAD_CREATE,
+                IsolatePolicy.Capability.FILESYSTEM_READ);
+        // A direct allowlist entry for Outer$Nested must never bypass a
+        // prohibition on Outer. These are public JDK binary class names.
+        for (String nested : new String[]{
+                "java.util.ResourceBundle$Control",
+                "java.util.ServiceLoader$Provider",
+                "java.lang.System$LoggerFinder",
+                "java.lang.Thread$Builder",
+                "java.lang.Thread$Builder$OfVirtual",
+                "java.lang.ProcessHandle$Info",
+                "java.lang.Runtime$Version",
+                "java.lang.ProcessBuilder$Redirect",
+                "java.security.KeyStore$Builder"
+        }) {
+            assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(nested)),
+                    "nested blocked authority admitted: " + nested);
+        }
+        // A binary-name dollar sign is not inherently dangerous: nested
+        // classes of safe public data types remain individually allowlistable.
+        assertDoesNotThrow(() -> policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(),
+                Set.of("java.util.Map$Entry", "java.util.AbstractMap$SimpleEntry")));
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
