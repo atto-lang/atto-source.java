@@ -31,6 +31,21 @@ final class PositionalTupleSyntaxTest {
     }
 
     @Test
+    void allOptionalTupleParametersFailClosedUntilGuestAbiIsImplemented() {
+        for (String parameter : new String[] {
+                "tuple (int, int, string?) value",
+                "(int, int, string?) value",
+                "structural (int, int, string?) value"
+        }) {
+            var parsed = Parser.parse(declaration(parameter));
+            var error = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(parsed), parameter);
+            assertTrue(error.getMessage().contains("not yet executable"),
+                    parameter + ": " + error.getMessage());
+        }
+    }
+
+    @Test
     void optionalMiddleTupleSlotIsRejectedImmediatelyByTheParser() {
         for (String parameter : new String[] {
                 "tuple (int?, int, string?) value",
