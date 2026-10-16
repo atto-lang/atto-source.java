@@ -146,3 +146,29 @@ This read-back check detects incorrect branch publication but does not
 eliminate the need for a post-run teardown/retention review. Branch creation
 does not imply that a CI build has executed; record actual step logs, the
 verified source tree and the destination commit before claiming test success.
+
+## Protected original-source mainline policy attestation
+
+The publisher **must not** treat an approval entry introduced only in a
+local/PR checkout as authorization to export private source. Before reading
+source files for transfer, it verifies through the authenticated original
+source GitHub API that `main` is protected and retrieves the policy file
+**from that exact protected-main commit**. The byte-for-byte SHA-256 of the
+remote policy must match the local approval policy, and the returned Git blob
+SHA must match the policy contents. Malformed/unavailable content, absent
+protection, unreviewed local policy changes, and any mismatch fail closed.
+
+The exact approved source-main commit is pinned for the transfer. Before
+each destination write, the publisher checks that original source `main`
+is still protected and has not moved. A change aborts any further writes.
+This eliminates local-branch-only approval and detects revocation by a new
+main commit while preserving previously uploaded Git objects as a separate
+destination-retention concern. It does **not** replace an independent
+security-owner review or prove that a branch's protection rules require
+code-owner approval: repository administrators must configure and verify
+those rules before a private export. No destination is authorized while the
+source's protected-main policy remains empty.
+
+Added adversarial source-main authorization tests to the publisher suite;
+the checked-in Python suite now declares **62** tests. The trusted
+source-local validation workflow in PR #1014 requires at least 62.
