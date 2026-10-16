@@ -102,10 +102,7 @@ public final class DopKernelIR {
             return DopRegionSchedule.Root.fromHostBuffer(this);
         }
         public static boolean isBackingLive(Object identity) {
-            if (!(identity instanceof State backing)) return false;
-            synchronized (backing) {
-                return !backing.closed;
-            }
+            return identity instanceof RegionToken token && token.isLive();
         }
         public DataOrientedLayout.Plan layout() {
             synchronized (state) {
