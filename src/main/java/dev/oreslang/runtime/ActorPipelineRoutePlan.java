@@ -233,6 +233,9 @@ public final class ActorPipelineRoutePlan {
     /** FNV-1a over strict UTF-8 bytes; deterministic, not authorization. */
     public Edge forwardByKey(String source, String key) {
         Objects.requireNonNull(key);
+        // Untrusted selectors must be bounded before allocating UTF-8 bytes.
+        if (key.length() > MAX_KEY_BYTES)
+            throw new IllegalArgumentException("routing key exceeds byte limit");
         ByteBuffer bytes;
         try {
             bytes = StandardCharsets.UTF_8.newEncoder()
