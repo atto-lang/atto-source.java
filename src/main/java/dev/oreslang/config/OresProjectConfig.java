@@ -229,15 +229,17 @@ public final class OresProjectConfig {
                     + " entrypoints.main must be a nonblank project-relative path inside the package root");
         }
         if (packageManifest && mainEntrypoint != null) {
-            // A lexical in-root path may be a symlink to outside the package.
-            // Reject it when it exists, while retaining support for manifests
-            // generated before their entrypoint file has been created.
-            if (Files.isSymbolicLink(mainEntrypoint) && !Files.exists(mainEntrypoint)) {
-                throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
-                        + " entrypoints.main points to a dangling symbolic link");
+            // Reject symlinks that escape through any existing ancestor,
+            // including when the final entrypoint has not yet been generated.
+            Path cursor = mainEntrypoint;
+            while (cursor != null && !Files.exists(cursor)) {
+                if (Files.isSymbolicLink(cursor)) {
+                    throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
+                            + " entrypoints.main points through a dangling symbolic link");
+                }
+                cursor = cursor.getParent();
             }
-            if (Files.exists(mainEntrypoint)
-                    && !mainEntrypoint.toRealPath().startsWith(projectRoot.toRealPath())) {
+            if (cursor != null && !cursor.toRealPath().startsWith(projectRoot.toRealPath())) {
                 throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
                         + " entrypoints.main resolves outside the package root");
             }
