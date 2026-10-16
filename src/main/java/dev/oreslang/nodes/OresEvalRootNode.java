@@ -5453,7 +5453,9 @@ public final class OresEvalRootNode extends RootNode {
                     return key.substring(0, key.length() - suffix.length());
                 }
             }
-            return Parser.ROOT_MODULE;
+            // A fabricated ClassDecl must never be treated as a root-module
+            // declaration merely because it was not found in this code image.
+            return null;
         }
 
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
