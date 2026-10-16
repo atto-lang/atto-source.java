@@ -712,6 +712,17 @@ public final class TypeChecker {
         Set<Ast.MethodArity> locallyResolved = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() == staticNamespace) locallyResolved.add(method.overloadIdentity());
+            if (!staticNamespace && !method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+                // An intermediate concrete override cannot launder the private
+                // abstract slot into a public method further down the hierarchy.
+                Ast.ClassDecl origin = privateAbstractSlotOwner(
+                        klass, method.name(), method.arity(), new LinkedHashSet<>());
+                if (origin != null && origin != klass) {
+                    throw new IllegalArgumentException(
+                            "private abstract method '" + origin.name() + "." + method.name()
+                                    + "' cannot be made public by an override in " + klass.name());
+                }
+            }
         }
 
         Named classType = nominalClassType(klass);
