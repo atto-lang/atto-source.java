@@ -12,8 +12,10 @@ on:
 permissions:
   contents: read
 
+# All three private-source validation workflows share one admission queue.
+# Never run two source candidates on the same class of disposable runner.
 concurrency:
-  group: private-exact-candidate-validation
+  group: private-oreslang-isolated-validation
   cancel-in-progress: false
 
 jobs:
