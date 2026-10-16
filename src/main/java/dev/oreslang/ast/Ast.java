@@ -27,6 +27,43 @@ public final class Ast {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            // Malformed externally constructed metadata must fail closed:
+            // IdentityHashMap accepts null values, and the evaluator would
+            // otherwise interpret a null binding as "not compiler-bound".
+            java.util.Objects.requireNonNull(boundDirectCalls, "direct call bindings");
+            java.util.Objects.requireNonNull(boundMethodCalls, "method call bindings");
+            for (var binding : boundDirectCalls.entrySet()) {
+                java.util.Objects.requireNonNull(binding.getKey(), "direct call site");
+                java.util.Objects.requireNonNull(binding.getValue(), "direct call target");
+            }
+            if (!boundMethodCalls.isEmpty()) {
+                var classes = java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<ClassDecl, Boolean>());
+                var methods = java.util.Collections.newSetFromMap(
+                        new java.util.IdentityHashMap<MethodDecl, Boolean>());
+                for (ModuleDecl module : modules) {
+                    for (Decl declaration : module.declarations()) {
+                        if (declaration instanceof ClassDecl owner) {
+                            classes.add(owner);
+                            methods.addAll(owner.methods());
+                        }
+                    }
+                }
+                for (var entry : boundMethodCalls.entrySet()) {
+                    java.util.Objects.requireNonNull(entry.getKey(), "method call site");
+                    MethodCallBinding binding = java.util.Objects.requireNonNull(
+                            entry.getValue(), "method call target");
+                    if (!classes.contains(binding.staticReceiver())
+                            || !methods.contains(binding.declaredMethod())) {
+                        throw new IllegalArgumentException(
+                                "compiler-bound method call references a foreign declaration");
+                    }
+                    if (binding.staticReceiver().actorKind() != ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor entrypoints cannot enter ordinary method call bindings");
+                    }
+                }
+            }
             // AST records have structural equality: equal-looking call
             // expressions from different call sites must not share a binding.
             boundDirectCalls = java.util.Collections.unmodifiableMap(
