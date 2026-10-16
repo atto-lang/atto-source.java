@@ -425,6 +425,45 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void candidateNativeStagesMustRebuildFromCleanTargets() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String runner = workflow.substring(
+                workflow.indexOf("  validate-approved-candidate:"));
+
+        String[] profiles = {"native-aot", "native-hybrid", "native-isolate"};
+        String[] stageNames = {
+                "Native AOT candidate build and guest execution",
+                "Native hybrid candidate build and guest execution",
+                "Strict polyglot isolate candidate build and guest execution"
+        };
+        for (int i = 0; i < profiles.length; i++) {
+            String expected = "mvn -B -ntp -P" + profiles[i] + " -DskipTests clean package";
+            String start = "      - name: " + stageNames[i] + "\n";
+            String stage = i + 1 < profiles.length
+                    ? section(workflow, start, "      - name: " + stageNames[i + 1])
+                    : workflow.substring(workflow.indexOf(start));
+
+            assertEquals(1, stage.lines()
+                            .filter(line -> line.equals("          " + expected)).count(),
+                    "native profile must execute exactly one fresh image build: " + profiles[i]);
+            assertTrue(stage.indexOf(expected) < stage.indexOf("timeout 180s"),
+                    "native compilation must precede the corresponding guest smoke");
+            assertFalse(stage.contains(" -DskipTests package"),
+                    "incremental build can execute stale native-image output");
+
+            String commented = stage.replace("          " + expected,
+                    "          # " + expected);
+            assertFalse(commented.lines()
+                            .anyMatch(line -> line.equals("          " + expected)),
+                    "commenting out the fresh native-image build must fail review");
+        }
+        assertTrue(runner.indexOf("Full Java 25 Maven candidate verification")
+                < runner.indexOf(stageNames[0]),
+                "focused security and full Maven verify must precede native builds");
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
