@@ -6,12 +6,22 @@ on:
       - 'scripts/verify_persistent_actor_data_contract.py'
       - 'scripts/test_persistent_actor_data_contract.py'
       - '.github/workflows/persistent-actor-data-contract.yml'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/PersistentActorMap.java'
+      - 'src/main/java/dev/oreslang/types/ActorStateModeContracts.java'
+      - 'src/test/java/dev/oreslang/runtime/PersistentActorMapTest.java'
+      - 'src/test/java/dev/oreslang/types/ActorStateModeContractsTest.java'
   push:
     paths:
       - 'contracts/v1/persistent_actor_data_v1.json'
       - 'scripts/verify_persistent_actor_data_contract.py'
       - 'scripts/test_persistent_actor_data_contract.py'
       - '.github/workflows/persistent-actor-data-contract.yml'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
+      - 'src/main/java/dev/oreslang/runtime/PersistentActorMap.java'
+      - 'src/main/java/dev/oreslang/types/ActorStateModeContracts.java'
+      - 'src/test/java/dev/oreslang/runtime/PersistentActorMapTest.java'
+      - 'src/test/java/dev/oreslang/types/ActorStateModeContractsTest.java'
   workflow_dispatch:
 permissions:
   contents: read
