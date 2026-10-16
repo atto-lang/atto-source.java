@@ -45,9 +45,9 @@ final class RuntimePermissionsNetworkAuditTest {
         RuntimePermissions broad = RuntimePermissions.denyAll()
                 .allowAll(RuntimePermissions.Permission.NET);
 
-        // This is an explicit wildcard request without local interface or
-        // port denials. It must not be confused with a localhost-only grant.
-        assertTrue(broad.allowsEphemeralNetworkBind("0.0.0.0", "0.0.0.0"));
+        // A wildcard IPv4 listener covers other local addresses not
+        // independently authorized; fail closed even under an allow-all.
+        assertFalse(broad.allowsEphemeralNetworkBind("0.0.0.0", "0.0.0.0"));
         assertFalse(broad.allowsEphemeralNetworkBind("localhost", "0.0.0.0"));
         assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "0.0.0.0"));
 
@@ -63,13 +63,33 @@ final class RuntimePermissionsNetworkAuditTest {
                     "wildcard bind must not evade a denial: " + denial);
         }
 
-        // Concrete IPv4 interface binds still work if denials target
-        // unrelated addresses, preserving legitimate scoped binds.
+        // Even an apparently unrelated denial is unsafe for port zero:
+        // a denied hostname may alias the selected numeric address, while
+        // the OS is free to assign a denied port. Keep concrete listeners
+        // working only when no network deny has been configured.
         RuntimePermissions scoped = broad.withDenied(
                 RuntimePermissions.Permission.NET, "127.0.0.2:443");
-        assertTrue(scoped.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"));
-        assertTrue(scoped.allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertFalse(scoped.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"));
+        assertFalse(scoped.allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertTrue(broad.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"));
+        assertTrue(broad.allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
         assertFalse(scoped.allowsEphemeralNetworkBind("localhost", "0.0.0.0"));
+    }
+
+    @Test
+    void ephemeralBindCannotIgnoreHostnameAliasOrUndeterminedPortDenials() {
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+        assertTrue(broad.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"));
+        for (String deny : new String[] {
+                "localhost:443", "other.example.com:443",
+                "127.0.0.2:443", "*.example.com", "203.0.113.1"
+        }) {
+            RuntimePermissions restricted = broad.withDenied(
+                    RuntimePermissions.Permission.NET, deny);
+            assertFalse(restricted.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"),
+                    "port-zero listener must not bypass alias/port deny: " + deny);
+        }
     }
 
     @Test
