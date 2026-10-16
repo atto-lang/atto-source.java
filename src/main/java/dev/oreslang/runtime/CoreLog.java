@@ -70,18 +70,25 @@ public final class CoreLog {
             return;
         }
         if (retained == null) {
-            retained = new Recorder(DEFAULT_CAPACITY);
+            // Install the shutdown hook before making the recorder visible.
+            // A rejected hook installation must not leave an exportless
+            // recorder that later configure() calls accidentally reuse.
+            Recorder next = new Recorder(DEFAULT_CAPACITY);
             if (!shutdownHookInstalled) {
                 Runtime.getRuntime().addShutdownHook(new Thread(
                         () -> dumpRetained(System.err), "ores-core-logging-dump"));
                 shutdownHookInstalled = true;
             }
+            retained = next;
         }
         active = new State(threshold, retained);
     }
 
     /** Host shutdown path; package-visible for lifecycle regression testing. */
-    static void dumpRetained(PrintStream out) {
+    static synchronized void dumpRetained(PrintStream out) {
+        // Serialize shutdown export with configure(OFF): after OFF returns,
+        // no earlier recorder can still be printing to the supplied stream.
+        // This monitor is acquired only on the cold export/configure path.
         Recorder recorder = retained;
         if (recorder != null) recorder.dump(out);
     }
@@ -179,8 +186,12 @@ public final class CoreLog {
                         + ",\"thread_id\":" + threadIds[i] + "}");
                 recorded++;
             }
+            // A writer may be preempted after reserving a slot but before
+            // publishing it. Such rows are never serialized as valid events.
+            // Report them explicitly rather than silently hiding the gap.
             out.println("{\"schema\":\"ores-core-log.v1\",\"kind\":\"end\",\"recorded\":"
                     + recorded + ",\"reserved\":" + reserved
+                    + ",\"unpublished\":" + (reserved - recorded)
                     + ",\"saturated\":" + saturated + "}");
             out.flush();
         }
