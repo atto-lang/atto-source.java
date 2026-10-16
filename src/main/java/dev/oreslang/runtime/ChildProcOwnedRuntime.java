@@ -221,6 +221,12 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             forget(slot);
             slot.ready.completeExceptionally(failed);
             return;
+        } catch (Error fatal) {
+            // Do not strand the actor's in-flight slot even when a VM/linkage
+            // error aborts the host worker before ProcessBuilder returns.
+            forget(slot);
+            slot.ready.completeExceptionally(fatal);
+            throw fatal;
         }
 
         synchronized (lock) {
@@ -232,23 +238,35 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             slot.process = process;
         }
 
-        // The first slice is read-only child stdin: close immediately so child
-        // processes waiting on input cannot hold an actor's wait forever.
-        try { process.getOutputStream().close(); }
-        catch (IOException ignored) { /* process exit/reap remains mandatory */ }
+        try {
+            // The first slice is read-only child stdin: close immediately so child
+            // processes waiting on input cannot hold an actor's wait forever.
+            try { process.getOutputStream().close(); }
+            catch (IOException ignored) { /* process exit/reap remains mandatory */ }
 
-        CompletableFuture<byte[]> stdout = capture(slot, process, process.getInputStream());
-        CompletableFuture<byte[]> stderr = capture(slot, process, process.getErrorStream());
-        CompletableFuture<Exit> done = new CompletableFuture<>();
-        process.onExit().thenCombine(stdout, (exited, out) -> new Object[]{exited, out})
-                .thenCombine(stderr, (pair, err) ->
-                        new Exit(((Process) pair[0]).exitValue(), (byte[]) pair[1], err))
-                .whenComplete((exit, failure) -> {
-                    forget(slot);
-                    if (failure != null) done.completeExceptionally(failure);
-                    else done.complete(exit);
-                });
-        slot.ready.complete(new Child(slot.generation, process, done));
+            CompletableFuture<byte[]> stdout = capture(slot, process, process.getInputStream());
+            CompletableFuture<byte[]> stderr = capture(slot, process, process.getErrorStream());
+            CompletableFuture<Exit> done = new CompletableFuture<>();
+            process.onExit().thenCombine(stdout, (exited, out) -> new Object[]{exited, out})
+                    .thenCombine(stderr, (pair, err) ->
+                            new Exit(((Process) pair[0]).exitValue(), (byte[]) pair[1], err))
+                    .whenComplete((exit, failure) -> {
+                        forget(slot);
+                        if (failure != null) done.completeExceptionally(failure);
+                        else done.complete(exit);
+                    });
+            slot.ready.complete(new Child(slot.generation, process, done));
+        } catch (RuntimeException | Error setupFailure) {
+            // Virtual-thread creation, pipe setup or onExit wiring can fail
+            // AFTER the OS process starts. Do not leave a live, untracked child
+            // and an unresolved caller future on this exceptional path.
+            slot.terminationRequested = true;
+            forget(slot);
+            try { destroyTree(process, true); }
+            catch (RuntimeException cleanup) { setupFailure.addSuppressed(cleanup); }
+            slot.ready.completeExceptionally(setupFailure);
+            if (setupFailure instanceof Error fatal) throw fatal;
+        }
     }
 
     private CompletableFuture<byte[]> capture(Slot slot, Process process, InputStream stream) {
