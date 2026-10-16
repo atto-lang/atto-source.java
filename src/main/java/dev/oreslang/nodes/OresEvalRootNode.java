@@ -7893,7 +7893,7 @@ public final class OresEvalRootNode extends RootNode {
                         && selector.matches(method)) return klass;
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                Ast.ClassDecl parent = findClass(parentRef.name());
+                Ast.ClassDecl parent = dispatchParent(klass, parentRef);
                 if (parent == null) continue;
                 Ast.ClassDecl owner = privateAbstractSlotOwner(parent, selector, visited);
                 if (owner != null) return owner;
@@ -7910,7 +7910,7 @@ public final class OresEvalRootNode extends RootNode {
                         && method.name().equals(name)) return true;
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
-                Ast.ClassDecl parent = findClass(parentRef.name());
+                Ast.ClassDecl parent = dispatchParent(klass, parentRef);
                 if (parent != null && hasPrivateAbstractSlotNamed(parent, name, visited)) return true;
             }
             return false;
