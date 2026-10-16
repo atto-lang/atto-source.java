@@ -58,6 +58,23 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void explicitRelativePrefixesResolveFromImporterWhileDotBareUsesRoots() throws Exception {
+        Path root = makeProject("relative-identity");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path sibling = root.resolve("src/routes/rest/foo/bar/baz/local.ores");
+        Path parent = root.resolve("src/routes/rest/foo/bar/up.ores");
+        Path hidden = root.resolve("src/.hidden/helper.ores");
+        Files.createDirectories(hidden.getParent());
+        Files.writeString(sibling, "pub fnc local(): int { return 41; }\n");
+        Files.writeString(parent, "pub fnc up(): int { return 42; }\n");
+        Files.writeString(hidden, "pub fnc helper(): int { return 42; }\n");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(sibling, config.resolveImport(importer, "./local").orElseThrow());
+        assertEquals(parent, config.resolveImport(importer, "../up").orElseThrow());
+        assertEquals(hidden, config.resolveImport(importer, ".hidden/helper").orElseThrow());
+    }
+
+    @Test
     void explicitRootOverrideChoosesOnlyTheOverriddenProject() throws Exception {
         Path first = makeProject("first");
         Path second = makeProject("second");
