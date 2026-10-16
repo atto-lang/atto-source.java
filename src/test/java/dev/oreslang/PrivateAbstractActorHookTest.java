@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -102,6 +103,63 @@ final class PrivateAbstractActorHookTest {
                         end
                         """)));
         assertTrue(failure.getMessage().contains("unresolved abstract method"), failure.getMessage());
+    }
+
+    @Test
+    void inlineSelfIsOneCanonicalReceiverForActorsAndOrdinaryClasses() {
+        Ast.Program program = Parser.parse("""
+                define class Ordinary as
+                  pub zero(self): void { return; }
+                  pub read(self, int value): int { return value; }
+                  pub implicit(int value): int { return value; }
+                  pub change(mut self, int value): void { return; }
+                end
+                define actor Worker as
+                  on_start(self): void { return; }
+                  receive(self, ActorMail<String> mail): void { return; }
+                end
+                """);
+        Ast.ClassDecl ordinary = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().get(1);
+        assertEquals(0, ordinary.methods().get(0).arity());
+        assertEquals(1, ordinary.methods().get(1).arity());
+        assertNull(ordinary.methods().get(1).explicitReceiverType());
+        assertEquals(ordinary.methods().get(1).arity(), ordinary.methods().get(2).arity());
+        assertEquals(1, ordinary.methods().get(3).arity());
+        assertTrue(ordinary.methods().get(3).explicitReceiverType().isBorrow());
+        assertTrue(ordinary.methods().get(3).explicitReceiverType().mutableBorrow());
+        assertEquals(0, actor.methods().get(0).arity());
+        assertEquals(1, actor.methods().get(1).arity());
+    }
+
+    @Test
+    void inlineSelfAndImplicitSelfDuplicateTheSameClassSlotInEitherOrder() {
+        for (String methods : new String[] {
+                "pub read(self, int x): int { return x; } pub read(int x): int { return x; }",
+                "pub read(int x): int { return x; } pub read(self, int x): int { return x; }"
+        }) {
+            IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse("define class C as "
+                            + methods + " end")));
+            assertTrue(duplicate.getMessage().contains("already has arity 1"),
+                    duplicate.getMessage());
+        }
+    }
+
+    @Test
+    void inlineReceiverRejectsIllegalStaticOrTrailingForms() {
+        for (String parameters : new String[] {
+                "self,", "mut self,", "int x, self", "int x, mut self"
+        }) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                    "define class C as pub wrong(" + parameters
+                            + "): void { return; } end"), parameters);
+        }
+        for (String parameters : new String[] {"self", "self, int x", "mut self, int x"}) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(
+                    "define class C as pub static fnc wrong(" + parameters
+                            + "): void { return; } end"), parameters);
+        }
     }
 
     @Test
