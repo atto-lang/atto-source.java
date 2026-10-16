@@ -939,39 +939,39 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId owner() { return slice.owner(); }
         public boolean closed() { return blockClosed.get(); }
 
-        public byte readByte(int index) {
+        public synchronized byte readByte(int index) {
             return openMemory().get(index);
         }
 
-        public void writeByte(int index, byte value) {
+        public synchronized void writeByte(int index, byte value) {
             openMemory().put(index, value);
         }
 
-        public int readInt(int index) {
+        public synchronized int readInt(int index) {
             return openMemory().getInt(index);
         }
 
-        public void writeInt(int index, int value) {
+        public synchronized void writeInt(int index, int value) {
             openMemory().putInt(index, value);
         }
 
-        public long readLong(int index) {
+        public synchronized long readLong(int index) {
             return openMemory().getLong(index);
         }
 
-        public void writeLong(int index, long value) {
+        public synchronized void writeLong(int index, long value) {
             openMemory().putLong(index, value);
         }
 
-        public double readDouble(int index) {
+        public synchronized double readDouble(int index) {
             return openMemory().getDouble(index);
         }
 
-        public void writeDouble(int index, double value) {
+        public synchronized void writeDouble(int index, double value) {
             openMemory().putDouble(index, value);
         }
 
-        public byte[] copyOut() {
+        public synchronized byte[] copyOut() {
             ByteBuffer live = openMemory();
             byte[] out = new byte[capacity];
             ByteBuffer duplicate = live.duplicate();
@@ -980,7 +980,7 @@ public final class ActorRuntime implements AutoCloseable {
             return out;
         }
 
-        public void copyIn(byte[] bytes) {
+        public synchronized void copyIn(byte[] bytes) {
             Objects.requireNonNull(bytes);
             ByteBuffer live = openMemory();
             if (bytes.length != capacity) {
@@ -1003,7 +1003,12 @@ public final class ActorRuntime implements AutoCloseable {
             return live;
         }
 
-        private void zeroAndDetachMemory() {
+        // Reads and writes hold this monitor until their ByteBuffer operation
+        // completes. Retirement takes the same monitor before zeroizing;
+        // never allow a stopped actor's block to race native memory scrubbing.
+        // Do not hold this monitor while releasing the slice reservation:
+        // slice teardown takes slice -> block, so that would invert locks.
+        private synchronized void zeroAndDetachMemory() {
             ByteBuffer live = memory;
             if (live == null) return;
             ByteBuffer duplicate = live.duplicate();
