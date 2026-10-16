@@ -478,8 +478,11 @@ def require_source_tree_match(source, trusted_root, files):
             ["git", "-C", str(trusted), "rev-parse",
              "--show-toplevel", "HEAD", "HEAD^{tree}"],
             capture_output=True, text=True, timeout=20, check=False,
-            env={key: value for key, value in os.environ.items()
-                 if not key.startswith("GIT_")},
+            env={**{key: value for key, value in os.environ.items()
+                     if not key.startswith("GIT_")},
+                 "GIT_NO_REPLACE_OBJECTS": "1",
+                 "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_CONFIG_GLOBAL": os.devnull},
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("exact-tree Git provenance unavailable") from exc
