@@ -106,6 +106,51 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void exactMainMustVerifyAdmissionBeforeCheckout() throws Exception {
+        String workflow = Files.readString(WORKFLOW);
+        String runner = workflow.substring(workflow.indexOf("  validate-exact-main:"));
+        String checkedOut = "- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4";
+        String approvalName = "      - name: Verify exact-main admission before source checkout";
+        int firstStep = runner.indexOf("\n    steps:\n") + "\n    steps:\n".length();
+        assertTrue(firstStep > 0, "runner must declare its steps");
+        assertEquals(approvalName, runner.substring(firstStep).lines().findFirst().orElse(""),
+                "runner must validate approval before any checkout/action");
+        String pre = section(runner, approvalName,
+                "      " + checkedOut);
+        for (String guard : new String[] {
+                "test \"$GITHUB_REPOSITORY\" = 'ores-truffle-oreslang/oreslang-source.java'",
+                "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'",
+                "test \"$GITHUB_REF\" = 'refs/heads/main'",
+                "test \"$GITHUB_REF_PROTECTED\" = 'true'",
+                "[[ \"$GITHUB_SHA\" =~ ^[a-f0-9]{40}$ ]]",
+                "[[ \"$APPROVED_SHA\" =~ ^[a-f0-9]{40}$ ]]",
+                "[[ \"$APPROVED_TREE\" =~ ^[a-f0-9]{40}$ ]]",
+                "test \"$GITHUB_SHA\" = \"$APPROVED_SHA\""
+        }) {
+            assertTrue(hasExactLine(pre, 10, guard),
+                    "pre-checkout admission must execute: " + guard);
+            String commented = pre.replace("          " + guard + "\n",
+                    "          # " + guard + "\n");
+            assertFalse(hasExactLine(commented, 10, guard),
+                    "commented-out gate must not pass: " + guard);
+        }
+        assertTrue(pre.contains("          set -euo pipefail"),
+                "all pre-checkout checks must fail closed");
+        assertFalse(pre.contains("uses: actions/checkout@"),
+                "pre-checkout validation may not run GitHub Actions code");
+        assertTrue(runner.indexOf(approvalName)
+                < runner.indexOf(checkedOut),
+                "private Git checkout must happen after admission");
+        assertTrue(runner.indexOf(checkedOut)
+                < runner.indexOf("Verify source identity and immutable Git tree"),
+                "commit/tree proof must run after source checkout");
+        String moved = runner.replace(approvalName, "      # " + approvalName.stripLeading());
+        assertNotEquals(approvalName,
+                moved.substring(firstStep).lines().findFirst().orElse(""),
+                "removing the first executable admission step must break the contract");
+    }
+
+    @Test
     void requiredValidationPhasesMayNotBeDropped() throws Exception {
         String job = Files.readString(WORKFLOW);
         for (String required : new String[] {
