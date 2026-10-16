@@ -130,7 +130,16 @@ jobs:
               root = ElementTree.parse(report).getroot()
               if root.tag != "testsuite" or root.get("name") != classname:
                   raise SystemExit(f"Invalid Surefire suite identity: {report}")
-              for case in root.iter("testcase"):
+              # Only direct Surefire testcase children count; an unrelated
+              # nested element must not smuggle fake test evidence.
+              cases = root.findall("testcase")
+              try:
+                  declared = int(root.get("tests", "-1"))
+              except ValueError:
+                  raise SystemExit(f"Invalid Surefire test count: {report}")
+              if declared < 1 or declared != len(cases):
+                  raise SystemExit(f"Surefire test count mismatch: {report}")
+              for case in cases:
                   if case.get("classname") != classname:
                       raise SystemExit(f"Mismatched Surefire testcase: {report}")
                   if any(case.find(tag) is not None
