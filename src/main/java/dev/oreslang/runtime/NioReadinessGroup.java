@@ -108,6 +108,10 @@ public final class NioReadinessGroup implements AutoCloseable {
                     // expansion fails. Existing reactors can still serve or
                     // explicitly reject the bounded request.
                     if (extra != null) extra.abortUnstarted();
+                    // Admission may still use existing reactors; throttle
+                    // retries rather than allocating a selector on every
+                    // subsequent request during FD/thread exhaustion.
+                    consecutiveCommandPressure = 0;
                     if (failure instanceof VirtualMachineError fatal) throw fatal;
                     if (failure instanceof ThreadDeath fatal) throw fatal;
                 }
