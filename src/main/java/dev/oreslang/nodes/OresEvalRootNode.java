@@ -1954,8 +1954,12 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
-                                continuation.accept(t, SourceFlow.normal());
+                                try {
+                                    env.define(binding.name(), shapeExactNumericBinding(binding, value), binding.kind());
+                                    continuation.accept(t, SourceFlow.normal());
+                                } catch (RuntimeException error) {
+                                    continuation.accept(t, SourceFlow.throwing(error));
+                                }
                             });
                     return;
                 }
@@ -5078,7 +5082,9 @@ public final class OresEvalRootNode extends RootNode {
                     env.reserve(binding.name(), binding.kind());
                     env.initialize(binding.name(), eval(binding.initializer(), env));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(binding.name(),
+                            shapeExactNumericBinding(binding, eval(binding.initializer(), env)),
+                            binding.kind());
                 }
                 return;
             }
@@ -8758,6 +8764,18 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof Number n) return new Complex(n.doubleValue(), 0);
             throw new IllegalArgumentException("value is not numeric");
         }
+        private Object shapeExactNumericBinding(Ast.BindingStmt binding, Object value) {
+            Ast.TypeRef type = binding.declaredType();
+            if (type != null && (type.name().equals("bigint") || type.name().equals("decimal"))
+                    && !type.isUnion() && !type.isComplement()) {
+                // Materialize exact carriers at local initialization, not only
+                // on return. Otherwise `val decimal x = 1; x / 3` would execute
+                // binary64 arithmetic and silently lose decimal precision.
+                return shapeReturnedValue(type, value, "binding " + binding.name());
+            }
+            return value;
+        }
+
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
