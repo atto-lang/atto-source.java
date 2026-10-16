@@ -85,6 +85,43 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void literalConfiguredTokenScopesCannotAuthorizeTrimmedNames() {
+        for (RuntimePermissions.Permission permission : new RuntimePermissions.Permission[] {
+                RuntimePermissions.Permission.ENV,
+                RuntimePermissions.Permission.RUN,
+                RuntimePermissions.Permission.SYS
+        }) {
+            IsolatePolicy coarse = IsolatePolicy.developer()
+                    .withCapabilities(permission.capability());
+            for (String literal : new String[] {" PUBLIC_NAME", "PUBLIC_NAME "}) {
+                RuntimePermissions granted = RuntimePermissions.denyAll()
+                        .withAllowed(permission, literal);
+                assertTrue(granted.allows(permission, literal), permission + ": literal grant");
+                assertFalse(granted.allows(permission, "PUBLIC_NAME"),
+                        permission + ": padded grant must not authorize an unpadded token");
+                RuntimePermissions restored = RuntimePermissions.fromApplicationArguments(
+                        granted.applicationArguments(), coarse);
+                assertTrue(restored.allows(permission, literal),
+                        permission + ": serialized literal grant must survive");
+                assertFalse(restored.allows(permission, "PUBLIC_NAME"),
+                        permission + ": serialization must not widen a literal grant");
+
+                RuntimePermissions denied = RuntimePermissions.denyAll()
+                        .allowAll(permission).withDenied(permission, literal);
+                assertFalse(denied.allows(permission, literal), permission + ": literal deny");
+                assertTrue(denied.allows(permission, "PUBLIC_NAME"),
+                        permission + ": padded deny must not target a different token");
+                RuntimePermissions restoredDeny = RuntimePermissions.fromApplicationArguments(
+                        denied.applicationArguments(), coarse);
+                assertFalse(restoredDeny.allows(permission, literal),
+                        permission + ": serialized literal denial must survive");
+                assertTrue(restoredDeny.allows(permission, "PUBLIC_NAME"),
+                        permission + ": serialized denial must not change token identity");
+            }
+        }
+    }
+
+    @Test
     void networkEndpointsWithSurroundingSpacesAreNotAuthorized() {
         RuntimePermissions broad = RuntimePermissions.denyAll()
                 .allowAll(RuntimePermissions.Permission.NET);
