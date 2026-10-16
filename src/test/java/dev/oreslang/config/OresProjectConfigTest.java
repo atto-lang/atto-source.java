@@ -458,7 +458,7 @@ final class OresProjectConfigTest {
         // TOML literal strings preserve the backslash, making this a
         // valid manifest on POSIX but a different path on Windows.
         Files.writeString(manifest,
-                "schema_version = \"1\"\\n[entrypoints]\\nmain = 'src\\\\main.ores'\\n");
+                "schema_version = \"1\"\n[entrypoints]\nmain = 'src\\main.ores'\n");
         IllegalArgumentException backslash = assertThrows(IllegalArgumentException.class,
                 () -> OresProjectConfig.load(manifest, Map.of()));
         assertTrue(backslash.getMessage().contains("entrypoints.main"),
