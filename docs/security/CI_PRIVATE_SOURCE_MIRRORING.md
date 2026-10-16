@@ -93,9 +93,12 @@ then a **fresh standalone source tree with no `base_tree`**, followed by a
 root tree that replaces the **entire** `private-oreslang-source/` directory
 in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
-Before creating the commit, the publisher **reads back** the destination
-root Git tree and requires an untruncated response with exactly one
-`private-oreslang-source` subtree bound to the reviewed source tree SHA.
+Before creating the commit, the publisher **reads back** both the
+destination's original base root Git tree and the newly constructed root
+tree, rejects truncated/ambiguous responses, and requires that **every
+unrelated root entry remains identical**, including `.github` CI workflow
+content. The only permitted root-level difference is replacement of exactly
+one `private-oreslang-source` subtree with the reviewed source tree SHA.
 It then reads back the destination commit and requires the same root tree
 and exactly the expected destination base parent. After creating the isolated
 ref, it reads that ref back and verifies the expected immutable commit.
