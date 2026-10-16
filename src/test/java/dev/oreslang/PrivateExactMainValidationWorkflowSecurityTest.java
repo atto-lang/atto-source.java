@@ -42,6 +42,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String denial = section(text, "  deny-unapproved:", "  validate-exact-main:");
         String requiredDenial =
                 "if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java'"
+                + " || github.event.repository.id != 1400792274"
                 + " || github.event.repository.private != true"
                 + " || github.ref != 'refs/heads/main'"
                 + " || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'"
@@ -63,6 +64,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
 
         String expectedGate =
                 "if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java'"
+                + " && github.event.repository.id == 1400792274"
                 + " && github.event.repository.private == true"
                 + " && github.ref == 'refs/heads/main'"
                 + " && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'"
@@ -75,10 +77,22 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 jobProperty(job, "runs-on"),
                 "no hosted or shared-runner fallback is permitted");
         assertTrue(hasExactLine(job, 10,
+                "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'"));
+        assertTrue(hasExactLine(job, 10,
+                "[[ \"$GITHUB_SHA\" =~ ^[a-f0-9]{40}$ ]]"));
+        assertTrue(hasExactLine(job, 10,
+                "[[ \"$APPROVED_SHA\" =~ ^[a-f0-9]{40}$ ]]"));
+        assertTrue(hasExactLine(job, 10,
+                "[[ \"$APPROVED_TREE\" =~ ^[a-f0-9]{40}$ ]]"));
+        assertTrue(hasExactLine(job, 10,
+                "test \"$(git rev-parse --verify HEAD)\" = \"$GITHUB_SHA\""));
+        assertTrue(hasExactLine(job, 10,
+                "test -z \"$(git status --porcelain --untracked-files=all)\""));
+        assertTrue(hasExactLine(job, 10,
                 "test \"$GITHUB_SHA\" = \"$APPROVED_SHA\""),
                 "the approved commit must be checked by an executable shell line");
         assertTrue(hasExactLine(job, 10,
-                "test \"$(git rev-parse HEAD^{tree})\" = \"$APPROVED_TREE\""),
+                "test \"$(git rev-parse --verify HEAD^{tree})\" = \"$APPROVED_TREE\""),
                 "the approved tree must be checked by an executable shell line");
         assertTrue(hasExactLine(job, 10, "persist-credentials: false"));
         assertTrue(hasExactLine(job, 6,
@@ -138,7 +152,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         job = job.substring(job.indexOf("  validate-exact-main:"));
         for (String check : new String[] {
                 "test \"$GITHUB_SHA\" = \"$APPROVED_SHA\"",
-                "test \"$(git rev-parse HEAD^{tree})\" = \"$APPROVED_TREE\""
+                "test \"$(git rev-parse --verify HEAD^{tree})\" = \"$APPROVED_TREE\"",
+                "test \"$GITHUB_REPOSITORY_ID\" = '1400792274'",
+                "test -z \"$(git status --porcelain --untracked-files=all)\""
         }) {
             assertTrue(hasExactLine(job, 10, check));
             String mutation = job.replace("          " + check + "\n",
@@ -267,6 +283,21 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }) {
             assertTrue(runner.contains(required), "candidate validation phase missing " + required);
         }
+    }
+
+    @Test
+    void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
+        String workflow = Files.readString(WORKFLOW);
+        String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
+        String run = workflow.substring(workflow.indexOf("  validate-exact-main:"));
+        assertTrue(jobProperty(deny, "if").contains("github.event.repository.id != 1400792274"));
+        assertTrue(jobProperty(run, "if").contains("github.event.repository.id == 1400792274"));
+
+        // A renamed or recreated repository must not inherit the reviewed
+        // runner admission solely by reusing the original slug.
+        String loosened = jobProperty(run, "if").replace(
+                " && github.event.repository.id == 1400792274", "");
+        assertNotEquals(jobProperty(run, "if"), loosened);
     }
 
     private static boolean hasExactLine(String body, int spaces, String executable) {
