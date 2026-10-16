@@ -4562,11 +4562,19 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("TcpConnection") || named.name().equals("HttpExchange") || named.name().equals("HttpServer") || named.name().equals("HttpHandler")
-                || named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
-                || named.name().equals("Channel") || named.name().equals("SelectCase")
-                || named.name().equals("SelectSet") || named.name().equals("SelectResult")
-                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) {
+        // The resolved nominal may be module-qualified. A prefix cannot
+        // turn built-in runtime/codec authority into ordinary DATA.
+        String capabilityName = named.name();
+        int dot = capabilityName.lastIndexOf('.');
+        int scope = capabilityName.lastIndexOf("::");
+        capabilityName = capabilityName.substring(
+                Math.max(dot, scope < 0 ? -1 : scope + 1) + 1);
+
+        if (capabilityName.equals("TcpConnection") || capabilityName.equals("HttpExchange") || capabilityName.equals("HttpServer") || capabilityName.equals("HttpHandler")
+                || capabilityName.equals("Mutex") || capabilityName.equals("MutexGuard") || capabilityName.equals("Future")
+                || capabilityName.equals("Channel") || capabilityName.equals("SelectCase")
+                || capabilityName.equals("SelectSet") || capabilityName.equals("SelectResult")
+                || capabilityName.equals("Iterator") || capabilityName.equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
@@ -4574,7 +4582,7 @@ public final class TypeChecker {
         // A shared actor has read-only shared authority, not shared-memory
         // mutation authority. No actor kind may receive a live SharedMutex:
         // otherwise a generic nested payload launders host lock authority.
-        if (named.name().equals("SharedMutex")) {
+        if (capabilityName.equals("SharedMutex")) {
             throw new IllegalArgumentException(
                     where + " cannot send SharedMutex<T> across an actor boundary");
         }
@@ -4583,10 +4591,14 @@ public final class TypeChecker {
         // tuple/list/record/sum traversal above.
         if (java.util.Set.of("NetworkCodec", "ActorMessageCodec", "MessagePackCodec",
                     "JsonCodec", "ProtobufCodec", "Pointer", "Stream", "Observable",
+                    "SupervisorControlCodec", "ControlCodec", "Serializable", "Sendable",
+                    "ActorHandle", "ActorGroupJoinCapability", "ProxyActor", "Mailman",
+                    "EventBus", "ContinuationTarget", "Region", "RegionTransfer",
+                    "OwnedRegion", "SyncCell",
                     "SupervisorId", "SupervisorProcess", "SupervisorFailureControl",
                     "SupervisorNotice", "ActorGroup", "ActorGroupId",
                     "ActorGroupContext", "ActorMailman", "ChannelReader",
-                    "ChannelWriter", "ActorControlHandle").contains(named.name())) {
+                    "ChannelWriter", "ActorControlHandle").contains(capabilityName)) {
             throw new IllegalArgumentException(
                     where + " cannot send runtime/codec/supervisor capability "
                             + named.name() + " as actor mailbox data");
@@ -4597,24 +4609,24 @@ public final class TypeChecker {
         // data mailboxes still use MessagePack until a separately audited
         // local Sendable capability path is implemented. Do not accidentally
         // turn a compile-time validation fix into an authority export.
-        if (named.name().equals("ActorRef")) {
+        if (capabilityName.equals("ActorRef")) {
             actorClassForRef(named);
             throw new IllegalArgumentException(
                     where + " cannot send ActorRef as a data payload; "
                             + "a proven local Sendable capability transport is not implemented");
         }
-        if (named.name().equals("ActorId")) {
+        if (capabilityName.equals("ActorId")) {
             if (!named.arguments().isEmpty()) {
                 throw new IllegalArgumentException(where + " ActorId is not generic");
             }
             return;
         }
-        if (named.name().equals("ActorMail") || named.name().equals("ActorOutput")) {
+        if (capabilityName.equals("ActorMail") || capabilityName.equals("ActorOutput")) {
             throw new IllegalArgumentException(
                     where + " cannot send an ActorMail/ActorOutput envelope as data; "
                             + "mailbox/supervisor metadata is created by the runtime");
         }
-        if (named.name().equals("ActorOutputStream")) {
+        if (capabilityName.equals("ActorOutputStream")) {
             throw new IllegalArgumentException(
                     where + " cannot send an ActorOutputStream runtime capability as data");
         }
