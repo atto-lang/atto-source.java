@@ -222,6 +222,34 @@ final class UntrustedActorTest {
     }
 
     @Test
+    void untrustedDataRejectsActorGroupJoinAuthorityDirectlyAndTransitively() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            var group = runtime.createActorGroup();
+            var joinAuthority = group.joinCapability();
+            java.util.concurrent.atomic.AtomicInteger received =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var untrusted = runtime.<Object>spawnUntrusted(context ->
+                    (message, turn) -> received.incrementAndGet());
+
+            for (Object forbidden : java.util.List.of(
+                    joinAuthority,
+                    java.util.List.of("data", joinAuthority),
+                    java.util.Map.of("nested", joinAuthority))) {
+                SecurityException rejection = assertThrows(SecurityException.class,
+                        () -> untrusted.send(forbidden));
+                assertTrue(rejection.getMessage().contains("data-only"),
+                        rejection.getMessage());
+            }
+            assertEquals(0, received.get(), "rejected authority must never be delivered");
+            untrusted.send("safe-data");
+            untrusted.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, received.get(), "failed sends must return mailbox credits");
+            untrusted.stop();
+            untrusted.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void untrustedSafepointsTerminateCpuHogInsteadOfTrustingSourceYield() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
             var ref = runtime.<String>spawnUntrusted(context -> (message, turn) -> {
