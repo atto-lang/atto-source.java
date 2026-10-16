@@ -89,7 +89,10 @@ final class StructuralCallableParityTest {
                         pub byBareMethod(structural Position value): int { return value.x; }
                         pub static fnc byStatic(structural Position value): int { return value.x; }
                       end
-                      fnc invalid(): int { return %s; }
+                      fnc invalid(): int {
+                        val consumer = new Consumer();
+                        return %s;
+                      }
                     end
                     """.formatted(call);
             assertThrows(IllegalArgumentException.class,
