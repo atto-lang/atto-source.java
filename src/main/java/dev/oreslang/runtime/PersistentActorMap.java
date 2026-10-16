@@ -131,7 +131,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         if (leftBit == rightBit) {
             return new Branch(leftBit, new Node[]{merge(existing, incoming, shift + 5)});
         }
-        return leftBit < rightBit
+        return Integer.compareUnsigned(leftBit, rightBit) < 0
                 ? new Branch(leftBit | rightBit, new Node[]{existing, incoming})
                 : new Branch(leftBit | rightBit, new Node[]{incoming, existing});
     }
