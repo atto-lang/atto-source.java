@@ -299,9 +299,10 @@ public final class OresProjectConfig {
         }
     }
 
-    private static Map<String, Path> parseDependencies(TomlParseResult toml, Path root) {
+    private static Map<String, Path> parseDependencies(TomlParseResult toml, Path root) throws IOException {
         TomlTable dependencies = toml.getTable("dependencies");
         if (dependencies == null) return Map.of();
+        Path installationRoot = zedInstallRoot(root);
         java.util.LinkedHashMap<String, Path> result = new java.util.LinkedHashMap<>();
         for (String alias : dependencies.keySet()) {
             if (!alias.matches("[A-Za-z][A-Za-z0-9_-]*")) {
@@ -324,9 +325,32 @@ public final class OresProjectConfig {
                     || identifier.contains("..")) {
                 throw new IllegalArgumentException("invalid zed-pkg identifier: " + identifier);
             }
-            result.put(alias, root.resolve("zed_modules").resolve(identifier).toAbsolutePath().normalize());
+            result.put(alias, installationRoot.resolve(identifier).toAbsolutePath().normalize());
         }
         return Map.copyOf(result);
+    }
+
+    private static Path zedInstallRoot(Path root) throws IOException {
+        Path zedManifest = root.resolve(".zpkg.toml");
+        if (!Files.isRegularFile(zedManifest)) return root.resolve("zed_modules");
+        TomlParseResult zed = Toml.parse(zedManifest);
+        if (!zed.errors().isEmpty()) {
+            throw new IllegalArgumentException("invalid .zpkg.toml: " + zed.errors().getFirst());
+        }
+        String directory = zed.getString("install.dir");
+        if (directory == null) directory = "zed_modules";
+        if (directory.isBlank()) {
+            throw new IllegalArgumentException("empty .zpkg.toml install.dir");
+        }
+        Path relative = Path.of(directory);
+        if (relative.isAbsolute()) {
+            throw new IllegalArgumentException(".zpkg.toml install.dir must be project-relative");
+        }
+        Path installed = root.resolve(relative).toAbsolutePath().normalize();
+        if (!installed.startsWith(root.toAbsolutePath().normalize())) {
+            throw new IllegalArgumentException(".zpkg.toml install.dir escapes the Oreslang project");
+        }
+        return installed;
     }
 
     private static List<Path> resolvePaths(Path base, List<String> values) {
