@@ -63,9 +63,11 @@ jobs:
           version: '25.3'
       - name: Verify toolchain
         run: |
+          set -euo pipefail
           java --version
           native-image --version
           mvn --version
+          python3 --version
       - name: Focused Future/select and exception-isolation regression suites
         run: mvn -B -ntp '-Dtest=ChannelCompletionPublicationIsolationTest,FutureSelectAttachmentPublicationBarrierTest,FutureChannelSelectTest,ChannelCommittedCompletionDrainTest,ChannelMappedCancellationStressTest,OresFutureHostWaiterDetachmentTest' test
       - name: Complete GraalVM JDK 25 Maven verification
