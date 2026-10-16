@@ -450,6 +450,24 @@ def verify_upstream_commit_tree(commit, expected_tree, relative_directory):
         raise Denied("source subtree not attested by original GitHub commit")
 
 
+def verify_destination_commit_tree(repository, commit_sha, root_tree_sha, parent_sha):
+    """Verify GitHub committed the attested tree before any branch is created."""
+    for value in (commit_sha, root_tree_sha, parent_sha):
+        valid_sha(value)
+    data = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    if not isinstance(data, dict):
+        raise Denied("destination Git commit metadata is unavailable")
+    tree = data.get("tree")
+    parents = data.get("parents")
+    if (data.get("sha") != commit_sha
+            or not isinstance(tree, dict)
+            or tree.get("sha") != root_tree_sha
+            or not isinstance(parents, list)
+            or len(parents) != 1
+            or not isinstance(parents[0], dict)
+            or parents[0].get("sha") != parent_sha):
+        raise Denied("destination Git commit does not attest the reviewed root and parent")
+
 def verify_private_ci_ref(repository, branch, commit_sha, created):
     """Verify both creation acknowledgement and a fresh GitHub ref read-back."""
     expected_ref = "refs/heads/" + branch
@@ -577,6 +595,9 @@ def publish(repository, source, branch, trusted_root,
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
+    # GitHub must persist the exact tree/parent, not only return a commit ID.
+    authorize_write()
+    verify_destination_commit_tree(repository, commit_sha, new_tree_sha, base_sha)
     authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
