@@ -50,6 +50,22 @@ public final class ActorPipelineRoutePlan {
     private static final int MAX_EDGES = 4096;
     private static final int MAX_NAME_BYTES = 256;
     private static final int MAX_KEY_BYTES = 4096;
+
+    /** Same byte-level identity/port contract as native actor graphs.
+     * Never use UTF-16 code-unit counts or lossy UTF-8 replacement here. */
+    private static boolean validComponent(String component, boolean optional) {
+        if (component.isEmpty()) return optional;
+        if (component.indexOf('\0') >= 0) return false;
+        try {
+            ByteBuffer bytes = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(component));
+            return bytes.remaining() <= MAX_NAME_BYTES;
+        } catch (CharacterCodingException malformed) {
+            return false;
+        }
+    }
     private final List<Edge> edges;
     private final Map<String, List<Edge>> outgoing;
     private final Map<String, Integer> cursors = new HashMap<>();
@@ -64,9 +80,10 @@ public final class ActorPipelineRoutePlan {
 
         Map<String, Stage> byId = new HashMap<>();
         for (Stage stage : stages) {
-            if (stage.instanceId().isEmpty() || stage.actorType().isEmpty()
-                    || stage.instanceId().length() > MAX_NAME_BYTES
-                    || stage.actorType().length() > MAX_NAME_BYTES
+            if (!validComponent(stage.instanceId(), false)
+                    || !validComponent(stage.actorType(), false)
+                    || !validComponent(stage.inbound(), true)
+                    || !validComponent(stage.outbound(), true)
                     || byId.putIfAbsent(stage.instanceId(), stage) != null) {
                 throw new IllegalArgumentException("duplicate or invalid pipeline instance ID");
             }
@@ -90,6 +107,11 @@ public final class ActorPipelineRoutePlan {
             indegree.put(stage.instanceId(), 0);
         }
         for (Edge edge : edges) {
+            if (!validComponent(edge.source(), false)
+                    || !validComponent(edge.target(), false)
+                    || !validComponent(edge.payloadType(), false)) {
+                throw new IllegalArgumentException("pipeline edge component invalid");
+            }
             Stage source = byId.get(edge.source());
             Stage target = byId.get(edge.target());
             if (source == null || target == null || source == target) {
