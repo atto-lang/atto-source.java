@@ -3497,6 +3497,10 @@ public final class TypeChecker {
                     && member.member().equals("length")) {
                 return Primitive.INT;
             }
+            if (isTypedMapType(sumReceiver)) {
+                throw new IllegalArgumentException(
+                        "typed Map has no string-named properties; use explicit map[key]");
+            }
             if (sumReceiver instanceof Function) {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
