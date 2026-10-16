@@ -95,7 +95,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
-            "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
+            # Synthetic fixture reuses SHA A to avoid changing unrelated
+            # historical tests. Before the POST it represents destination
+            # main; after commit creation it represents the returned snapshot.
+            "repos/trusted/ci/git/commits/"+A: (
+                {"sha": A, "tree": {"sha": E}, "parents": [{"sha": A}]}
+                if any(m == "POST" and r == "repos/trusted/ci/git/commits"
+                       for m, r, _ in self.route_calls)
+                else {"tree": {"sha": B}}),
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {
                 "ref": "refs/heads/ci/oreslang-test",
@@ -111,6 +118,47 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A, D)
+
+    def test_destination_commit_attestation_requires_exact_tree_and_parent(self):
+        route = "repos/trusted/ci/git/commits/" + A
+        correct = {"sha": A, "tree": {"sha": E},
+                   "parents": [{"sha": A}]}
+        malformed = [
+            {},
+            {"sha": B, "tree": {"sha": E}, "parents": [{"sha": A}]},
+            {"sha": A, "tree": {"sha": D}, "parents": [{"sha": A}]},
+            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": B}]},
+            {"sha": A, "tree": {"sha": E}, "parents": []},
+            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": A},
+                                                     {"sha": B}]},
+            {"sha": A, "tree": {"sha": E}, "parents": None},
+            {"sha": A, "tree": {"sha": E}, "parents": [None]},
+        ]
+        with patch.object(pub, "gh_api", return_value=correct) as api:
+            pub.verify_private_ci_commit("trusted/ci", A, E, A)
+            api.assert_called_once_with(route)
+        for invalid in malformed:
+            with self.subTest(invalid=invalid):
+                with patch.object(pub, "gh_api", return_value=invalid):
+                    with self.assertRaisesRegex(pub.Denied, "commit tree or parent"):
+                        pub.verify_private_ci_commit("trusted/ci", A, E, A)
+
+    def test_destination_commit_swap_prevents_ci_branch_publication(self):
+        original = self.fake_api
+        def substituted(route, method="GET", payload=None):
+            if (route == "repos/trusted/ci/git/commits/" + A
+                    and any(m == "POST" and r == "repos/trusted/ci/git/commits"
+                            for m, r, _ in self.route_calls)):
+                self.route_calls.append((method, route, payload))
+                return {"sha": A, "tree": {"sha": D},
+                        "parents": [{"sha": A}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=substituted):
+            with self.assertRaisesRegex(pub.Denied, "commit tree or parent"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, A, D)
+        self.assertFalse(any(m == "POST" and r.endswith("/git/refs")
+                             for m, r, _ in self.route_calls))
 
     def test_git_pointer_metadata_denied_before_any_git_command(self):
         with tempfile.TemporaryDirectory() as tmp:
