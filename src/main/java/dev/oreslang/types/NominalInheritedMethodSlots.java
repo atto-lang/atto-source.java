@@ -90,6 +90,14 @@ public final class NominalInheritedMethodSlots {
         if (plan.isEmpty()) {
             throw new IllegalArgumentException("no inherited nominal method candidates");
         }
+        // With one candidate there are no discriminator positions, so even
+        // Unknown arguments would appear to prove a unique target. Ordinary
+        // single-slot calls belong to the existing arity-only checker, not
+        // this nominal-enum selection API.
+        if (plan.size() < 2) {
+            throw new IllegalArgumentException(
+                    "resolved nominal overload selection requires multiple candidates");
+        }
         List<Slot> slots = new ArrayList<>(plan.keySet());
         java.util.Set<Integer> discriminators = new java.util.HashSet<>();
         for (int i = 0; i < slots.size(); i++) {
