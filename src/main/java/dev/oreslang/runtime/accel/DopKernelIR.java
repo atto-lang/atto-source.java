@@ -62,7 +62,7 @@ public final class DopKernelIR {
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
-            this.regionToken = new HostBuffer.RegionToken(this);
+            this.regionToken = new HostBuffer.RegionToken(layout.rows(), layout.fields());
         }
     }
 
