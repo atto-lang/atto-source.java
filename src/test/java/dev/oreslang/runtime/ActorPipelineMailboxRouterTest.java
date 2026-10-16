@@ -315,6 +315,73 @@ final class ActorPipelineMailboxRouterTest {
     }
 
     @Test
+    void retiredRoutingGenerationRejectsReplaysAndRebindingResetsRoundRobin()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorPipelineMailboxRouter<String>> active =
+                    new AtomicReference<>();
+            AtomicReference<ActorPipelineMailboxRouter<String>> old =
+                    new AtomicReference<>();
+            AtomicInteger denied = new AtomicInteger();
+            AtomicInteger aCount = new AtomicInteger();
+            AtomicInteger bCount = new AtomicInteger();
+            var a = runtime.<String>spawnShared(() -> (message, actor) ->
+                    aCount.incrementAndGet());
+            var b = runtime.<String>spawnShared(() -> (message, actor) ->
+                    bCount.incrementAndGet());
+            var producer = runtime.<String>spawnShared(() -> (message, actor) -> {
+                if (message.equals("old-route")) {
+                    try {
+                        old.get().forwardRoundRobin("replay");
+                    } catch (IllegalStateException retired) {
+                        denied.incrementAndGet();
+                    }
+                } else if (message.equals("try-close")) {
+                    try {
+                        active.get().close();
+                    } catch (SecurityException deniedClose) {
+                        denied.incrementAndGet();
+                    }
+                } else {
+                    active.get().forwardRoundRobin("delivered");
+                }
+            });
+            var plan = graph();
+            Map<String, ActorRuntime.ActorRef<String>> bindings =
+                    Map.of("producer", producer, "worker-a", a, "worker-b", b);
+            var first = new ActorPipelineMailboxRouter<>(runtime, plan, bindings);
+            old.set(first);
+            active.set(first);
+            producer.send("first");
+            producer.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, aCount.get());
+            assertEquals(0, bCount.get());
+
+            first.close();  // supervisor retires the first routing generation
+            var second = new ActorPipelineMailboxRouter<>(runtime, plan, bindings);
+            active.set(second);  // same immutable plan must NOT inherit cursor
+            producer.send("old-route");
+            producer.send("try-close");
+            producer.send("new-generation");
+            producer.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(2, denied.get(), "retired route and actor close both denied");
+            assertEquals(2, aCount.get(), "new generation must restart RR at first edge");
+            assertEquals(0, bCount.get());
+            second.close();
+            producer.stop();
+            a.stop();
+            b.stop();
+            producer.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void bindingRejectsMissingDuplicateAndForeignActorIdentities() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
