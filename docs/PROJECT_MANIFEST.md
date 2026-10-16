@@ -61,6 +61,15 @@ For a path without an extension, the resolver tries the exact file and then
 Project-local roots intentionally precede ambient `ORESLANG_PATH` entries so
 a developer machine cannot silently shadow a dependency pinned by the project.
 
+## Package-root selection
+
+For `.ores.pkg.toml` projects, `+/some/file` resolves from the
+manifest-containing directory, regardless of `[source].roots`. Use
+`--manifest-path` or `--project-root` via flags-2-env to explicitly select
+the entrypoint package; both options must agree if set. The corresponding
+environment variables are `ORES_MANIFEST_PATH` and `ORES_PROJECT_ROOT`.
+Nested dependencies keep independent package roots.
+
 ## ORESLANG_PATH
 
 `ORESLANG_PATH` is the ambient Oreslang import/search path. It is a list of
