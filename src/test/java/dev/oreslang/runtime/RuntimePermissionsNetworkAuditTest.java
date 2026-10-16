@@ -197,6 +197,7 @@ final class RuntimePermissionsNetworkAuditTest {
                 .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
         for (String alias : new String[]{
                 "0x7f.0.0.1", "0X7F.0.0.1", "0x7f000001",
+                "127.0x0.0.1", "1.2.3.0x01", "0X7F.0x0.0.1",
                 "127.0.0.0x1", "0x7f.1", "0x7f.0.0.1."
         }) {
             for (String endpoint : new String[]{alias, alias + ":443"}) {
