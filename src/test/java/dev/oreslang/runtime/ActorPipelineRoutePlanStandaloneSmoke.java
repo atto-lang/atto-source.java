@@ -323,6 +323,16 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                 identityStages.get(1), identityStages.get(2), identityStages.get(3)),
                 boundEdges), "257+ byte actor ID admitted");
 
+        // Declaring an outbound type does not make a terminal transform
+        // executable: it must have a real downstream edge.
+        rejects(() -> new ActorPipelineRoutePlan(
+                List.of(
+                        new ActorPipelineRoutePlan.Stage("src", "Producer",
+                                ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                        new ActorPipelineRoutePlan.Stage("worker", "Worker",
+                                ActorPipelineRoutePlan.Role.TRANSFORM, "Event", "Event")),
+                List.of(new ActorPipelineRoutePlan.Edge("src", "worker", "Event"))),
+                "terminal transform without outbound connection accepted");
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
                 + " cases=24 concurrent_selections=" + (writers * sendsEach));
     }
