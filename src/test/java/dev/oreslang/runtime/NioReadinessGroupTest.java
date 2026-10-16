@@ -96,6 +96,36 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void cancellationBurstDrainsWithoutScanningIdleWatchers() throws Exception {
+        try (var group = new NioReadinessGroup(1, 256, 256)) {
+            var pipes = new ArrayList<java.nio.channels.Pipe>();
+            var waiting = new ArrayList<OresFuture<Integer>>();
+            try {
+                for (int i = 0; i < 192; ++i) {
+                    var pipe = java.nio.channels.Pipe.open();
+                    pipes.add(pipe);
+                    pipe.source().configureBlocking(false);
+                    waiting.add(group.watch(pipe.source(), SelectionKey.OP_READ));
+                }
+                assertEquals(192, group.pendingCount());
+                for (var future : waiting) assertTrue(future.cancel(false));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.pendingCount() != 0 && System.nanoTime() < deadline)
+                    Thread.sleep(1); // test harness only
+                assertEquals(0, group.pendingCount(),
+                        "cancelled watches must be reclaimed within bounded quanta");
+                assertEquals(1, group.reactorCount());
+            } finally {
+                for (var pipe : pipes) {
+                    pipe.source().close();
+                    pipe.sink().close();
+                }
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void failClosedOnInvalidAdmissionAndMaxPending() throws Exception {
         try (var group = new NioReadinessGroup(1, 1, 8);
              var listener = ServerSocketChannel.open()) {
