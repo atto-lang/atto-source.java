@@ -5503,13 +5503,26 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * Compare guarded ranges in their actual numeric domain. A binary64
+     * approximation can collapse distinct decimal bounds and incorrectly
+     * declare a reachable pattern arm unreachable, especially above 2^53.
+     * null lower/upper limits represent unbounded intervals.
+     */
     private boolean guardsProvablyDisjoint(Ast.Expr left, Ast.Expr right) {
         GuardRange a = guardRange(left);
         GuardRange b = guardRange(right);
         if (a == null || b == null || !a.variable().equals(b.variable())) return false;
-        return a.max() < b.min() || b.max() < a.min()
-                || (a.max() == b.min() && (!a.maxInclusive() || !b.minInclusive()))
-                || (b.max() == a.min() && (!b.maxInclusive() || !a.minInclusive()));
+        return separatedIntervals(a.max(), a.maxInclusive(), b.min(), b.minInclusive())
+                || separatedIntervals(b.max(), b.maxInclusive(), a.min(), a.minInclusive());
+    }
+
+    private boolean separatedIntervals(
+            java.math.BigDecimal upper, boolean upperInclusive,
+            java.math.BigDecimal lower, boolean lowerInclusive) {
+        if (upper == null || lower == null) return false;
+        int relation = upper.compareTo(lower);
+        return relation < 0 || (relation == 0 && (!upperInclusive || !lowerInclusive));
     }
 
     private GuardRange guardRange(Ast.Expr guard) {
@@ -5517,19 +5530,22 @@ public final class TypeChecker {
                 || !(binary.left() instanceof Ast.NameExpr name)
                 || !(binary.right() instanceof Ast.LiteralExpr literal)
                 || !(literal.value() instanceof Number number)) return null;
-        double v = number.doubleValue();
+        if ((number instanceof Float || number instanceof Double)
+                && !Double.isFinite(number.doubleValue())) return null;
+        java.math.BigDecimal v = exactLiteralDecimal(number);
         return switch (binary.operator()) {
-            case "<" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, false);
-            case "<=" -> new GuardRange(name.name(), Double.NEGATIVE_INFINITY, false, v, true);
-            case ">" -> new GuardRange(name.name(), v, false, Double.POSITIVE_INFINITY, false);
-            case ">=" -> new GuardRange(name.name(), v, true, Double.POSITIVE_INFINITY, false);
+            case "<" -> new GuardRange(name.name(), null, false, v, false);
+            case "<=" -> new GuardRange(name.name(), null, false, v, true);
+            case ">" -> new GuardRange(name.name(), v, false, null, false);
+            case ">=" -> new GuardRange(name.name(), v, true, null, false);
             case "eq", "==" -> new GuardRange(name.name(), v, true, v, true);
             default -> null;
         };
     }
 
-    private record GuardRange(
-            String variable, double min, boolean minInclusive, double max, boolean maxInclusive) { }
+    private record GuardRange(String variable,
+            java.math.BigDecimal min, boolean minInclusive,
+            java.math.BigDecimal max, boolean maxInclusive) { }
 
     private boolean isFallbackArm(Ast.MatchArm arm) {
         return arm.guard() == null
