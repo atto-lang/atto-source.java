@@ -459,6 +459,14 @@ public final class OresProjectConfig {
         if (relative.isBlank() || relative.startsWith("/")) {
             throw new IllegalArgumentException("invalid rooted import: " + importPath);
         }
+        // Reject traversal components even when normalization would land
+        // inside the package. A rooted import must name a source beneath that
+        // root without changing directories through parent segments.
+        for (String segment : relative.replace('\\', '/').split("/", -1)) {
+            if ("..".equals(segment)) {
+                throw new IllegalArgumentException("rooted import cannot contain '..': " + importPath);
+            }
+        }
         Path component = Path.of(relative);
         if (component.isAbsolute()) {
             throw new IllegalArgumentException("absolute component in rooted import: " + importPath);
