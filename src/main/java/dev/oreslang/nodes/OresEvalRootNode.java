@@ -4330,6 +4330,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env) {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
+            requireBoundInstanceReceiver(call, receiver);
 
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -4374,9 +4375,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 Ast.MethodDecl method =
-                        object.owner.findMethod(
-                                object.klass,
-                                CallableSelector.instance(member.member(), args.size()));
+                        preboundMethod(call, object, member.member(), args.size());
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
                             method.visibility(),
@@ -5781,6 +5780,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+                requireBoundInstanceReceiver(call, receiver);
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -5824,8 +5824,8 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
-                    Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()));
+                    Ast.MethodDecl method =
+                            preboundMethod(call, object, methodCall.member(), args.size());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7922,6 +7922,88 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return null;
+        }
+
+        /**
+         * A statically selected instance call cannot be redirected to a
+         * class namespace, foreign callable or field by a runtime value.
+         * Legacy unbound call sites keep their existing dispatch semantics.
+         */
+        private void requireBoundInstanceReceiver(Ast.CallExpr call, Object receiver) {
+            if (program.boundMethodCalls().containsKey(call)
+                    && !(receiver instanceof OresObject)) {
+                throw new IllegalStateException(
+                        "compiler-bound instance call received non-object receiver");
+            }
+        }
+
+        /**
+         * Compiler-owned declaration identity is checked on the caller's
+         * exact code image. Only after checking provenance and subtype
+         * membership do we use the existing (name, arity) vtable selector.
+         * In particular no runtime value, enum tag, or payload chooses a
+         * method implementation.
+         */
+        private Ast.MethodDecl preboundMethod(
+                Ast.CallExpr call, OresObject receiver, String name, int arity) {
+            CallableSelector selector = CallableSelector.instance(name, arity);
+            Ast.MethodCallBinding binding = program.boundMethodCalls().get(call);
+            // The *receiver* evaluator owns its linked callable tables; the
+            // *caller* evaluator owns the call-site binding. Never look for
+            // the caller's CallExpr identity in receiver.owner.program.
+            Ast.MethodDecl dynamic = receiver.owner.findMethod(receiver.klass, selector);
+            if (binding == null) return dynamic;
+            if (receiver.owner != this) {
+                throw new IllegalStateException(
+                        "compiler-bound method call cannot cross code images without linked type identity");
+            }
+            Ast.ClassDecl staticReceiver = binding.staticReceiver();
+            Ast.MethodDecl expected = binding.declaredMethod();
+            Map<CallableSelector, Ast.MethodDecl> staticSlots = callableSlots.get(staticReceiver);
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    || staticReceiver.actorKind() != Ast.ActorKind.NONE
+                    || staticSlots == null
+                    || methodOwners.get(expected) == null
+                    || expected.isStatic()
+                    || !selector.matches(expected)
+                    || staticSlots.get(selector) != expected
+                    || !isNominalSubclassOf(receiver.klass, staticReceiver)) {
+                throw new IllegalStateException(
+                        "compiler-bound method is not valid for receiver and code image");
+            }
+            if (dynamic == null) {
+                throw new IllegalStateException(
+                        "concrete receiver lost compiler-bound method slot");
+            }
+            return dynamic;
+        }
+
+        private boolean isNominalSubclassOf(
+                Ast.ClassDecl concrete, Ast.ClassDecl expectedAncestor) {
+            Set<Ast.ClassDecl> seen =
+                    java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+            ArrayDeque<Ast.ClassDecl> pending = new ArrayDeque<>();
+            pending.add(concrete);
+            while (!pending.isEmpty()) {
+                Ast.ClassDecl current = pending.removeLast();
+                if (!seen.add(current)) continue;
+                if (seen.size() > 4096) {
+                    throw new IllegalArgumentException(
+                            "compiler-bound receiver ancestry class limit exceeded");
+                }
+                if (current == expectedAncestor) return true;
+                for (Ast.TypeRef parentRef : current.parents()) {
+                    if (parentRef.name().equals("Object")
+                            || parentRef.name().equals("List")) continue;
+                    Ast.ClassDecl parent = dispatchParent(current, parentRef);
+                    if (parent == null) {
+                        throw new IllegalArgumentException(
+                                "unresolved parent in compiler-bound receiver ancestry");
+                    }
+                    pending.add(parent);
+                }
+            }
+            return false;
         }
 
         private Ast.MethodDecl findMethod(
