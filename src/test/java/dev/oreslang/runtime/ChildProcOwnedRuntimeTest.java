@@ -77,8 +77,12 @@ final class ChildProcOwnedRuntimeTest {
              ChildProcOwnedRuntime manager = manager(workers, 2, 8)) {
             var child = manager.spawnAsync(spec(executable("/usr/bin/printf"), "01234567890123456789"))
                     .get(10, TimeUnit.SECONDS);
-            assertThrows(java.util.concurrent.ExecutionException.class,
+            var error = assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> child.waitAsync().get(10, TimeUnit.SECONDS));
+            Throwable root = error;
+            while (root.getCause() != null) root = root.getCause();
+            assertEquals("child process output quota exceeded", root.getMessage(),
+                    "output quota errors must not be converted into ordinary termination");
         }
     }
 
