@@ -49,13 +49,9 @@ public final class ActorPipelineMailboxRouter<M> {
     public ActorPipelineMailboxRouter(
             ActorRuntime runtime, ActorPipelineRoutePlan plan,
             Map<String, ActorRuntime.ActorRef<M>> actorBindings) {
-        if (ActorRuntime.inActorExecution()
-                || ActorRuntime.inActorGroupMailmanExecution()
-                || OresScheduler.current() != null) {
-            throw new SecurityException(
-                    "pipeline graph bindings are supervisor-only");
-        }
         this.owner = Objects.requireNonNull(runtime, "runtime");
+        // This includes the force-cancellation callback reentry fence.
+        this.owner.requirePipelineRegistrationHostAuthority();
         this.graph = Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(actorBindings, "actorBindings");
 
@@ -97,6 +93,11 @@ public final class ActorPipelineMailboxRouter<M> {
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new SecurityException(
                     "pipeline routing requires an actor turn in its owning runtime");
+        }
+        if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            // Deny before touching the RR cursor or constructing a fan-out
+            // batch, not only later when ActorRuntime.send rejects delivery.
+            throw new SecurityException("untrusted actor pipeline routing is not enabled");
         }
         ActorRuntime.ActorId actorId = ActorRuntime.currentActorId()
                 .orElseThrow(() -> new SecurityException(
