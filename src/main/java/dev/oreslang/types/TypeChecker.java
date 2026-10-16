@@ -2306,6 +2306,13 @@ public final class TypeChecker {
                     if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
                         throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
                     }
+                    // Complex numbers support equality, not total ordering.
+                    // Accepting this at typecheck time previously guaranteed a
+                    // runtime "values are not comparable" exception.
+                    if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) {
+                        throw new IllegalArgumentException(
+                                "complex numbers have no ordered comparison; compare real components explicitly");
+                    }
                     yield Primitive.BOOL;
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
