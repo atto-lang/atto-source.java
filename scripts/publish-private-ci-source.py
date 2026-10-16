@@ -45,7 +45,7 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
-    # Candidate identity pin only; protected source-main approval is separate.
+    # Candidate identity pin, not protected-main source-export authorization.
     "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
@@ -506,6 +506,28 @@ def require_source_tree_match(source, trusted_root, files):
     return commit_sha, expected_tree
 
 
+def verify_private_ci_commit(repository, commit_sha, expected_tree, expected_parent):
+    """Attest the destination commit object before exposing a new CI ref.
+
+    A successful git/commits POST response contains a SHA, not a certificate
+    that the created object points to the requested root tree and parent.
+    Independently GET that immutable commit before publishing its branch.
+    """
+    for value in (commit_sha, expected_tree, expected_parent):
+        valid_sha(value)
+    published = gh_api(f"repos/{repository}/git/commits/{commit_sha}")
+    tree = published.get("tree")
+    parents = published.get("parents")
+    if (published.get("sha") != commit_sha
+            or not isinstance(tree, dict)
+            or tree.get("sha") != expected_tree
+            or not isinstance(parents, list)
+            or len(parents) != 1
+            or not isinstance(parents[0], dict)
+            or parents[0].get("sha") != expected_parent):
+        raise Denied("private CI commit tree or parent failed independent attestation")
+
+
 def verify_private_ci_ref(repository, branch, commit_sha, created):
     """Attest the GitHub ref write with an independent exact-commit readback."""
     expected = "refs/heads/" + branch
@@ -606,6 +628,8 @@ def publish(repository, source, branch, trusted_root,
         "tree": new_tree_sha, "parents": [base_sha]
     })
     commit_sha = valid_sha(commit.get("sha"))
+    authorize_write()
+    verify_private_ci_commit(repository, commit_sha, new_tree_sha, base_sha)
     authorize_write()
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
