@@ -1110,7 +1110,7 @@ public final class Parser {
                     // These names must not be inert metadata: otherwise a
                     // network serializer could impersonate an actor mailbox
                     // codec or a guest could assume userland CONTROL access.
-                    "Serializable", "NetworkCodec", "ActorMessageCodec",
+                    "Sendable", "Serializable", "NetworkCodec", "ActorMessageCodec",
                     "SupervisorControlCodec",
                     "PipelineStage", "RequiresState").contains(name)) {
                 throw error(previous(), "@" + name
