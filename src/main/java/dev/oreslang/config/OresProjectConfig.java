@@ -291,8 +291,18 @@ public final class OresProjectConfig {
 
     /** Enter a declared zed dependency, treating its physical mount root as a boundary. */
     public OresProjectConfig forImportedPackage(Path importedSource, String importPath) throws IOException {
+        if (importedSource == null) {
+            throw new IllegalArgumentException("imported source path cannot be null");
+        }
+        if (importPath == null || !importPath.startsWith("pkg:")) {
+            throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
+        }
         String remainder = importPath.substring("pkg:".length());
-        String alias = remainder.substring(0, remainder.indexOf('/'));
+        int slash = remainder.indexOf('/');
+        if (slash <= 0 || slash == remainder.length() - 1) {
+            throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
+        }
+        String alias = remainder.substring(0, slash);
         Path packageRoot = dependencyRoots.get(alias);
         if (packageRoot == null) {
             throw new IllegalArgumentException("undeclared package alias '" + alias + "'");
@@ -472,13 +482,13 @@ public final class OresProjectConfig {
     }
 
     private static void addEnvironmentPaths(LinkedHashSet<Path> paths, String raw, String delimiter) {
-        if (raw == null || raw.isBlank()) return;
+        if (raw == null || raw.isEmpty()) return;
         Path cwd = Path.of("").toAbsolutePath().normalize();
         for (String part : raw.split(java.util.regex.Pattern.quote(delimiter), -1)) {
-            String trimmed = part.trim();
-            // Empty segments are ignored, never implicit cwd.
-            if (trimmed.isEmpty()) continue;
-            Path path = Path.of(trimmed);
+            // Preserve spaces: PATH-like segments are literal filenames, not trimmed tokens.
+            // Only a truly empty segment is ignored; it never grants implicit cwd.
+            if (part.isEmpty()) continue;
+            Path path = Path.of(part);
             if (!path.isAbsolute()) path = cwd.resolve(path);
             paths.add(path.toAbsolutePath().normalize());
         }
