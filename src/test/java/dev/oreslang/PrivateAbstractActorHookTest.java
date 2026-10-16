@@ -215,6 +215,66 @@ final class PrivateAbstractActorHookTest {
     }
 
     @Test
+    void privateAbstractOverrideMustPreserveTheOriginalSignature() {
+        IllegalArgumentException changedArgument = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework as
+                          private abstract receive(int value): int;
+                        end
+                        define class Worker extends Framework as
+                          private receive(bool value): int { return 1; }
+                        end
+                        """)));
+        assertTrue(changedArgument.getMessage().contains("incompatible private abstract"),
+                changedArgument.getMessage());
+
+        IllegalArgumentException changedReturn = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework as
+                          private abstract receive(int value): int;
+                        end
+                        define class Worker extends Framework as
+                          private receive(int value): bool { return true; }
+                        end
+                        """)));
+        assertTrue(changedReturn.getMessage().contains("incompatible private abstract"),
+                changedReturn.getMessage());
+    }
+
+    @Test
+    void concreteIntermediateCannotLaunderAnIncompatibleGrandchildOverride() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework as
+                          private abstract receive(int value): int;
+                        end
+                        define class Middle extends Framework as
+                          private receive(int value): int { return value; }
+                        end
+                        define class Worker extends Middle as
+                          private receive(bool value): int { return 1; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("original superclass signature"),
+                failure.getMessage());
+    }
+
+    @Test
+    void uncheckedGenericPrivateAbstractOverridesFailClosed() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework<T> as
+                          private abstract receive(T value): void;
+                        end
+                        define class Worker extends Framework<int> as
+                          private receive(int value): void { return; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("checked type substitution"),
+                failure.getMessage());
+    }
+
+    @Test
     void onStartIsAnUncallableActorRuntimeHook() {
         IllegalArgumentException direct = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
