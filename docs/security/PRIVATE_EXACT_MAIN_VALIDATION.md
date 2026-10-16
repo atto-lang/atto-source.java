@@ -73,8 +73,18 @@ References:
    values are deliberately updated. The workflow checkout checks immutable
    40-hex commit/tree values, the GitHub-provided repository ID, the checked-out
    commit and tree, and a clean worktree *before* invoking the toolchain.
-5. Confirm that focused JUnit, full JDK 25 Maven verify, ten stress replays,
-   native AOT, native hybrid, and strict-isolate guest execution all ran.
+5. Confirm that focused JUnit, **fresh `mvn ... -DskipTests=false
+   -Dmaven.test.skip=false clean verify`**, ten stress replays, native AOT,
+   native hybrid, and strict-isolate guest execution all ran. The reviewed
+   exact-main workflow now independently reads the full Maven Surefire
+   reports: all six Future/channel focused classes and at least one
+   additional class must have executed, and **every** reported test must
+   be successful and non-skipped (including no flaky/rerun failure
+   markers). The report directory and per-class XML must not be symlinks,
+   misplaced, malformed, oversized, or inconsistent with declared counts.
+   Run this verifier from trusted workflow YAML, not candidate scripts.
+   This attests broader JUnit execution, not that malicious candidate
+   sources could not alter which tests were discovered or built.
    Each of the three native profiles must run `mvn ... -DskipTests clean package`
    **before** its guest smoke test, rather than reusing an incremental build
    or an artifact left behind by a prior profile. Verify this requirement
