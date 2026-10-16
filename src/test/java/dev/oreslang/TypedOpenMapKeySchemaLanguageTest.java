@@ -88,6 +88,64 @@ final class TypedOpenMapKeySchemaLanguageTest {
     }
 
     @Test
+    void lookupOperationsPreserveOuterPresenceAndStoredOptionType() {
+        TypeChecker.check(Parser.parse(SCHEMA + """
+                fnc valid(): void {
+                  val m = new Settings();
+                  val bool missing = m.has("pending");
+                  val Option<Option<bool>> first = m.get("pending");
+                  m["pending"] = None;
+                  val Option<Option<bool>> storedNone = m.get("pending");
+                  val Option<Option<bool>> transferred = m.take("pending");
+                  val bool removed = m.remove("pending");
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(SCHEMA + """
+                        fnc invalid(): void {
+                          val m = new Settings();
+                          val Option<bool> wrong = m.get("name");
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void lookupOperationsAlsoWorkForClosedGenericMap() {
+        TypeChecker.check(Parser.parse("""
+                fnc valid(): void {
+                  val m = new Map<string, int>();
+                  m["answer"] = 42;
+                  val bool present = m.has("answer");
+                  val Option<int> copy = m.get("answer");
+                  val Option<int> moved = m.take("answer");
+                  val bool removed = m.remove("answer");
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void consumingLookupRequiresMutableMapAuthority() {
+        for (String operation : new String[] {"take", "remove"}) {
+            String source = SCHEMA + """
+                    fnc invalid(): void {
+                      let m = new Settings();
+                      m.%s("name");
+                      return;
+                    }
+                    """.formatted(operation);
+            IllegalArgumentException denied = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)));
+            assertTrue(denied.getMessage().contains("requires"),
+                    denied.getMessage());
+        }
+    }
+
+    @Test
     void knownLiteralKeysRejectWrongStoredValues() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse(SCHEMA + """
@@ -223,6 +281,41 @@ final class TypedOpenMapKeySchemaLanguageTest {
             context.eval(src);
         }
         assertEquals("hellofalsefalse7",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void runtimeLookupDistinguishesMissingStoredNoneAndStoredSome() throws Exception {
+        String source = SCHEMA + """
+                pub fnc main(): void {
+                  val m = new Settings();
+                  stdio.stdout.write(m.get("pending").is_none());
+                  m["pending"] = None;
+                  stdio.stdout.write(m.get("pending").is_some());
+                  stdio.stdout.write(m.get("pending").unwrap().is_none());
+                  m["pending"] = Some(false);
+                  val moved = m.take("pending");
+                  stdio.stdout.write(moved.is_some());
+                  stdio.stdout.write(moved.unwrap().unwrap());
+                  stdio.stdout.write(m.has("pending"));
+                  m["extra"] = 7;
+                  stdio.stdout.write(m.remove("extra"));
+                  stdio.stdout.write(m.remove("extra"));
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(source));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source src = Source.newBuilder(
+                OresLanguage.ID, source, "typed-open-map-option-lookup.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(src);
+        }
+        assertEquals("truetruetruetruefalsefalsetruefalse",
                 output.toString(StandardCharsets.UTF_8));
     }
 
