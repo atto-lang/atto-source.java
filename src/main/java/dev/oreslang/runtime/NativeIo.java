@@ -349,7 +349,9 @@ public final class NativeIo {
         if (addresses.length > 64)
             throw new SecurityException("DNS response exceeds listener admission limit");
         for (InetAddress address : addresses) {
-            if (!(address instanceof Inet4Address)) continue;
+            // The all-interfaces address is not one selected network identity:
+            // it would also bind IPs covered by other host-level denies.
+            if (!(address instanceof Inet4Address) || address.isAnyLocalAddress()) continue;
             if (permissions.allowsEphemeralNetworkBind(requested, address.getHostAddress()))
                 return new InetSocketAddress(address, 0);
         }
