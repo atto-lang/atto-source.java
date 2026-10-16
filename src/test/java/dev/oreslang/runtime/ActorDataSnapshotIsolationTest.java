@@ -74,6 +74,40 @@ final class ActorDataSnapshotIsolationTest {
     }
 
     @Test
+    void rejectedNestedNonDataLeavesOwnershipAndMailboxRecoverable() throws Exception {
+        AtomicReference<List<?>> received = new AtomicReference<>();
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<List<?>>spawnPrivate(() ->
+                    (message, context) -> received.set(message));
+            Object unportable = new Object();
+            ArrayList<String> ownedNested = new ArrayList<>(List.of("before"));
+            ArrayList<Object> sender = new ArrayList<>();
+            sender.add(ownedNested);
+            sender.add(List.of(unportable));
+
+            // A nested host reference is not DATA. A failed admission must
+            // neither steal/mutate sender ownership nor poison mailbox state.
+            assertThrows(IllegalArgumentException.class, () -> ref.send(sender));
+            assertSame(ownedNested, sender.get(0));
+            assertSame(unportable, ((List<?>) sender.get(1)).get(0));
+            ownedNested.add("still-owned");
+
+            // Repair in place and reuse the same sender container; the next
+            // valid send must reach the actor as a separate owned snapshot.
+            sender.set(1, "repaired");
+            ref.send(sender);
+            ownedNested.add("after-send");
+            ref.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(List.of(List.of("before", "still-owned"), "repaired"),
+                    received.get());
+            assertNotSame(sender, received.get());
+            assertNotSame(ownedNested, received.get().get(0));
+            ref.stop();
+            ref.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void sendFailureDoesNotConsumeSenderGraph() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<List<?>>spawnShared(() -> (message, context) -> { });
