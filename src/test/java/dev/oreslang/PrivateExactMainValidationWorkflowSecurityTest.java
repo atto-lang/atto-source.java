@@ -182,6 +182,32 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String admit = workflow.substring(workflow.indexOf("  validate-approved-candidate:"));
         String allowed = jobProperty(admit, "if");
         String rejected = jobProperty(deny, "if");
+        String requiredAccept =
+                "if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java'"
+                + " && github.event.repository.id == 1400792274"
+                + " && github.event.repository.private == true"
+                + " && github.ref == 'refs/heads/main'"
+                + " && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true'"
+                + " && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != ''"
+                + " && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha"
+                + " && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != ''"
+                + " && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha"
+                + " && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE != '' }}";
+        String requiredReject =
+                "if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java'"
+                + " || github.event.repository.id != 1400792274"
+                + " || github.event.repository.private != true"
+                + " || github.ref != 'refs/heads/main'"
+                + " || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true'"
+                + " || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == ''"
+                + " || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != github.sha"
+                + " || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == ''"
+                + " || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != inputs.candidate_sha"
+                + " || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE == '' }}";
+        assertEquals(requiredAccept, allowed, "unreviewed candidate admission expression");
+        assertEquals(requiredReject, rejected, "unreviewed candidate refusal expression");
+        String weakened = admit.replace(allowed, "if: " + "$" + "{{ true }}");
+        assertNotEquals(requiredAccept, jobProperty(weakened, "if"));
         for (String guard : new String[] {
                 "github.repository", "github.event.repository.id",
                 "github.event.repository.private", "github.ref",
