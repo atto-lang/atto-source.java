@@ -189,6 +189,30 @@ class CorePerfTest {
         assertEquals(Long.MAX_VALUE, CorePerf.Recorder.relativeNanos(Long.MAX_VALUE, Long.MIN_VALUE));
     }
 
+    @Test void invalidPublicDiagnosticIdsAreInertEvenWhenEnabled() {
+        assertFalse(CorePerf.knownPhase(-1));
+        assertFalse(CorePerf.knownPhase(0));
+        assertFalse(CorePerf.knownPhase(Integer.MAX_VALUE));
+        assertTrue(CorePerf.knownPhase(CorePerf.HTTP_RECEIVE));
+        assertFalse(CorePerf.knownDebugEvent(-1));
+        assertFalse(CorePerf.knownDebugEvent(0));
+        assertFalse(CorePerf.knownDebugEvent(Integer.MAX_VALUE));
+        assertTrue(CorePerf.knownDebugEvent(CoreDebug.ACTOR_POOLS_CREATED));
+        CorePerf.configure(true);
+        CoreDebug.configure(true);
+        try {
+            assertDoesNotThrow(() -> CorePerf.end(0, 1L));
+            assertDoesNotThrow(() -> CorePerf.end(Integer.MAX_VALUE, 1L));
+            assertDoesNotThrow(() -> CorePerf.elapsed(0, 1L, 2L));
+            assertDoesNotThrow(() -> CorePerf.elapsed(Integer.MIN_VALUE, 1L, 2L));
+            assertDoesNotThrow(() -> CoreDebug.event(0, 7L));
+            assertDoesNotThrow(() -> CoreDebug.event(Integer.MAX_VALUE, 7L));
+        } finally {
+            CorePerf.configure(false);
+            CoreDebug.configure(false);
+        }
+    }
+
     @Test void invalidSamplesFailClosed() {
         var recorder = new CorePerf.Recorder(1);
         assertThrows(IllegalArgumentException.class, () -> recorder.record(0, 1L, 2L));
