@@ -71,6 +71,50 @@ final class NativeIoPinnedNetworkTest {
     }
 
     @Test
+    void ephemeralListenerBindsPinnedIpv4OnlyWhenAnySelectedPortIsPermitted() throws Exception {
+        RuntimePermissions exactHost = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1");
+        InetSocketAddress pinned = NativeIo.resolveAuthorizedListenerAddress(
+                exactHost, "127.0.0.1", 0);
+        assertEquals("127.0.0.1", pinned.getAddress().getHostAddress());
+        assertEquals(0, pinned.getPort());
+        assertFalse(pinned.isUnresolved());
+
+        // Verify the real JDK server can bind an OS-assigned port on the
+        // pinned IPv4 bytes; no hostname-based socket resolution occurs.
+        com.sun.net.httpserver.HttpServer server =
+                com.sun.net.httpserver.HttpServer.create(pinned, 1);
+        try {
+            server.start();
+            assertTrue(server.getAddress().getPort() > 0);
+            assertEquals("127.0.0.1", server.getAddress().getAddress().getHostAddress());
+        } finally {
+            server.stop(0);
+        }
+
+        RuntimePermissions onePortOnly = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:8080");
+        assertThrows(SecurityException.class, () ->
+                NativeIo.resolveAuthorizedListenerAddress(onePortOnly, "127.0.0.1", 0));
+
+        RuntimePermissions deniedPort = exactHost.withDenied(
+                RuntimePermissions.Permission.NET, "127.0.0.1:443");
+        assertThrows(SecurityException.class, () ->
+                NativeIo.resolveAuthorizedListenerAddress(deniedPort, "127.0.0.1", 0));
+
+        RuntimePermissions deniedAddress = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1");
+        assertThrows(SecurityException.class, () ->
+                NativeIo.resolveAuthorizedListenerAddress(deniedAddress, "127.0.0.1", 0));
+
+        // Fixed-port listeners still use exact destination checks.
+        InetSocketAddress fixed = NativeIo.resolveAuthorizedListenerAddress(
+                onePortOnly, "127.0.0.1", 8080);
+        assertEquals(8080, fixed.getPort());
+    }
+
+    @Test
     void builtInHttpRefusesUnpinnedHostnamesEvenWhenAllowed() {
         RuntimePermissions broad = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
