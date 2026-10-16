@@ -5,7 +5,10 @@ import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ProxySelector;
 import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -235,6 +238,11 @@ public final class NativeIo {
         URI uri = checkedHttpUri(rawUri);
         String endpoint = networkEndpoint(uri);
         context.requirePermission(RuntimePermissions.Permission.NET, endpoint, "http." + method.toLowerCase());
+        // HttpClient has no address-pinning API. Until HTTPS can preserve the
+        // original TLS identity while pinning a checked socket address, only
+        // canonical numeric IPv4 destinations are admitted. Never let HttpClient
+        // resolve a DNS hostname independently of the permission decision.
+        requirePinnedHttpLiteral(context.runtimePermissions(), endpoint);
 
         HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(30));
@@ -248,6 +256,7 @@ public final class NativeIo {
         // to a second host would bypass the permission check above.
         HttpClient client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NEVER)
+                .proxy(ProxySelector.of(null)) // Do not let ambient proxies reroute a checked IP.
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
         try (client) {
@@ -275,13 +284,53 @@ public final class NativeIo {
         Socket socket = new Socket();
         try {
             context.nativeIo().register(socket);
-            socket.connect(new InetSocketAddress(host, port), 15_000);
+            // Resolve exactly once under the checked host policy; the chosen
+            // InetSocketAddress contains InetAddress bytes, not a hostname.
+            // Socket.connect(selected) therefore cannot re-resolve/rebind.
+            InetSocketAddress selected = resolveAuthorizedAddress(
+                    context.runtimePermissions(), host, port);
+            context.requireCapability(IsolatePolicy.Capability.NETWORK, "network.connect");
+            socket.connect(selected, 15_000);
             return new TcpConnection(context, endpoint, socket);
         } catch (Exception failure) {
             context.nativeIo().unregister(socket);
             try { socket.close(); } catch (IOException cleanup) { failure.addSuppressed(cleanup); }
-            throw new IllegalStateException("network connection failed for " + endpoint + ": " + failure.getMessage(), failure);
+            if (failure instanceof SecurityException denied) throw denied;
+            throw new IllegalStateException("network connection failed", failure);
         }
+    }
+
+    // Package-private for loopback integration tests; callers must separately
+    // enforce the effective actor/context capability at the I/O boundary.
+    static InetSocketAddress resolveAuthorizedAddress(
+            RuntimePermissions permissions, String host, int port) throws IOException {
+        if (permissions == null || host == null || port < 1 || port > 65535)
+            throw new IllegalArgumentException("invalid requested socket endpoint");
+        String requested = host.toLowerCase(java.util.Locale.ROOT) + ":" + port;
+        if (!permissions.allows(RuntimePermissions.Permission.NET, requested))
+            throw new SecurityException("requested network endpoint denied");
+
+        // getAllByName may return both families, aliases and many answers.
+        // Unsupported IPv6 and every denied numeric-IP candidate are skipped.
+        // No host-name InetSocketAddress is ever passed to connect().
+        InetAddress[] addresses = InetAddress.getAllByName(host);
+        if (addresses.length > 64)
+            throw new SecurityException("DNS response exceeds address admission limit");
+        for (InetAddress address : addresses) {
+            if (!(address instanceof Inet4Address)) continue;
+            String selected = address.getHostAddress() + ":" + port;
+            if (permissions.allowsNetworkConnection(requested, selected))
+                return new InetSocketAddress(address, port);
+        }
+        throw new SecurityException("no resolved network address is authorized");
+    }
+
+    static void requirePinnedHttpLiteral(RuntimePermissions permissions, String endpoint) {
+        // IPv4-only: the exact numeric endpoint is both the request target and
+        // the selected address. Hostnames/IPv6 are denied, not passed to an
+        // implicit resolver or an unaudited alternate HTTP transport.
+        if (!permissions.allowsNetworkConnection(endpoint, endpoint))
+            throw new SecurityException("HTTP requires an approved numeric IPv4 destination");
     }
 
     public static final class TcpConnection implements AutoCloseable {
