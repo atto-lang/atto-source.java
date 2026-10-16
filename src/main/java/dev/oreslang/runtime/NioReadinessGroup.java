@@ -197,14 +197,22 @@ public final class NioReadinessGroup implements AutoCloseable {
                         }
                     }
                     if (stopping.get()) break;
-                    selector.select(1000); // ONLY this dedicated reactor may wait for readiness
-                    for (Iterator<SelectionKey> it = selector.selectedKeys().iterator(); it.hasNext(); ) {
-                        SelectionKey key = it.next();
-                        it.remove();
-                        Watch selected = (Watch) key.attachment();
-                        if (selected == null) continue;
-                        if (!key.isValid()) retire(selected, null, new CancelledKeyException());
-                        else retire(selected, key.readyOps(), null);
+                    // A hot socket population must not monopolize the
+                    // reactor: bound readiness dispatch just like commands.
+                    // Selected keys left over from the previous quantum must
+                    // be served without parking for another select timeout.
+                    if (selector.selectedKeys().isEmpty())
+                        selector.select(1000); // dedicated reactor only
+                    else selector.selectNow();
+                    Iterator<SelectionKey> selected = selector.selectedKeys().iterator();
+                    int readyQuantum = 0;
+                    while (readyQuantum++ < 128 && selected.hasNext()) {
+                        SelectionKey key = selected.next();
+                        selected.remove();
+                        Watch watchReady = (Watch) key.attachment();
+                        if (watchReady == null) continue;
+                        if (!key.isValid()) retire(watchReady, null, new CancelledKeyException());
+                        else retire(watchReady, key.readyOps(), null);
                     }
                     // Cancellation itself only wakes the selector, avoiding a
                     // separate unbounded queue of cancellation commands.
