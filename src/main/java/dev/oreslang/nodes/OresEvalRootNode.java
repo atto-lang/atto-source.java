@@ -1239,18 +1239,22 @@ public final class OresEvalRootNode extends RootNode {
                 List<?> arguments) {
             SourceTask task = new SourceTask(function, arguments);
             OresFuture<Object> future;
-            if (ActorRuntime.inActorExecution()) {
+            boolean actorOwned = ActorRuntime.inActorExecution();
+            if (actorOwned) {
                 future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
-            // The scheduler task can return another Future. Its entire
-            // completion chain is the observable async function result.
-            return function.async() ? OresFutures.flattenOwned(future) : future;
+            // Actor pending-operation accounting must track the ADOPTED
+            // terminal result, not the raw scheduler Future: an outer task may
+            // complete while its returned inner Future is still pending.
+            OresFuture<Object> adopted =
+                    function.async() ? OresFutures.flattenOwned(future) : future;
+            if (actorOwned) context.actors().ownCurrentActorFuture(adopted);
+            return adopted;
         }
 
         private OresFuture<Object> startSourceBlockTask(
@@ -1273,17 +1277,20 @@ public final class OresEvalRootNode extends RootNode {
                 List<?> arguments) {
             SourceTask task = new SourceTask(method, receiver, arguments);
             OresFuture<Object> future;
-            if (ActorRuntime.inActorExecution()) {
+            boolean actorOwned = ActorRuntime.inActorExecution();
+            if (actorOwned) {
                 future = context.actors().startActorTask(task);
-                context.actors().ownCurrentActorFuture(future);
             } else {
                 OresScheduler current = OresScheduler.current();
                 future = (current != null
                         ? current
                         : context.vm().rootScheduler()).start(task);
             }
-            // Method async results follow the same completion contract.
-            return method.async() ? OresFutures.flattenOwned(future) : future;
+            // Method async results use the same adopted completion lifetime.
+            OresFuture<Object> adopted =
+                    method.async() ? OresFutures.flattenOwned(future) : future;
+            if (actorOwned) context.actors().ownCurrentActorFuture(adopted);
+            return adopted;
         }
 
         private OresFuture<Object> startFutureChainTask(
