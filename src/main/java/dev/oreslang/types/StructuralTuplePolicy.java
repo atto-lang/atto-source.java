@@ -55,7 +55,11 @@ public final class StructuralTuplePolicy {
             return certifiedSlotType(named.arguments().getFirst(), depth + 1);
         }
         if (type instanceof Types.Tuple tuple) {
-            if (tuple.elements().size() > MAX_ARITY) return false;
+            // Nested FixedArray/FixedList values need their own alias and
+            // ownership proof. They are not positional tuple views.
+            if (tuple.kind() != TupleKind.TUPLE || tuple.elements().size() > MAX_ARITY) {
+                return false;
+            }
             for (Type element : tuple.elements()) if (!certifiedSlotType(element, depth + 1)) return false;
             return true;
         }
