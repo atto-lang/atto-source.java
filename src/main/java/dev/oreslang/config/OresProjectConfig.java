@@ -203,8 +203,16 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException("project-root import escapes root: " + importPath);
             }
             Optional<Path> source = existingSource(candidate);
-            if (source.isPresent() && !source.get().toRealPath().startsWith(root.toRealPath())) {
-                throw new IllegalArgumentException("project-root import escapes root through symlink: " + importPath);
+            if (source.isPresent()) {
+                try {
+                    if (!source.get().toRealPath().startsWith(root.toRealPath())) {
+                        throw new IllegalArgumentException(
+                                "project-root import escapes root through symlink: " + importPath);
+                    }
+                } catch (IOException error) {
+                    throw new IllegalArgumentException(
+                            "cannot verify project-root import: " + importPath, error);
+                }
             }
             return source;
         }
