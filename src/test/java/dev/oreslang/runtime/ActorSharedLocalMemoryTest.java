@@ -53,11 +53,17 @@ final class ActorSharedLocalMemoryTest {
                     "actor-local arena bytes must not be classified as explicit shared memory");
             assertThrows(IllegalStateException.class, () -> block.get().readLong(0),
                     "off-carrier host access must not gain private arena authority");
+            assertThrows(IllegalStateException.class, localSlice.get()::close,
+                    "an off-carrier slice reference must not grant retirement authority");
+            assertFalse(localSlice.get().closed());
 
             CountDownLatch rejected = new CountDownLatch(1);
             var foreign = runtime.<String>spawnShared(() -> (message, turn) -> {
                 assertThrows(IllegalStateException.class, () -> block.get().readLong(0),
                         "a second SHARED actor must not access a sibling's local memory");
+                assertThrows(IllegalStateException.class, localSlice.get()::close,
+                        "a sibling actor must not revoke another actor's local heap");
+                assertFalse(localSlice.get().closed());
                 rejected.countDown();
                 turn.self().stop();
             });
