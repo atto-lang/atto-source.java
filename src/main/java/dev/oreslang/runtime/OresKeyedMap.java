@@ -54,6 +54,32 @@ public final class OresKeyedMap<K, V> {
         ANY, INT, STRING, SYMBOL, BOOL
     }
 
+    /**
+     * Atomic presence result for non-throwing guest lookup/take lowering.
+     *
+     * <p>The outer presence bit belongs to the Map operation.  The value is
+     * deliberately opaque here, so a stored guest Option/Result remains a
+     * distinct inner value rather than being collapsed into map absence.
+     */
+    public record Lookup<V>(boolean present, V value) {
+        public Lookup {
+            if (present && value == null) {
+                throw new IllegalArgumentException("present Map lookup requires a non-null value");
+            }
+            if (!present && value != null) {
+                throw new IllegalArgumentException("missing Map lookup cannot carry a value");
+            }
+        }
+
+        public static <V> Lookup<V> missing() {
+            return new Lookup<>(false, null);
+        }
+
+        public static <V> Lookup<V> present(V value) {
+            return new Lookup<>(true, Objects.requireNonNull(value, "map lookup value"));
+        }
+    }
+
     private final ValueDomain valueDomain;
     private final KeyDomain domain;
     private final LinkedHashMap<K, V> entries = new LinkedHashMap<>();
@@ -146,6 +172,18 @@ public final class OresKeyedMap<K, V> {
     public synchronized V get(Object key) {
         checkKey(key);
         return entries.get(key);
+    }
+
+    /**
+     * Resolve absence and value under one monitor without sentinel/null
+     * ambiguity.  This is the lowering target for APIs that return
+     * Option<V>; if V itself is Option<T>, the result remains
+     * Option<Option<T>> rather than flattening the inner value.
+     */
+    public synchronized Lookup<V> lookup(Object key) {
+        checkKey(key);
+        V value = entries.get(key);
+        return value == null ? Lookup.missing() : Lookup.present(value);
     }
 
     /**
@@ -259,11 +297,21 @@ public final class OresKeyedMap<K, V> {
         storedKeyWireBytes += additionalKeyWireBytes;
     }
 
-    public synchronized V remove(Object key) {
+    /**
+     * Atomically remove and transfer a value while preserving key absence as
+     * an explicit outer state.  No public has/get/remove sequence is needed.
+     */
+    public synchronized Lookup<V> take(Object key) {
         checkKey(key);
         V removed = entries.remove(key);
-        if (removed != null) storedKeyWireBytes -= wireKeyBytes(key);
-        return removed;
+        if (removed == null) return Lookup.missing();
+        storedKeyWireBytes -= wireKeyBytes(key);
+        return Lookup.present(removed);
+    }
+
+    /** Host compatibility API; guest consuming lowering should prefer take(). */
+    public synchronized V remove(Object key) {
+        return take(key).value();
     }
 
     public synchronized void clear() {
