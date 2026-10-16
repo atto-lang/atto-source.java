@@ -172,3 +172,28 @@ source's protected-main policy remains empty.
 Added adversarial source-main authorization tests to the publisher suite;
 the checked-in Python suite now declares **62** tests. The trusted
 source-local validation workflow in PR #1014 requires at least 62.
+
+## Destination root and commit read-back before branch publication
+
+After creating the isolated source subtree, the private CI publisher now
+independently reads the **destination root Git tree** and rejects malformed,
+truncated or substituted responses. It requires exactly one
+`private-oreslang-source` entry of type tree, mode `040000`, with the exact
+reviewed source subtree SHA. This happens before creating a destination commit.
+
+After GitHub creates that commit, the publisher independently reads the commit
+object back. Its commit SHA, root tree SHA, and **single expected parent SHA**
+must match the submitted values or no branch is created. The final isolated
+branch name, commit ID and ref read-back remain separate required proofs.
+
+This creates a layered fail-closed publication contract: blob SHA, source
+subtree SHA, root tree read-back, commit/tree/parent read-back, and isolated
+branch ref read-back. The publisher test module now declares **66 Python
+regression methods**, and the source-local workflow in PR #1014 requires
+at least 66 per round. Local extracted-function regressions and synthetic
+GitHub objects are not the same as completing full source CI.
+
+The original source export policy is unchanged: independently protected
+source `main`, security-reviewed destination allowlist, numeric identity
+pins, and private visibility are mandatory. An empty allowlist authorizes
+no cross-organization private-source transfer.
