@@ -73,6 +73,37 @@ final class PersistentActorMapTest {
     }
 
     @Test
+    void signedHashBranchesAndCollisionSubtreesRemainPersistentAfterRemovals() {
+        assertTrue("zzzzzz".hashCode() < 0, "exercise negative signed hash");
+        assertEquals("Aa".hashCode(), "BB".hashCode());
+
+        var oracle = new HashMap<String, Object>();
+        var keys = List.of("zzzzzz", "Aa", "BB", "111111111",
+                "AAAAAAAA", "2147483648", "branch", "root");
+        PersistentActorMap map = PersistentActorMap.empty();
+        for (int i = 0; i < keys.size(); i++) {
+            var prior = map;
+            var priorSnapshot = new HashMap<>(oracle);
+            map = map.with(keys.get(i), i);
+            oracle.put(keys.get(i), i);
+            assertEquals(priorSnapshot, prior,
+                    "inserting across signed hash bits cannot change old roots");
+            assertEquals(oracle, map);
+            assertEquals(oracle.hashCode(), map.hashCode());
+        }
+
+        var completeRoot = map;
+        for (String key : keys) {
+            map = map.without(key);
+            oracle.remove(key);
+            assertEquals(oracle, map);
+            assertEquals(keys.size(), completeRoot.size(),
+                    "removing colliding descendants must preserve prior root");
+        }
+        assertSame(PersistentActorMap.empty(), map);
+    }
+
+    @Test
     void hashFloodFailsClosedWhileOldRootRemainsUsable() {
         // Every fixed-length combination of Aa/BB has the same String hash.
         PersistentActorMap map = PersistentActorMap.empty();
