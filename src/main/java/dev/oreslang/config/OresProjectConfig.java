@@ -238,7 +238,11 @@ public final class OresProjectConfig {
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
-        if (unix.startsWith(".")) {
+        // Only explicit ./ and ../ (or the degenerate . / .. forms)
+        // are importer-relative. Dot-prefixed bare names such as
+        // .hidden/helper and ..backup/helper use ordinary source roots.
+        if (unix.equals(".") || unix.equals("..") ||
+                unix.startsWith("./") || unix.startsWith("../")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
             return existingSource(parent.resolve(raw).normalize());
