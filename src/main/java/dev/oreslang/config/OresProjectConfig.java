@@ -294,7 +294,7 @@ public final class OresProjectConfig {
         if (importedSource == null) {
             throw new IllegalArgumentException("imported source path cannot be null");
         }
-        String normalizedImport = importPath == null ? null : importPath.replace('\\\\', '/');
+        String normalizedImport = importPath == null ? null : importPath.replace('\\', '/');
         if (normalizedImport == null || !normalizedImport.startsWith("pkg:")) {
             throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
         }
