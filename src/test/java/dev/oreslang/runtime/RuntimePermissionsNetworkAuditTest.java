@@ -193,6 +193,31 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void longNumericPortsCannotWrapIntoAnAuthorizedNetworkPort() {
+        RuntimePermissions specific = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443")
+                .withAllowed(RuntimePermissions.Permission.NET, "[::1]:443");
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*");
+        assertTrue(specific.allows(RuntimePermissions.Permission.NET, "api.example.com:0443"));
+        assertTrue(specific.allows(RuntimePermissions.Permission.NET, "[::1]:0443"));
+        for (String port : new String[] {
+                "4294967739", "4294967297", "000443", "9999999999"
+        }) {
+            for (String host : new String[] {"api.example.com", "[::1]"}) {
+                String endpoint = host + ":" + port;
+                assertFalse(specific.allows(RuntimePermissions.Permission.NET, endpoint),
+                        "oversized port must not match a permitted port: " + endpoint);
+                assertFalse(broad.allows(RuntimePermissions.Permission.NET, endpoint),
+                        "invalid numeric port must fail even under wildcard grant");
+                assertThrows(IllegalArgumentException.class,
+                        () -> broad.withAllowed(RuntimePermissions.Permission.NET, endpoint),
+                        "oversized port cannot be installed as a permission scope");
+            }
+        }
+    }
+
+    @Test
     void bracketedIpv6CanBeScopedByPort() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "[::1]")
