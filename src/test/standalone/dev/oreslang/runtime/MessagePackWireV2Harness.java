@@ -58,6 +58,14 @@ public final class MessagePackWireV2Harness {
     corrupted=b.clone();corrupted[3]^=1;byte[] final2=corrupted;reject(()->MessagePackWireV2.decode("demo.String.v1",Shape.string(),final2));
     corrupted=b.clone();corrupted[25]^=1;byte[] final3=corrupted;reject(()->MessagePackWireV2.decode("demo.String.v1",Shape.string(),final3));
     reject(()->MessagePackWireV2.encode("demo.X",Shape.string(),"\ud800"));
+    // Admission must reject oversized UTF-8 *before* allocating the
+    // temporary encoded byte array, including multibyte and surrogate input.
+    reject(()->MessagePackWireV2.encode("demo.X",Shape.string(),
+        "a".repeat(MessagePackWireV2.MAX_BYTES + 1)));
+    reject(()->MessagePackWireV2.encode("demo.X",Shape.string(),
+        "\u00e9".repeat(MessagePackWireV2.MAX_BYTES / 2 + 1)));
+    reject(()->MessagePackWireV2.encode("demo.X",Shape.string(),
+        "\ud83d\udc4b".repeat(MessagePackWireV2.MAX_BYTES / 4 + 1)));
     reject(()->MessagePackWireV2.encode("demo.X",Shape.f64(),Double.NaN));
     reject(()->MessagePackWireV2.encode("demo.X",Shape.i64(),"not a long"));
     reject(()->MessagePackWireV2.decode("demo.String.v1", Shape.string(),new byte[1048577]));
