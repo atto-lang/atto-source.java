@@ -456,6 +456,53 @@ final class ProjectManifestImportTest {
 
 
     @Test
+    void deepRestRouteImportsModulesThroughPackageRootAndExecutes() throws Exception {
+        Path project = temp.resolve("deep-rest-demo");
+        Path lib = project.resolve("src/lib");
+        Path route = project.resolve("src/routes/rest/foo/bar/baz");
+        Files.createDirectories(lib);
+        Files.createDirectories(route);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "deep-rest-demo"
+                [source]
+                roots = []
+                [entrypoints]
+                main = "src/routes/rest/foo/bar/baz/delete.ores"
+                """);
+        Files.writeString(lib.resolve("telemetry.ores"), """
+                define module telemetry as
+                  pub fnc label(): string { return "telemetry"; }
+                end
+                """);
+        Files.writeString(lib.resolve("store.ores"), """
+                define module store as
+                  pub fnc label(): string { return "store"; }
+                end
+                """);
+        Path main = route.resolve("delete.ores");
+        Files.writeString(main, """
+                import module telemetry from "+/src/lib/telemetry";
+                import module store from "+/src/lib/store";
+
+                pub routine main(): void {
+                  stdio.println(telemetry.label() + ":" + store.label());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        var linked = LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), output, new ByteArrayOutputStream());
+        assertEquals(3, linked.units().size());
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("telemetry:store"));
+    }
+
+    @Test
     void missingRootedImportMustNotFallThroughToLegacyPackageResolution() throws Exception {
         Path project = temp.resolve("missing-rooted");
         Path src = project.resolve("src");
