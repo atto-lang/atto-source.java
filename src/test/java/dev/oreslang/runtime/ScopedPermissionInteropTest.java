@@ -114,6 +114,39 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void hostAsyncUtilitiesCannotBypassSingleFlightActorExecution() {
+        // Even with explicit THREAD_CREATE, actor execution must remain on
+        // the runtime's serial admission lane. JDK utilities must not create
+        // cleaner threads or schedule guest callbacks in a common worker pool.
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.THREAD_CREATE);
+        for (String className : new String[]{
+                "java.lang.ref.Cleaner",
+                "java.lang.ref.Cleaner$Cleanable",
+                "java.util.Arrays",
+                "java.util.stream.Stream",
+                "java.util.stream.IntStream",
+                "java.util.stream.LongStream",
+                "java.util.stream.DoubleStream",
+                "java.util.stream.StreamSupport"
+        }) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(className)),
+                    "unmanaged host execution primitive admitted: " + className);
+            assertTrue(denied.getMessage().contains("direct Java host I/O"),
+                    "class must fail before Graal HostAccess construction: " + className);
+        }
+
+        // Existing data-only Java interop must remain available. Blocking
+        // the whole java.util package would regress this intended contract.
+        assertDoesNotThrow(() -> policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(),
+                Set.of("java.util.ArrayList", "java.util.Map$Entry")));
+    }
+
+    @Test
     void keystoresAndGlobalSecurityConfigurationCannotBypassScopedAuthority() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP,
