@@ -1338,7 +1338,7 @@ public final class OresEvalRootNode extends RootNode {
                             return OresScheduler.done(value);
                         }
 
-                        if (!flatten) {
+                        if (!flatten && !(mapped instanceof OresFuture<?>)) {
                             pc = 3;
                             return OresScheduler.done(mapped);
                         }
@@ -1348,9 +1348,8 @@ public final class OresEvalRootNode extends RootNode {
                                     "Future.compose/flatMap callback must return Future<T>");
                         }
                         pc = 2;
-                        // flatMap/compose adopts the full nested completion
-                        // chain. Runtime callbacks only settle futures; the
-                        // guest continuation still resumes via its scheduler.
+                        // Even map() adopts Future-valued results: by contract
+                        // Future<Future<T>> is not a guest-visible type.
                         return OresScheduler.await(OresFutures.flatten(nested));
                     }
 
@@ -8798,6 +8797,14 @@ public final class OresEvalRootNode extends RootNode {
             if (declared.name().equals("void")) {
                 if (value != null) throw returnTypeMismatch(callable, declared, value);
                 return null;
+            }
+            if (declared.name().equals("Future") && declared.arguments().size() == 1) {
+                if (!(value instanceof OresFuture<?> future)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                // Includes synchronous functions that explicitly declare a
+                // Future return: the boundary adopts all nested completions.
+                return OresFutures.flatten(future);
             }
 
             return value;
