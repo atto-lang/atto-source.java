@@ -346,16 +346,41 @@ public final class NativeHttp implements AutoCloseable {
             try {
                 validateRequest(raw);
                 state = new State(this, raw);
+                OresFuture<Object> acceptWaiter = null;
+                Exchange acceptedExchange = null;
+                boolean refused;
                 synchronized (this) {
-                    if (stopped) { admission.release(); reject(raw, 503); return; }
-                    active.add(state); accepted.incrementAndGet();
-                    State timed = state;
-                    long schedulePerf = CorePerf.start();
-                    state.deadline = timers.schedule(() -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
-                    CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
-                    Exchange exchange = new Exchange(state, context, 0);
-                    if (waiter == null) pending.add(exchange);
-                    else { OresFuture<Object> next = waiter; waiter = null; next.completeFromRuntime(exchange); }
+                    refused = stopped;
+                    if (!refused) {
+                        active.add(state); accepted.incrementAndGet();
+                        State timed = state;
+                        long schedulePerf = CorePerf.start();
+                        try {
+                            state.deadline = timers.schedule(
+                                    () -> timed.abort(504), deadlineMillis, TimeUnit.MILLISECONDS);
+                        } finally {
+                            CorePerf.end(CorePerf.HTTP_TIMER_SCHEDULE, schedulePerf);
+                        }
+                        Exchange exchange = new Exchange(state, context, 0);
+                        if (waiter == null) pending.add(exchange);
+                        else {
+                            acceptWaiter = waiter;
+                            waiter = null;
+                            acceptedExchange = exchange;
+                        }
+                    }
+                }
+                if (refused) {
+                    admission.release();
+                    reject(raw, 503);
+                    return;
+                }
+                // Future runtime subscribers execute synchronously. Publish
+                // after the listener monitor has been released: otherwise a
+                // continuation that requires another listener operation can
+                // deadlock an HTTP receive carrier.
+                if (acceptWaiter != null) {
+                    publishOutsideMonitor(this, acceptWaiter, acceptedExchange);
                 }
             } catch (IllegalArgumentException invalid) {
                 admission.release(); reject(raw, invalid.getMessage().equals("body too large") ? 413 : 400);
@@ -969,6 +994,18 @@ public final class NativeHttp implements AutoCloseable {
             }
         }
         return first;
+    }
+
+    /** Guard the producer side of HTTP accept notifications against lock re-entry. */
+    static <T> void publishOutsideMonitor(
+            Object monitor, OresFuture<T> observer, T value) {
+        Objects.requireNonNull(monitor, "monitor");
+        Objects.requireNonNull(observer, "observer");
+        if (Thread.holdsLock(monitor)) {
+            throw new IllegalStateException(
+                    "HTTP accept Future cannot settle while listener monitor is held");
+        }
+        observer.completeFromRuntime(value);
     }
 
     private static byte[] byteBuffer(List<?> values, int maximum) {
