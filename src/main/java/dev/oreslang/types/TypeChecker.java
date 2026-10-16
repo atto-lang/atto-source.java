@@ -1244,6 +1244,10 @@ public final class TypeChecker {
             currentActorKind = klass.actorKind();
             try {
                 Type fieldType = classFieldType(klass, field);
+                if (containsTypedMapType(fieldType)) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot be stored in ordinary class/actor fields until container move tracking is implemented");
+                }
                 if (field.initializer() != null && field.type() != null) {
                     Ast.ClassDecl previousClassOwner = currentClassOwner;
                     Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
@@ -1647,6 +1651,10 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (containsTypedMapType(actual)) {
+            throw new IllegalArgumentException(
+                    "typed Map cannot be stored in module/global state until ownership domains are explicit");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
@@ -1798,7 +1806,7 @@ public final class TypeChecker {
             // Mutable maps are affine until borrow tracking can prove there are
             // no competing live writable aliases. Read-only aliases cannot
             // be promoted into writable references.
-            if (isTypedMapType(actual)
+            if (containsTypedMapType(actual)
                     && !isFreshTypedMapConstruction(binding.initializer())) {
                 // Even a readonly alias of a mutable map would need an active
                 // lifetime loan so owners cannot write while it exists.
@@ -1867,9 +1875,9 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
-            if (isTypedMapType(actual)) {
+            if (containsTypedMapType(actual)) {
                 throw new IllegalArgumentException(
-                        "typed Map return requires an exclusive move/borrow lifetime; not implemented");
+                        "typed Map or aggregate containing one cannot be returned until exclusive move/borrow lifetimes are implemented");
             }
             requireReadonlyCapabilityPreserved(actual, expectedReturn, "return value");
             requireAssignable(actual, expectedReturn, "return value");
@@ -2499,9 +2507,9 @@ public final class TypeChecker {
             for (Ast.Expr argument : call.arguments()) {
                 Ast.Expr value = argument instanceof Ast.SpreadExpr spread
                         ? spread.expression() : argument;
-                if (isTypedMapType(typeOf(value, env, generics, self))) {
+                if (containsTypedMapType(typeOf(value, env, generics, self))) {
                     throw new IllegalArgumentException(
-                            "typed Map cannot escape through a call argument without move/borrow semantics");
+                            "typed Map or aggregate containing one cannot escape through a call argument without move/borrow semantics");
                 }
             }
             if (isBuiltinStdoutCall(call, "log", env)) {
@@ -3759,6 +3767,10 @@ public final class TypeChecker {
                     Type expected = substituteGenerics(expectedPattern, classBindings);
                     Type actualArgument =
                             typeOf(created.arguments().get(i), env, generics, self);
+                    if (containsTypedMapType(actualArgument)) {
+                        throw new IllegalArgumentException(
+                                "typed Map cannot escape into object constructor storage until container move tracking is implemented");
+                    }
                     requireReadonlyCapabilityPreserved(
                             actualArgument,
                             expected,
@@ -3790,6 +3802,10 @@ public final class TypeChecker {
                             classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
                     Type actualArgument =
                             typeOf(created.arguments().get(i), env, generics, self);
+                    if (containsTypedMapType(actualArgument)) {
+                        throw new IllegalArgumentException(
+                                "typed Map cannot escape into synthesized object storage until container move tracking is implemented");
+                    }
                     requireReadonlyCapabilityPreserved(
                             actualArgument,
                             expected,
@@ -3941,20 +3957,43 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            Type first = typeOf(list.elements().getFirst(), env, generics, self);
+            if (containsTypedMapType(first)) {
+                throw new IllegalArgumentException(
+                        "typed Map cannot be stored in an array/list until element-level move tracking is implemented");
+            }
+            Type element = widenCollectionElement(first);
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                Type item = typeOf(list.elements().get(i), env, generics, self);
+                if (containsTypedMapType(item)) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot be stored in an array/list until element-level move tracking is implemented");
+                }
+                element = collectionElementJoin(element, widenCollectionElement(item));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            List<Type> elements = new ArrayList<>(tuple.elements().size());
+            for (Ast.Expr item : tuple.elements()) {
+                Type itemType = typeOf(item, env, generics, self);
+                if (containsTypedMapType(itemType)) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot be stored in a tuple until element-level move tracking is implemented");
+                }
+                elements.add(itemType);
+            }
+            return new Tuple(elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             if (object.explicitStruct()) {
                 Map<String, Type> members = new LinkedHashMap<>();
                 for (Ast.StructFieldSpec field : object.declaredFields()) {
                     Type declared = resolve(field.type(), generics, self);
+                    if (containsTypedMapType(declared)) {
+                        throw new IllegalArgumentException(
+                                "typed Map cannot be stored in an explicit struct until field-level move tracking is implemented");
+                    }
                     if (declared == Primitive.VOID) {
                         throw new IllegalArgumentException(
                                 "explicit struct field '" + field.name() + "' cannot have type void");
@@ -3978,6 +4017,10 @@ public final class TypeChecker {
                     }
                     Type actualField =
                             typeOf(field.value(), env, generics, self);
+                    if (containsTypedMapType(actualField)) {
+                        throw new IllegalArgumentException(
+                                "typed Map cannot be stored in an explicit struct until field-level move tracking is implemented");
+                    }
                     requireReadonlyCapabilityPreserved(
                             actualField,
                             expected,
@@ -4002,6 +4045,10 @@ public final class TypeChecker {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Ast.ObjectField field : object.fields()) {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
+                if (containsTypedMapType(exactValueType)) {
+                    throw new IllegalArgumentException(
+                            "typed Map cannot be stored in a struct until field-level move tracking is implemented");
+                }
                 if (members.putIfAbsent(
                         field.name(),
                         object.inferredStruct()
@@ -4070,6 +4117,10 @@ public final class TypeChecker {
         if (element == Primitive.VOID) {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
+        }
+        if (containsTypedMapType(element)) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport typed Map values until channel ownership transfer is implemented");
         }
         // Ordinary Channel<T> is an execution-domain-local capability, not a
         // mailbox. Owned function values and objects containing callables may
@@ -8585,6 +8636,31 @@ public final class TypeChecker {
         return type instanceof Named named
                 && (named.name().equals("$builtin$Map")
                         || named.name().startsWith(TYPED_OPEN_MAP_PREFIX));
+    }
+
+    private boolean containsTypedMapType(Type type) {
+        if (type == null) return false;
+        if (isTypedMapType(type)) return true;
+        if (type instanceof SelfType selfType) return containsTypedMapType(selfType.bound());
+        if (type instanceof Borrow borrow) return containsTypedMapType(borrow.target());
+        if (type instanceof ListType list) return containsTypedMapType(list.element());
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Named named) {
+            return named.arguments().stream().anyMatch(this::containsTypedMapType);
+        }
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(this::containsTypedMapType)
+                    || containsTypedMapType(fn.result());
+        }
+        return false;
     }
 
     private boolean isFreshTypedMapConstruction(Ast.Expr expression) {
