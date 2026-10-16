@@ -17,8 +17,8 @@ public final class DopRegionSchedule {
     public static final class Root {
         private final long rows;
         private final int fields;
-        private final Object backing;
-        private Root(long rows, int fields, Object backing) {
+        private final DopKernelIR.HostBuffer.RegionToken backing;
+        private Root(long rows, int fields, DopKernelIR.HostBuffer.RegionToken backing) {
             if (rows < 0 || fields <= 0) throw new IllegalArgumentException("invalid region shape");
             this.rows = rows;
             this.fields = fields;
