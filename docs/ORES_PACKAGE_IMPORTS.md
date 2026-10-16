@@ -71,6 +71,30 @@ package manifest exists, the nearest legacy compiler manifest is used.
 Manifest-less and legacy projects retain their original transitive bare-import
 search context, for backwards compatibility.
 
+## Explicit entry-package overrides
+
+By default the resolver walks upward from the **entry source**, choosing the
+nearest `.ores.pkg.toml`. Compilation may select a different entry package
+through the flags-2-env schema in `.cli-flags.toml`:
+
+```sh
+oreslang --manifest-path /work/app/.ores.pkg.toml src/main.ores
+# equivalent manifest-directory selection
+oreslang --project-root /work/app src/main.ores
+```
+
+The corresponding parser variables are `ORES_MANIFEST_PATH` and
+`ORES_PROJECT_ROOT`. If both are set they must name the same package root.
+The entry source must be lexically inside the selected package directory.
+Overrides only select the entry package; nested/imported package sources
+discover their own nearest manifest, including across symlinks. A missing
+or invalid manifest fails closed; overrides never create an implicit package.
+CLI entrypoints that use `flags-2-env` must forward these parsed environment
+variables to the compiler.
+
+`+/src/lib/foo` always means the package manifest directory plus
+`src/lib/foo`, **not** the configured `[source].roots` value.
+
 ## zed-pkg integration
 
 zed-pkg maintains `.zpkg.toml` and `.zpkg.lock` and materializes packages
