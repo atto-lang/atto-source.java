@@ -31,6 +31,69 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void filesystemResourceAndScopeSpacesRemainDistinct() throws Exception {
+        Path directory = Files.createTempDirectory("ores-perm-space-");
+        Path plain = Files.writeString(directory.resolve("private.txt"), "plain");
+        Path spaced = Files.writeString(directory.resolve("private.txt "), "spaced");
+
+        for (RuntimePermissions.Permission permission : new RuntimePermissions.Permission[] {
+                RuntimePermissions.Permission.READ,
+                RuntimePermissions.Permission.WRITE,
+                RuntimePermissions.Permission.FFI,
+                RuntimePermissions.Permission.IMPORT
+        }) {
+            RuntimePermissions plainOnly = RuntimePermissions.denyAll()
+                    .withAllowed(permission, plain.toString());
+            assertTrue(plainOnly.allows(permission, plain.toString()), permission.name());
+            assertFalse(plainOnly.allows(permission, spaced.toString()),
+                    "trailing filename space cannot collapse into an allowed file: " + permission);
+            assertThrows(SecurityException.class,
+                    () -> plainOnly.require(permission, spaced.toString(), "test.file"),
+                    "native resource with trailing space must be denied: " + permission);
+
+            RuntimePermissions spacedOnly = RuntimePermissions.denyAll()
+                    .withAllowed(permission, spaced.toString());
+            assertTrue(spacedOnly.allows(permission, spaced.toString()),
+                    "literal trailing-space file scope must be usable: " + permission);
+            assertFalse(spacedOnly.allows(permission, plain.toString()),
+                    "space-padded grant cannot authorize unpadded file: " + permission);
+
+            RuntimePermissions denySpaced = RuntimePermissions.denyAll()
+                    .allowAll(permission).withDenied(permission, spaced.toString());
+            assertFalse(denySpaced.allows(permission, spaced.toString()),
+                    "space-padded denial must actually block its file: " + permission);
+            assertTrue(denySpaced.allows(permission, plain.toString()),
+                    "space-padded denial must not accidentally block other files: " + permission);
+        }
+    }
+
+    @Test
+    void environmentAndExecutionResourcesAreNotTrimmedIntoOtherKeys() {
+        for (RuntimePermissions.Permission permission : new RuntimePermissions.Permission[] {
+                RuntimePermissions.Permission.ENV,
+                RuntimePermissions.Permission.RUN,
+                RuntimePermissions.Permission.SYS
+        }) {
+            RuntimePermissions exact = RuntimePermissions.denyAll()
+                    .withAllowed(permission, "PUBLIC_NAME");
+            assertTrue(exact.allows(permission, "PUBLIC_NAME"));
+            assertFalse(exact.allows(permission, "PUBLIC_NAME "));
+            assertFalse(exact.allows(permission, " PUBLIC_NAME"));
+            assertThrows(SecurityException.class,
+                    () -> exact.require(permission, "PUBLIC_NAME ", "test.token"));
+        }
+    }
+
+    @Test
+    void networkEndpointsWithSurroundingSpacesAreNotAuthorized() {
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+        assertTrue(broad.allows(RuntimePermissions.Permission.NET, "api.example.com:443"));
+        assertFalse(broad.allows(RuntimePermissions.Permission.NET, "api.example.com:443 "));
+        assertFalse(broad.allows(RuntimePermissions.Permission.NET, " api.example.com:443"));
+    }
+
+    @Test
     void networkHostGrantCanBeNarrowedByPortDeny() {
         RuntimePermissions permissions = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "example.com")
