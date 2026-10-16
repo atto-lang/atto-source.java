@@ -133,6 +133,16 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         sendChild(session.forwardByKey(frame, key), value);
     }
 
+    /** A typed host reply travels exactly ONE edge upstream along the
+     * immutable original route. At fan-in, distinct branches retain their
+     * different paths and cannot accidentally reply through the other worker.
+     * A full origin reply is composed of these hops; source self.reply is
+     * not enabled until compiler-owned backward message handlers exist. */
+    void backward(M value) {
+        var frame = current();
+        sendChild(session.returnOneHop(frame), value);
+    }
+
     /** Every recipient gets an independent admission result; earlier
      * successes are not rolled back when a later mailbox is full or stopped. */
     List<Admission> forwardAll(M value) {
