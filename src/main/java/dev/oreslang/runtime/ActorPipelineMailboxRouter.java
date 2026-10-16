@@ -89,6 +89,9 @@ public final class ActorPipelineMailboxRouter<M> {
 
     /** The caller is the actual executing actor, never a guessed name. */
     private String currentSource() {
+        // Actor identity alone also exists during startup/lifecycle callbacks.
+        // Admit a route only under an actual scheduler-owned DATA receive.
+        owner.requireCurrentPipelineReceiveTurn();
         if (ActorRuntime.currentActorRuntime() != owner
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new SecurityException(
