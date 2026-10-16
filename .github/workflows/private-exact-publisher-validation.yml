@@ -100,8 +100,10 @@ jobs:
           if count < 57:
               raise SystemExit(f"Publisher suite unexpectedly shrank to {count} tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
-          if result.testsRun != count or not result.wasSuccessful():
-              raise SystemExit("Publisher regression suite failed or did not execute completely")
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Publisher tests failed, skipped, or did not fully execute")
           print(f"VERIFIED_PUBLISHER_TESTS={result.testsRun}")
           PY
           done
