@@ -5998,6 +5998,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        // This concrete HAMT accepts only runtime-verified immutable values.
+        // Shared transport may retain its root; PRIVATE/UNTRUSTED still
+        // descend through Map in isolateCopy and obtain fresh containers.
+        if (value instanceof PersistentActorMap) return value;
         if (value instanceof Shared<?> shared) {
             shared.value();
             return shared;
