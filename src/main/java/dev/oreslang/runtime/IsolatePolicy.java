@@ -290,6 +290,15 @@ public record IsolatePolicy(
                 || className.startsWith("java.util.zip.")
                 || className.startsWith("java.util.jar.")
                 || className.startsWith("javax.imageio.")
+                // A keystore can directly open host files, while Security
+                // mutates JVM-wide provider/properties configuration. JAAS
+                // login configuration can also read host resources or change
+                // process-wide authentication state. None is scoped by the
+                // Ores READ/WRITE/NET/SYS permission rules.
+                || className.equals("java.security.KeyStore")
+                || className.startsWith("java.security.KeyStore$")
+                || className.equals("java.security.Security")
+                || className.startsWith("javax.security.auth.login.")
                 || className.startsWith("javax.naming.")
                 || className.startsWith("javax.net.")
                 || className.startsWith("java.sql.")
