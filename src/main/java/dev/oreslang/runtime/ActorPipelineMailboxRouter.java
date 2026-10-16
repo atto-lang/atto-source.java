@@ -94,10 +94,14 @@ public final class ActorPipelineMailboxRouter<M> {
             throw new SecurityException(
                     "pipeline routing requires an actor turn in its owning runtime");
         }
-        if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
-            // Deny before touching the RR cursor or constructing a fan-out
-            // batch, not only later when ActorRuntime.send rejects delivery.
-            throw new SecurityException("untrusted actor pipeline routing is not enabled");
+        if (ActorRuntime.currentActorKind() != ActorRuntime.ActorKind.SHARED) {
+            // A PRIVATE actor owns an isolated heap: passing it this mutable
+            // host selector would leak a cross-isolate object capability.
+            // UNTRUSTED routing is equally unsupported. Both need sealed,
+            // scheduler-owned route handles, not this trusted-host adapter.
+            // Reject before changing the RR cursor or admitting any edge.
+            throw new SecurityException(
+                    "host pipeline mailbox routing requires a trusted SHARED actor turn");
         }
         ActorRuntime.ActorId actorId = ActorRuntime.currentActorId()
                 .orElseThrow(() -> new SecurityException(
