@@ -534,7 +534,11 @@ public final class RuntimePermissions {
             // allow/deny scope must never silently target a different file.
             case READ, WRITE, FFI, IMPORT -> normalizePath(value);
             case NET -> {
-                NetworkScope scope = parseNetworkScope(trimmed, true);
+                // Direct grants/denials are literal endpoints, not CSV entries.
+                // Do not silently turn padded invalid syntax into authority.
+                if (!value.equals(trimmed))
+                    throw new IllegalArgumentException("network scope contains surrounding whitespace");
+                NetworkScope scope = parseNetworkScope(value, true);
                 if (scope == null) {
                     throw new IllegalArgumentException("invalid network permission scope '" + trimmed + "'");
                 }
