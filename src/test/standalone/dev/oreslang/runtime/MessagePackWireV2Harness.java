@@ -123,6 +123,25 @@ public final class MessagePackWireV2Harness {
     if (!MessagePackWireV2.decode("demo.Snapshot.v1", snapshot, encoded).equals(List.of("ok")))
       throw new AssertionError("descriptor snapshot wire round-trip");
     cases++;
+    // A malformed descriptor may shrink during indexed copying, return null,
+    // or violate List.size()'s nonnegative contract. All must fail closed.
+    List<Shape> shrinkingDescriptor = new AbstractList<>() {
+      @Override public int size() { return 2; }
+      @Override public Shape get(int i) {
+        if (i == 0) return Shape.string();
+        throw new IndexOutOfBoundsException("member removed");
+      }
+    };
+    reject(() -> new Shape(MessagePackWireV2.Kind.TUPLE, shrinkingDescriptor));
+    reject(() -> new Shape(MessagePackWireV2.Kind.LIST,
+        java.util.Arrays.asList((Shape)null)));
+    List<Shape> negativeDescriptor = new AbstractList<>() {
+      @Override public int size() { return -1; }
+      @Override public Shape get(int i) {
+        throw new AssertionError("invalid length traversed");
+      }
+    };
+    reject(() -> new Shape(MessagePackWireV2.Kind.LIST, negativeDescriptor));
     System.out.println("PASS MessagePack v2 Java portable golden/negative assertions="+cases);
   }
 }
