@@ -323,6 +323,15 @@ public record IsolatePolicy(
                 // going through the actor scheduler or THREAD_CREATE checks.
                 || authorizationRoot.equals("java.util.Timer")
                 || authorizationRoot.equals("java.util.TimerTask")
+                // Cleaner.create() starts its own daemon thread outside actor
+                // admission and THREAD_CREATE checks. Likewise, Arrays
+                // parallelSort and java.util.stream parallel pipelines can
+                // execute guest-directed callbacks on unmanaged pool workers.
+                // Reject them even when THREAD_CREATE is granted: actor code
+                // must use the Oreslang scheduler, never a raw host worker.
+                || authorizationRoot.equals("java.lang.ref.Cleaner")
+                || authorizationRoot.equals("java.util.Arrays")
+                || className.startsWith("java.util.stream.")
                 || authorizationRoot.equals("java.util.ResourceBundle")) {
             throw new SecurityException(
                     "direct Java host I/O is blocked from class-level interop; "
