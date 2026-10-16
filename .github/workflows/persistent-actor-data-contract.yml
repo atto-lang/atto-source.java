@@ -27,3 +27,19 @@ jobs:
         run: python3 scripts/verify_persistent_actor_data_contract.py
       - name: Execute negative policy mutation suite
         run: python3 scripts/test_persistent_actor_data_contract.py -v
+  java-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          java-version: '25'
+          distribution: graalvm
+          cache: maven
+      - name: HAMT and pure-actor runtime regression
+        run: mvn -B -ntp -Dtest=PersistentActorMapTest,ActorStateModeContractsTest test
+      - name: Full Java/GraalVM verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
