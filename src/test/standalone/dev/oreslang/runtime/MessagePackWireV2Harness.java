@@ -19,6 +19,32 @@ public final class MessagePackWireV2Harness {
     cases++;
   }
   static void reject(Runnable r) {try{r.run();throw new AssertionError("invalid input accepted");}catch(IllegalArgumentException expected){cases++;}}
+  static void mutationAudit() {
+    String id="demo.MutationAudit.v1";
+    Shape shape=Shape.list(Shape.string());
+    byte[] original=MessagePackWireV2.encode(id,shape,List.of("alpha","beta"));
+    for(int i=0;i<original.length;i++) for(int bit=0;bit<8;bit++) {
+      byte[] altered=original.clone(); altered[i]^=(byte)(1<<bit);
+      try {
+        Object decoded=MessagePackWireV2.decode(id,shape,altered);
+        if(!Arrays.equals(MessagePackWireV2.encode(id,shape,decoded),altered))
+          throw new AssertionError("noncanonical mutated envelope accepted");
+      } catch(IllegalArgumentException rejected) { }
+      cases++;
+    }
+    int seed=0x4d534732;
+    for(int sample=0;sample<4096;sample++) {
+      seed=seed*1664525+1013904223;
+      byte[] bytes=new byte[Integer.remainderUnsigned(seed,257)];
+      for(int i=0;i<bytes.length;i++){seed=seed*1664525+1013904223; bytes[i]=(byte)(seed>>>24);}
+      try {
+        Object decoded=MessagePackWireV2.decode(id,shape,bytes);
+        if(!Arrays.equals(MessagePackWireV2.encode(id,shape,decoded),bytes))
+          throw new AssertionError("noncanonical random envelope accepted");
+      } catch(IllegalArgumentException rejected) { }
+      cases++;
+    }
+  }
   public static void main(String[] a) {
     eq("demo.TupleBoolString.v1",Shape.tuple(Shape.bool(),Shape.string()),List.of(true,"foo"),"9402b764656d6f2e5475706c65426f6f6c537472696e672e7631c420d254b4ecd3d7964454dcdf86fd10ede585a17b3af27982a289819afdc2379ab292c3a3666f6f");
     eq("demo.FixedArrayInts.v1",Shape.fixedArray(Shape.i64(),Shape.i64(),Shape.i64()),List.of(1L,2L,3L),"9402b664656d6f2e46697865644172726179496e74732e7631c4206a46f6c65c619cc1c5354f7bd3b35ec0fcfbc9866c0760a15b860cfef79773b993010203");
@@ -40,6 +66,7 @@ public final class MessagePackWireV2Harness {
     @SuppressWarnings("unchecked") List<Object> receiver=(List<Object>)MessagePackWireV2.decode("demo.Mutation.v1",Shape.list(Shape.string()),owned);
     Arrays.fill(owned,(byte)0);receiver.set(1,"receiver");
     if(!receiver.equals(List.of("before","receiver"))||!sender.equals(List.of("after","stable")))throw new AssertionError("ownership isolation broken");
+    mutationAudit();
     System.out.println("PASS MessagePack v2 Java portable golden/negative assertions="+cases);
   }
 }
