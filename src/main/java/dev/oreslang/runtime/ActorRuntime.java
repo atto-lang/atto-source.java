@@ -5958,7 +5958,7 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        Object frozen = freeze(value, new IdentityHashMap<>(), 0);
+        Object frozen = freeze(value, new IdentityHashMap<>(), 0, new long[]{0L});
         // The input may change during the multiple traversals above. Verify
         // the returned immutable graph rather than trusting a previous read.
         rejectDataFreezeCapabilities(frozen, new IdentityHashMap<>(), 0);
@@ -5967,7 +5967,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static Object freezeForTransport(Object value) {
         validateMessageGraph(value);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        return freeze(value, new IdentityHashMap<>(), 0, new long[]{0L});
     }
 
     private static void rejectDataFreezeCapabilities(
@@ -6012,8 +6012,11 @@ public final class ActorRuntime implements AutoCloseable {
     private static Object freeze(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
-            int depth) {
+            int depth,
+            long[] nodes) {
         requireGraphDepth(depth);
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (isScalar(value)) return value;
         if (value instanceof Shared<?> shared) {
             shared.value();
@@ -6032,27 +6035,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                List<Object> frozen = new ArrayList<>(list.size());
-                for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
+                int count = list.size();
+                requireGraphNodeCapacity(nodes[0], count);
+                List<Object> frozen = new ArrayList<>(count);
+                for (Object item : list) frozen.add(freeze(item, visiting, depth + 1, nodes));
                 return List.copyOf(frozen);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1));
+                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1, nodes));
                 return Collections.unmodifiableSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
+                    frozen.put(freeze(entry.getKey(), visiting, depth + 1, nodes), freeze(entry.getValue(), visiting, depth + 1, nodes));
                 }
                 return Collections.unmodifiableMap(frozen);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
+                requireGraphNodeCapacity(nodes[0], length);
                 List<Object> frozen = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    frozen.add(freeze(Array.get(value, i), visiting, depth + 1));
+                    frozen.add(freeze(Array.get(value, i), visiting, depth + 1, nodes));
                 }
                 return List.copyOf(frozen);
             }
@@ -6068,14 +6074,17 @@ public final class ActorRuntime implements AutoCloseable {
      * shared wrappers are unwrapped and copied into the private message graph.
      */
     private static Object isolateCopy(Object value) {
-        return isolateCopy(value, new IdentityHashMap<>(), 0);
+        return isolateCopy(value, new IdentityHashMap<>(), 0, new long[]{0L});
     }
 
     private static Object isolateCopy(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
-            int depth) {
+            int depth,
+            long[] nodes) {
         requireGraphDepth(depth);
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
@@ -6086,7 +6095,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
-        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
+        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1, nodes);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
 
@@ -6095,27 +6104,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                List<Object> copy = new ArrayList<>(list.size());
-                for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
+                int count = list.size();
+                requireGraphNodeCapacity(nodes[0], count);
+                List<Object> copy = new ArrayList<>(count);
+                for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1, nodes));
                 return Collections.unmodifiableList(copy);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1));
+                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1, nodes));
                 return Collections.unmodifiableSet(copy);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> copy = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
+                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1, nodes), isolateCopy(entry.getValue(), visiting, depth + 1, nodes));
                 }
                 return Collections.unmodifiableMap(copy);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
+                requireGraphNodeCapacity(nodes[0], length);
                 List<Object> copy = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
+                    copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1, nodes));
                 }
                 return Collections.unmodifiableList(copy);
             }
