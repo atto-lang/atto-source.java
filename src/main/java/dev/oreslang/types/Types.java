@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, OpenValue, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -108,6 +108,9 @@ public final class Types {
         public Not { Objects.requireNonNull(excluded, "excluded type"); }
     }
 
+    /** Source-level open top type. Unlike Unknown, this is not an inference placeholder. */
+    public enum OpenValue implements Type { INSTANCE }
+
     public enum Unknown implements Type { INSTANCE }
 
     public static Type notOf(Type type) {
@@ -124,6 +127,7 @@ public final class Types {
      */
     public static boolean areProvablyDisjoint(Type first, Type second) {
         if (first == Unknown.INSTANCE || second == Unknown.INSTANCE
+                || first == OpenValue.INSTANCE || second == OpenValue.INSTANCE
                 || first instanceof Generic || second instanceof Generic) return false;
         if (first.equals(second)) return false;
         if (first instanceof Union union) {
@@ -170,7 +174,7 @@ public final class Types {
     }
 
     private static boolean containsUncertainType(Type type) {
-        if (type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type == Unknown.INSTANCE || type == OpenValue.INSTANCE || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
@@ -193,9 +197,11 @@ public final class Types {
             if (from instanceof Not source) return source.excluded().equals(negative.excluded());
             return areProvablyDisjoint(from, negative.excluded());
         }
-        if (from instanceof Not) return to == Unknown.INSTANCE;
+        if (from instanceof Not) return to == Unknown.INSTANCE || to == OpenValue.INSTANCE;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
+        if (to == OpenValue.INSTANCE) return true;
+        if (from == OpenValue.INSTANCE) return false;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
         if (from instanceof SelfType source) {
@@ -289,6 +295,7 @@ public final class Types {
         java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
         for (Type type : types) {
             if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
+            if (type == OpenValue.INSTANCE) return OpenValue.INSTANCE;
             if (type instanceof Union union) {
                 for (Type option : union.options()) if (!flattened.contains(option)) flattened.add(option);
             } else if (!flattened.contains(type)) flattened.add(type);
