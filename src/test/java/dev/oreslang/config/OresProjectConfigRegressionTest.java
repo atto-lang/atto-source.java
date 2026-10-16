@@ -203,6 +203,36 @@ final class OresProjectConfigRegressionTest {
     }
 
     @Test
+    void rootedImportCannotUseNestedPackageSymlinkBackToParent() throws Exception {
+        Path root = temp.resolve("nested-alias-boundary");
+        Path lib = root.resolve("lib");
+        Path nested = root.resolve("nested");
+        Files.createDirectories(lib);
+        Files.createDirectories(nested);
+        Files.writeString(root.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Files.writeString(nested.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path helper = Files.writeString(lib.resolve("helper.ores"),
+                "pub fnc helper(): int { return 42; }\n");
+        Path entry = Files.writeString(root.resolve("main.ores"),
+                "pub fnc main(): int { return 42; }\n");
+        Path nestedAlias = nested.resolve("parent-alias.ores");
+        try {
+            Files.createSymbolicLink(nestedAlias, helper);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unavailable) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        OresProjectConfig config = OresProjectConfig.discover(entry, Map.of());
+        assertEquals(helper.toRealPath(),
+                config.resolveImport(entry, "+/lib/helper").orElseThrow());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(entry, "+/nested/parent-alias"));
+        assertTrue(denied.getMessage().contains("nested package boundary"),
+                denied.getMessage());
+    }
+
+    @Test
     void packageManifestEntrypointRejectsOutsideAndDanglingSymlinks() throws Exception {
         Path project = temp.resolve("manifest-entry-physical");
         Files.createDirectories(project.resolve("src"));
