@@ -142,8 +142,10 @@ final class ActorCallableKeywordTest {
                 actor fnc invalid(&int value): void { return; }
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                actor fnc valid(SharedMutex<int> value): void { return; }
+        // Shared actors may read frozen snapshots, but may not receive
+        // host-owned writable mutex authority through actor arguments.
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc invalid(SharedMutex<int> value): void { return; }
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
