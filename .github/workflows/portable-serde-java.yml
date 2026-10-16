@@ -1,0 +1,64 @@
+name: Java standalone MessagePack and actor DATA admission
+on:
+  push:
+    branches:
+      - integration/current-main-actor-serde-admission-20261016
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: portable-serde-java-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  standalone-and-focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert executed source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '${{ github.event.pull_request.head.sha || github.sha }}'
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)"
+          echo "SOURCE_TREE=$(git rev-parse 'HEAD^{tree}')"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+      - name: Execute standalone MessagePack v2 Java golden and hostile-binary tests
+        shell: bash
+        run: bash scripts/test-messagepack-wire-v2-standalone.sh
+      - name: Execute portable compiler codec descriptor harness
+        shell: bash
+        run: bash scripts/test-portable-codec-registry-standalone.sh
+      - name: Execute cross-backend independent wire oracle
+        run: python3 scripts/check_messagepack_v2_golden.py
+      - name: Compile real Java actor and portable codec JUnit regressions
+        run: >
+          mvn -B -ntp -Dores.runtime.carriers=native
+          -Dtest=ActorTransportHardeningTest,UntrustedActorTest,PortableCodecRegistryTest,PortableCodecBudgetHardeningTest,DualSerdeBorrowBoundaryTest
+          test
+  full-runtime:
+    needs: standalone-and-focused
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+      - name: Full compiler/runtime suite
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Compile and execute canonical actor program
+        run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
