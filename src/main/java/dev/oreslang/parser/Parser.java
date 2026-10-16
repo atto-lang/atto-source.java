@@ -795,7 +795,7 @@ public final class Parser {
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
-            methods.add(parseMethod(annotations, mods));
+            methods.add(parseMethod(annotations, mods, false, true));
         }
 
         consume(terminator, braceStyle
@@ -1009,6 +1009,11 @@ public final class Parser {
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
                                        boolean enclosingAbstractClass) {
+        return parseMethod(annotations, mods, enclosingAbstractClass, false);
+    }
+
+    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
+                                       boolean enclosingAbstractClass, boolean enclosingActor) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -1020,6 +1025,14 @@ public final class Parser {
         boolean mutableReceiver = check(MUT) && checkNext(SELF);
         if (mods.isStatic && (check(SELF) || mutableReceiver)) {
             throw error(peek(), "static class functions do not have a self receiver");
+        }
+
+        // Actor instance methods may optionally spell their intrinsic Self receiver
+        // as a first, untyped argument: receive(self, ActorMail<T> mail).
+        // It does not contribute to the method's arity or create another binding.
+        if (enclosingActor && check(SELF) && (checkNext(COMMA) || checkNext(RPAREN))) {
+            advance(); // self (the receiver, never a value argument)
+            match(COMMA);
         }
 
         // Pointerless receiver effects:
