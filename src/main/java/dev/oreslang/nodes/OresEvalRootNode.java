@@ -4940,6 +4940,9 @@ public final class OresEvalRootNode extends RootNode {
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
         private boolean isGuestCatchableFailure(Throwable failure) {
+            // The explicit try/catch path also must never consume an internal
+            // return/loop/exit signal as a recoverable guest exception.
+            if (isSourceControlSignal(failure)) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
