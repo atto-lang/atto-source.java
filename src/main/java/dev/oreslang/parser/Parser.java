@@ -795,7 +795,7 @@ public final class Parser {
                         + "compiler-enforced exhaustiveness and CONTROL dispatch; "
                         + "source handlers are not yet enabled");
             }
-            methods.add(parseMethod(annotations, mods, false, true));
+            methods.add(parseMethod(annotations, mods));
         }
 
         consume(terminator, braceStyle
@@ -1009,11 +1009,6 @@ public final class Parser {
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
                                        boolean enclosingAbstractClass) {
-        return parseMethod(annotations, mods, enclosingAbstractClass, false);
-    }
-
-    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods,
-                                       boolean enclosingAbstractClass, boolean enclosingActor) {
         CallableStructural structural = normalizeCallableStructural(annotations, mods.structural);
         annotations = structural.annotations();
         String name = parseMethodName();
@@ -1027,38 +1022,55 @@ public final class Parser {
             throw error(peek(), "static class functions do not have a self receiver");
         }
 
-        // Actor instance methods may optionally spell their intrinsic Self receiver
-        // as a first, untyped argument: receive(self, ActorMail<T> mail).
-        // It does not contribute to the method's arity or create another binding.
-        if (enclosingActor && check(SELF) && (checkNext(COMMA) || checkNext(RPAREN))) {
-            advance(); // self (the receiver, never a value argument)
-            match(COMMA);
-        }
-
-        // Pointerless receiver effects:
-        //   method(mut self)(params)       -> mutable receiver
-        //   method(self Foo)(params)       -> explicit read receiver
-        // Ordinary methods without either form receive read-only self.
+        // The intrinsic receiver is not a value parameter and never
+        // changes method arity, regardless of class or actor kind.
+        // Inline: fn(self, T value), fn(self), fn(mut self, T value).
+        // Legacy: fn(mut self)(T value), fn(self Type)(T value).
         int parameterStart = current;
         boolean explicitReceiver = false;
+        boolean inlineReceiver = false;
+        boolean inlineReceiverComma = false;
         if (mutableReceiver) {
-            advance(); // mut
+            advance();
             consume(SELF, "mutable receiver syntax is 'mut self'");
-            Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
-            receiverType = Ast.TypeRef.borrowed(target, true);
-            explicitReceiver = true;
+            if (match(COMMA)) {
+                inlineReceiver = true;
+                inlineReceiverComma = true;
+            } else if (check(RPAREN) && !checkNext(LPAREN)) {
+                inlineReceiver = true;
+            } else {
+                Ast.TypeRef target = check(RPAREN) ? Ast.TypeRef.simple("self") : parseTypeRef();
+                receiverType = Ast.TypeRef.borrowed(target, true);
+                explicitReceiver = true;
+            }
+            if (inlineReceiver) {
+                receiverType = Ast.TypeRef.borrowed(Ast.TypeRef.simple("self"), true);
+            }
         } else if (check(SELF)) {
             advance();
-            Ast.TypeRef candidateReceiver = parseTypeRef();
-            if (check(RPAREN) && checkNext(LPAREN)) {
-                receiverType = candidateReceiver;
-                explicitReceiver = true;
+            if (match(COMMA)) {
+                inlineReceiver = true;
+                inlineReceiverComma = true;
+            } else if (check(RPAREN) && !checkNext(LPAREN)) {
+                inlineReceiver = true;
             } else {
-                current = parameterStart;
+                Ast.TypeRef candidateReceiver = parseTypeRef();
+                if (check(RPAREN) && checkNext(LPAREN)) {
+                    receiverType = candidateReceiver;
+                    explicitReceiver = true;
+                } else {
+                    current = parameterStart;
+                }
             }
         }
 
-        if (explicitReceiver) {
+        if (inlineReceiver) {
+            if (inlineReceiverComma && check(RPAREN)) {
+                throw error(peek(), "receiver 'self' must be followed by a value parameter after ','");
+            }
+            params = parseParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after inline self receiver and method parameters");
+        } else if (explicitReceiver) {
             consume(RPAREN, "expected ')' after explicit self receiver");
             consume(LPAREN, mutableReceiver
                     ? "explicit mutable receiver form is method(mut self)(params)"
