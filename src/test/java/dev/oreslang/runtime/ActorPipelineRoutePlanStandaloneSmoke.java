@@ -70,6 +70,14 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
             check(plan.forwardByKey("producer-1", key).target().equals(stable),
                     "key affinity changed without graph reconfiguration");
         }
+        // Independent FNV-1a 64-bit known-slot vectors shared with LLVM.
+        // Producer edges are ordered [worker-a, worker-b].
+        check(plan.forwardByKey("producer-1", "partition-🌍").target().equals("worker-a"),
+                "UTF-8 partition Unicode fixture changed hash slot");
+        check(plan.forwardByKey("producer-1", "café").target().equals("worker-b"),
+                "UTF-8 accented Unicode fixture changed hash slot");
+        check(plan.forwardByKey("producer-1", "device-42").target().equals("worker-a"),
+                "ASCII partition fixture changed hash slot");
         rejects(() -> plan.forwardByKey("producer-1", String.valueOf((char) 0xD800)),
                 "unpaired surrogate must fail strict UTF-8 encoding");
         rejects(() -> plan.forwardByKey("producer-1", "x".repeat(4097)),
