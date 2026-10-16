@@ -77,7 +77,7 @@ public final class DecimalMatrix {
             DecimalMatrix left, DecimalMatrix right, MathContext context) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        Objects.requireNonNull(context, "context");
+        validateContext(Objects.requireNonNull(context, "context"));
         checkMultiplyShapesAndWork(left.rows, left.columns, right.rows, right.columns,
                 left.rows, right.columns);
         DecimalMatrix result = zeros(left.rows, right.columns);
@@ -97,7 +97,7 @@ public final class DecimalMatrix {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
-        Objects.requireNonNull(context, "context");
+        validateContext(Objects.requireNonNull(context, "context"));
         checkMultiplyShapesAndWork(left.rows, left.columns, right.rows, right.columns,
                 output.rows, output.columns);
         if (output == left || output == right) {
@@ -142,6 +142,14 @@ public final class DecimalMatrix {
             throw new IndexOutOfBoundsException("matrix index outside shape");
         }
         return row * columns + column;
+    }
+
+    private static void validateContext(MathContext context) {
+        // Zero precision explicitly requests exact arithmetic. Any positive
+        // precision must still stay within the output digit allocation budget.
+        if (context.getPrecision() > MAX_DIGITS_PER_CELL) {
+            throw new IllegalArgumentException("matrix rounding precision budget exceeded");
+        }
     }
 
     private static void validateDecimal(BigDecimal value) {
