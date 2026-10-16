@@ -454,4 +454,76 @@ final class ProjectManifestImportTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void packageRootAndZedAliasesLinkThroughTheSameCompilerGraph() throws Exception {
+        Path project = temp.resolve("package-integration");
+        Path src = project.resolve("src");
+        Path external = temp.resolve("external-zed");
+        Files.createDirectories(src);
+        Files.createDirectories(external.resolve("src"));
+        Files.createDirectories(project.resolve("zed_modules/acme"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "integration"
+                [source]
+                roots = ["src"]
+                [dependencies]
+                tools = { zed = "acme/tools" }
+                """);
+        Files.writeString(src.resolve("local.ores"), """
+                pub fnc local() : string { return "local:"; }
+                """);
+        Files.writeString(external.resolve("src/remote.ores"), """
+                pub fnc remote() : string { return "zed"; }
+                """);
+        try {
+            Files.createSymbolicLink(project.resolve("zed_modules/acme/tools"), external);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        Path main = src.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc local from "@/src/local";
+                import fnc remote from "pkg:tools/src/remote";
+
+                pub fnc main() : void {
+                  stdio.println(local() + remote());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var build = LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), out, new ByteArrayOutputStream());
+        assertEquals(3, build.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("local:zed"));
+    }
+
+    @Test
+    void symlinkedSelfImportCannotEvadeIdentityChecks() throws Exception {
+        Path project = temp.resolve("symlinked-self");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                """);
+        Path main = project.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc helper from "@/alias";
+                pub fnc helper() : int { return 42; }
+                pub fnc main() : void { return; }
+                """);
+        try {
+            Files.createSymbolicLink(project.resolve("alias.ores"), main);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(failure.getMessage().contains("cannot import itself"));
+    }
+
 }
