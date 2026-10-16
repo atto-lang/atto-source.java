@@ -5968,6 +5968,74 @@ public final class TypeChecker {
      * As for ordinary lambdas, checking the body must not leak definite
      * initialization into its surrounding lexical scope.
      */
+    /**
+     * An eager sum callback is not an async/suspending continuation.
+     * Inspect nested expressions as well as the top level: a containing
+     * async fnc must not implicitly authorize await or blocking channel
+     * operations inside a callback typed as a synchronous Function.
+     * Future expression variants fail closed until their effects are audited.
+     */
+    private static boolean hasSuspendingSumCallbackSyntax(Ast.Expr expr) {
+        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr) return true;
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.BinaryExpr binary)
+            return hasSuspendingSumCallbackSyntax(binary.left())
+                    || hasSuspendingSumCallbackSyntax(binary.right());
+        if (expr instanceof Ast.UnaryExpr unary)
+            return hasSuspendingSumCallbackSyntax(unary.operand());
+        if (expr instanceof Ast.AssignExpr assignment)
+            return hasSuspendingSumCallbackSyntax(assignment.target())
+                    || hasSuspendingSumCallbackSyntax(assignment.value());
+        if (expr instanceof Ast.ConditionalExpr conditional)
+            return hasSuspendingSumCallbackSyntax(conditional.condition())
+                    || hasSuspendingSumCallbackSyntax(conditional.whenTrue())
+                    || hasSuspendingSumCallbackSyntax(conditional.whenFalse());
+        if (expr instanceof Ast.MatchExpr match) {
+            if (hasSuspendingSumCallbackSyntax(match.subject())) return true;
+            for (Ast.MatchValueArm arm : match.arms())
+                if ((arm.guard() != null && hasSuspendingSumCallbackSyntax(arm.guard()))
+                        || hasSuspendingSumCallbackSyntax(arm.value())) return true;
+            return false;
+        }
+        if (expr instanceof Ast.TypeTestExpr test)
+            return hasSuspendingSumCallbackSyntax(test.value());
+        if (expr instanceof Ast.PatternTestExpr test)
+            return hasSuspendingSumCallbackSyntax(test.value());
+        if (expr instanceof Ast.CastExpr cast)
+            return hasSuspendingSumCallbackSyntax(cast.value());
+        if (expr instanceof Ast.SpreadExpr spread)
+            return hasSuspendingSumCallbackSyntax(spread.expression());
+        if (expr instanceof Ast.CallExpr call)
+            return hasSuspendingSumCallbackSyntax(call.callee())
+                    || call.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.RuntimeCallExpr runtime)
+            return runtime.operation().equals("cooperate")
+                    || runtime.operation().equals("yield")
+                    || runtime.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.MemberExpr member)
+            return hasSuspendingSumCallbackSyntax(member.receiver());
+        if (expr instanceof Ast.IndexExpr index)
+            return hasSuspendingSumCallbackSyntax(index.receiver())
+                    || hasSuspendingSumCallbackSyntax(index.index());
+        if (expr instanceof Ast.NewExpr created)
+            return created.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.TrapExpr trap)
+            return hasSuspendingSumCallbackSyntax(trap.expression());
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream()
+                    .anyMatch(field -> hasSuspendingSumCallbackSyntax(field.value()));
+        if (expr instanceof Ast.LambdaExpr nested)
+            return nested.expressionBody() == null
+                    || hasSuspendingSumCallbackSyntax(nested.expressionBody());
+        throw new IllegalArgumentException(
+                "sum callback contains an unaudited expression form: " + expr.getClass().getSimpleName());
+    }
+
     private Function inferSumLambda(
             Ast.LambdaExpr lambda, Type input, boolean zeroArg,
             Env parent, Set<String> generics, Type self, String operation) {
@@ -5979,6 +6047,10 @@ public final class TypeChecker {
         if (lambda.expressionBody() == null) {
             throw new IllegalArgumentException(
                     operation + " block lambda result cannot be inferred safely");
+        }
+        if (hasSuspendingSumCallbackSyntax(lambda.expressionBody())) {
+            throw new IllegalArgumentException(
+                    operation + " inline callback cannot suspend or await");
         }
 
         boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
@@ -6002,12 +6074,15 @@ public final class TypeChecker {
         Ast.ClassDecl previousClass = currentClassOwner;
         Ast.ClassDecl previousConstructor = currentConstructorOwner;
         Map<Env.Binding, Set<String>> initialized = parent.initializationSnapshot();
+        boolean previousMaySuspend = currentMaySuspend;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
+        currentMaySuspend = false;
         try {
             Type result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
             return new Function(arguments, result);
         } finally {
+            currentMaySuspend = previousMaySuspend;
             parent.restoreInitialization(initialized);
             currentClassOwner = previousClass;
             currentConstructorOwner = previousConstructor;
@@ -6082,9 +6157,9 @@ public final class TypeChecker {
             throw new IllegalArgumentException(kind + "." + operation
                     + " callback result cannot be inferred safely");
         }
-        if (mapped instanceof Borrow) {
+        if (containsChannelBorrow(mapped, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(kind + "." + operation
-                    + " cannot publish a borrowed callback result");
+                    + " cannot publish a borrowed callback result, including nested payloads");
         }
         if (option) {
             return switch (operation) {
