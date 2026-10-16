@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -10,8 +12,25 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 final class RecursiveOptionFlattenLanguageTest {
+    @Test
+    void nestedOptionsAreNotImplicitlyAssignableToFlattenedType() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc bad(Option<Option<int>> nested): Option<int> {
+                            return nested;
+                        }
+                        """)));
+        assertDoesNotThrow(() ->
+                TypeChecker.check(Parser.parse("""
+                        fnc good(Option<Option<int>> nested): Option<int> {
+                            return nested.flatten();
+                        }
+                        """)));
+    }
+
     @Test
     void explicitFlattenCollapsesNestedOptionsWithoutCollapsingByDefault() throws Exception {
         String program = """
