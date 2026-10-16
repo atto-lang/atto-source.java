@@ -4407,8 +4407,17 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         Object result = invocation.run(delivered, turnContext);
                         if (result instanceof OresFuture<?> future) {
+                            // A user actor invocation may return a Future of
+                            // another Future. The one-shot actor's CONTROL and
+                            // physical finalization barriers must follow the
+                            // innermost terminal result, not a successful outer
+                            // wrapper that still contains pending work.
+                            // This invocation already owns the returned task,
+                            // so revocation retains the original cancellation
+                            // authority through the adopted observer.
+                            OresFuture<?> adopted = OresFutures.flattenOwned(future);
                             OresFuture<?> owned =
-                                    ownCurrentActorFuture((OresFuture) future);
+                                    ownCurrentActorFuture((OresFuture) adopted);
                             ContinuationTarget target =
                                     captureCurrentContinuationTarget();
 
