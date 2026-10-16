@@ -138,9 +138,53 @@ public final class ExecutionGraphV1 {
         private final ValueKind resultType;
 
         private Plan(List<Node> nodes, int output, ValueKind resultType) {
-            this.nodes = nodes;
+            Objects.requireNonNull(resultType, "resultType");
+            Objects.requireNonNull(nodes, "nodes");
+            if (nodes.isEmpty() || nodes.size() > 4096 || output < 0 || output >= nodes.size()) {
+                throw new IllegalArgumentException("invalid typed graph size or output");
+            }
+            for (int i = 0; i < nodes.size(); i++) {
+                Node node = Objects.requireNonNull(nodes.get(i), "node");
+                if (node.id() != i) throw new IllegalArgumentException("invalid graph node ID");
+                for (int dep : node.inputs()) {
+                    if (dep < 0 || dep >= i) {
+                        throw new IllegalArgumentException("invalid graph dependency");
+                    }
+                }
+                switch (node.operation()) {
+                    case UNIT -> signature(nodes, node, Domain.CPU, ValueKind.UNIT);
+                    case CONSTANT_I64 -> signature(nodes, node, Domain.CPU, ValueKind.HOST_I64);
+                    case ADD_I64 -> signature(nodes, node, Domain.CPU, ValueKind.HOST_I64,
+                            ValueKind.HOST_I64, ValueKind.HOST_I64);
+                    case UPLOAD_I64 -> signature(nodes, node, Domain.GPU, ValueKind.DEVICE_I64,
+                            ValueKind.HOST_I64);
+                    case GPU_ADD_I64 -> signature(nodes, node, Domain.GPU, ValueKind.DEVICE_I64,
+                            ValueKind.DEVICE_I64, ValueKind.DEVICE_I64);
+                    case DOWNLOAD_I64 -> signature(nodes, node, Domain.CPU, ValueKind.HOST_I64,
+                            ValueKind.DEVICE_I64);
+                }
+            }
+            if (nodes.get(output).result() != resultType) {
+                throw new IllegalArgumentException("invalid typed graph output kind");
+            }
+            this.nodes = List.copyOf(nodes);
             this.output = output;
             this.resultType = resultType;
+        }
+
+        private static void signature(List<Node> nodes, Node node, Domain domain,
+                                      ValueKind result, ValueKind... expectedInputs) {
+            if (node.domain() != domain || node.result() != result
+                    || node.inputs().size() != expectedInputs.length) {
+                throw new IllegalArgumentException("invalid typed graph operation signature");
+            }
+            for (int i = 0; i < expectedInputs.length; i++) {
+                int dependency = node.inputs().get(i);
+                if (dependency < 0 || dependency >= node.id()
+                        || nodes.get(dependency).result() != expectedInputs[i]) {
+                    throw new IllegalArgumentException("invalid typed graph operand kind");
+                }
+            }
         }
 
         public List<Node> nodes() { return nodes; }
