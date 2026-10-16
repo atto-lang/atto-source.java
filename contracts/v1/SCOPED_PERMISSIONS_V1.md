@@ -22,7 +22,8 @@ sentinel, not a valid `net` permission-scope port. Before binding, the runtime
 requires a port-independent grant for the requested host and checks the
 resolved numeric IPv4 address. Any matching denial for either host or IP,
 including a denial for an individual port, prevents dynamic-port listening.
-A fixed-port-only grant does not authorize a dynamic-port listener.
+The all-interfaces address `0.0.0.0` is not one selected IP and is rejected
+for dynamic ports. A fixed-port-only grant does not authorize a dynamic-port listener.
 
 Unsupported listener address families remain denied until implemented.
 ## Canonical test-vector integrity
