@@ -69,6 +69,14 @@ public final class DopKernelIR {
      * loan exists. Closing invalidates all operations; GC is not the lifetime API.
      */
     public static final class HostBuffer implements AutoCloseable {
+        /** Opaque allocation identity; never exposes the underlying bytes. */
+        public static final class RegionToken {
+            private final State owner;
+            private RegionToken(State owner) { this.owner = owner; }
+            public boolean isLive() {
+                synchronized (owner) { return !owner.closed; }
+            }
+        }
         private final State state;
         private boolean moved;
 
