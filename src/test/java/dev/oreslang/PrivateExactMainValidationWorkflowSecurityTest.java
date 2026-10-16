@@ -397,6 +397,13 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "cases = root.findall(\"testcase\")",
                 "declared = int(root.get(\"tests\", \"-1\"))",
                 "if declared < 1 or declared != len(cases):",
+                "for attribute in (\"failures\", \"errors\", \"skipped\"):",
+                "count = int(root.get(attribute, \"-1\"))",
+                "if count != 0:",
+                "\"flakyFailure\"",
+                "\"flakyError\"",
+                "\"rerunFailure\"",
+                "\"rerunError\"",
                 "if case.get(\"classname\") != classname:",
                 "missing = sorted(name for name, count in executed.items() if count == 0)",
                 "if missing:"
