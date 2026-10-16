@@ -85,6 +85,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
+        # The synthetic fixture reuses A as both base and resulting commit.
+        # Before the POST it represents the default-branch base object; after
+        # the POST it must expose the newly minted root tree and exact parent.
+        if (route == "repos/trusted/ci/git/commits/" + A
+                and method == "GET"
+                and any(m == "POST" and r == "repos/trusted/ci/git/commits"
+                        for m, r, _ in self.route_calls)):
+            return {"sha": A, "tree": {"sha": E},
+                    "parents": [{"sha": A}]}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
@@ -492,6 +501,49 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                   if method == "POST"]
         self.assertIn("repos/trusted/ci/git/trees", writes)
         self.assertNotIn("repos/trusted/ci/git/commits", writes)
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
+    def test_destination_commit_must_attest_exact_root_and_parent(self):
+        valid = {"sha": A, "tree": {"sha": E}, "parents": [{"sha": B}]}
+        with patch.object(pub, "gh_api", return_value=valid) as call:
+            pub.verify_destination_commit_tree("trusted/ci", A, E, B)
+            call.assert_called_once_with("repos/trusted/ci/git/commits/" + A)
+        invalid = [
+            None, [], {}, "unexpected",
+            {"sha": C, "tree": {"sha": E}, "parents": [{"sha": B}]},
+            {"sha": A, "tree": None, "parents": [{"sha": B}]},
+            {"sha": A, "tree": {"sha": C}, "parents": [{"sha": B}]},
+            {"sha": A, "tree": {"sha": E}, "parents": []},
+            {"sha": A, "tree": {"sha": E}, "parents": None},
+            {"sha": A, "tree": {"sha": E}, "parents": [{}]},
+            {"sha": A, "tree": {"sha": E}, "parents": [{"sha": C}]},
+            {"sha": A, "tree": {"sha": E},
+             "parents": [{"sha": B}, {"sha": C}]},
+        ]
+        for response in invalid:
+            with self.subTest(response=response):
+                with patch.object(pub, "gh_api", return_value=response):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_destination_commit_tree("trusted/ci", A, E, B)
+
+    def test_destination_commit_substitution_aborts_before_branch_creation(self):
+        original = self.fake_api
+        def wrong_commit(route, method="GET", payload=None):
+            if (method == "GET"
+                    and route == "repos/trusted/ci/git/commits/" + A
+                    and any(m == "POST" and r == "repos/trusted/ci/git/commits"
+                            for m, r, _ in self.route_calls)):
+                self.route_calls.append((method, route, payload))
+                return {"sha": A, "tree": {"sha": C},
+                        "parents": [{"sha": A}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_commit):
+            with self.assertRaisesRegex(pub.Denied, "reviewed root and parent"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertIn("repos/trusted/ci/git/commits", writes)
         self.assertNotIn("repos/trusted/ci/git/refs", writes)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
