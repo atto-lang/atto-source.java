@@ -61,7 +61,18 @@ publisher rejects missing or malformed pins; checks that the trusted checkout
 has exactly that `HEAD^{commit}` and `HEAD:<source-directory>` tree; and
 compares every collected in-memory source path, Git executable mode and blob
 hash with `git ls-tree -r -z`. Extra, missing, modified and untracked files
-fail **before the first GitHub API write**. The newly created isolated private
+fail **before the first GitHub API write**. Additionally, the verified commit is now independently looked up through
+the authenticated **original private GitHub repository Git-object API**. Its
+actual root tree (or each nested source-directory tree) must equal the
+reviewed source subtree; missing Git objects, malformed commit metadata,
+truncated tree listings, unexpected object modes, and subtree mismatches
+cause rejection **before destination writes**. Source repository numeric
+identity and private visibility are checked separately. This authenticates
+the source object location, but does not itself prove that a commit was
+independently reviewed; that still requires protected-branch security-owner
+approval and separately pinned commit/tree values.
+
+The newly created isolated private
 destination subtree's returned SHA must equal the reviewed source subtree SHA
 **before any new commit or ref is created**. This makes the source-subtree
 proof stronger than per-blob transport checks. The approval variables/CLI
