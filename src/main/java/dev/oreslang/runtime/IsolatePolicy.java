@@ -243,7 +243,11 @@ public record IsolatePolicy(
         String authorizationRoot = nestedSeparator < 0
                 ? className : className.substring(0, nestedSeparator);
 
-        if (authorizationRoot.equals("java.lang.Class")
+        // java.lang.Object exposes public wait()/notify()/notifyAll().
+        // Allowing its declared host methods permits unscheduled thread
+        // parking and monitor signaling outside the actor scheduler.
+        if (authorizationRoot.equals("java.lang.Object")
+                || authorizationRoot.equals("java.lang.Class")
                 || authorizationRoot.equals("java.lang.ClassLoader")
                 || authorizationRoot.equals("java.lang.Module")
                 || authorizationRoot.equals("java.lang.Runtime")
