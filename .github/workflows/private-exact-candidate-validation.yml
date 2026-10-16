@@ -1,0 +1,101 @@
+name: Private exact-candidate Java/Native validation
+
+# Trusted workflow must be dispatched from independently approved source main.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Independently approved immutable candidate commit in this repository"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-exact-candidate-validation
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != github.sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != inputs.candidate_sha || vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject unapproved exact-commit or workflow admission
+        run: |
+          echo "::error::Private candidate validation denied; require reviewed exact workflow, commit and tree"
+          exit 1
+
+  validate-approved-candidate:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha && vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 180
+    env:
+      APPROVED_WORKFLOW_SHA: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA }}
+      APPROVED_CANDIDATE_SHA: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA }}
+      APPROVED_CANDIDATE_TREE: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE }}
+      REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Verify approvals before any candidate source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
+          test "$REQUESTED_CANDIDATE_SHA" = "$APPROVED_CANDIDATE_SHA"
+          [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_CANDIDATE_TREE" =~ ^[a-f0-9]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          clean: true
+      - name: Verify immutable candidate and clean checkout before tool setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$APPROVED_CANDIDATE_SHA"
+          test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_CANDIDATE_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "TRUSTED_WORKFLOW_COMMIT=$APPROVED_WORKFLOW_SHA"
+          echo "TESTED_CANDIDATE_COMMIT=$APPROVED_CANDIDATE_SHA"
+          echo "TESTED_CANDIDATE_TREE=$APPROVED_CANDIDATE_TREE"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          distribution: graalvm
+          java-version: '25'
+          version: '25.3'
+      - name: Verify GraalVM JDK 25 and Maven
+        run: |
+          set -euo pipefail
+          java --version
+          native-image --version
+          mvn --version
+      - name: Focused permissions and scoped host interop regressions
+        run: mvn -B -ntp '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,ScopedPermissionInteropTest' test
+      - name: Full Java 25 Maven candidate verification
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Native AOT candidate build and guest execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-aot -DskipTests package
+          timeout 180s ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+      - name: Native hybrid candidate build and guest execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-hybrid -DskipTests package
+          timeout 180s ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
+      - name: Strict polyglot isolate candidate build and guest execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -B -ntp -Pnative-isolate -DskipTests package
+          lib="$(find target -maxdepth 1 -type f \( -name 'oresvm.so' -o -name 'liboresvm.so' \) | head -n1)"
+          test -n "$lib"
+          timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
