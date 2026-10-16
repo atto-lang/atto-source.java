@@ -460,8 +460,13 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "if not extra:",
                 "report_dir = Path(\"target/surefire-reports\")",
                 "if report.is_symlink() or not report.is_file():",
-                "declared != len(cases)",
+                "declared < 1 or declared != len(cases) or any(n != 0 for n in totals)",
                 "case.get(\"classname\") != classname",
+                "raise SystemExit(f\"Failed/skipped/flaky testcase in {report}\")",
+                "\"flakyFailure\"",
+                "\"flakyError\"",
+                "\"rerunFailure\"",
+                "\"rerunError\"",
                 "VERIFIED_FULL_JUNIT_EXTRA_CLASSES="
         }) {
             assertTrue(proof.contains(required), "full-suite evidence guard missing: " + required);
