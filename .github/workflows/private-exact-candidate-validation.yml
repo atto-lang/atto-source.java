@@ -98,14 +98,18 @@ jobs:
               "dev.oreslang.runtime.ScopedPermissionInteropTest",
           }
           executed = {name: 0 for name in required}
-          reports = [
-              p for p in Path(".").rglob("TEST-*.xml")
-              if p.parent.name == "surefire-reports"
-              and p.parent.parent.name == "target"
-          ]
+          # This is a single-module Maven project. Never accept reports
+          # from candidate-controlled nested fixture directories.
+          report_dir = Path("target/surefire-reports")
+          if (not report_dir.is_dir() or report_dir.is_symlink()
+                  or report_dir.parent.is_symlink()):
+              raise SystemExit("Missing or symlinked Maven Surefire report directory")
+          reports = list(report_dir.glob("TEST-*.xml"))
           if not reports:
               raise SystemExit("No Maven Surefire XML reports; tests did not execute")
           for report in reports:
+              if report.is_symlink() or not report.is_file():
+                  raise SystemExit(f"Invalid Maven Surefire report: {report}")
               root = ElementTree.parse(report).getroot()
               for case in root.iter("testcase"):
                   classname = case.get("classname", "")
