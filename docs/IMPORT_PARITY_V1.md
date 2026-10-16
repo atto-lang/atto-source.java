@@ -9,7 +9,7 @@ until its own parser, resolver and linker/runtime pass the positive tests.
 
 1. `./x` and `../x` resolve relative to the importing source. Bare names
    such as `.hidden/x` or `..backup/x` use configured search roots instead.
-2. `@/x` is confined lexically to the nearest `.ores.pkg.toml` root,
+2. `+/x` (not `+x` or the experimental `@/x`) is confined lexically to the nearest `.ores.pkg.toml` root,
    rejects missing manifests, missing sources and `..` escape; it never
    falls through to ambient search paths.
 3. `pkg:alias/x` requires an explicitly declared zed-pkg dependency alias;
@@ -20,7 +20,7 @@ until its own parser, resolver and linker/runtime pass the positive tests.
    Omitted `roots` defaults to `["."]`; explicit `roots = []` remains empty;
    empty environment entries are ignored.
 5. Nearest package manifest outranks a closer legacy compiler manifest.
-   Each nested package has independent `@/` and `pkg:` authority.
+   Each nested package has independent `+/` and `pkg:` authority.
 6. Canonical physical source identity prevents duplicate/self imports and
    rejects the same physical file under conflicting package contexts. Import
    discovery is **not** filesystem confinement; symlink races are separate.
@@ -34,7 +34,7 @@ until its own parser, resolver and linker/runtime pass the positive tests.
 ## Promotion gates
 
 - **A — safe admission:** all unsupported syntax rejected with no partial
-  artifact, including `@/`, `pkg:`, `./`, `../`, `.hidden/x`, bare imports.
+  artifact, including `+/`, `pkg:`, `./`, `../`, `.hidden/x`, bare imports.
 - **B — resolver behavior:** positive and negative tests of each namespace,
   precedence, empty roots, nested manifests, symlink identity and aliases.
 - **C — actual link/runtime:** independently build and run the same multi-file
