@@ -58,7 +58,13 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             // Raise core size before submit instead, but only on runnable demand.
             // Initial lazy startup remains limited to the configured minimum.
             int live = getPoolSize();
-            if (live >= minimum && getActiveCount() >= live
+            int active = getActiveCount();
+            int queued = getQueue().size();
+            // Submissions may arrive faster than the newly created worker
+            // transitions to ACTIVE. Count previously queued runnable turns
+            // as demand too; otherwise a burst can leave all work stranded
+            // behind the minimum core pool while max capacity is idle.
+            if (live >= minimum && active + queued >= live
                     && getCorePoolSize() < getMaximumPoolSize()) {
                 setCorePoolSize(getCorePoolSize() + 1);
             }
