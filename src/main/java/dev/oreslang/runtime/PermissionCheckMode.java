@@ -23,12 +23,22 @@ public enum PermissionCheckMode {
     }
 
     public static PermissionCheckMode fromApplicationArguments(String[] args) {
+        PermissionCheckMode result = null;
         for (String arg : args) {
+            if (arg == null)
+                throw new IllegalArgumentException("null Oreslang application argument");
             if (arg.startsWith("--ores-permission-check=")) {
-                return parse(arg.substring("--ores-permission-check=".length()));
+                // First-wins parsing formerly ignored later conflicting or
+                // malformed policy values. A host policy must be unambiguous.
+                if (result != null)
+                    throw new IllegalArgumentException("duplicate Oreslang permission check mode");
+                String value = arg.substring("--ores-permission-check=".length());
+                if (value.isBlank())
+                    throw new IllegalArgumentException("empty Oreslang permission check mode");
+                result = parse(value);
             }
         }
-        return COMPILE;
+        return result == null ? COMPILE : result;
     }
 
     public boolean defersToRuntime(IsolatePolicy.Capability capability) {
