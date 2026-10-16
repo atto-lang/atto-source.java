@@ -190,8 +190,16 @@ public final class ActorStateContract {
                     || !state.annotations().getFirst().arguments().isEmpty()) {
                 throw new IllegalArgumentException("actor state requires canonical sealed compiler-owned layout");
             }
-            if (state.initializer() != null && !(state.initializer() instanceof Ast.ObjectExpr)) {
-                throw new IllegalArgumentException("actor state initializer must be a closed key/value aggregate");
+            // The parser produces a fresh inferred-struct aggregate for the
+            // compiler-owned state defaults. Later passes must not replace it
+            // with an explicit user-shaped struct carrying independent layout
+            // metadata: that would create an unchecked initialization schema.
+            if (state.initializer() != null
+                    && (!(state.initializer() instanceof Ast.ObjectExpr defaults)
+                        || defaults.kind() != Ast.ObjectKind.INFERRED_STRUCT
+                        || !defaults.declaredFields().isEmpty())) {
+                throw new IllegalArgumentException(
+                        "actor state initializer must be a canonical closed key/value aggregate");
             }
             if (state.type().name().equals("Map")) {
                 throw new IllegalArgumentException(
