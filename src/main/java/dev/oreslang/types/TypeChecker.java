@@ -3483,9 +3483,11 @@ public final class TypeChecker {
                     // Private abstract slots and actor lifecycle handlers are
                     // never exposed as method values, even to the implementing class.
                     if (klass.actorKind() != Ast.ActorKind.NONE
-                            && member.member().equals("receive")) {
+                            && (member.member().equals("receive")
+                                || member.member().equals("on_start"))) {
                         throw new IllegalArgumentException(
-                                "actor receive is runtime-managed and cannot be referenced from user code");
+                                "actor lifecycle method '" + member.member()
+                                        + "' is runtime-managed and cannot be referenced from user code");
                     }
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
@@ -6745,9 +6747,11 @@ public final class TypeChecker {
     }
 
     private void requireUserCallableMethodSlot(Ast.ClassDecl klass, String name, int arity) {
-        if (klass.actorKind() != Ast.ActorKind.NONE && name.equals("receive")) {
+        if (klass.actorKind() != Ast.ActorKind.NONE
+                && (name.equals("receive") || name.equals("on_start"))) {
             throw new IllegalArgumentException(
-                    "actor receive is runtime-managed; send a message rather than invoke it");
+                    "actor lifecycle method '" + name
+                            + "' is runtime-managed and cannot be invoked by user code");
         }
         Ast.ClassDecl origin = privateAbstractSlotOwner(
                 klass, name, arity, new LinkedHashSet<>());
