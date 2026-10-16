@@ -184,7 +184,7 @@ def verified_protected_main_policy(local_policy_fingerprint):
         raise Denied("protected-main source policy is missing or malformed")
     try:
         policy_bytes = base64.b64decode(
-            file_metadata["content"].replace("\\n", ""), validate=True)
+            file_metadata["content"].replace("\n", ""), validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise Denied("protected-main source policy cannot be decoded") from exc
     if (len(policy_bytes) > 16 * 1024
@@ -192,7 +192,7 @@ def verified_protected_main_policy(local_policy_fingerprint):
         raise Denied("local destination policy differs from protected source main")
     expected_blob = hashlib.sha1(
         b"blob " + str(len(policy_bytes)).encode("ascii")
-        + b"\\0" + policy_bytes).hexdigest()
+        + b"\0" + policy_bytes).hexdigest()
     if file_metadata.get("sha") != expected_blob:
         raise Denied("protected-main policy blob SHA does not match contents")
     return approved_main
