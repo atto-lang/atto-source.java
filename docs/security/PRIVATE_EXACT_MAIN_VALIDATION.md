@@ -103,9 +103,11 @@ After the focused Maven invocation, the **trusted workflow** runs a
 Python 3 standard-library verifier over Maven Surefire XML reports. It must
 find at least one executed, non-skipped, non-failing test case in **each**
 of those six classes before the full build is admitted. Missing reports,
-skipped-only classes and malformed XML fail closed. This check is embedded
-in the reviewed workflow definition rather than loaded as a script from the
-untrusted candidate source checkout. The administrator's isolated runner
+skipped-only classes and malformed XML fail closed. As this is a single-module
+Maven project, evidence must come from **only** `target/surefire-reports`;
+nested fixture files and symlinked report paths are rejected. This check is
+embedded in the reviewed workflow definition rather than loaded as a script
+from the untrusted candidate source checkout. The administrator's isolated runner
 must provide `python3` in addition to Java, GraalVM and Maven.
 
 It then runs full Java 25 `verify` and native AOT/hybrid/strict-isolate
