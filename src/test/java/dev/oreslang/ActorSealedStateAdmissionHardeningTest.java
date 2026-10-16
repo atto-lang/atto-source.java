@@ -322,4 +322,59 @@ final class ActorSealedStateAdmissionHardeningTest {
         // outer state default shape, independent of value object syntax.
         assertDoesNotThrow(() -> ActorStateContract.verify(replaceStateField(parsed, changed)));
     }
+
+    @Test void nestedExplicitStateDefaultMustBeFullyInitializedAndNonduplicated() {
+        Ast.Program parsed = source("0");
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.TypeRef intType = Ast.TypeRef.simple("int");
+        Ast.StructFieldSpec item = new Ast.StructFieldSpec("item", intType);
+        Ast.StructFieldSpec extra = new Ast.StructFieldSpec("extra", intType);
+        Ast.ObjectField initializedItem =
+                Ast.ObjectField.named("item", new Ast.LiteralExpr(1L));
+        Ast.ObjectField undeclared =
+                Ast.ObjectField.named("unknown", new Ast.LiteralExpr(2L));
+        List<Ast.ObjectExpr> rejectedNested = List.of(
+                // Missing field: partial explicit structs are never valid as
+                // actor-state defaults, even though ordinary mutable locals
+                // may complete them later.
+                new Ast.ObjectExpr(List.of(initializedItem), Ast.ObjectKind.EXPLICIT_STRUCT,
+                        List.of(item, extra)),
+                // A forged AST must not smuggle a second declaration.
+                new Ast.ObjectExpr(List.of(initializedItem), Ast.ObjectKind.EXPLICIT_STRUCT,
+                        List.of(item, item)),
+                // Every initialized field must be declared in its closed shape.
+                new Ast.ObjectExpr(List.of(initializedItem, undeclared),
+                        Ast.ObjectKind.EXPLICIT_STRUCT, List.of(item)),
+                // An undeclared shape cannot initialize an explicit field.
+                new Ast.ObjectExpr(List.of(initializedItem),
+                        Ast.ObjectKind.EXPLICIT_STRUCT, List.of()));
+        for (Ast.ObjectExpr nested : rejectedNested) {
+            Ast.ObjectExpr outer = new Ast.ObjectExpr(
+                    List.of(Ast.ObjectField.named("value", nested)));
+            Ast.FieldDecl altered = new Ast.FieldDecl(
+                    state.name(), state.visibility(), state.bindingKind(), state.type(),
+                    state.annotations(), outer, state.mutableReferent());
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(replaceStateField(parsed, altered)));
+            assertTrue(denied.getMessage().contains("owned constant expression"),
+                    denied::getMessage);
+        }
+
+        Ast.ObjectExpr completeNested = new Ast.ObjectExpr(
+                List.of(initializedItem,
+                        Ast.ObjectField.named("extra", new Ast.LiteralExpr(2L))),
+                Ast.ObjectKind.EXPLICIT_STRUCT, List.of(item, extra));
+        Ast.ObjectExpr completeDefault = new Ast.ObjectExpr(
+                List.of(Ast.ObjectField.named("value", completeNested)));
+        Ast.TypeRef nestedType = Ast.TypeRef.recordType(java.util.Map.of(
+                "item", intType, "extra", intType));
+        Ast.TypeRef stateType = Ast.TypeRef.recordType(
+                java.util.Map.of("value", nestedType));
+        Ast.FieldDecl completeState = new Ast.FieldDecl(
+                state.name(), state.visibility(), state.bindingKind(), stateType,
+                state.annotations(), completeDefault, state.mutableReferent());
+        assertDoesNotThrow(() -> ActorStateContract.verify(
+                replaceStateField(parsed, completeState)));
+    }
 }
