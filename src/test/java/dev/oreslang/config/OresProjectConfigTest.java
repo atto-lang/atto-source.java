@@ -640,4 +640,35 @@ final class OresProjectConfigTest {
                 () -> config.resolveImport(project.resolve("src/main.ores"), "pkg:math/src/escape"));
         assertTrue(depEscape.getMessage().contains("physical package root"));
     }
+
+    @Test
+    void explicitRootOverridesCheckPhysicalAncestorsOfGeneratedEntries() throws Exception {
+        Path project = temp.resolve("selected-generated");
+        Path outside = temp.resolve("external-generated");
+        Files.createDirectories(project.resolve("src"));
+        Files.createDirectories(outside);
+        Path manifest = Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path escapeLink = project.resolve("external");
+        Path insideLink = project.resolve("internal");
+        Path dangling = project.resolve("dangling");
+        try {
+            Files.createSymbolicLink(escapeLink, outside);
+            Files.createSymbolicLink(insideLink, project.resolve("src"));
+            Files.createSymbolicLink(dangling, temp.resolve("never-created"));
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+
+        Map<String, String> override = Map.of(
+                OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString());
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(escapeLink.resolve("future.ores"), override));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(dangling.resolve("future.ores"), override));
+        assertEquals(project.toAbsolutePath().normalize(),
+                OresProjectConfig.discover(insideLink.resolve("future.ores"), override).projectRoot());
+        assertEquals(project.toAbsolutePath().normalize(),
+                OresProjectConfig.discover(project.resolve("src/generated.ores"), override).projectRoot());
+    }
 }
