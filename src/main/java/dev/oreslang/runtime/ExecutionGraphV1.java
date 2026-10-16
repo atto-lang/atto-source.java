@@ -249,10 +249,11 @@ public final class ExecutionGraphV1 {
                 return OresFuture.failed(ex);
             }
             AtomicBoolean cancelled = new AtomicBoolean();
+            AtomicBoolean started = new AtomicBoolean();
             OresFuture<T> result = new OresFuture<>(() -> cancelled.set(true));
             try {
                 executor.execute(() -> {
-                    if (result.isDone()) return;
+                    if (!started.compareAndSet(false, true) || result.isDone()) return;
                     try {
                         // A direct/inline Executor handed to an actor is not
                         // asynchronous. Refuse it rather than accidentally
