@@ -5959,6 +5959,61 @@ public final class TypeChecker {
      * This v1 path requires a statically typed callable result. Lambdas whose
      * return type cannot be inferred are rejected, never treated as safe.
      */
+    /**
+     * Contextually type an inline pipe lambda from the sum payload, rather
+     * than turning unannotated pipe parameters into Unknown or $infer$.
+     * Only expression-bodied lambdas have an inferable return value in v1;
+     * block-bodied callbacks require an explicitly typed named function.
+     *
+     * As for ordinary lambdas, checking the body must not leak definite
+     * initialization into its surrounding lexical scope.
+     */
+    private Function inferSumLambda(
+            Ast.LambdaExpr lambda, Type input, boolean zeroArg,
+            Env parent, Set<String> generics, Type self, String operation) {
+        int expected = zeroArg ? 0 : 1;
+        if (lambda.parameters().size() != expected) {
+            throw new IllegalArgumentException(
+                    operation + " lambda expects " + expected + " parameter(s)");
+        }
+        if (lambda.expressionBody() == null) {
+            throw new IllegalArgumentException(
+                    operation + " block lambda result cannot be inferred safely");
+        }
+
+        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        List<Type> arguments = new ArrayList<>(expected);
+        if (!zeroArg) {
+            Ast.Param param = lambda.parameters().getFirst();
+            if (param.mutable() || param.structural()) {
+                throw new IllegalArgumentException(
+                        operation + " lambda cannot mutate or erase its input capability");
+            }
+            Type declared = param.type().name().equals("$infer$")
+                    ? input : resolveParam(param, generics, self);
+            requireAssignable(input, declared, operation + " lambda parameter");
+            requireAssignable(declared, input, operation + " lambda parameter");
+            arguments.add(declared);
+            lambdaEnv.define(param.name(), declared, Ast.BindingKind.VAL);
+        }
+        defineImplicitArguments(lambdaEnv, arguments);
+
+        Ast.ClassDecl previousClass = currentClassOwner;
+        Ast.ClassDecl previousConstructor = currentConstructorOwner;
+        Map<Env.Binding, Set<String>> initialized = parent.initializationSnapshot();
+        if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
+        try {
+            Type result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+            return new Function(arguments, result);
+        } finally {
+            parent.restoreInitialization(initialized);
+            currentClassOwner = previousClass;
+            currentConstructorOwner = previousConstructor;
+        }
+    }
+
     private Type checkTypedSumCombinator(
             Ast.CallExpr call, Named sum, String operation,
             Env env, Set<String> generics, Type self) {
@@ -6001,7 +6056,11 @@ public final class TypeChecker {
         final Type callbackInput = operation.equals("map_err") || operation.equals("or_else")
                 ? error : input;
         final boolean zeroArg = operation.equals("ok_or_else");
-        Type callbackType = typeOf(call.arguments().getFirst(), env, generics, self);
+        Ast.Expr callbackExpression = call.arguments().getFirst();
+        Type callbackType = callbackExpression instanceof Ast.LambdaExpr lambda
+                ? inferSumLambda(lambda, callbackInput, zeroArg, env, generics, self,
+                        kind + "." + operation)
+                : typeOf(callbackExpression, env, generics, self);
         if (!(callbackType instanceof Function callback)
                 || callback.parameters().size() != (zeroArg ? 0 : 1)
                 || callback.async()
