@@ -34,5 +34,10 @@ final class ProjectRootFlagTest {
         assertEquals(0, OresMain.exitStatusForArgs(new String[] {
                 "--check", "--project-root=" + root, entry.toString()
         }));
+        // Simulates invocation from a different working directory: src/main.ores
+        // must be interpreted relative to the explicitly selected project root.
+        assertEquals(0, OresMain.exitStatusForArgs(new String[] {
+                "--check", "--project-root=" + root, "src/main.ores"
+        }));
     }
 }
