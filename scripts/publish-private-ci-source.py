@@ -8,6 +8,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import stat
 from pathlib import Path
@@ -131,9 +132,24 @@ def strict_github_api_json(raw):
     def reject_nonstandard_number(value):
         raise Denied("nonstandard GitHub API JSON number")
 
+    def strict_int(value):
+        # GitHub object IDs, counts and limits never need unbounded integers.
+        if len(value) > 64:
+            raise Denied("invalid GitHub API JSON oversized integer")
+        return int(value)
+
+    def strict_float(value):
+        if len(value) > 128:
+            raise Denied("invalid GitHub API JSON float")
+        number = float(value)
+        if not math.isfinite(number):
+            raise Denied("nonfinite GitHub API JSON number")
+        return number
+
     try:
         data = json.loads(raw, object_pairs_hook=unique_keys,
-                          parse_constant=reject_nonstandard_number)
+                          parse_constant=reject_nonstandard_number,
+                          parse_int=strict_int, parse_float=strict_float)
     except (ValueError, RecursionError) as exc:
         raise Denied("invalid GitHub API JSON response") from exc
     if not isinstance(data, dict):
