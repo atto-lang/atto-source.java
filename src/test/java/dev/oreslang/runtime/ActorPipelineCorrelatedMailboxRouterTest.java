@@ -42,26 +42,35 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             var binding = new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
             var receipts = new AtomicReference<List<ActorPipelineCorrelatedMailboxRouter.Admission>>();
             var delivered = new CountDownLatch(2);
+            var replied = new CountDownLatch(2);
             var observed = Collections.synchronizedList(
+                    new ArrayList<ActorPipelineCorrelatedMailboxRouter.Correlation>());
+            var originReplies = Collections.synchronizedList(
                     new ArrayList<ActorPipelineCorrelatedMailboxRouter.Correlation>());
             var unexpectedPayload = new AtomicInteger();
 
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 if (!"fan-in".equals(value)) unexpectedPayload.incrementAndGet();
                 observed.add(binding.get().currentCorrelation());
+                binding.get().backward("ack");
                 delivered.countDown();
             });
             var a = runtime.<String>spawnShared(() -> (value, actor) -> {
-                assertEquals("fanout", value);
-                binding.get().forward("fan-in");
+                if (value.equals("fanout")) binding.get().forward("fan-in");
+                else if (value.equals("ack")) binding.get().backward("ack");
+                else throw new AssertionError("worker-a unexpected payload");
             });
             var b = runtime.<String>spawnShared(() -> (value, actor) -> {
-                assertEquals("fanout", value);
-                binding.get().forward("fan-in");
+                if (value.equals("fanout")) binding.get().forward("fan-in");
+                else if (value.equals("ack")) binding.get().backward("ack");
+                else throw new AssertionError("worker-b unexpected payload");
             });
             var source = runtime.<String>spawnShared(() -> (value, actor) -> {
-                assertEquals("begin", value);
-                receipts.set(binding.get().forwardAll("fanout"));
+                if (value.equals("begin")) receipts.set(binding.get().forwardAll("fanout"));
+                else if (value.equals("ack")) {
+                    originReplies.add(binding.get().currentCorrelation());
+                    replied.countDown();
+                } else throw new AssertionError("source unexpected payload");
             });
 
             var router = new ActorPipelineCorrelatedMailboxRouter<>(
@@ -73,6 +82,8 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             assertThrows(SecurityException.class, () -> router.forwardAll("spoof"));
             router.ingress("source", "begin");
             assertTrue(delivered.await(8, TimeUnit.SECONDS));
+            assertTrue(replied.await(8, TimeUnit.SECONDS),
+                    "two reverse branches must reach the actual origin");
             source.drain().get(5, TimeUnit.SECONDS);
             a.drain().get(5, TimeUnit.SECONDS);
             b.drain().get(5, TimeUnit.SECONDS);
@@ -95,6 +106,13 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             assertEquals(observed.get(0).flowId(), observed.get(1).flowId());
             assertNotEquals(observed.get(0).routeId(), observed.get(1).routeId());
             assertEquals(batch.get(0).flowId(), observed.get(0).flowId());
+            assertEquals(2, originReplies.size());
+            assertEquals("source", originReplies.get(0).receiver());
+            assertEquals("source", originReplies.get(1).receiver());
+            assertEquals(observed.get(0).flowId(), originReplies.get(0).flowId());
+            assertEquals(observed.get(1).flowId(), originReplies.get(1).flowId());
+            assertNotEquals(originReplies.get(0).routeId(), originReplies.get(1).routeId(),
+                    "two fan-in returns cannot collapse into one global previous actor");
 
             router.close();
             assertThrows(IllegalStateException.class,
