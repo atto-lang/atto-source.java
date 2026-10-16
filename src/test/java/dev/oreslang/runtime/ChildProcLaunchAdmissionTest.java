@@ -138,4 +138,61 @@ final class ChildProcLaunchAdmissionTest {
         assertThrows(IllegalArgumentException.class, () ->
                 ChildProcLaunchAdmission.admit(spec, allow()));
     }
+    @Test
+    void rejectsMalformedUnicodeBeforeLaunching() {
+        String loneHigh = String.valueOf((char) 0xd800);
+        String loneLow = String.valueOf((char) 0xdc00);
+        for (String malformed : List.of(loneHigh, loneLow, "prefix" + loneHigh)) {
+            var spec = new ChildProcLaunchAdmission.Spec(
+                    javaExecutable(), List.of(malformed), cwd(), Map.of());
+            assertThrows(IllegalArgumentException.class, () ->
+                    ChildProcLaunchAdmission.admit(spec, allow()));
+        }
+        var env = new ChildProcLaunchAdmission.Spec(
+                javaExecutable(), List.of(), cwd(), Map.of("KEY", loneHigh));
+        assertThrows(IllegalArgumentException.class, () ->
+                ChildProcLaunchAdmission.admit(env, allow()));
+    }
+
+    @Test
+    void countsUtf8SupplementaryCharactersRatherThanUtf16CodeUnits() throws Exception {
+        String emoji = new String(Character.toChars(0x1f600));
+        var small = new ChildProcLaunchAdmission.Spec(
+                javaExecutable(), List.of(emoji.repeat(1024)), cwd(), Map.of());
+        assertEquals(2, ChildProcLaunchAdmission.admit(small, allow()).argv().size());
+        var excessive = new ChildProcLaunchAdmission.Spec(
+                javaExecutable(), List.of(emoji.repeat(32768)), cwd(), Map.of());
+        assertThrows(IllegalArgumentException.class, () ->
+                ChildProcLaunchAdmission.admit(excessive, allow()));
+    }
+
+    @Test
+    void boundsCollectionCountsBeforeCloning() {
+        var tooManyArgs = new ChildProcLaunchAdmission.Spec[1];
+        assertThrows(IllegalArgumentException.class, () ->
+                tooManyArgs[0] = new ChildProcLaunchAdmission.Spec(
+                        javaExecutable(), java.util.Collections.nCopies(257, "x"), cwd(), Map.of()));
+        java.util.Map<String, String> env = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < 129; i++) env.put("KEY_" + i, "value");
+        assertThrows(IllegalArgumentException.class, () ->
+                new ChildProcLaunchAdmission.Spec(javaExecutable(), List.of(), cwd(), env));
+    }
+
+    @Test
+    void failsClosedForDirectoryAndNonExecutableFile() throws Exception {
+        Path dir = Files.createTempDirectory("ores-childproc-invalid-");
+        try {
+            Path file = Files.createFile(dir.resolve("not-executable"));
+            var dirSpec = new ChildProcLaunchAdmission.Spec(dir.toString(), List.of(), cwd(), Map.of());
+            var fileSpec = new ChildProcLaunchAdmission.Spec(file.toString(), List.of(), cwd(), Map.of());
+            assertThrows(IllegalArgumentException.class, () ->
+                    ChildProcLaunchAdmission.admit(dirSpec, allow()));
+            assertThrows(IllegalArgumentException.class, () ->
+                    ChildProcLaunchAdmission.admit(fileSpec, allow()));
+        } finally {
+            Files.deleteIfExists(dir.resolve("not-executable"));
+            Files.deleteIfExists(dir);
+        }
+    }
+
 }
