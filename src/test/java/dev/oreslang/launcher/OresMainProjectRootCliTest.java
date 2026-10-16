@@ -53,6 +53,9 @@ final class OresMainProjectRootCliTest {
         assertEquals(0, OresMain.exitStatusForArgs(new String[]{
                 "--check", "--manifest-path=" + manifest
         }));
+        assertEquals(0, OresMain.exitStatusForArgs(new String[]{
+                "--check", "--project-root=" + root
+        }));
     }
 
     @Test
