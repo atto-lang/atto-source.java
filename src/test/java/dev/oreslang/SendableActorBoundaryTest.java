@@ -113,6 +113,44 @@ final class SendableActorBoundaryTest {
     }
 
     @Test
+    void booleanSingletonTypesCanBeTransferredAsImmutableData() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<true> mail): void { return; }
+                end
+                """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  receive(ActorMail<false> mail): void { return; }
+                end
+                """)));
+    }
+
+    @Test
+    void borrowedOrNegativeTypesCannotAssertSendableProof() {
+        IllegalArgumentException negative = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<not int> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(negative.getMessage().contains("not actor-boundary sendable")
+                        || negative.getMessage().contains("concrete owned/sendable"),
+                negative.getMessage());
+
+        IllegalArgumentException borrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<Option<rt borrow int>> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(borrowed.getMessage().contains("concrete owned/sendable"),
+                borrowed.getMessage());
+    }
+
+    @Test
     void malformedBuiltinSumArityCannotBypassSendability() {
         IllegalArgumentException option = assertThrows(
                 IllegalArgumentException.class,
