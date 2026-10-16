@@ -4370,6 +4370,31 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
+        private static boolean isTypedOpenMapClass(Ast.ClassDecl klass) {
+            if (klass.parents().size() != 1) return false;
+            Ast.TypeRef parent = klass.parents().getFirst();
+            if (!parent.name().equals("Map") || parent.inferArguments()
+                    || parent.arguments().size() != 2) return false;
+            Ast.TypeRef key = parent.arguments().get(0);
+            Ast.TypeRef value = parent.arguments().get(1);
+            return !key.inferArguments() && key.arguments().isEmpty()
+                    && (key.name().equals("String") || key.name().equals("string"))
+                    && !value.inferArguments() && value.arguments().isEmpty()
+                    && value.name().equals("unknown");
+        }
+
+        private OresKeyedMap<String, Object> newGuestOpenMap(Ast.ClassDecl klass) {
+            if (!isTypedOpenMapClass(klass)) {
+                throw new IllegalArgumentException(
+                        "class is not a canonical typed open Map schema: " + klass.name());
+            }
+            if (ActorRuntime.currentActorKind() != null) {
+                throw new SecurityException(
+                        "typed Map allocation inside actors requires ownership and memory accounting");
+            }
+            return OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        }
+
         private Object newGuestMap(Ast.TypeRef type) {
             if (ActorRuntime.currentActorKind() != null) {
                 throw new SecurityException(
@@ -4566,6 +4591,13 @@ public final class OresEvalRootNode extends RootNode {
             if (klass == null) {
                 throw new IllegalArgumentException(
                         "unknown class " + created.type().name());
+            }
+            if (owner.isTypedOpenMapClass(klass)) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "typed open Map schema constructors take no arguments");
+                }
+                return owner.newGuestOpenMap(klass);
             }
             return owner.instantiate(klass, args, externalConstruction);
         }
@@ -6404,6 +6436,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                if (owner.isTypedOpenMapClass(klass)) {
+                    if (!args.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "typed open Map schema constructors take no arguments");
+                    }
+                    return owner.newGuestOpenMap(klass);
+                }
                 return owner.instantiate(klass, args, externalConstruction);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
