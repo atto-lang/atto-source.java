@@ -306,6 +306,18 @@ final class TypedOpenMapKeySchemaLanguageTest {
     }
 
     @Test
+    void schemaMapCannotBeUsedAsOrdinaryObjectSuperclass() {
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class, () ->
+                        TypeChecker.check(Parser.parse(SCHEMA + """
+                                define class Derived extends Settings as
+                                end
+                                """)));
+        assertTrue(denied.getMessage().contains("cannot be subclassed"),
+                denied.getMessage());
+    }
+
+    @Test
     void hashMapSpellingFailsWithPreciseDeferredRuntimeDiagnostic() {
         IllegalArgumentException denied = assertThrows(
                 IllegalArgumentException.class, () ->
