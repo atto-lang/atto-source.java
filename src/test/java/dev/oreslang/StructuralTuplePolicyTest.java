@@ -115,6 +115,16 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void excessiveRecursiveOptionalDepthFailsClosed() {
+        dev.oreslang.types.Types.Type type = Primitive.STRING;
+        for (int i = 0; i < 80; i++) {
+            type = new Named("Option", List.of(type));
+        }
+        dev.oreslang.types.Types.Type deepType = type;
+        assertThrows(IllegalArgumentException.class, () -> new Slot(deepType, true));
+    }
+
+    @Test
     void cannotUseShapeForSameArityOverloadingOrDynamicLists() {
         assertThrows(IllegalArgumentException.class, () ->
                 StructuralTuplePolicy.selectExplicitTupleSpread(
