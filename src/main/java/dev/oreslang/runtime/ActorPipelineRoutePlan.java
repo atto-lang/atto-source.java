@@ -44,6 +44,8 @@ public final class ActorPipelineRoutePlan {
         }
     }
 
+    private record EndpointPair(String source, String target) { }
+
     private static final int MAX_STAGES = 1024;
     private static final int MAX_EDGES = 4096;
     private static final int MAX_NAME_BYTES = 256;
@@ -82,7 +84,7 @@ public final class ActorPipelineRoutePlan {
         Map<String, List<Edge>> routes = new HashMap<>();
         Map<String, Integer> incoming = new HashMap<>();
         Map<String, Integer> indegree = new HashMap<>();
-        Set<String> pairs = new HashSet<>();
+        Set<EndpointPair> pairs = new HashSet<>();
         for (Stage stage : stages) {
             incoming.put(stage.instanceId(), 0);
             indegree.put(stage.instanceId(), 0);
@@ -99,7 +101,7 @@ public final class ActorPipelineRoutePlan {
                     || !edge.payloadType().equals(target.inbound())) {
                 throw new IllegalArgumentException("pipeline edge violates nominal payload or direction");
             }
-            String pair = edge.source() + "\u0000" + edge.target();
+            EndpointPair pair = new EndpointPair(edge.source(), edge.target());
             if (!pairs.add(pair)) {
                 throw new IllegalArgumentException("duplicate pipeline connection");
             }
