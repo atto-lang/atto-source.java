@@ -199,6 +199,29 @@ final class PortableCodecRegistryTest {
     }
 
     @Test
+    void nestedProtobufRepeatedNeedsExplicitGeneratedWrapper() {
+        Registry registry = new Registry();
+        Shape repeatedOfRepeated = new Sequence(SequenceKind.LIST,
+                new Sequence(SequenceKind.LIST, integer(), -1), -1);
+        assertThrows(IllegalArgumentException.class,
+                () -> registry.registerCompilerDescriptor(Format.PROTOBUF,
+                        Purpose.NETWORK_DATA, "app.Table", "app.TableProto", 1,
+                        new ObjectShape(List.of(new Field("rows", 1, repeatedOfRepeated)))));
+        assertEquals(0, registry.size(),
+                "reject unsupported protobuf mapping before publishing any index");
+
+        // Repeated nested messages are representable when the element itself
+        // is a separately tagged record; don't reject legitimate schemas.
+        Shape row = new ObjectShape(List.of(new Field("value", 1, integer())));
+        Descriptor valid = registry.registerCompilerDescriptor(Format.PROTOBUF,
+                Purpose.NETWORK_DATA, "app.Table", "app.TableProto", 1,
+                new ObjectShape(List.of(new Field("rows", 1,
+                        new Sequence(SequenceKind.LIST, row, -1)))));
+        assertEquals(Format.PROTOBUF, valid.format());
+        assertEquals(1, registry.size());
+    }
+
+    @Test
     void differentCompilerInstancesNeverShareMutableDescriptorTables() {
         Registry first = new Registry();
         Registry second = new Registry();
