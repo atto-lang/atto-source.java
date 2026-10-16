@@ -453,4 +453,36 @@ final class OresProjectConfigTest {
                 defaults.resolveImport(importer, "secret").orElseThrow());
     }
 
+
+    @Test
+    void dotPrefixedBareModulesUseConfiguredRootsOnlyExplicitDotSlashIsRelative() throws Exception {
+        Path project = temp.resolve("dot-prefix-modules");
+        Path src = project.resolve("src");
+        Path importerDir = src.resolve("nested");
+        Files.createDirectories(src.resolve(".hidden"));
+        Files.createDirectories(src.resolve("..backup"));
+        Files.createDirectories(importerDir.resolve(".hidden"));
+        Path globalDot = Files.writeString(src.resolve(".hidden/util.ores"),
+                "pub fnc util(): int { return 1; }");
+        Path siblingDot = Files.writeString(importerDir.resolve(".hidden/util.ores"),
+                "pub fnc util(): int { return 2; }");
+        Path globalDots = Files.writeString(src.resolve("..backup/util.ores"),
+                "pub fnc util(): int { return 3; }");
+        Path importer = Files.writeString(importerDir.resolve("main.ores"),
+                "pub fnc main(): void { return; }");
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["src"]
+                """);
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(globalDot.toRealPath(),
+                config.resolveImport(importer, ".hidden/util").orElseThrow());
+        assertEquals(globalDots.toRealPath(),
+                config.resolveImport(importer, "..backup/util").orElseThrow());
+        assertEquals(siblingDot.toRealPath(),
+                config.resolveImport(importer, "./.hidden/util").orElseThrow());
+        assertTrue(config.resolveImport(importer, "../.hidden/missing").isEmpty());
+    }
+
 }
