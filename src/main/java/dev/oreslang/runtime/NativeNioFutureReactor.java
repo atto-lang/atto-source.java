@@ -429,8 +429,12 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     }
 
     private void drainCommands() {
+        // A sustained producer flood must not prevent other sockets from
+        // getting ready-event service. Pending futures and command publication
+        // remain bounded; advance at most one quantum per loop iteration.
         Runnable next;
-        while ((next = commands.poll()) != null) next.run();
+        int quantum = 0;
+        while (quantum++ < 128 && (next = commands.poll()) != null) next.run();
     }
 
     private void run() {
@@ -438,9 +442,13 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             while (!shuttingDown.get()) {
                 drainCommands();
                 if (shuttingDown.get()) break;
-                selector.select(1000); // exclusively the dedicated host reactor
+                // If a command quantum left work behind, do not park for an
+                // extra second; service readiness and return to commands.
+                if (commands.isEmpty()) selector.select(1000);
+                else selector.selectNow();
                 Iterator<SelectionKey> it = selector.selectedKeys().iterator();
-                while (it.hasNext()) {
+                int readyQuantum = 0;
+                while (readyQuantum++ < 128 && it.hasNext()) {
                     SelectionKey key = it.next();
                     it.remove();
                     if (!key.isValid()) continue;
