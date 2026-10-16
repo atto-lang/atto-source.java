@@ -259,12 +259,22 @@ public final class ActorStateContract {
         if (expression instanceof Ast.ObjectExpr object) {
             // A compiler-generated nested default must not silently overwrite
             // another key, even if every individual value is a fresh literal.
-            Set<String> names = new java.util.HashSet<>();
+            // Explicit structs may be only partly initialized in an ordinary
+            // mutable binding, but the actor's initialization snapshot cannot
+            // acquire such an incomplete value. Require all declared fields.
+            Set<String> initialized = new java.util.HashSet<>();
             for (Ast.ObjectField field : object.fields()) {
-                if (!names.add(field.name()) || !sealedDefault(field.value()))
+                if (!initialized.add(field.name()) || !sealedDefault(field.value()))
                     return false;
             }
-            return true;
+            if (object.explicitStruct()) {
+                Set<String> declared = new java.util.HashSet<>();
+                for (Ast.StructFieldSpec field : object.declaredFields()) {
+                    if (!declared.add(field.name())) return false;
+                }
+                return initialized.equals(declared);
+            }
+            return object.inferredStruct() && object.declaredFields().isEmpty();
         }
         // In particular no NameExpr, MemberExpr, CallExpr, NewExpr, alias,
         // pointer, ownership intrinsic, coroutine or externally owned value.
