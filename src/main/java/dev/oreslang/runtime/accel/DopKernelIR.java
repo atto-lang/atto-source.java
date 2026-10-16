@@ -48,6 +48,7 @@ public final class DopKernelIR {
     private static final class State {
         final DataOrientedLayout.Plan layout;
         final ByteBuffer bytes;
+        final HostBuffer.RegionToken regionToken;
         int readLoans;
         boolean writeLoan;
         boolean closed;
@@ -61,6 +62,7 @@ public final class DopKernelIR {
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
+            this.regionToken = new HostBuffer.RegionToken(this);
         }
     }
 
