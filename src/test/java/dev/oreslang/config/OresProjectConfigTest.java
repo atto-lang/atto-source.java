@@ -263,4 +263,56 @@ final class OresProjectConfigTest {
                 () -> OresProjectConfig.discover(project.resolve("main.ores"), Map.of()));
     }
 
+
+    @Test
+    void verifiesInstalledPackageMetadataWhenPresent() throws Exception {
+        Path project = temp.resolve("identity");
+        Path installed = project.resolve("zed_modules/acme/tools");
+        Files.createDirectories(installed.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                tools = { zed = "acme/tools" }
+                """);
+        Files.writeString(installed.resolve("src/hello.ores"),
+                "pub fnc hello() : int { return 1; }");
+        Path metadata = installed.resolve(".zpkg.toml");
+        Files.writeString(metadata, """
+                [package]
+                org = "evil"
+                name = "tools"
+                version = "1.0.0"
+                """);
+        OresProjectConfig config = OresProjectConfig.discover(project.resolve("main.ores"), Map.of());
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.ores"), "pkg:tools/src/hello"));
+        assertTrue(mismatch.getMessage().contains("identity mismatch"));
+
+        Files.writeString(metadata, """
+                [package]
+                org = "acme"
+                name = "tools"
+                version = "1.0.0"
+                """);
+        assertEquals(installed.resolve("src/hello.ores").toRealPath(),
+                config.resolveImport(project.resolve("main.ores"), "pkg:tools/src/hello").orElseThrow());
+    }
+
+    @Test
+    void rejectsInvalidInstalledZedMetadataInsteadOfSilentlyProceeding() throws Exception {
+        Path project = temp.resolve("bad-zpkg");
+        Path installed = project.resolve("zed_modules/acme/tools");
+        Files.createDirectories(installed.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                tools = "acme/tools"
+                """);
+        Files.writeString(installed.resolve(".zpkg.toml"), "[package\n");
+        Files.writeString(installed.resolve("src/hello.ores"), "pub fnc hello(): int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(project.resolve("main.ores"), Map.of());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.ores"), "pkg:tools/src/hello"));
+    }
+
 }
