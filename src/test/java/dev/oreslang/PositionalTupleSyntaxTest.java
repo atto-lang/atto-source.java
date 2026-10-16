@@ -65,6 +65,15 @@ final class PositionalTupleSyntaxTest {
     }
 
     @Test
+    void positionalTupleTypeHasBoundedStaticProofArity() {
+        String slots = String.join(", ", java.util.Collections.nCopies(65, "int"));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(declaration("tuple (" + slots + ") value")));
+        assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(declaration("(" + slots + ") value")));
+    }
+
+    @Test
     void groupedSingletonTypeAndContextualTupleNameArePreserved() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(
                 "define module app\n"
