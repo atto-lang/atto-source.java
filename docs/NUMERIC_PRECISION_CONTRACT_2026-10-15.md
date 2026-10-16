@@ -14,7 +14,7 @@ Exact decimal and binary floating-point operands cannot be implicitly combined i
 ## Arithmetic and comparison
 
 - Decimal `+`, `-`, `*`, `%` use BigDecimal exact arithmetic (no silent rounding).
-- Decimal `/` uses deterministic `MathContext.DECIMAL128`: **34 significant digits, HALF_EVEN rounding**. This is a default, *not* configurable arbitrary-precision division. A future `std/decimal.divide(left,right,precision,rounding)` must be explicit and backend-neutral.
+- Decimal `/` uses deterministic `MathContext.DECIMAL128`: **34 significant digits, HALF_EVEN rounding**. For explicit higher precision use `std/decimal.divide(left,right,precision,rounding)` with 1..4096 significant digits; `round` and `sqrt` take the same context. These are Java VM intrinsics wrapped in source-first Oreslang, **not yet cross-backend parity**.
 - Decimal operation results are capped at 1,000,000 significant digits and absolute scale 200,000 for resource safety. More refined pre-allocation admission and actor-local budgets are still required.
 - Numeric equality compares the exact numeric values of finite numbers and ignores BigDecimal representational scale; +0 == -0; NaN is unequal to everything; infinities compare equal only to the same signed infinity.
 - Ordering compares exact BigDecimal and binary float numerical values without silently rounding large integers to binary64. Any relational comparison with NaN is false; signed zeros compare equal; infinity orders above/below finite values.
@@ -23,12 +23,12 @@ Exact decimal and binary floating-point operands cannot be implicitly combined i
 
 ## Native-first standard library
 
-- `std/decimal`: exact decimal sum, integer nonnegative power, and Horner polynomial evaluation.
-- `std/matrix`: row-major `Array<decimal>` dot products, element-wise addition, transpose, and matrix multiply.
+- `std/decimal`: exact decimal sum, integer nonnegative power, Horner polynomial evaluation; explicit per-call `divide`, `round`, and `sqrt` via closed `DecimalOps` VM kernel. Precision is 1..4096 significant digits and rounding is one of UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN, UNNECESSARY; there is no ambient mutable rounding context.
+- `std/matrix`: row-major `Array<decimal>` dot products, element-wise addition, transpose, and matrix multiply, exact trace and identity construction, and Frobenius norm with a caller-supplied decimal sqrt precision context.
 - Matrix shape functions return `Result<..., String>` rather than silently truncating incompatible inputs. Current reference implementation bounds each matrix dimension to 128 (dot element budget 16,384) so products/offsets fit signed 64-bit.
 - Matrix accumulation is exact under decimal addition/multiplication, not a compensated binary64 approximation.
 - These are Oreslang source modules, whitelisted by `CoreLibrarySources`, not Java interop.
-- This is a **reference matrix library**, not LAPACK, BLAS, GPU acceleration or arbitrary-scale sparse algebra. LU/QR/Cholesky/SVD, eigensolvers, norms, condition-number estimates, and configurable precision require additional work.
+- This is a **reference matrix library**, not LAPACK, BLAS, GPU acceleration or arbitrary-scale sparse algebra. LU/QR/Cholesky/SVD, eigensolvers, condition-number estimates and high-performance kernels require additional work. Frobenius norm is supported with explicitly rounded square root.
 
 ## Validation requirements before merge
 
