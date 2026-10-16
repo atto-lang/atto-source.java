@@ -47,6 +47,13 @@ public final class TypeChecker {
             "ActorOutputStream", "Option", "Result", "Mutex",
             "SharedMutex", "Channel", "Future", "Fnc", "Function");
 
+    // Reserved non-overridable actor pipeline operations. Until the typed
+    // scheduler lowering is present they must be rejected explicitly, never
+    // interpreted as arbitrary instance methods or leaked as host ActorRefs.
+    private static final Set<String> PIPELINE_ACTOR_INTRINSICS = Set.of(
+            "forward", "forward_all", "forward_round_robin", "forward_to",
+            "forward_by_key", "backward", "reply");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedInterfaceFunction(
             Ast.InterfaceDecl owner,
@@ -1270,7 +1277,8 @@ public final class TypeChecker {
                     && !method.isStatic()
                     && (method.name().equals("send")
                             || method.name().equals("end")
-                            || method.name().equals("endWithCleanup"))) {
+                            || method.name().equals("endWithCleanup")
+                            || PIPELINE_ACTOR_INTRINSICS.contains(method.name()))) {
                 throw new IllegalArgumentException(
                         "actor method name '" + method.name()
                                 + "' is reserved by the non-overridable actor transport/lifecycle API");
@@ -2667,6 +2675,12 @@ public final class TypeChecker {
                 boolean actorSelf = currentActorKind != Ast.ActorKind.NONE
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
+                if (actorSelf && PIPELINE_ACTOR_INTRINSICS.contains(member.member())) {
+                    throw new IllegalArgumentException(
+                            "self." + member.member()
+                                    + " requires compiled typed pipeline actor routing and "
+                                    + "scheduler-owned admission; source lowering is not enabled");
+                }
                 if (actorSelf && (member.member().equals("on_start")
                         || member.member().equals("receive"))) {
                     throw new IllegalArgumentException(
