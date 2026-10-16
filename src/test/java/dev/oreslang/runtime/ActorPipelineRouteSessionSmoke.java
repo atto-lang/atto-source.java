@@ -91,6 +91,26 @@ public final class ActorPipelineRouteSessionSmoke {
         check(bounded.outstanding() == 1, "all-or-none frame budget violated");
         bounded.complete(root);
 
+        // Repeat fan-out under tight credits: no unpublished identity or
+        // stale route ID may remain after child completion.
+        var reusable = new ActorPipelineRouteSession(plan, 10, 3);
+        var producer = reusable.ingress("source");
+        long previousRoute = -1;
+        for (int i = 0; i < 10000; i++) {
+            var fan = reusable.forwardAll(producer);
+            check(fan.size() == 2 && fan.get(0).routeId() > previousRoute,
+                    "fanout identities duplicated or disappeared");
+            previousRoute = fan.get(1).routeId();
+            check(reusable.outstanding() == 3, "fan-out allocated wrong batch size");
+            reject(() -> reusable.forwardRoundRobin(producer),
+                    "additional branch bypassed active-frame budget");
+            reusable.complete(fan.get(0));
+            reusable.complete(fan.get(1));
+            check(reusable.outstanding() == 1, "fan-out leaked a completed child");
+        }
+        reusable.complete(producer);
+        check(reusable.outstanding() == 0, "fan-out producer not released");
+
         var parallel = new ActorPipelineRouteSession(plan, 10, 8192);
         var r = parallel.ingress("source");
         int threads = 4, iterations = 500;
