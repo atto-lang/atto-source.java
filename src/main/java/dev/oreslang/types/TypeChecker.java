@@ -2382,6 +2382,16 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr sumMethod
+                    && Set.of("map", "map_err", "and_then", "or_else", "filter",
+                              "ok_or_else", "transpose", "ok").contains(sumMethod.member())) {
+                Type sumReceiver = deref(typeOf(sumMethod.receiver(), env, generics, self));
+                if (sumReceiver instanceof Named sum
+                        && (sum.name().equals("Option") || sum.name().equals("Result"))) {
+                    return checkTypedSumCombinator(call, sum, sumMethod.member(),
+                            env, generics, self);
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -5925,6 +5935,125 @@ public final class TypeChecker {
                     List.of(new Function(List.of(element), Primitive.VOID)),
                     named);
             default -> null;
+        };
+    }
+
+    /**
+     * Unlike the old Unknown-returning synthetic Function descriptors, these
+     * combinators must propagate the callback's *actual* return type. Otherwise
+     * Option<int> can silently widen to Option<String> and Result.and_then
+     * can change its error domain without a checked conversion.
+     *
+     * This v1 path requires a statically typed callable result. Lambdas whose
+     * return type cannot be inferred are rejected, never treated as safe.
+     */
+    private Type checkTypedSumCombinator(
+            Ast.CallExpr call, Named sum, String operation,
+            Env env, Set<String> generics, Type self) {
+        final boolean option = sum.name().equals("Option");
+        final String kind = option ? "Option" : "Result";
+        final Type input = sum.arguments().getFirst();
+        final Type error = option ? null : sum.arguments().get(1);
+        final boolean noCallback = operation.equals("transpose") || operation.equals("ok");
+
+        if (option) {
+            if (!Set.of("map", "and_then", "filter", "ok_or_else", "transpose")
+                    .contains(operation)) {
+                throw new IllegalArgumentException("unknown Option member '" + operation + "'");
+            }
+        } else if (!Set.of("map", "map_err", "and_then", "or_else", "ok")
+                .contains(operation)) {
+            throw new IllegalArgumentException("unknown Result member '" + operation + "'");
+        }
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " does not accept call-site type arguments");
+        }
+        if (call.arguments().size() != (noCallback ? 0 : 1)
+                || (!noCallback && call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " expects " + (noCallback ? "zero arguments" : "one callable"));
+        }
+        if (noCallback) {
+            if (operation.equals("ok")) return new Named("Option", List.of(input));
+            if (input instanceof Named nested
+                    && nested.name().equals("Result") && nested.arguments().size() == 2) {
+                return new Named("Result", List.of(
+                        new Named("Option", List.of(nested.arguments().getFirst())),
+                        nested.arguments().get(1)));
+            }
+            throw new IllegalArgumentException(
+                    "Option.transpose requires Option<Result<T,E>>");
+        }
+
+        final Type callbackInput = operation.equals("map_err") || operation.equals("or_else")
+                ? error : input;
+        final boolean zeroArg = operation.equals("ok_or_else");
+        Type callbackType = typeOf(call.arguments().getFirst(), env, generics, self);
+        if (!(callbackType instanceof Function callback)
+                || callback.parameters().size() != (zeroArg ? 0 : 1)
+                || callback.async()
+                || callback.mutableParameters().contains(true)) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " requires a synchronous, non-mutating "
+                    + (zeroArg ? "zero-argument" : "one-argument") + " callable");
+        }
+        if (!zeroArg) {
+            requireAssignable(callbackInput, callback.parameters().getFirst(),
+                    kind + "." + operation + " callback parameter");
+        }
+        Type mapped = callback.result();
+        // String and boolean singleton literals are scalar *values*, not
+        // invariant generic parameter identities.
+        if (mapped instanceof StringLiteral) mapped = Primitive.STRING;
+        if (mapped instanceof dev.oreslang.types.Types.BoolLiteral) mapped = Primitive.BOOL;
+        if (mapped == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " callback result cannot be inferred safely");
+        }
+        if (mapped instanceof Borrow) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " cannot publish a borrowed callback result");
+        }
+        if (option) {
+            return switch (operation) {
+                case "map" -> new Named("Option", List.of(mapped));
+                case "filter" -> {
+                    requireAssignable(mapped, Primitive.BOOL, "Option.filter predicate");
+                    yield sum;
+                }
+                case "ok_or_else" -> new Named("Result", List.of(input, mapped));
+                case "and_then" -> {
+                    if (!(mapped instanceof Named nested) ||
+                            !nested.name().equals("Option") ||
+                            nested.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Option.and_then callback must return Option<U>");
+                    }
+                    yield mapped;
+                }
+                default -> throw new IllegalArgumentException("unknown Option member '" + operation + "'");
+            };
+        }
+        return switch (operation) {
+            case "map" -> new Named("Result", List.of(mapped, error));
+            case "map_err" -> new Named("Result", List.of(input, mapped));
+            case "and_then", "or_else" -> {
+                if (!(mapped instanceof Named nested) ||
+                        !nested.name().equals("Result") ||
+                        nested.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Result." + operation + " callback must return Result");
+                }
+                // and_then cannot rewrite E, and or_else cannot rewrite T.
+                final Type invariant = operation.equals("and_then") ? error : input;
+                final Type actual = nested.arguments().get(
+                        operation.equals("and_then") ? 1 : 0);
+                requireAssignable(actual, invariant, "Result." + operation + " invariant");
+                requireAssignable(invariant, actual, "Result." + operation + " invariant");
+                yield mapped;
+            }
+            default -> throw new IllegalArgumentException("unknown Result member '" + operation + "'");
         };
     }
 
