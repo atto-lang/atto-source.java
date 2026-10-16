@@ -931,6 +931,14 @@ public final class TypeChecker {
         }
     }
     private void checkClass(String module, Ast.ClassDecl klass) {
+        // Never rely on parser-only admission. ASTs can also be constructed by
+        // tooling, deserialization or future compiler transforms.
+        if (klass.maxActorThreads() != Ast.MaxActorThreads.LOW) {
+            throw new IllegalArgumentException(
+                    "@ActorMaxThreads requires per-turn state isolation and"
+                    + " authenticated runtime leases before "
+                    + klass.maxActorThreads().value() + " physical actor turns can execute");
+        }
         Ast.ClassDecl previousLexicalClass = lexicalClassOrigin;
         lexicalClassOrigin = klass;
         try {
