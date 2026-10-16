@@ -96,6 +96,23 @@ References:
    variable after the validation session. Check for lingering workspaces,
    artifacts, caches and source copies; perform the host's secure teardown.
 
+## Shared validation queue
+
+The exact-main, exact-candidate, and private-publisher validation workflows
+all use the same GitHub Actions concurrency group:
+`private-oreslang-isolated-validation` with `cancel-in-progress: false`.
+These validations can otherwise overlap even when their individual workflow
+groups seem exclusive, causing resource contention or accidental mixed-source
+workspace evidence on repository-scoped runners. Treat this as an additional
+serialization control, **not** a replacement for one-time runner provisioning,
+immutable commit/tree checks, protected main, or independent approval.
+
+GitHub concurrency permits at most one running and one pending run per group.
+A newly queued dispatch can replace an older pending run even when running
+runs are not canceled. Recheck the exact requested candidate SHA and job
+status after admission; a superseded or canceled pending run is not evidence
+of test execution. Do not rely on ordering between queued dispatches.
+
 ## Safety and availability constraints
 
 - Only `workflow_dispatch` is admitted; no `pull_request`,
