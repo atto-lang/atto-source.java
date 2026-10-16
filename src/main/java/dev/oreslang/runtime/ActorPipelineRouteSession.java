@@ -182,6 +182,23 @@ final class ActorPipelineRouteSession {
         active.remove(current);
     }
 
+    /**
+     * VM-owned mailbox cleanup. Retire a delivered or cancelled envelope
+     * without granting a caller the right to complete arbitrary frames.
+     * Terminal selection may already have consumed the frame. A previous
+     * generation must never retire a successor's frame.
+     */
+    static void retireDelivered(MailFrame frame) {
+        if (frame == null) return;
+        frame.session.retireIfActive(frame);
+    }
+
+    private synchronized void retireIfActive(MailFrame frame) {
+        if (!closed && frame.session == this && frame.generation == generation) {
+            active.remove(frame);
+        }
+    }
+
     /** A clean topology change is only allowed after every current message
      * has completed. In-flight actor messages must never silently disappear. */
     synchronized void advanceGeneration(long successor) {
