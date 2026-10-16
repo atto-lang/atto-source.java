@@ -4913,7 +4913,7 @@ public final class TypeChecker {
         // literal strings. Their runtime representation is a plain boolean,
         // so reject unsafe complement/borrow types without rejecting these.
         if (type instanceof Primitive || type instanceof StringLiteral
-                || type instanceof BoolLiteral) return;
+                || type instanceof Types.BoolLiteral) return;
         if (type instanceof ListType list) {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
             return;
