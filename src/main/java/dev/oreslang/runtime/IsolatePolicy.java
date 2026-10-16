@@ -252,6 +252,11 @@ public record IsolatePolicy(
                 || authorizationRoot.equals("java.lang.ProcessBuilder")
                 || authorizationRoot.equals("java.lang.ProcessHandle")
                 || authorizationRoot.equals("java.lang.Thread")
+                // ThreadLocal and ClassValue bypass actor-private state by
+                // storing data in host-thread or JVM Class-keyed caches.
+                || authorizationRoot.equals("java.lang.ThreadLocal")
+                || authorizationRoot.equals("java.lang.InheritableThreadLocal")
+                || authorizationRoot.equals("java.lang.ClassValue")
                 || authorizationRoot.equals("java.lang.ThreadGroup")
                 || authorizationRoot.equals("java.lang.SecurityManager")
                 || authorizationRoot.equals("java.util.ServiceLoader")
@@ -369,13 +374,29 @@ public record IsolatePolicy(
                 if (Modifier.isPublic(constructor.getModifiers())) access.allowAccess(constructor);
             }
             for (Method method : type.getDeclaredMethods()) {
-                if (Modifier.isPublic(method.getModifiers())) access.allowAccess(method);
+                if (Modifier.isPublic(method.getModifiers())
+                        && !isUnscopedGlobalMutator(type, method)) {
+                    access.allowAccess(method);
+                }
             }
             for (Field field : type.getDeclaredFields()) {
                 if (Modifier.isPublic(field.getModifiers())) access.allowAccess(field);
             }
         }
         return access.build();
+    }
+
+    /**
+     * A Java host-class allowlist does not imply authorization to mutate
+     * process-wide defaults shared by every isolate and actor. Keep useful
+     * read-only Locale/TimeZone functionality, but never export their global
+     * setters through Graal HostAccess.
+     */
+    static boolean isUnscopedGlobalMutator(Class<?> type, Method method) {
+        if (!Modifier.isStatic(method.getModifiers())
+                || !method.getName().equals("setDefault")) return false;
+        return type == java.util.Locale.class
+                || java.util.TimeZone.class.isAssignableFrom(type);
     }
 
     public boolean allows(Capability capability) {
