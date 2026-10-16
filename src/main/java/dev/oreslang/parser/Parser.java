@@ -3612,7 +3612,7 @@ public final class Parser {
         }
         // Contextual lex capture policy must be recognized before a generic
         // IDENT; otherwise lex[bindings] is parsed as ordinary indexing.
-        if (isContextualIdentifier("lex") && checkNext(LBRACKET)) {
+        if (looksLikeSelectiveLexLambda()) {
             advance();
             return parseSelectiveLambda(Ast.LambdaCapturePolicy.ALLOW);
         }
@@ -3728,6 +3728,38 @@ public final class Parser {
                 ? "expected '}' after explicit struct initializer"
                 : "expected '}' after infer struct literal");
         return new Ast.ObjectExpr(fields, kind, declaredFields);
+    }
+
+    /**
+     * 'lex' is contextual: lex[index] remains ordinary indexing unless a
+     * capture-list-shaped bracket is immediately followed by lambda syntax.
+     */
+    private boolean looksLikeSelectiveLexLambda() {
+        if (!isContextualIdentifier("lex") || !checkNext(LBRACKET)) return false;
+        int i = current + 2;
+        if (i >= tokens.size()) return false;
+        if (tokens.get(i).type() != RBRACKET) {
+            while (i < tokens.size()) {
+                Token.Type type = tokens.get(i).type();
+                if (type != IDENT && type != SELF) return false;
+                i++;
+                if (i >= tokens.size()) return false;
+                if (tokens.get(i).type() == RBRACKET) break;
+                if (tokens.get(i).type() != COMMA) return false;
+                i++;
+            }
+        }
+        if (i + 1 >= tokens.size() || tokens.get(i).type() != RBRACKET) return false;
+        Token.Type next = tokens.get(i + 1).type();
+        if (next == PIPE) return true;
+        if (next != LPAREN) return false;
+        int saved = current;
+        try {
+            current = i + 1;
+            return looksLikeLambda();
+        } finally {
+            current = saved;
+        }
     }
 
     private Ast.LambdaExpr parseSelectiveLambda(Ast.LambdaCapturePolicy policy) {
