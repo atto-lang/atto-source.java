@@ -177,8 +177,14 @@ final class ChildProcOwnedRuntimeTest {
     }
 
     @Test
-    void quotaExceptionHasDistinctTypeFromNormalTeardown() {
-        assertNotNull(ChildProcOwnedRuntime.class);
+    void exitRecordDefensivelyCopiesConstructorArrays() {
+        byte[] stdout = "example".getBytes(StandardCharsets.UTF_8);
+        byte[] stderr = "warning".getBytes(StandardCharsets.UTF_8);
+        var result = new ChildProcOwnedRuntime.Exit(0, stdout, stderr);
+        stdout[0] = 'X';
+        stderr[0] = 'Y';
+        assertEquals("example", new String(result.stdout(), StandardCharsets.UTF_8));
+        assertEquals("warning", new String(result.stderr(), StandardCharsets.UTF_8));
     }
 
     @Test
