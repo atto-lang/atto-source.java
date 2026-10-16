@@ -148,7 +148,11 @@ public final class OresProjectConfig {
         Path manifestDir = absoluteManifest.getParent();
         // @/ always means the directory containing .ores.pkg.toml.
         // Legacy compiler manifests keep their explicit project.root behavior.
-        String rootText = defaultString(toml.getString("project.root"), ".");
+        String explicitRoot = toml.getString("project.root");
+        if (explicitRoot == null && toml.get("project.root") != null) {
+            throw new IllegalArgumentException(manifestName + " project.root must be a string");
+        }
+        String rootText = defaultString(explicitRoot, ".");
         if (packageManifest && !".".equals(rootText)) {
             throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
                     + " cannot override its physical manifest directory with project.root");
@@ -161,6 +165,9 @@ public final class OresProjectConfig {
         List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
 
         String mainText = toml.getString("entrypoints.main");
+        if (mainText == null && toml.get("entrypoints.main") != null) {
+            throw new IllegalArgumentException(manifestName + " entrypoints.main must be a string");
+        }
         Path mainEntrypoint = mainText == null ? null : resolvePath(projectRoot, mainText);
 
         return new OresProjectConfig(
