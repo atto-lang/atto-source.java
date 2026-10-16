@@ -110,6 +110,53 @@ class AsyncNativeIoTest {
         }
     }
 
+    @Test void coreNumericLoggingDoesNotChangeIoFailuresOrLeakGuestExceptionText() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CoreLog.configure(CoreLog.Level.WARN);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try (var io = new AsyncNativeIo(1)) {
+            var blocked = io.submit("slow", () -> {
+                started.countDown();
+                release.await();
+                return 19;
+            });
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+            var rejected = io.submit("private-operation-name", () -> fail("must not run"));
+            assertInstanceOf(RejectedExecutionException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS)).getCause());
+            release.countDown();
+            assertEquals(19, blocked.get(2, TimeUnit.SECONDS));
+
+            var failed = io.submit("another-secret-operation", () -> {
+                throw new IllegalStateException("PRIVATE-GUEST-EXCEPTION-TEXT");
+            });
+            assertInstanceOf(IllegalStateException.class,
+                    assertThrows(ExecutionException.class,
+                            () -> failed.get(2, TimeUnit.SECONDS)).getCause());
+            assertEquals(7, io.submit("normal", () -> 7).get(2, TimeUnit.SECONDS),
+                    "diagnostic publication must not change later admissions");
+
+            var output = new ByteArrayOutputStream();
+            CoreLog.dumpRetained(new PrintStream(output, true, java.nio.charset.StandardCharsets.UTF_8));
+            String json = output.toString(java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(json.contains("\"event\":\"async.io.rejected\""));
+            assertTrue(json.contains("\"event\":\"async.io.failed\""));
+            assertFalse(json.contains("PRIVATE-GUEST-EXCEPTION-TEXT"));
+            assertFalse(json.contains("private-operation-name"));
+            assertFalse(json.contains("another-secret-operation"));
+            assertFalse(json.contains("\"value\":0"));
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+        var afterDisable = new ByteArrayOutputStream();
+        CoreLog.dumpRetained(new PrintStream(afterDisable));
+        assertEquals("", afterDisable.toString(),
+                "explicitly disabled diagnostics must not export prior I/O events");
+    }
+
     @Test void delayedTcpReadReleasesSingleActorCarrierAndSupportsWriteAndEof() throws Exception {
         String previous = System.getProperty("ores.runtime.actor.shared.parallelism");
         System.setProperty("ores.runtime.actor.shared.parallelism", "1");
