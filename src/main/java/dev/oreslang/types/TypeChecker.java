@@ -4949,17 +4949,25 @@ public final class TypeChecker {
                     where + " cannot use " + named.name()
                             + " across an actor boundary; actor communication uses ActorRef/mailbox transport");
         }
+        // A shared actor has read-only shared authority, not shared-memory
+        // mutation authority. No actor kind may receive a live SharedMutex:
+        // otherwise a generic nested payload launders host lock authority.
         if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE || actorKind == Ast.ActorKind.UNTRUSTED) {
-                throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
-            }
-            if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
-                throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
-            }
-            return;
+            throw new IllegalArgumentException(
+                    where + " cannot send SharedMutex<T> across an actor boundary");
+        }
+        // Codec objects and supervisor/control handles are capabilities, not
+        // serializable data. The rule applies recursively via the parent
+        // tuple/list/record/sum traversal above.
+        if (java.util.Set.of("NetworkCodec", "ActorMessageCodec", "MessagePackCodec",
+                    "JsonCodec", "ProtobufCodec", "Pointer", "Stream", "Observable",
+                    "SupervisorId", "SupervisorProcess", "SupervisorFailureControl",
+                    "SupervisorNotice", "ActorGroup", "ActorGroupId",
+                    "ActorGroupContext", "ActorMailman", "ChannelReader",
+                    "ChannelWriter", "ActorControlHandle").contains(named.name())) {
+            throw new IllegalArgumentException(
+                    where + " cannot send runtime/codec/supervisor capability "
+                            + named.name() + " as actor mailbox data");
         }
 
         // An ActorRef<T> is scoped runtime authority, not wire data. Its
