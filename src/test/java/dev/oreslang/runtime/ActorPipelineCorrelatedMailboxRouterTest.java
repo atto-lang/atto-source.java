@@ -148,6 +148,15 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             var workerA = runtime.<String>spawnShared(() -> (value, actor) -> { });
             var workerB = runtime.<String>spawnShared(() -> (value, actor) -> { });
             var source = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var privateWorker = runtime.<String>spawnPrivateTrusted(
+                    context -> (value, actor) -> { });
+            assertThrows(IllegalArgumentException.class,
+                    () -> new ActorPipelineCorrelatedMailboxRouter<>(
+                            runtime, fanInGraph(),
+                            Map.of("source", source, "worker-a", workerA,
+                                   "worker-b", privateWorker, "sink", sink),
+                            3, 8),
+                    "private actor must not be given VM-owned shared route frames");
             var router = new ActorPipelineCorrelatedMailboxRouter<>(
                     runtime, fanInGraph(),
                     Map.of("source", source, "worker-a", workerA,
@@ -162,10 +171,12 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             source.stop();
             workerA.stop();
             workerB.stop();
+            privateWorker.stop();
             sink.stop();
             source.getDone().get(5, TimeUnit.SECONDS);
             workerA.getDone().get(5, TimeUnit.SECONDS);
             workerB.getDone().get(5, TimeUnit.SECONDS);
+            privateWorker.getDone().get(5, TimeUnit.SECONDS);
             sink.getDone().get(5, TimeUnit.SECONDS);
         }
     }
