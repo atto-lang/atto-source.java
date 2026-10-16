@@ -3,7 +3,6 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -22,7 +21,9 @@ class ActorPhysicalTurnCreditsTest {
         first.close();
         first.close();
         assertEquals(0, gate.active());
-        assertNotNull(gate.tryAcquire());
+        var replacement = gate.tryAcquire();
+        assertNotNull(replacement);
+        replacement.close();
     }
 
     @Test void explicitThreeAdmitsAtMostThreeAndReleasesOnce() {
@@ -58,6 +59,7 @@ class ActorPhysicalTurnCreditsTest {
         var ready = new CountDownLatch(16);
         var start = new CountDownLatch(1);
         var release = new CountDownLatch(1);
+        var attempted = new CountDownLatch(16);
         var observedPeak = new AtomicInteger();
         var granted = new AtomicInteger();
         try (var pool = Executors.newFixedThreadPool(16)) {
@@ -68,6 +70,7 @@ class ActorPhysicalTurnCreditsTest {
                     if (!start.await(5, TimeUnit.SECONDS))
                         throw new AssertionError("start barrier timed out");
                     var permit = gate.tryAcquire();
+                    attempted.countDown();
                     if (permit == null) return;
                     try (permit) {
                         granted.incrementAndGet();
@@ -80,9 +83,10 @@ class ActorPhysicalTurnCreditsTest {
             assertTrue(ready.await(5, TimeUnit.SECONDS));
             start.countDown();
             try {
+                assertTrue(attempted.await(5, TimeUnit.SECONDS),
+                        "all claims must occur before the release barrier");
                 // Workers may race a single-attempt CAS; no minimum count is
                 // required. The strict safety property is never exceeding three.
-                while (ready.getCount() != 0) Thread.onSpinWait();
                 assertTrue(gate.active() <= 3);
             } finally {
                 release.countDown();
