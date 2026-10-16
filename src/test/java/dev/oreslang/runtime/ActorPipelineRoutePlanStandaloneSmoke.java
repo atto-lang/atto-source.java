@@ -212,9 +212,9 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                         && counts.get(1) == writers * sendsEach / 2,
                 "concurrent round-robin lost selections");
 
-        // Shared canonical v1 selector fixture: one producer, three
+        // Shared canonical v1 selector fixture: one producer, canonicalThree
         // independently owned Worker instances of the same nominal type.
-        var three = new ActorPipelineRoutePlan(
+        var canonicalThree = new ActorPipelineRoutePlan(
                 List.of(
                         new ActorPipelineRoutePlan.Stage(
                                 "producer-1", "Producer", ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
@@ -228,12 +228,12 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                         new ActorPipelineRoutePlan.Edge("producer-1", "worker-a", "Event"),
                         new ActorPipelineRoutePlan.Edge("producer-1", "worker-b", "Event"),
                         new ActorPipelineRoutePlan.Edge("producer-1", "worker-c", "Event")));
-        check(three.forwardAll("producer-1").stream()
+        check(canonicalThree.forwardAll("producer-1").stream()
                 .map(ActorPipelineRoutePlan.Edge::target).toList()
                 .equals(List.of("worker-a", "worker-b", "worker-c")),
-                "three-consumer fan-out publication order");
+                "canonicalThree-consumer fan-out publication order");
         for (int i = 0; i < 6; ++i) {
-            check(three.forwardRoundRobin("producer-1").target().equals(
+            check(canonicalThree.forwardRoundRobin("producer-1").target().equals(
                     List.of("worker-a", "worker-b", "worker-c").get(i % 3)),
                     "canonical RR sequence differs from other backends");
         }
@@ -241,15 +241,15 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                 String.valueOf((char) 0)};
         String[] destinations = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c", "worker-a"};
         for (int i = 0; i < keys.length; i++) {
-            check(three.forwardByKey("producer-1", keys[i]).target()
+            check(canonicalThree.forwardByKey("producer-1", keys[i]).target()
                     .equals(destinations[i]),
                     "canonical FNV-1a64 key destination disagrees across backends");
         }
-        check(three.forwardTo("producer-1", "worker-b").target().equals("worker-b"),
-                "three-consumer targeted route mismatch");
-        rejects(() -> three.forward("producer-1"),
+        check(canonicalThree.forwardTo("producer-1", "worker-b").target().equals("worker-b"),
+                "canonicalThree-consumer targeted route mismatch");
+        rejects(() -> canonicalThree.forward("producer-1"),
                 "multi-consumer forward silently picked a target");
-        rejects(() -> three.forwardTo("producer-1", "worker-z"),
+        rejects(() -> canonicalThree.forwardTo("producer-1", "worker-z"),
                 "unknown canonical destination was accepted");
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
                 + " cases=24 concurrent_selections=" + (writers * sendsEach));
