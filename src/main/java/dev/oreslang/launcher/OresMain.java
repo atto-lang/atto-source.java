@@ -91,6 +91,10 @@ public final class OresMain {
         List<IsolatePolicy.Capability> additionalCapabilities = new ArrayList<>();
         Set<String> allowedHostClasses = new LinkedHashSet<>();
         String filename = null;
+        // flags-2-env supplies these same variables when launched by a schema
+        // wrapper. Preserve direct Java launcher compatibility for --flag=value.
+        String manifestOption = null;
+        String rootOption = null;
 
         for (String arg : args) {
             try {
@@ -124,6 +128,17 @@ public final class OresMain {
                     buildEntryPoints.add(raw);
                 } else if (arg.startsWith("--mode=")) mode = arg.substring("--mode=".length());
                 else if (arg.startsWith("--platform=")) platform = arg.substring("--platform=".length());
+                else if (arg.startsWith("--manifest-path=")) {
+                    if (manifestOption != null) throw new UsageException("duplicate --manifest-path");
+                    manifestOption = arg.substring("--manifest-path=".length());
+                    if (manifestOption.isBlank()) throw new UsageException("--manifest-path requires a .ores.pkg.toml path");
+                    Path.of(manifestOption); // malformed paths must be CLI usage errors
+                } else if (arg.startsWith("--project-root=")) {
+                    if (rootOption != null) throw new UsageException("duplicate --project-root");
+                    rootOption = arg.substring("--project-root=".length());
+                    if (rootOption.isBlank()) throw new UsageException("--project-root requires a directory");
+                    Path.of(rootOption);
+                }
                 else if (arg.startsWith("--allow=")) {
                     String raw = arg.substring("--allow=".length());
                     if (raw.isBlank()) {
@@ -151,6 +166,11 @@ public final class OresMain {
             }
         }
 
+        Map<String, String> projectEnvironment = new java.util.HashMap<>(System.getenv());
+        if (manifestOption != null) projectEnvironment.put(OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifestOption);
+        if (rootOption != null) projectEnvironment.put(OresProjectConfig.ENV_ORES_PROJECT_ROOT, rootOption);
+        projectEnvironment = Map.copyOf(projectEnvironment);
+
         // Report mutually exclusive CLI flags before opening/discovering a file.
         // An invalid invocation is status 2 even when the source path is absent.
         if (checkOnly && buildAnalysis) {
@@ -166,9 +186,14 @@ public final class OresMain {
         }
         Path path;
         if (filename == null) {
-            OresProjectConfig project = OresProjectConfig.discover(
-                    Path.of("").toAbsolutePath().normalize(),
-                    System.getenv());
+            // Explicit entry-package selection also works from a different
+            // working directory and when no entry filename was supplied.
+            String selectedManifest = projectEnvironment.get(OresProjectConfig.ENV_ORES_MANIFEST_PATH);
+            String selectedRoot = projectEnvironment.get(OresProjectConfig.ENV_ORES_PROJECT_ROOT);
+            Path discoveryStart = selectedManifest != null ? Path.of(selectedManifest)
+                    : selectedRoot != null ? Path.of(selectedRoot)
+                    : Path.of("").toAbsolutePath().normalize();
+            OresProjectConfig project = OresProjectConfig.discover(discoveryStart, projectEnvironment);
             path = project.mainEntrypoint().orElse(null);
             if (path == null) {
                 printUsage();
@@ -244,7 +269,7 @@ public final class OresMain {
             try {
                 LinkedProgramRunner.validate(
                         path,
-                        System.getenv(),
+                        projectEnvironment,
                         policy,
                         permissionCheckMode);
             } catch (Exception error) {
@@ -262,7 +287,7 @@ public final class OresMain {
                 permissionCheckMode,
                 profile,
                 allowedHostClasses,
-                System.getenv(),
+                projectEnvironment,
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
