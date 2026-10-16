@@ -80,7 +80,7 @@ final class RuntimePermissionsNetworkAuditTest {
         for (String malformed : new String[]{
                 "[:::1]:443", "[1:2:3:4:5:6:7:8:9]:443", "[12345::1]:443",
                 "[::1%lo0]:443", "[::ffff:127.0.0.1]:443",
-                "[::1]:443:444", "[::1]:0", "[::1]:65536"
+                "[::1]:443:444", "[::1]:-1", "[::1]:65536"
         }) {
             assertFalse(broad.allows(RuntimePermissions.Permission.NET, malformed),
                     "malformed IPv6 endpoint matched unrestricted grant: " + malformed);
@@ -132,7 +132,7 @@ final class RuntimePermissionsNetworkAuditTest {
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
 
         for (String target : new String[]{
-                "", "api.example.com:0", "api.example.com:65536",
+                "", "api.example.com:-1", "api.example.com:65536",
                 "api.example.com:443:999", "api.example.com:", "*.example.com:443",
                 "http://api.example.com:443", "user@api.example.com:443",
                 "api.example.com..:443", "api.example.com..", "api.example.com...:443",
@@ -141,6 +141,25 @@ final class RuntimePermissionsNetworkAuditTest {
             assertFalse(policy.allows(RuntimePermissions.Permission.NET, target),
                     "malformed endpoint unexpectedly allowed: " + target);
         }
+    }
+
+    @Test
+    void ephemeralBindPortIsValidButNeverAWildcardGrant() {
+        RuntimePermissions scoped = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "127.0.0.1:0");
+        assertTrue(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertFalse(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
+        assertFalse(scoped.allows(RuntimePermissions.Permission.NET, "127.0.0.2:0"));
+        RuntimePermissions roundTrip = RuntimePermissions.fromApplicationArguments(
+                scoped.applicationArguments(),
+                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK));
+        assertTrue(roundTrip.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertFalse(roundTrip.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
+        RuntimePermissions denied = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*")
+                .withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:0");
+        assertFalse(denied.allows(RuntimePermissions.Permission.NET, "127.0.0.1:0"));
+        assertTrue(denied.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
     }
 
     @Test

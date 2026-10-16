@@ -352,7 +352,12 @@ public final class RuntimePermissions {
             } catch (NumberFormatException invalid) {
                 return null;
             }
-            if (port < 1 || port > 65535) return null;
+            // Port zero is a valid requested local bind: http.listen asks
+            // the OS for an ephemeral port. Keep it distinct from every
+            // concrete port, rather than treating it as a wildcard.
+            if (port < 0 || port > 65535) {
+                return null;
+            }
         }
         return new NetworkScope(host, port);
     }
