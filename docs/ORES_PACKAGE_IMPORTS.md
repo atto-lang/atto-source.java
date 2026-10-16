@@ -21,8 +21,9 @@ import class ArrayList from "java:java.util.ArrayList";
 - `+lib/foo` (without `/` after `+`) is invalid; use `+/lib/foo`.
   Legacy experimental `@/` syntax is rejected, not silently reinterpreted.
 - `pkg:<alias>/<path>` is a manifest-declared dependency alias, resolved
-  under the corresponding zed-pkg installation. The compiler does **not**
-  download packages, resolve semver, or run installers.
+  under the corresponding zed-pkg installation. Both `pkg:` and `+/` require
+  forward slashes, with no empty, `.` or `..` segments. The compiler does
+  **not** download packages, resolve semver, or run installers.
 - Bare imports check project `source.roots`, `source.import_paths`,
   `ORES_PATHS`, then legacy `ORESLANG_PATH`, in that order. An omitted
   `source.roots` defaults to `["."]`; an explicitly empty `roots = []`
@@ -116,10 +117,12 @@ cannot import `+/` from its consumer. Nested package manifests reached through
 relative or bare imports are discovered as distinct source roots. If two different
 package contexts refer to the **same physical file**, the linker rejects the
 ambiguity rather than silently compiling the file with whichever `+/` or
-`pkg:` namespace was visited first. Symlink traversal can still resolve
-files outside the project root. These rules are **import discovery**, not
-filesystem confinement or a defense against a hostile concurrent filesystem
-mutator.
+`pkg:` namespace was visited first. The compiler confines `+/` and `pkg:`
+imports to their respective physical package roots, but **bare and explicit
+relative imports** can still resolve files elsewhere. The public package-
+context transition validates that a supplied imported source is physically
+the same file as the declared `pkg:` target. These rules are import-namespace
+boundaries, not a defense against a hostile concurrent filesystem mutator.
 
 A typical development flow is:
 
