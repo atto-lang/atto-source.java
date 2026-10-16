@@ -61,6 +61,18 @@ AST/compiler contract; filesystem/package resolution is a host build/bundling
 concern so strict isolates do not gain ambient filesystem access merely by using
 `import`.
 
+Import strings also support explicit project/package boundaries:
+
+```ores
+import fnc shared from "@/src/shared";         // nearest .ores.pkg.toml root
+import fnc parse from "pkg:json/src/parser";    // declared zed-pkg alias
+```
+
+Bare paths search project-configured roots, then `ORES_PATHS`, then legacy
+`ORESLANG_PATH`. The compiler accepts symlinked roots and installed packages,
+but installation and version pinning remain the responsibility of zed-pkg;
+see [package imports](ORES_PACKAGE_IMPORTS.md).
+
 Java host classes use an explicit `java:` URI and the same alias syntax:
 
 ```ores
