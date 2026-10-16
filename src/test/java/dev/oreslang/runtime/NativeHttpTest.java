@@ -120,10 +120,14 @@ class NativeHttpTest {
         Object exchange = new Object();
         CountDownLatch delivered = new CountDownLatch(1);
         var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        var received = new java.util.concurrent.atomic.AtomicReference<Object>();
+        var receivedFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
         var heldMonitor = new java.util.concurrent.atomic.AtomicBoolean();
         var blockedPeer = new java.util.concurrent.atomic.AtomicBoolean();
         accepted.whenCompleteRuntime((value, failure) -> {
             callbacks.incrementAndGet();
+            received.set(value);
+            receivedFailure.set(failure);
             if (Thread.holdsLock(listenerMonitor)) heldMonitor.set(true);
             CountDownLatch peerAcquired = new CountDownLatch(1);
             Thread.ofVirtual().start(() -> {
@@ -137,8 +141,6 @@ class NativeHttpTest {
             } finally {
                 delivered.countDown();
             }
-            assertSame(exchange, value);
-            assertNull(failure);
         });
         synchronized (listenerMonitor) {
             assertThrows(IllegalStateException.class, () ->
@@ -149,6 +151,9 @@ class NativeHttpTest {
         NativeHttp.publishOutsideMonitor(listenerMonitor, accepted, exchange);
         assertTrue(delivered.await(5, TimeUnit.SECONDS));
         assertTrue(accepted.isDone());
+        assertSame(exchange, accepted.get(5, TimeUnit.SECONDS));
+        assertSame(exchange, received.get(), "accept callback received the wrong exchange");
+        assertNull(receivedFailure.get());
         assertEquals(1, callbacks.get(), "accept callback must run exactly once");
         assertFalse(heldMonitor.get(), "accept callback executed inside listener monitor");
         assertFalse(blockedPeer.get(),
