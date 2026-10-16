@@ -1385,7 +1385,7 @@ public final class TypeChecker {
             // capability in the environment, rather than laundering it into ownership.
             if (actual instanceof Borrow borrowed && !borrowed.mutable()
                     && binding.initializer() instanceof Ast.RuntimeCallExpr runtime
-                    && (runtime.operation().equals("unref") || runtime.operation().equals("deref"))
+                    && runtime.operation().equals("deref")
                     && !(declared instanceof Borrow)) {
                 requireAssignable(borrowed.target(), declared, "pointee for " + binding.name());
                 declared = new Borrow(declared, false);
