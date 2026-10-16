@@ -193,12 +193,12 @@ public final class TypeChecker {
     }
 
     private void bindMethodCall(
-            Ast.CallExpr call, Ast.ClassDecl staticReceiver, Ast.MethodDecl target) {
+            Ast.CallExpr call, Ast.ClassDecl staticReceiver,
+            Ast.ClassDecl declaringOwner, Ast.MethodDecl target) {
         // A linked imported class is not the current source image. Remote
         // class identity needs a separate linker proof before publication.
         if (!classOwners.containsKey(staticReceiver)
-                || !classOwners.containsKey(findDeclaringClass(
-                        staticReceiver, target, new LinkedHashSet<>()))) {
+                || !classOwners.containsKey(declaringOwner)) {
             return;
         }
         Ast.MethodCallBinding binding = new Ast.MethodCallBinding(
@@ -3163,7 +3163,7 @@ public final class TypeChecker {
                         // participate in this ordinary instance-call table.
                         if (klass.actorKind() == Ast.ActorKind.NONE
                                 && owner.actorKind() == Ast.ActorKind.NONE) {
-                            bindMethodCall(call, klass, method);
+                            bindMethodCall(call, klass, owner, method);
                         }
                         return result;
                     }
