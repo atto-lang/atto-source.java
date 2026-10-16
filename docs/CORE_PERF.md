@@ -136,6 +136,8 @@ events. The producer uses fixed event identifiers and numeric values only.
 - [Native AOT executable and CLI smoke passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38929690187): GraalVM 25.3; exact 96-blob Java module mirror
 - [Java actor/CLI/OTel regression tests 50/50 passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38929064534)
 - [Expanded async I/O and CLI failure tests 59/59 passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38945844351): exact 98-blob source mirror, including real failure/rejection and prevention of exception-text disclosure
+- [60/60 Java logging + OTel integration tests passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38946580025), including a JDK thread-allocation regression over 100,000 enabled numeric recorder events
+- [GraalVM native hybrid executable and CLI smoke passed](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-web-server.ores/actions/runs/38946273871): exact 98-blob source mirror, `--build-info` reports `hybrid`, severity and disabled CLI flags verified
 - The guest telemetry smoke executes real `oreslang-otel` code and validates nine JSONL records. This is not OTLP exporter verification.
 
 No complete Git root-tree SHA match is claimed: the full-tree transfer
