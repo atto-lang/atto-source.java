@@ -104,6 +104,22 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void acceptsAndExecutesExactly128ForwardedStages() throws Exception {
+        String program = "fnc increment(int n): int { return n + 1; } "
+                + "pub fnc main(): void { stdio.println(1"
+                + " |> increment".repeat(128) + "); return; }";
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-128.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals("129", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
+    @Test
     void rejectsErrorTypeMutationByAndThen() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
