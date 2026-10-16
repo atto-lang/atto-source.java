@@ -34,6 +34,67 @@ public final class OresContext implements AutoCloseable {
     private final AsyncRuntime asyncRuntime;
     private final RuntimeGarbageCollector garbageCollector;
     private final AsyncNativeIo nativeIo = new AsyncNativeIo();
+    private final java.util.Set<NativeNioFutureReactor> nioListeners = new java.util.HashSet<>();
+    private final Object nioLifecycle = new Object();
+    private boolean nioContextClosed;
+    private int nioOpening;
+    // Bounded context-owned reactors while full VM selector sharing is staged.
+    private static final int MAX_NIO_LISTENERS_PER_CONTEXT = 4;
+
+    /** Verify both current NETWORK capability and the listener's context owner. */
+    public void requireNioOwner(NativeNioFutureReactor listener, String operation) {
+        synchronized (nioLifecycle) {
+            if (nioContextClosed || !nioListeners.contains(listener))
+                throw new SecurityException("foreign or closed nonblocking TCP listener: " + operation);
+        }
+        requireCapability(IsolatePolicy.Capability.NETWORK, operation);
+    }
+
+    public void requireNioOwner(NativeNioFutureReactor.Connection connection, String operation) {
+        requireNioOwner(connection.ownerReactor(), operation);
+    }
+
+    /** Kernel-only, loopback/supervisor-owned listener; source orchestration is std/net. */
+    public NativeNioFutureReactor listenNioLoopback(
+            String host, int port, int backlog, int maxConnections, int maxPending) {
+        if (ActorRuntime.inActorExecution())
+            throw new SecurityException("nonblocking TCP listeners are supervisor-only");
+        if (!"127.0.0.1".equals(host))
+            throw new SecurityException("experimental nonblocking TCP only binds loopback");
+        requirePermission(RuntimePermissions.Permission.NET, host + ":" + port,
+                "network.listen_nonblocking");
+        synchronized (nioLifecycle) {
+            if (nioContextClosed)
+                throw new IllegalStateException("cannot create TCP listener in closed context");
+            // Passive cleanup: reactor threads never execute arbitrary host
+            // termination subscribers and closed listeners do not retain quota.
+            nioListeners.removeIf(NativeNioFutureReactor::isTerminated);
+            if (nioListeners.size() + nioOpening >= MAX_NIO_LISTENERS_PER_CONTEXT)
+                throw new RejectedExecutionException("NIO listener capacity exhausted");
+            ++nioOpening;
+        }
+        NativeNioFutureReactor reactor;
+        try {
+            reactor = NativeNioFutureReactor.loopback(
+                    port, backlog, maxConnections, maxPending);
+        } catch (java.io.IOException failure) {
+            synchronized (nioLifecycle) { --nioOpening; }
+            throw new IllegalStateException("nonblocking TCP listen failed", failure);
+        } catch (RuntimeException | Error failure) {
+            synchronized (nioLifecycle) { --nioOpening; }
+            throw failure;
+        }
+        synchronized (nioLifecycle) {
+            --nioOpening;
+            if (nioContextClosed) {
+                reactor.close();
+                throw new IllegalStateException("TCP context closed during listener admission");
+            }
+            nioListeners.add(reactor);
+        }
+        return reactor;
+    }
+
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
@@ -428,6 +489,15 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        java.util.Set<NativeNioFutureReactor> closingNio;
+        synchronized (nioLifecycle) {
+            nioContextClosed = true;
+            closingNio = java.util.Set.copyOf(nioListeners);
+            nioListeners.clear();
+        }
+        // Nonblocking stop requests; never wait for reactor termination while
+        // the actor or CONTROL scheduler owns a physical guest turn.
+        for (NativeNioFutureReactor reactor : closingNio) reactor.close();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;
