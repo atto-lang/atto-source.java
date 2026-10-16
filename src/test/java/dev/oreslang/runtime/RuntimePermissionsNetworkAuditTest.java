@@ -40,6 +40,38 @@ final class RuntimePermissionsNetworkAuditTest {
     }
 
     @Test
+    void ephemeralWildcardBindCannotListenOnDeniedLocalAddresses() {
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.NET);
+
+        // This is an explicit wildcard request without local interface or
+        // port denials. It must not be confused with a localhost-only grant.
+        assertTrue(broad.allowsEphemeralNetworkBind("0.0.0.0", "0.0.0.0"));
+        assertFalse(broad.allowsEphemeralNetworkBind("localhost", "0.0.0.0"));
+        assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "0.0.0.0"));
+
+        // 0.0.0.0 covers every local IPv4 interface. A literal comparison
+        // with only "0.0.0.0" would miss a denial on loopback or elsewhere.
+        for (String denial : new String[] {
+                "127.0.0.1", "127.0.0.1:443",
+                "10.0.0.2:443", "localhost:443", "*.example.com:443"
+        }) {
+            RuntimePermissions restricted = broad.withDenied(
+                    RuntimePermissions.Permission.NET, denial);
+            assertFalse(restricted.allowsEphemeralNetworkBind("0.0.0.0", "0.0.0.0"),
+                    "wildcard bind must not evade a denial: " + denial);
+        }
+
+        // Concrete IPv4 interface binds still work if denials target
+        // unrelated addresses, preserving legitimate scoped binds.
+        RuntimePermissions scoped = broad.withDenied(
+                RuntimePermissions.Permission.NET, "127.0.0.2:443");
+        assertTrue(scoped.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"));
+        assertTrue(scoped.allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertFalse(scoped.allowsEphemeralNetworkBind("localhost", "0.0.0.0"));
+    }
+
+    @Test
     void deniedResourceCannotInjectControlsOrForgedLogLines() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .allowAll(RuntimePermissions.Permission.NET);
