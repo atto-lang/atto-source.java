@@ -714,4 +714,42 @@ final class NominalInheritedMethodSlotsTest {
         assertEquals("Diamond", NominalInheritedMethodSlots.resolveVirtual(
                 program, mode, "Diamond").owner().name());
     }
+
+    @Test
+    void virtualBindingCannotConvertStaticOverloadsIntoInstanceMethods() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub static fnc pick(Color value): int { return 1; }
+                    pub static fnc pick(Mode value): int { return 2; }
+                end
+                """);
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.bindInstance(
+                        program, "Base", "pick",
+                        List.of(new dev.oreslang.types.Types.Named("Color", List.of()))));
+        assertTrue(rejected.getMessage().contains("no inherited nominal method candidates"),
+                rejected::getMessage);
+    }
+
+    @Test
+    void virtualProofDoesNotPrematurelyAdmitExecutableSameArityMethods() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 1; }
+                    pub pick(Mode value): int { return 2; }
+                end
+                define class Child extends Base as
+                    pub pick(Color value): int { return 3; }
+                end
+                """);
+        var bound = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        assertEquals("Child", NominalInheritedMethodSlots.resolveVirtual(
+                program, bound, "Child").owner().name());
+        // The compiler's production admission path is still arity-only.
+        // Remove this assertion only with a tested runtime and LLVM slot ABI.
+        assertThrows(IllegalArgumentException.class,
+                () -> dev.oreslang.types.TypeChecker.checkTypes(program));
+    }
 }
