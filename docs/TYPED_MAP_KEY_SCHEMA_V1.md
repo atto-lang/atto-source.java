@@ -43,6 +43,12 @@ The runtime never implements `get` or `take` as a public
 `containsKey/get/remove` sequence. `OresKeyedMap.lookup` and
 `OresKeyedMap.take` resolve presence and value while holding one map monitor.
 
+Closed generic maps use the same presence rule. In particular,
+`Map<string, Option<T>>.get(k)` and `.take(k)` return
+`Option<Option<T>>`; the runtime recursively validates Copy `Option` and
+`Result` values instead of flattening them or treating an inner `None` as
+map absence.
+
 ## Open keys
 
 A literal key declared by the schema is statically narrowed to its stored type.
@@ -92,6 +98,11 @@ different ownership semantics.
 Typed-open-map class identity is not currently reified in the runtime object;
 `is`, `as`, and type patterns targeting a schema class therefore fail
 closed rather than returning misleading results.
+
+Cross-file imported schema classes also fail closed in v1: linked class
+metadata does not yet carry a source-qualified schema identity, so accepting
+an imported short name could conflate distinct schemas from different source
+units.
 
 ## Verification gate
 
