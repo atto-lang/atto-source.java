@@ -1,0 +1,134 @@
+package dev.oreslang.types;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+
+import dev.oreslang.types.Types.Named;
+import dev.oreslang.types.Types.Tuple;
+import dev.oreslang.types.Types.TupleKind;
+import dev.oreslang.types.Types.Type;
+
+/**
+ * Conservative proof substrate for structural positional tuples. This is
+ * compile-time-only: callers must not substitute it for emitter-bound calls.
+ * In particular, this class never coerces numeric values, creates padded
+ * tuples, inspects host reflection metadata, or performs runtime dispatch.
+ *
+ * contracts/structural/v2/README.md remains the cross-backend target.
+ */
+public final class StructuralTuplePolicy {
+    private StructuralTuplePolicy() { }
+
+    public record Slot(Type type, boolean omittable) {
+        public Slot {
+            Objects.requireNonNull(type, "slot type");
+        }
+    }
+
+    public record Shape(List<Slot> slots, boolean structural) {
+        public Shape {
+            slots = List.copyOf(slots);
+            boolean optionalStarted = false;
+            for (Slot slot : slots) {
+                Objects.requireNonNull(slot, "slot");
+                if (optionalStarted && !slot.omittable()) {
+                    throw new IllegalArgumentException(
+                            "omittable tuple slots must form a contiguous trailing suffix");
+                }
+                optionalStarted |= slot.omittable();
+            }
+        }
+
+        public int required() {
+            int result = 0;
+            for (Slot slot : slots) {
+                if (slot.omittable()) break;
+                result++;
+            }
+            return result;
+        }
+    }
+
+    /**
+     * Returns a *conservative* assignability proof. General coercion is never
+     * used to supply a structural readonly projected tuple slot.
+     */
+    public static boolean admits(Shape expected, Type actual) {
+        Objects.requireNonNull(expected, "expected");
+        if (!(actual instanceof Tuple source) || source.kind() != TupleKind.TUPLE) return false;
+        int count = source.elements().size();
+        if (count < expected.required()) return false;
+        if (!expected.structural() && count > expected.slots().size()) return false;
+        int declaredPresent = Math.min(count, expected.slots().size());
+        for (int i = 0; i < declaredPresent; i++) {
+            Type supplied = source.elements().get(i);
+            Slot slot = expected.slots().get(i);
+            if (supplied.equals(slot.type())) continue;
+            // The optional *slot* may be represented by T or Option<T>.
+            // Whether Option<T> can be observed requires the later ABI/view
+            // lowering, not merely this compile-time proof.
+            if (slot.omittable()
+                    && supplied instanceof Named option
+                    && option.name().equals("Option")
+                    && option.arguments().size() == 1
+                    && option.arguments().getFirst().equals(slot.type())) {
+                continue;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    public record Candidate(String id, int arity, Shape tupleParameter) {
+        public Candidate {
+            if (id == null || id.isBlank()) throw new IllegalArgumentException("candidate id is empty");
+            if (arity < 0) throw new IllegalArgumentException("negative callable arity");
+            if (tupleParameter != null && arity != 1) {
+                throw new IllegalArgumentException("tuple packing target must accept exactly one tuple parameter");
+            }
+        }
+    }
+
+    public record Selection(String id, boolean pack) { }
+
+    /**
+     * Resolve a single explicitly spread *statically typed finite tuple*.
+     * A matching ordinary expanded-arity callable always shadows the packing
+     * fallback, regardless of its parameter types. An eventual type mismatch
+     * on that direct target is an error; it must never retry the tuple pack.
+     * Nominal-enum same-arity families require a separate compiler proof.
+     */
+    public static Selection selectExplicitTupleSpread(List<Candidate> family, Type source) {
+        Objects.requireNonNull(family, "family");
+        if (!(source instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
+            throw new IllegalArgumentException("spread needs a statically typed finite tuple");
+        }
+        Set<Integer> usedArities = new HashSet<>();
+        for (Candidate candidate : family) {
+            Objects.requireNonNull(candidate, "candidate");
+            if (!usedArities.add(candidate.arity())) {
+                throw new IllegalArgumentException(
+                        "same-arity overload requires independent nominal-enum proof");
+            }
+        }
+        for (Candidate candidate : family) {
+            if (candidate.arity() == tuple.elements().size()) {
+                return new Selection(candidate.id(), false);
+            }
+        }
+        List<Candidate> eligible = new ArrayList<>();
+        for (Candidate candidate : family) {
+            if (candidate.tupleParameter() != null
+                    && admits(candidate.tupleParameter(), source)) eligible.add(candidate);
+        }
+        if (eligible.size() != 1) {
+            throw new IllegalArgumentException(eligible.isEmpty()
+                    ? "no callable accepts explicit tuple spread"
+                    : "ambiguous tuple packing cannot use runtime shape dispatch");
+        }
+        return new Selection(eligible.getFirst().id(), true);
+    }
+}
