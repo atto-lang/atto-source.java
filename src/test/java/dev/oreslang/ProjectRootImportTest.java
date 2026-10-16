@@ -125,6 +125,52 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void runtimeUsesExplicitRootOverrideNotImplicitImporterLocation() throws Exception {
+        Path first = makeProject("runtime-first");
+        Path second = makeProject("runtime-second");
+        Path importer = first.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Files.writeString(second.resolve("lib/message.ores"), """
+                pub fnc message(): string { return "overridden-root"; }
+                """);
+        Files.writeString(importer, """
+                import fnc message from "+/lib/message";
+                pub fnc main(): void {
+                  stdio.println(message());
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(
+                importer, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(OresProjectConfig.ENV_PROJECT_ROOT, second.toString()),
+                out, new ByteArrayOutputStream());
+        assertEquals(2, result.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("overridden-root"));
+    }
+
+    @Test
+    void projectRootFieldControlsPlusImportAnchor() throws Exception {
+        Path packageDirectory = temp.resolve("manifest-with-explicit-root");
+        Path logicalRoot = packageDirectory.resolve("app");
+        Files.createDirectories(logicalRoot.resolve("lib"));
+        Files.createDirectories(packageDirectory.resolve("src"));
+        Files.writeString(packageDirectory.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                root = "app"
+                """);
+        Files.writeString(logicalRoot.resolve("lib/message.ores"), """
+                pub fnc message(): string { return "configured-project-root"; }
+                """);
+        Path importer = packageDirectory.resolve("src/main.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(logicalRoot, config.projectRoot());
+        assertEquals(logicalRoot.resolve("lib/message.ores"),
+                config.resolveImport(importer, "+/lib/message").orElseThrow());
+    }
+
+    @Test
     void symlinkCannotEscapeProjectRoot() throws Exception {
         Path root = makeProject("symlink");
         Path outside = temp.resolve("outside.ores");
