@@ -4,6 +4,7 @@ import dev.oreslang.imports.ImportRules;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
+import org.tomlj.TomlInvalidTypeException;
 import org.tomlj.TomlTable;
 
 import java.io.File;
@@ -139,7 +140,7 @@ public final class OresProjectConfig {
                     "invalid " + manifestName + ": " + toml.errors().getFirst());
         }
 
-        String schemaVersion = toml.getString("schema_version");
+        String schemaVersion = optionalString(toml, "schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
                     manifestName + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
@@ -148,7 +149,7 @@ public final class OresProjectConfig {
         Path manifestDir = absoluteManifest.getParent();
         // @/ always means the directory containing .ores.pkg.toml.
         // Legacy compiler manifests keep their explicit project.root behavior.
-        String explicitRoot = toml.getString("project.root");
+        String explicitRoot = optionalString(toml, "project.root");
         if (explicitRoot == null && toml.get("project.root") != null) {
             throw new IllegalArgumentException(manifestName + " project.root must be a string");
         }
@@ -164,7 +165,7 @@ public final class OresProjectConfig {
         List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
         List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
 
-        String mainText = toml.getString("entrypoints.main");
+        String mainText = optionalString(toml, "entrypoints.main");
         if (mainText == null && toml.get("entrypoints.main") != null) {
             throw new IllegalArgumentException(manifestName + " entrypoints.main must be a string");
         }
@@ -173,8 +174,8 @@ public final class OresProjectConfig {
         return new OresProjectConfig(
                 absoluteManifest,
                 projectRoot,
-                toml.getString(packageManifest ? "package.name" : "project.name"),
-                toml.getString(packageManifest ? "package.version" : "project.version"),
+                optionalString(toml, packageManifest ? "package.name" : "project.name"),
+                optionalString(toml, packageManifest ? "package.version" : "project.version"),
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
@@ -334,8 +335,8 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException("invalid installed .zpkg.toml: "
                         + metadata.errors().getFirst());
             }
-            String org = metadata.getString("package.org");
-            String name = metadata.getString("package.name");
+            String org = optionalString(metadata, "package.org");
+            String name = optionalString(metadata, "package.name");
             String expected = expectedDirectory.getParent().getFileName()
                     + "/" + expectedDirectory.getFileName();
             if (org == null || name == null || !expected.equals(org + "/" + name)) {
@@ -419,7 +420,8 @@ public final class OresProjectConfig {
     }
 
     private static Map<String, Path> parseDependencies(TomlParseResult toml, Path root) throws IOException {
-        TomlTable dependencies = toml.getTable("dependencies");
+        Object dependencyValue = tomlValue(toml, "dependencies");
+        TomlTable dependencies = dependencyValue instanceof TomlTable t ? t : null;
         if (dependencies == null) {
             if (toml.get("dependencies") != null) {
                 throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME + " dependencies must be a TOML table");
@@ -437,7 +439,7 @@ public final class OresProjectConfig {
             if (declaration instanceof String text) {
                 identifier = text;
             } else if (declaration instanceof TomlTable table) {
-                identifier = table.getString("zed");
+                identifier = optionalString(table, "zed");
                 if (table.keySet().size() != 1 || identifier == null) {
                     throw new IllegalArgumentException("dependency '" + alias
                             + "' expects only zed = \"org/name\"");
@@ -461,7 +463,7 @@ public final class OresProjectConfig {
         if (!zed.errors().isEmpty()) {
             throw new IllegalArgumentException("invalid .zpkg.toml: " + zed.errors().getFirst());
         }
-        String directory = zed.getString("install.dir");
+        String directory = optionalString(zed, "install.dir");
         if (directory == null) {
             if (zed.get("install.dir") != null) {
                 throw new IllegalArgumentException(".zpkg.toml install.dir must be a string");
@@ -502,7 +504,8 @@ public final class OresProjectConfig {
     }
 
     private static List<String> stringArray(TomlParseResult toml, String key) {
-        TomlArray array = toml.getArray(key);
+        Object arrayValue = tomlValue(toml, key);
+        TomlArray array = arrayValue instanceof TomlArray values ? values : null;
         if (array == null) {
             if (toml.get(key) != null) {
                 throw new IllegalArgumentException("project manifest key '" + key + "' must be an array");
@@ -519,6 +522,27 @@ public final class OresProjectConfig {
             result.add(text);
         }
         return List.copyOf(result);
+    }
+
+    /**
+     * tomlj typed getters throw TomlInvalidTypeException (a RuntimeException,
+     * not an IllegalArgumentException) on wrong types. The compiler must
+     * report malformed manifests consistently as argument errors instead.
+     */
+    private static Object tomlValue(TomlTable table, String key) {
+        try {
+            return table.get(key);
+        } catch (TomlInvalidTypeException invalid) {
+            throw new IllegalArgumentException("invalid TOML key '" + key
+                    + "': expected a table for each parent component", invalid);
+        }
+    }
+
+    private static String optionalString(TomlTable table, String key) {
+        Object value = tomlValue(table, key);
+        if (value == null) return null;
+        if (value instanceof String text) return text;
+        throw new IllegalArgumentException("manifest key '" + key + "' must be a string");
     }
 
     private static String defaultString(String value, String fallback) {
