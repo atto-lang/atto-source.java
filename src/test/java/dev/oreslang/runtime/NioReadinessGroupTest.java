@@ -64,6 +64,38 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void selectedKeysBeyondOneQuantumAreNotStranded() throws Exception {
+        // More than one readiness quantum on one selector. The reactor must
+        // service the residual selected set without waiting for new I/O.
+        try (var group = new NioReadinessGroup(1, 192, 256)) {
+            var pipes = new ArrayList<java.nio.channels.Pipe>();
+            var awaiting = new ArrayList<OresFuture<Integer>>();
+            try {
+                for (int i = 0; i < 160; ++i) {
+                    var pipe = java.nio.channels.Pipe.open();
+                    pipes.add(pipe);
+                    pipe.source().configureBlocking(false);
+                    pipe.sink().configureBlocking(false);
+                    awaiting.add(group.watch(pipe.source(), SelectionKey.OP_READ));
+                }
+                assertEquals(1, group.reactorCount());
+                for (var pipe : pipes)
+                    assertEquals(1, pipe.sink().write(
+                            java.nio.ByteBuffer.wrap(new byte[] {42})));
+                for (var future : awaiting)
+                    assertTrue((future.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+                assertEquals(0, group.pendingCount());
+            } finally {
+                for (var pipe : pipes) {
+                    pipe.source().close();
+                    pipe.sink().close();
+                }
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void failClosedOnInvalidAdmissionAndMaxPending() throws Exception {
         try (var group = new NioReadinessGroup(1, 1, 8);
              var listener = ServerSocketChannel.open()) {
