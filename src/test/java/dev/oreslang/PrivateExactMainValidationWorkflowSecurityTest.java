@@ -326,6 +326,42 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void candidateMustClearCandidateControlledSurefireReportsBeforeTests() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String cleanup = section(workflow,
+                "      - name: Clear and attest focused Surefire report provenance",
+                "      - name: Focused permissions and scoped host interop regressions");
+        String runner = workflow.substring(workflow.indexOf("  validate-approved-candidate:"));
+        assertTrue(runner.indexOf("Verify immutable candidate and clean checkout before tool setup")
+                < runner.indexOf("Clear and attest focused Surefire report provenance"));
+        assertTrue(runner.indexOf("Clear and attest focused Surefire report provenance")
+                < runner.indexOf("Focused permissions and scoped host interop regressions"));
+        assertTrue(runner.indexOf("Focused permissions and scoped host interop regressions")
+                < runner.indexOf("Prove all six security JUnit classes executed"));
+
+        for (String command : new String[] {
+                "set -euo pipefail",
+                "test ! -L target",
+                "test ! -L target/surefire-reports",
+                "rm -rf -- target/surefire-reports",
+                "test ! -e target/surefire-reports"
+        }) {
+            assertTrue(hasExactLine(cleanup, 10, command),
+                    "candidate-controlled Surefire output was not rejected/cleared: " + command);
+            String commented = cleanup.replace("          " + command + "\n",
+                    "          # " + command + "\n");
+            assertFalse(hasExactLine(commented, 10, command),
+                    "commented-out report provenance commands do not count");
+        }
+        assertTrue(hasExactLine(cleanup, 10,
+                "if test -e target/surefire-reports && test ! -d target/surefire-reports; then"),
+                "existing non-directory paths must fail before cleanup");
+        assertFalse(cleanup.contains("python3 scripts/"),
+                "test-result provenance must not depend on candidate scripts");
+    }
+
+    @Test
     void candidateMustProveExecutedSurefireResultsBeforeFullVerification() throws Exception {
         String workflow = Files.readString(
                 Path.of(".github/workflows/private-exact-candidate-validation.yml"));
