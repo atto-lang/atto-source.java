@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
-import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -30,27 +31,42 @@ final class ActorPipelineAdmissionBridge {
         }
     }
 
-    record BatchReport(List<Receipt> receipts) {
-        BatchReport {
-            receipts = List.copyOf(receipts);
+    /**
+     * A fully populated, immutable-to-callers receipt vector. The backing
+     * array is owned by forwardAll, and is filled exactly once before this
+     * object is returned. Neither adapters nor callers receive that array.
+     *
+     * Critically, its read-only view is constructed BEFORE publishing the
+     * first mailbox envelope: the successful path allocates no reports,
+     * receipts or collection wrappers after an irrevocable admission.
+     */
+    static final class BatchReport {
+        private final List<Receipt> receipts;
+
+        private BatchReport(Receipt[] ownedSlots) {
+            receipts = Collections.unmodifiableList(Arrays.asList(ownedSlots));
         }
 
+        List<Receipt> receipts() { return receipts; }
+
         int admitted() {
-            return (int) receipts.stream()
-                    .filter(r -> r.status() == Admission.ADMITTED).count();
+            int total = 0;
+            for (Receipt receipt : receipts) {
+                if (receipt.status() == Admission.ADMITTED) ++total;
+            }
+            return total;
         }
 
         int rejected() { return receipts.size() - admitted(); }
     }
 
     /**
-     * Allocate branch provenance atomically before any mailbox publication.
-     * Per-destination mailbox outcomes are independent: a full or closed edge
-     * releases only its own route frame, never a previously admitted sibling.
+     * Allocate branch provenance AND every possible receipt outcome before
+     * any mailbox publication. Per-destination outcomes are independent:
+     * a full or closed edge releases only its own frame.
      *
-     * Any adapter exception denotes NO publication for the throwing edge.
-     * The remaining unattempted frames are rolled back and the exception
-     * propagates; committed earlier branches stay live for correlation.
+     * An adapter exception MUST mean no publication on that edge. Already
+     * admitted siblings stay live, while unattempted frames are released.
      */
     static <T> BatchReport forwardAll(
             ActorPipelineRouteSession session,
@@ -61,31 +77,52 @@ final class ActorPipelineAdmissionBridge {
         Objects.requireNonNull(message);
         Objects.requireNonNull(mailbox);
         return session.withAdmissionBarrier(source, () -> {
-        List<ActorPipelineRouteSession.MailFrame> children =
-                session.forwardAll(source);
-        List<Receipt> outcomes = new ArrayList<>(children.size());
-        int finished = 0;
-        try {
-            for (ActorPipelineRouteSession.MailFrame child : children) {
-                Admission admission =
-                        Objects.requireNonNull(mailbox.tryAdmit(child, message),
-                                "mailbox adapter returned null admission");
-                if (admission != Admission.ADMITTED) {
-                    session.complete(child);
+            List<ActorPipelineRouteSession.MailFrame> children =
+                    session.forwardAll(source);
+            Receipt[] slots;
+            Receipt[][] prepared;
+            BatchReport report;
+            try {
+                slots = new Receipt[children.size()];
+                prepared = new Receipt[Admission.values().length][children.size()];
+                // Preallocate every outcome and the immutable view; no
+                // per-edge Receipt creation follows a successful publication.
+                for (int i = 0; i < children.size(); ++i) {
+                    var child = children.get(i);
+                    for (Admission status : Admission.values()) {
+                        prepared[status.ordinal()][i] = new Receipt(
+                                child.receiver(), child.generation(),
+                                child.flowId(), child.routeId(), status);
+                    }
                 }
-                outcomes.add(new Receipt(child.receiver(), child.generation(),
-                        child.flowId(), child.routeId(), admission));
-                ++finished;
+                report = new BatchReport(slots);
+            } catch (RuntimeException | Error allocationFailure) {
+                for (var unpublished : children)
+                    ActorPipelineRouteSession.retireDelivered(unpublished);
+                throw allocationFailure;
             }
-            return new BatchReport(outcomes);
-        } catch (RuntimeException | Error failure) {
-            // The throwing edge and subsequent edges were NOT published,
-            // by the mandatory adapter contract. Reclaim their route credits.
-            for (int i = finished; i < children.size(); ++i) {
-                session.complete(children.get(i));
+
+            int finished = 0;
+            try {
+                for (int i = 0; i < children.size(); ++i) {
+                    var child = children.get(i);
+                    Admission status = Objects.requireNonNull(
+                            mailbox.tryAdmit(child, message),
+                            "mailbox adapter returned null admission");
+                    if (status != Admission.ADMITTED)
+                        session.complete(child);
+                    slots[i] = prepared[status.ordinal()][i];
+                    finished = i + 1;
+                }
+                return report;
+            } catch (RuntimeException | Error failure) {
+                // Only this edge and later ones were not published under
+                // the mandatory adapter contract. Do not retract any
+                // previously admitted siblings.
+                for (int i = finished; i < children.size(); ++i)
+                    ActorPipelineRouteSession.retireDelivered(children.get(i));
+                throw failure;
             }
-            throw failure;
-        }
         });
     }
 }
