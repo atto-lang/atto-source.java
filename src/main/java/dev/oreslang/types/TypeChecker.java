@@ -164,6 +164,11 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "linked public class was not uniquely imported: " + name);
             }
+            if (checker.isTypedOpenMapClass(declaration)) {
+                throw new IllegalArgumentException(
+                        "imported typed open Map schema class '" + name
+                                + "' requires source-qualified linked schema identity; not implemented");
+            }
             checker.classes.put(name, declaration);
             Map<String, Ast.TypeAliasDecl> aliases =
                     linkedAliases.getOrDefault(name, Map.of());
