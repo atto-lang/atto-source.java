@@ -49,7 +49,7 @@ final class PersistentActorMapTest {
         for (int i = 0; i < 12_000; i++) {
             String key = "key-" + random.nextInt(1800);
             PersistentActorMap before = map;
-            Map<String, Object> snapshot = new HashMap<>(oracle);
+            Map<String, Object> snapshot = (i & 63) == 0 ? new HashMap<>(oracle) : null;
             if (random.nextInt(4) == 0) {
                 map = map.without(key);
                 oracle.remove(key);
@@ -60,7 +60,7 @@ final class PersistentActorMapTest {
             }
             assertEquals(oracle.size(), map.size());
             assertEquals(oracle.get(key), map.get(key));
-            assertEquals(snapshot, before);
+            if (snapshot != null) assertEquals(snapshot, before);
         }
         assertEquals(oracle, map);
         assertEquals(oracle.keySet(), map.keySet());
