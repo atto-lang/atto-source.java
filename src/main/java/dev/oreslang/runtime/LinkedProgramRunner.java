@@ -422,7 +422,7 @@ public final class LinkedProgramRunner {
                 // package fallback instead of failing early.
                 boolean explicitRelative = raw.equals(".") || raw.equals("..")
                         || raw.startsWith("./") || raw.startsWith("../");
-                if (explicitRelative || raw.startsWith("@") || raw.startsWith("pkg:")
+                if (explicitRelative || raw.startsWith("+") || raw.startsWith("@") || raw.startsWith("pkg:")
                         || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
