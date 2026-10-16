@@ -34,6 +34,10 @@ public final class ActorPipelineRouteSessionSmoke {
                 "host caller could construct a forged reply path");
         var plan = graph();
         var ledger = new ActorPipelineRouteSession(plan, 7, 8);
+        reject(() -> ledger.ingress("worker-a"), "internal worker must not originate flow");
+        reject(() -> ledger.ingress("worker-b"), "second internal worker must not originate flow");
+        reject(() -> ledger.ingress("sink"), "terminal sink must not originate flow");
+        check(ledger.outstanding() == 0, "invalid ingress allocated a frame");
         var origin = ledger.ingress("source");
         reject(() -> ledger.reply(origin), "root cannot forge a return route");
         reject(() -> ledger.forward(origin), "ambiguous source forward allowed");
