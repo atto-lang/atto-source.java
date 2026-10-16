@@ -179,7 +179,7 @@ def require_protected_origin_policy(local_digest):
             or remote["size"] > 16 * 1024):
         raise Denied("protected-main approval file metadata is invalid")
     try:
-        encoded = remote["content"].replace("\\n", "").replace("\\r", "")
+        encoded = remote["content"].replace("\n", "").replace("\r", "")
         data = base64.b64decode(encoded, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise Denied("protected-main approval file is not valid base64") from exc
