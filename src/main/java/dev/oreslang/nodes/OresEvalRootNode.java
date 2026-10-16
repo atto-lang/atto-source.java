@@ -4198,10 +4198,8 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 Ast.MethodDecl method =
-                        object.owner.findMethod(
-                                object.klass,
-                                CallableSelector.instance(member.member(), args.size()),
-                                new LinkedHashSet<>());
+                        object.owner.preboundMethod(
+                                call, object, member.member(), args.size());
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
                             method.visibility(),
@@ -5514,8 +5512,8 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
-                    Ast.MethodDecl method = object.owner.findMethod(
-                            object.klass, CallableSelector.instance(methodCall.member(), args.size()), new LinkedHashSet<>());
+                    Ast.MethodDecl method = object.owner.preboundMethod(
+                            call, object, methodCall.member(), args.size());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
                                 method.visibility(),
@@ -7598,6 +7596,64 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return null;
+        }
+
+        /**
+         * Existing executable ABI: name + arity. The compiler-selected
+         * declaration is checked against that exact virtual slot and the
+         * receiver ancestry before ordinary polymorphic dispatch.
+         * No runtime argument value or enum tag is used as a discriminator.
+         */
+        private Ast.MethodDecl preboundMethod(
+                Ast.CallExpr call, OresObject receiver, String name, int arity) {
+            CallableSelector selector = CallableSelector.instance(name, arity);
+            Ast.MethodDecl dynamic = findMethod(
+                    receiver.klass, selector, new LinkedHashSet<>());
+            Ast.MethodCallBinding binding = program.boundMethodCalls().get(call);
+            // Preserve imported code images' original dispatch semantics.
+            if (binding == null || receiver.owner != this) return dynamic;
+            Ast.ClassDecl staticReceiver = binding.staticReceiver();
+            Ast.MethodDecl declared = binding.declaredMethod();
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    || staticReceiver.actorKind() != Ast.ActorKind.NONE
+                    || classOwner(staticReceiver) == null
+                    || methodOwners.get(declared) == null
+                    || declared.isStatic()
+                    || !selector.matches(declared)
+                    || findMethod(staticReceiver, selector, new LinkedHashSet<>()) != declared
+                    || !isNominalSubclassOf(receiver.klass, staticReceiver,
+                            new LinkedHashSet<>())) {
+                throw new IllegalStateException(
+                        "compiler-bound method call is not valid for this code image and receiver");
+            }
+            if (dynamic == null) {
+                throw new IllegalStateException(
+                        "concrete receiver lost compiler-bound method slot");
+            }
+            return dynamic;
+        }
+
+        private boolean isNominalSubclassOf(
+                Ast.ClassDecl concrete, Ast.ClassDecl declared,
+                Set<Ast.ClassDecl> visiting) {
+            if (concrete == declared) return true;
+            if (visiting.size() >= 128 || !visiting.add(concrete)) {
+                throw new IllegalArgumentException(
+                        "invalid or cyclic compiler-bound receiver ancestry");
+            }
+            try {
+                for (Ast.TypeRef parentRef : concrete.parents()) {
+                    if (parentRef.name().equals("Object")
+                            || parentRef.name().equals("List")) continue;
+                    Ast.ClassDecl parent = findClass(parentRef.name());
+                    if (parent != null && isNominalSubclassOf(parent, declared, visiting)) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                visiting.remove(concrete);
+            }
         }
 
         private Ast.MethodDecl findMethod(
