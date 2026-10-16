@@ -222,11 +222,16 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
                     "subprocess launch worker must not execute on an actor carrier"));
             return;
         }
+        final boolean staleBeforeLaunch;
         synchronized (lock) {
-            if (closed || slots.get(slot.generation) != slot) {
-                slot.ready.completeExceptionally(new IllegalStateException("child process registry closed"));
-                return;
-            }
+            staleBeforeLaunch = closed || slots.get(slot.generation) != slot;
+        }
+        if (staleBeforeLaunch) {
+            // Completing a future may run user callbacks inline. Never do so
+            // while holding the registry monitor.
+            slot.ready.completeExceptionally(
+                    new IllegalStateException("child process registry closed"));
+            return;
         }
         Process process;
         try {
