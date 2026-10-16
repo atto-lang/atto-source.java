@@ -47,7 +47,7 @@ public final class DopKernelIR {
 
     private static final class State {
         final DataOrientedLayout.Plan layout;
-        final ByteBuffer bytes;
+        ByteBuffer bytes;
         final HostBuffer.RegionToken regionToken;
         int readLoans;
         boolean writeLoan;
