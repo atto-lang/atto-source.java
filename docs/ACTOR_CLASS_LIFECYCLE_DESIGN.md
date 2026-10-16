@@ -104,6 +104,11 @@ rejects with the cleanup failure.
 
 ## Runtime-owned `receive` and private abstract slots (2026-10-16)
 
+The Java evaluator also treats `on_start` as an actor-runtime-only lifecycle
+extension point: user code cannot invoke or capture it, including through
+runtime member lookup. Startup is executed by the trusted actor initialization
+path and does not use an ordinary user-visible method call.
+
 The actor's effective hidden base declares a conceptual
 `private abstract receive(ActorMail<T> mail): void;` extension point.
 It is *required to implement* but *not callable by the implementing actor*:
