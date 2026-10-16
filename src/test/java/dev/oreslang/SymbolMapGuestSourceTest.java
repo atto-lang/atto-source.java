@@ -139,7 +139,7 @@ final class SymbolMapGuestSourceTest {
         String[] invalid = {
             "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); let v = m.ready; return; }",
             "pub fnc bad(): void { let mut m = new Map<Symbol, int>(); m.ready = 4; return; }",
-            "pub fnc bad(): void { let mut m = new Map<String, int>(); m.get(\"ready\"); return; }"
+            "pub fnc bad(): void { let mut m = new Map<String, int>(); let f = m.get; return; }"
         };
         for (String source : invalid) {
             assertThrows(IllegalArgumentException.class,
@@ -215,6 +215,17 @@ final class SymbolMapGuestSourceTest {
                 """;
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.checkTypes(Parser.parse(source)));
+    }
+
+    @Test void ownershipIntrinsicsCannotDuplicateOrShareMutableMaps() {
+        String[] invalid = {
+            "pub fnc bad(): void { val m = new Map<String, int>(); val x = rt copy m; return; }",
+            "pub fnc bad(): void { val m = new Map<String, int>(); val x = rt share m; return; }"
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
     }
 
     @Test void typedMapWritesRemainDistinctFromFixedTupleSlotWritesAfterMainMerge() {
