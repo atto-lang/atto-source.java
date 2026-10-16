@@ -89,7 +89,7 @@ final class ProjectRootImportTest {
         Path root = makeProject("safety");
         Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
         OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
-        for (String name : new String[] {"+/../outside", "+/lib/../message", "+/", "+lib/message", "+/lib//message"}) {
+        for (String name : new String[] {"+/../outside", "+/lib/../message", "+/", "+lib/message", "+/lib//message", "+\\lib\\message"}) {
             assertThrows(IllegalArgumentException.class, () -> config.resolveImport(importer, name), name);
         }
     }
