@@ -16,7 +16,7 @@ import java.util.Objects;
  * This class only selects connected graph routes and preserves sealed return
  * paths; it does not enqueue messages or implement Oreslang self.* lowering.
  */
-public final class ActorPipelineRouteSession {
+final class ActorPipelineRouteSession {
     /** Reverse route begins with the replying actor and ends at the parent or
      * authenticated original source. Not a bearer ActorRef or send authority. */
     public static final class ReturnPath {
@@ -77,7 +77,7 @@ public final class ActorPipelineRouteSession {
     private long nextRouteId = 1;
     private boolean closed;
 
-    public ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
+    ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
                                      long generation, int maxActiveFrames) {
         this.graph = Objects.requireNonNull(graph);
         if (generation < 1 || maxActiveFrames < 1 || maxActiveFrames > 65536) {
@@ -92,7 +92,7 @@ public final class ActorPipelineRouteSession {
     public synchronized boolean closed() { return closed; }
 
     /** Called ONLY after supervisor authenticates the entering source actor. */
-    public synchronized MailFrame ingress(String source) {
+    synchronized MailFrame ingress(String source) {
         graph.requireIngressRoot(source); // ingress must begin at a graph root
         ensureOpen();
         reserve(1);
@@ -182,7 +182,7 @@ public final class ActorPipelineRouteSession {
 
     /** A clean topology change is only allowed after every current message
      * has completed. In-flight actor messages must never silently disappear. */
-    public synchronized void advanceGeneration(long successor) {
+    synchronized void advanceGeneration(long successor) {
         validateSuccessor(successor);
         if (!active.isEmpty()) {
             throw new IllegalStateException(
@@ -195,7 +195,7 @@ public final class ActorPipelineRouteSession {
     /** Explicit supervisor cancellation barrier. Previous frames become stale,
      * and any actual mailbox writers must be failed/drained by the scheduler
      * before a replacement graph is published. This ledger is host-only. */
-    public synchronized int abortAndAdvanceGeneration(long successor) {
+    synchronized int abortAndAdvanceGeneration(long successor) {
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
@@ -211,7 +211,7 @@ public final class ActorPipelineRouteSession {
         }
     }
 
-    public synchronized void close() {
+    synchronized void close() {
         closed = true;
         active.clear();
     }
