@@ -501,6 +501,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         return terminated;
     }
 
+    boolean isTerminated() { return stopped.getCount() == 0L; }
+
     boolean awaitTerminated(long timeoutMillis) throws InterruptedException {
         return stopped.await(timeoutMillis, TimeUnit.MILLISECONDS);
     }
