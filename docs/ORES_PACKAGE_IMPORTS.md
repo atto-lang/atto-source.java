@@ -56,10 +56,11 @@ must be a zed-pkg `org/name` or `{ zed = "org/name" }`. Package aliases are
 not automatically injected into bare-path imports, preventing package
 shadowing of local sources.
 
-When `.ores.pkg.toml` and the legacy `.oreslangc.cfg.toml` occur in the
-same directory, the package manifest wins. Discovery walks from the entry
-file upward, choosing the nearest recognized manifest. The old configuration
-format continues to work.
+When a `.ores.pkg.toml` exists on the ancestor path, the *nearest package
+manifest* wins, including over a nearer legacy `.oreslangc.cfg.toml`. If no
+package manifest exists, the nearest legacy compiler manifest is used.
+Manifest-less and legacy projects retain their original transitive bare-import
+search context, for backwards compatibility.
 
 ## zed-pkg integration
 
@@ -75,9 +76,11 @@ directory setting, and resolves `pkg:math/src/answer` as:
 zed's per-project links into the content-addressed global store work normally.
 The compiler follows symlinks and canonicalizes existing source files with
 `toRealPath()`; this prevents duplicate compilation or self-imports from
-different paths to the same file. At a `pkg:` boundary, recursive source imports
-use the dependency's own nearest manifest, so its internal `@/` refers to that
-dependency rather than the application. Symlink traversal can resolve files outside
+different paths to the same file. At a `pkg:` boundary, manifest discovery stops
+at the installed package's canonical physical root; it cannot accidentally
+pick up the consumer's project manifest. A dependency with no `.ores.pkg.toml`
+cannot import `@/` from its consumer. Nested package manifests reached through
+relative or bare imports are discovered as distinct source roots. Symlink traversal can resolve files outside
 the project root. These rules are **import discovery**, not filesystem
 confinement or a defense against a hostile concurrent filesystem mutator.
 
@@ -91,7 +94,10 @@ oreslang --check src/main.ores
 ```
 
 Keep any zed dependencies in `.zpkg.toml` aligned with `.ores.pkg.toml`
-aliases, and commit the zed lockfile. For CI, `zed install --frozen` or
+aliases, and commit the zed lockfile. If an installed dependency contains
+`.zpkg.toml`, its `package.org` and `package.name` must match the declared
+`org/name`; malformed or mismatched metadata is rejected. This metadata
+comparison is **not** a substitute for verified lockfile or artifact provenance. For CI, `zed install --frozen` or
 equivalent verified materialization must run *before* compilation. Compiling
 alone does not validate semver locks or artifact provenance.
 
@@ -114,9 +120,10 @@ containing a colon cannot be represented directly in `ORES_PATHS` v1; use
 ## Tests and outstanding parity
 
 Tests added alongside this proposal cover project-root precedence, legacy
-manifest compatibility, ordered path lists, symlinked search roots, symlinked
-zed packages, customized zed install directories, traversal rejection,
-whole-program linking and symlinked self-imports.
+manifest compatibility, manifest-less transitive resolution, ordered path lists,
+symlinked roots, installed package identity, customized zed install directories,
+malformed manifests, traversal rejection, nested project boundaries,
+whole-program linking, and symlinked self-imports.
 
 Outstanding: exact-head JDK25/JUnit execution, Graal/native validation,
 LLVM frontend/linker parity, lockfile/version consistency checks, and
