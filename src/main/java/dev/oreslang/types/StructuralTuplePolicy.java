@@ -22,15 +22,66 @@ import dev.oreslang.types.Types.Type;
 public final class StructuralTuplePolicy {
     private StructuralTuplePolicy() { }
 
+    // Keep proof complexity aligned with the existing bounded nominal
+    // overload selector; no source input can trigger unbounded shape work.
+    private static final int MAX_ARITY = 64;
+    private static final int MAX_FAMILY = 128;
+
+    /**
+     * Unresolved, borrowed, executable, and actor-like types cannot provide
+     * a closed proof of readonly positional slot compatibility. This is
+     * intentionally stricter than ordinary tuple assignability.
+     */
+    private static boolean certifiedSlotType(Type type) {
+        if (type == null || type == Types.Unknown.INSTANCE
+                || type instanceof Types.Borrow
+                || type instanceof Types.Generic
+                || type instanceof Types.SelfType
+                || type instanceof Types.ClassNamespace
+                || type instanceof Types.Function
+                || type instanceof Types.Not) return false;
+        if (type == Types.Primitive.VOID || type == Types.Primitive.NULL) return false;
+        if (type instanceof Types.Named named) {
+            // Do not pretend arbitrary nominal objects or ActorRef<T>
+            // have a proven structural ownership/serialization contract.
+            if (!named.name().equals("Option") || named.arguments().size() != 1) {
+                return false;
+            }
+            return certifiedSlotType(named.arguments().getFirst());
+        }
+        if (type instanceof Types.Tuple tuple) {
+            if (tuple.elements().size() > MAX_ARITY) return false;
+            for (Type element : tuple.elements()) if (!certifiedSlotType(element)) return false;
+            return true;
+        }
+        if (type instanceof Types.Union union) {
+            for (Type alternative : union.options()) {
+                if (!certifiedSlotType(alternative)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Types.Record) return false; // dedicated record/loan proof required
+        if (type instanceof Types.ListType) return false; // mutable alias authority not proven
+        return type instanceof Types.Primitive
+                || type instanceof Types.StringLiteral
+                || type instanceof Types.BoolLiteral;
+    }
+
     public record Slot(Type type, boolean omittable) {
         public Slot {
             Objects.requireNonNull(type, "slot type");
+            if (!certifiedSlotType(type)) {
+                throw new IllegalArgumentException("tuple slot needs a closed, readonly-safe type proof");
+            }
         }
     }
 
     public record Shape(List<Slot> slots, boolean structural) {
         public Shape {
             slots = List.copyOf(slots);
+            if (slots.size() > MAX_ARITY) {
+                throw new IllegalArgumentException("structural tuple width exceeds 64 slots");
+            }
             boolean optionalStarted = false;
             for (Slot slot : slots) {
                 Objects.requireNonNull(slot, "slot");
@@ -60,12 +111,14 @@ public final class StructuralTuplePolicy {
         Objects.requireNonNull(expected, "expected");
         if (!(actual instanceof Tuple source) || source.kind() != TupleKind.TUPLE) return false;
         int count = source.elements().size();
+        if (count > MAX_ARITY) return false;
         if (count < expected.required()) return false;
         if (!expected.structural() && count > expected.slots().size()) return false;
         int declaredPresent = Math.min(count, expected.slots().size());
         for (int i = 0; i < declaredPresent; i++) {
             Type supplied = source.elements().get(i);
             Slot slot = expected.slots().get(i);
+            if (!certifiedSlotType(supplied)) return false;
             if (supplied.equals(slot.type())) continue;
             // The optional *slot* may be represented by T or Option<T>.
             // Whether Option<T> can be observed requires the later ABI/view
@@ -85,7 +138,9 @@ public final class StructuralTuplePolicy {
     public record Candidate(String id, int arity, Shape tupleParameter) {
         public Candidate {
             if (id == null || id.isBlank()) throw new IllegalArgumentException("candidate id is empty");
-            if (arity < 0) throw new IllegalArgumentException("negative callable arity");
+            if (arity < 0 || arity > MAX_ARITY) {
+                throw new IllegalArgumentException("callable arity is outside supported range 0..64");
+            }
             if (tupleParameter != null && arity != 1) {
                 throw new IllegalArgumentException("tuple packing target must accept exactly one tuple parameter");
             }
@@ -106,9 +161,16 @@ public final class StructuralTuplePolicy {
         if (!(source instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
             throw new IllegalArgumentException("spread needs a statically typed finite tuple");
         }
+        if (family.size() > MAX_FAMILY || tuple.elements().size() > MAX_ARITY) {
+            throw new IllegalArgumentException("tuple overload proof exceeds bounded family/arity limits");
+        }
         Set<Integer> usedArities = new HashSet<>();
+        Set<String> usedIds = new HashSet<>();
         for (Candidate candidate : family) {
             Objects.requireNonNull(candidate, "candidate");
+            if (!usedIds.add(candidate.id())) {
+                throw new IllegalArgumentException("duplicate callable target identity in overload family");
+            }
             if (!usedArities.add(candidate.arity())) {
                 throw new IllegalArgumentException(
                         "same-arity overload requires independent nominal-enum proof");
