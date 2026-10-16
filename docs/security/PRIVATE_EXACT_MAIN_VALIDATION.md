@@ -53,7 +53,8 @@ References:
    ephemeral, repository-scoped** self-hosted Linux x64 runner named/labelled
    `oreslang-private-ephemeral`. Do not use a shared organization runner or
    run unreviewed PR code on it. Provision JDK 25/GraalVM-compatible Linux,
-   Maven and enough disk/RAM for three sequential native builds. Provision
+   Maven, Python 3 (standard-library XML report verifier) and enough disk/RAM
+   for three sequential native builds. Provision
    without printing registration tokens or retaining build artifacts/secrets.
 3. Resolve the exact reviewed `main` commit and its tree from an authenticated
    trusted checkout:
