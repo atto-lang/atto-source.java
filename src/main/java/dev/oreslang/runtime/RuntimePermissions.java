@@ -296,6 +296,11 @@ public final class RuntimePermissions {
         if (target == null || resolved == null || target.port() == null
                 || resolved.port() == null || !target.port().equals(resolved.port())
                 || !resolved.host().matches("[0-9.]+")) return false;
+        // An unspecified IPv4 socket peer is not a destination identity.
+        // On Linux 0.0.0.0 may connect to 127.0.0.1, evading a deny for
+        // the actual loopback endpoint if left as the selected address.
+        if (resolved.host().equals("0.0.0.0") || target.host().equals("0.0.0.0"))
+            return false;
 
         // An IPv4 literal already names the destination. Never let a
         // different selected IP satisfy an exact numeric-address grant.
