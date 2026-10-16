@@ -100,6 +100,12 @@ public final class DopKernelIR {
                 return state.regionToken;
             }
         }
+        public RegionToken regionToken() {
+            synchronized (state) {
+                active();
+                return state.regionToken;
+            }
+        }
         public DopRegionSchedule.Root regionRoot() {
             return DopRegionSchedule.Root.fromHostBuffer(this);
         }
