@@ -155,6 +155,15 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
     }
 
     private void start(Slot slot, ChildProcLaunchAdmission.Plan plan) {
+        // Executor implementations are caller supplied. A direct/inline executor
+        // must NOT turn the async API into a blocking ProcessBuilder.start() on
+        // the actor carrier or on another actor's execution turn.
+        if (ActorRuntime.isActorCarrierThread() || ActorRuntime.inActorExecution()) {
+            forget(slot);
+            slot.ready.completeExceptionally(new IllegalStateException(
+                    "subprocess launch worker must not execute on an actor carrier"));
+            return;
+        }
         synchronized (lock) {
             if (closed || slots.get(slot.generation) != slot) {
                 slot.ready.completeExceptionally(new IllegalStateException("child process registry closed"));
