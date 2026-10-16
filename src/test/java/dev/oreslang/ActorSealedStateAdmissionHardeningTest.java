@@ -218,4 +218,45 @@ final class ActorSealedStateAdmissionHardeningTest {
                     denied::getMessage);
         }
     }
+
+    @Test void forgedDirectStateRecordLayoutsRejectBeforeDefaultOrCodegen() {
+        Ast.Program parsed = source("0");
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.TypeRef scalar = Ast.TypeRef.simple("int");
+        Ast.TypeRef value = new Ast.TypeRef("$field$value", List.of(scalar), false);
+        List<Ast.TypeRef> forged = List.of(
+                Ast.TypeRef.readonlyRecordType(java.util.Map.of("value", scalar)),
+                new Ast.TypeRef("$record$", List.of(value), true),
+                new Ast.TypeRef("$record$", List.of(value, value), false),
+                new Ast.TypeRef("$record$", List.of(
+                        new Ast.TypeRef("$field$", List.of(scalar), false)), false),
+                new Ast.TypeRef("$record$", List.of(
+                        new Ast.TypeRef("value", List.of(scalar), false)), false),
+                new Ast.TypeRef("$record$", List.of(
+                        new Ast.TypeRef("$field$z", List.of(scalar), false),
+                        new Ast.TypeRef("$field$a", List.of(scalar), false)), false));
+        for (Ast.TypeRef type : forged) {
+            Ast.FieldDecl changed = new Ast.FieldDecl(
+                    state.name(), state.visibility(), state.bindingKind(), type,
+                    state.annotations(), state.initializer(), state.mutableReferent());
+            IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                    () -> ActorStateContract.verify(replaceStateField(parsed, changed)));
+            assertTrue(denied.getMessage().contains("record schema"), denied::getMessage);
+        }
+
+        Ast.FieldDecl nullType = new Ast.FieldDecl(
+                state.name(), state.visibility(), state.bindingKind(), null,
+                state.annotations(), state.initializer(), state.mutableReferent());
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(replaceStateField(parsed, nullType)));
+    }
+
+    @Test void canonicalEmptyAndMultipleKeyDirectRecordsStayValid() {
+        assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse("define actor Empty as state { } end")));
+        assertDoesNotThrow(() -> ActorStateContract.verify(
+                Parser.parse("define actor Pair as "
+                        + "state { z: int = 1; a: bool = true; } end")));
+    }
 }
