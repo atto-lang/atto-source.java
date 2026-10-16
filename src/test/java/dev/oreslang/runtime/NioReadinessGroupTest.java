@@ -152,6 +152,31 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void abandonedPrestartReactorClosesSelector() throws Exception {
+        try (var group = new NioReadinessGroup(1, 16, 16)) {
+            // Exercise the constructor-error cleanup path without depending on
+            // OS pthread exhaustion or process-wide artificial failure flags.
+            Class<?> type = Class.forName(
+                    "dev.oreslang.runtime.NioReadinessGroup$Reactor");
+            var constructor = type.getDeclaredConstructor(NioReadinessGroup.class, int.class);
+            constructor.setAccessible(true);
+            Object unstarted = constructor.newInstance(group, 7);
+            var field = type.getDeclaredField("selector");
+            field.setAccessible(true);
+            var selector = (java.nio.channels.Selector) field.get(unstarted);
+            assertTrue(selector.isOpen());
+            var abort = type.getDeclaredMethod("abortUnstarted");
+            abort.setAccessible(true);
+            abort.invoke(unstarted);
+            assertFalse(selector.isOpen(), "failed bootstrap must release its selector");
+            assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> abort.invoke(unstarted),
+                    "aborting a closed reactor twice must not be silently accepted");
+            group.close();
+            assertTrue(group.awaitStopped(2, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
