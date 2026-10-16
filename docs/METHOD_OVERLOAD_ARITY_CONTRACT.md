@@ -50,8 +50,10 @@ use `pub` for a publicly callable abstract method. A `private abstract`
 instance method is an **override-only slot**: concrete subclasses must
 implement it, but only code lexically declared in the slot's originating
 superclass may invoke virtual dispatch. Overrides cannot publish the slot,
-call it themselves, or expose method references to it. Unrelated ordinary
-private methods still follow their existing declaring-class access rules.
+call it themselves, or expose method references to it. An intermediate
+abstract redeclaration never becomes a new invocation authority: ancestor
+provenance wins, and conflicting independent origins fail closed. Unrelated
+ordinary private methods still follow their existing declaring-class access rules.
 Signature-only declarations in concrete classes are rejected. Abstract
 static class functions remain rejected.
 
