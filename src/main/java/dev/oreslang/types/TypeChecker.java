@@ -59,6 +59,10 @@ public final class TypeChecker {
     /** Compiler-selected direct declarations, keyed by AST object identity. */
     private final IdentityHashMap<Ast.CallExpr, Ast.FunctionDecl> boundDirectCalls =
             new IdentityHashMap<>();
+    // Compiler-bound identity for already-valid, arity-unique instance calls.
+    // Nominal same-arity method admission remains disabled.
+    private final IdentityHashMap<Ast.CallExpr, Ast.MethodCallBinding> boundMethodCalls =
+            new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -114,7 +118,7 @@ public final class TypeChecker {
         // modules from sharing another call site's resolved declaration.
         Ast.Program bound = new Ast.Program(
                 program.namespace(), program.imports(), program.modules(),
-                checker.boundDirectCalls);
+                checker.boundDirectCalls, checker.boundMethodCalls);
         return new TypeCheckResult(bound, checker.warnings);
     }
 
@@ -123,6 +127,17 @@ public final class TypeChecker {
         if (previous != null && previous != target) {
             throw new IllegalArgumentException(
                     "one call expression resolved to different function declarations");
+        }
+    }
+
+    private void bindMethodCall(
+            Ast.CallExpr call, Ast.ClassDecl staticReceiver, Ast.MethodDecl selected) {
+        Ast.MethodCallBinding binding = new Ast.MethodCallBinding(staticReceiver, selected);
+        Ast.MethodCallBinding previous = boundMethodCalls.putIfAbsent(call, binding);
+        if (previous != null && (previous.staticReceiver() != staticReceiver
+                || previous.declaredMethod() != selected)) {
+            throw new IllegalArgumentException(
+                    "one instance call expression resolved to incompatible method declarations");
         }
     }
 
@@ -2865,7 +2880,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -2874,6 +2889,12 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        // Bind only after type, effect and ownership checks.
+                        // The production vtable is still arity-only.
+                        if (klass.actorKind() == Ast.ActorKind.NONE) {
+                            bindMethodCall(call, klass, method);
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
