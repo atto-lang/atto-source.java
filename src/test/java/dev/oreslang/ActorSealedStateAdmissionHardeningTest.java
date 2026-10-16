@@ -311,10 +311,15 @@ final class ActorSealedStateAdmissionHardeningTest {
                 List.of(new Ast.StructFieldSpec("item", Ast.TypeRef.simple("int"))));
         Ast.ObjectExpr canonicalOuter = new Ast.ObjectExpr(
                 List.of(Ast.ObjectField.named("value", nested)));
+        Ast.TypeRef nestedType = Ast.TypeRef.recordType(java.util.Map.of(
+                "item", Ast.TypeRef.simple("int")));
+        Ast.TypeRef stateSchema = Ast.TypeRef.recordType(java.util.Map.of(
+                "value", nestedType));
         Ast.FieldDecl changed = new Ast.FieldDecl(
-                state.name(), state.visibility(), state.bindingKind(), state.type(),
+                state.name(), state.visibility(), state.bindingKind(), stateSchema,
                 state.annotations(), canonicalOuter, state.mutableReferent());
-        // This is the AST admission check, not a type assignment test.
+        // Retain valid nested freshly-owned structs; enforce a canonical
+        // outer state default shape, independent of value object syntax.
         assertDoesNotThrow(() -> ActorStateContract.verify(replaceStateField(parsed, changed)));
     }
 }
