@@ -302,6 +302,30 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void candidatePermissionsMustRunAllSixClassesWithNativeCarrier() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String runner = workflow.substring(
+                workflow.indexOf("  validate-approved-candidate:"));
+        String expected = "run: mvn -B -ntp -Dores.runtime.carriers=native "
+                + "'-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,"
+                + "RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,"
+                + "IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' test";
+        assertTrue(hasExactLine(runner, 8, expected),
+                "the reviewed focused Maven command must execute the full policy suite");
+
+        // Mentioning a class elsewhere (or only in a YAML comment) cannot
+        // substitute for invoking it in the actual Maven test command.
+        String omitted = runner.replace("RuntimePermissionsExplicitPolicyTest,", "");
+        assertFalse(hasExactLine(omitted, 8, expected),
+                "dropping a permission class must invalidate the review fixture");
+        String commented = runner.replace("        " + expected,
+                "        # " + expected);
+        assertFalse(hasExactLine(commented, 8, expected),
+                "commented-out Maven commands must not pass");
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
