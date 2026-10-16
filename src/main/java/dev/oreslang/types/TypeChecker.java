@@ -2233,6 +2233,12 @@ public final class TypeChecker {
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
+            if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+                if (typedOpenMapClass(receiver) != null && targetType == OpenValue.INSTANCE) {
+                    requireTypedOpenMapExtraValue(value, "typed open Map extra-key value");
+                }
+            }
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             for (Type slot : dynamicFixedSlots) {
@@ -4980,7 +4986,8 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+        if (type == Unknown.INSTANCE || type == OpenValue.INSTANCE
+                || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
@@ -5073,7 +5080,8 @@ public final class TypeChecker {
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
-        if (type == Unknown.INSTANCE || type instanceof SelfType || type instanceof Borrow
+        if (type == Unknown.INSTANCE || type == OpenValue.INSTANCE
+                || type instanceof SelfType || type instanceof Borrow
                 || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
@@ -8459,6 +8467,38 @@ public final class TypeChecker {
                     stored, "map key " + klass.name() + "." + key.name());
             resolve(stored, classGenerics, self);
         }
+    }
+
+    private void requireTypedOpenMapExtraValue(Type type, String where) {
+        if (type == Unknown.INSTANCE || type == OpenValue.INSTANCE
+                || type instanceof Borrow || type instanceof Function
+                || type instanceof Generic || type instanceof SelfType
+                || type instanceof ListType || type instanceof Tuple
+                || type instanceof Record || isTypedMapType(type)) {
+            throw new IllegalArgumentException(
+                    where + " must be a recursively Copy scalar, Option or Result value");
+        }
+        if (type instanceof StringLiteral || type instanceof Types.BoolLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.INT || primitive == Primitive.BOOL
+                    || primitive == Primitive.STRING) return;
+            throw new IllegalArgumentException(
+                    where + " currently supports only int, bool, String and Symbol scalars");
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("$builtin$Symbol") && named.arguments().isEmpty()) return;
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                requireTypedOpenMapExtraValue(named.arguments().getFirst(), where);
+                return;
+            }
+            if (named.name().equals("Result") && named.arguments().size() == 2) {
+                requireTypedOpenMapExtraValue(named.arguments().get(0), where);
+                requireTypedOpenMapExtraValue(named.arguments().get(1), where);
+                return;
+            }
+        }
+        throw new IllegalArgumentException(
+                where + " must be a recursively Copy scalar, Option or Result value");
     }
 
     private void requireReifiableTypedOpenMapStoredType(Ast.TypeRef type, String where) {
