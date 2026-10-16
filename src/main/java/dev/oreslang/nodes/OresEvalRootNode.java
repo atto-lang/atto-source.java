@@ -6842,6 +6842,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof OresKeyedMap<?, ?>) {
+                throw new IllegalArgumentException(
+                        "typed Map members are sealed runtime operations and cannot be reified or accessed through host interop");
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
