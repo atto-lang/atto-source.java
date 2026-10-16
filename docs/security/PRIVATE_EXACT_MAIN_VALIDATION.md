@@ -95,9 +95,12 @@ rejects other repositories, repository IDs, visibility, unprotected refs, workfl
 or candidate SHAs *before checking out any candidate code*. Its pinned
 read-only checkout then requires the selected commit, Git tree, and clean
 worktree to match the approvals before GraalVM setup or Maven/guest execution.
-The workflow runs the targeted Deno-style permissions, network-policy and
-host-interop regression suites, full Java 25 `verify`, and native AOT/hybrid/
-strict-isolate guest smoke tests. Capture actual workflow job steps, exit
+The workflow runs the **six-class** focused native-carrier suite:
+`DenoCliDefaultPermissionsTest`, `RuntimePermissionsNetworkAuditTest`,
+`RuntimePermissionsTest`, `RuntimePermissionsExplicitPolicyTest`,
+`IsolatePolicySerializationAuditTest`, and `ScopedPermissionInteropTest`.
+It then runs full Java 25 `verify` and native AOT/hybrid/strict-isolate
+guest smoke tests. Capture actual workflow job steps, exit
 codes, SHA/tree prints and complete test results; **a queued, skipped or
 zero-step job is never passing evidence**.
 
