@@ -92,6 +92,23 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void nestedArraysAndFixedListsCannotMasqueradeAsReadonlyTupleSlots() {
+        for (TupleKind kind : new TupleKind[] {
+                TupleKind.FIXED_ARRAY, TupleKind.FIXED_LIST
+        }) {
+            var nested = new Tuple(List.of(Primitive.INT), kind);
+            assertThrows(IllegalArgumentException.class,
+                    () -> new Slot(nested, false), kind.name());
+            var supplied = tuple(Primitive.INT, Primitive.INT, nested);
+            assertFalse(StructuralTuplePolicy.admits(STRUCTURAL, supplied), kind.name());
+            assertFalse(StructuralTuplePolicy.admits(EXACT, supplied), kind.name());
+        }
+        var closedNestedTuple = tuple(Primitive.INT);
+        var expectation = new Shape(List.of(new Slot(closedNestedTuple, false)), true);
+        assertTrue(StructuralTuplePolicy.admits(expectation, tuple(closedNestedTuple)));
+    }
+
+    @Test
     void overloadFamilyMustHaveDistinctCallableIdentityAndFiniteBounds() {
         assertThrows(IllegalArgumentException.class, () ->
                 StructuralTuplePolicy.selectExplicitTupleSpread(List.of(
