@@ -4988,6 +4988,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = isPrivateKind(cell.kind) ? isolateCopy(message) : freezeForTransport(message);
+        // The caller-owned graph may mutate after the first authorization pass.
+        // Check the sealed snapshot that will actually enter the mailbox.
+        validateMessageGraph(prepared);
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            rejectUntrustedInboundCapabilities(prepared, new IdentityHashMap<>(), 0);
+        }
+        requireMutexTransport(cell, prepared, new IdentityHashMap<>(), 0);
+        requireOwnedActorRefs(prepared, new IdentityHashMap<>(), 0);
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(prepared, new IdentityHashMap<>(), 0);
+        }
         Runnable release;
         if (isPrivateKind(cell.kind)) {
             MemoryReservation reservation;
@@ -5764,6 +5775,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.ActorGroupJoinCapability
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
@@ -5946,7 +5958,10 @@ public final class ActorRuntime implements AutoCloseable {
     public static Object freeze(Object value) {
         validateMessageGraph(value);
         rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
-        return freeze(value, new IdentityHashMap<>(), 0);
+        Object frozen = freeze(value, new IdentityHashMap<>(), 0);
+        // Only returning an actually DATA-only snapshot closes mutation races.
+        rejectDataFreezeCapabilities(frozen, new IdentityHashMap<>(), 0);
+        return frozen;
     }
 
     private static Object freezeForTransport(Object value) {
@@ -6018,7 +6033,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>(list.size());
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
-                return List.copyOf(frozen);
+                return Collections.unmodifiableList(frozen);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
@@ -6038,7 +6053,7 @@ public final class ActorRuntime implements AutoCloseable {
                 for (int i = 0; i < length; i++) {
                     frozen.add(freeze(Array.get(value, i), visiting, depth + 1));
                 }
-                return List.copyOf(frozen);
+                return Collections.unmodifiableList(frozen);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
