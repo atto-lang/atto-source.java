@@ -456,6 +456,39 @@ final class ProjectManifestImportTest {
 
 
     @Test
+    void missingRootedImportMustNotFallThroughToLegacyPackageResolution() throws Exception {
+        Path project = temp.resolve("missing-rooted");
+        Path src = project.resolve("src");
+        Files.createDirectories(src);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "missing-rooted"
+                [source]
+                roots = ["src"]
+                """);
+        Path main = src.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc missing from "+/src/missing";
+                pub fnc main(): void { return; }
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(failure.getMessage().contains("does not resolve to a file"),
+                failure.getMessage());
+        assertTrue(failure.getMessage().contains("+/src/missing"),
+                failure.getMessage());
+
+        // The same unresolved import must be rejected in the execution path.
+        IllegalArgumentException executionFailure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                        new ByteArrayOutputStream(), new ByteArrayOutputStream()));
+        assertTrue(executionFailure.getMessage().contains("+/src/missing"),
+                executionFailure.getMessage());
+    }
+
+    @Test
     void packageRootAndZedAliasesLinkThroughTheSameCompilerGraph() throws Exception {
         Path project = temp.resolve("package-integration");
         Path src = project.resolve("src");
