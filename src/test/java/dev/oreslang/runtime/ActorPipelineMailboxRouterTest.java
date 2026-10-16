@@ -98,6 +98,8 @@ final class ActorPipelineMailboxRouterTest {
             assertEquals(2, receipts.size());
             assertEquals("worker-a", receipts.get(0).target());
             assertEquals("worker-b", receipts.get(1).target());
+            assertEquals(0, receipts.get(0).edgeIndex());
+            assertEquals(1, receipts.get(1).edgeIndex());
             assertTrue(receipts.stream().allMatch(ActorPipelineMailboxRouter.Admission::admitted));
             assertEquals(8, observedA.get() + observedB.get());
             assertEquals(1, peak.get(), "actor cannot execute two physical turns");
@@ -190,6 +192,8 @@ final class ActorPipelineMailboxRouterTest {
             assertFalse(receipts.get(1).admitted());
             assertNotNull(receipts.get(1).failure());
             assertEquals("worker-b", receipts.get(1).target());
+            assertEquals(0, receipts.get(0).edgeIndex());
+            assertEquals(1, receipts.get(1).edgeIndex());
             producer.stop();
             a.stop();
             producer.getDone().get(5, TimeUnit.SECONDS);
