@@ -1242,6 +1242,8 @@ final class MethodOverloadTest {
         var existing = checked.boundMethodCalls().entrySet().iterator().next();
         var call = existing.getKey();
         var binding = existing.getValue();
+        assertEquals("pick", binding.slot().name());
+        assertEquals(1, binding.slot().arity());
         var entries =
                 new java.util.IdentityHashMap<Ast.CallExpr, Ast.MethodCallBinding>();
         entries.put(call, null);
@@ -1285,6 +1287,18 @@ final class MethodOverloadTest {
                         checked.boundDirectCalls(), entries));
         assertTrue(foreign.getMessage().contains("foreign declaration"),
                 foreign::getMessage);
+
+        entries.clear();
+        var sourceMember = (Ast.MemberExpr) call.callee();
+        var wrongCallee = new Ast.CallExpr(
+                new Ast.MemberExpr(sourceMember.receiver(), "notPick"),
+                call.arguments());
+        entries.put(wrongCallee, binding);
+        var mismatched = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(mismatched.getMessage().contains("does not match"),
+                mismatched::getMessage);
 
         entries.clear();
         entries.put(call, binding);
