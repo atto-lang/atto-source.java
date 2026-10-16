@@ -61,6 +61,27 @@ final class NumericPortableI64GuestTest {
     }
 
     @Test
+    void byteExactSharedSourceBoundaryCompilesAndExecutesInGraal() throws Exception {
+        // Same exact Oreslang file as .NET, LLVM, Wasm and Forge. Do not
+        // count a Python arithmetic oracle or parser acceptance as execution.
+        byte[] source = Files.readAllBytes(
+                Path.of("contracts/v1/numeric-parity/i64-max-minus-one.ores"));
+        MessageDigest hash = MessageDigest.getInstance("SHA-1");
+        hash.update(("blob " + source.length + "\0")
+                .getBytes(StandardCharsets.US_ASCII));
+        hash.update(source);
+        assertEquals("c400f440fde2fbc10514ab7cfd2ffe3d19729ee1",
+                HexFormat.of().formatHex(hash.digest()),
+                "five-backend byte-identical signed-i64 source fixture drift");
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertEquals(Long.MAX_VALUE - 1L,
+                    context.eval(OresLanguage.ID, new String(source, StandardCharsets.UTF_8)).asLong(),
+                    "actual GraalVM guest must execute the shared i64 source");
+        }
+    }
+
+    @Test
     void portableI64InputsReturnFullWidthSignedResults() throws Exception {
         // This guest suite currently embeds source expressions. Fail if the
         // shared corpus changes without an explicit guest-case code review;
