@@ -505,7 +505,12 @@ public final class RuntimePermissions {
                 }
                 yield scope.canonical();
             }
-            case ENV, RUN, SYS -> trimmed;
+            // A configured programmatic permission is a literal token.
+            // Trimming it can turn an intended grant for "NAME " into an
+            // unintended grant for "NAME" (and likewise for deny rules).
+            // CSV delimiters are trimmed by normalizedCsvScopes before this
+            // branch, so only the explicit Builder.allow/deny semantics change.
+            case ENV, RUN, SYS -> value;
         };
     }
 
