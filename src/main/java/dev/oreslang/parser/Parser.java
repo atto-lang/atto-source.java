@@ -376,8 +376,8 @@ public final class Parser {
                 throw error(actorToken, "actor class declarations accept only visibility and actor-kind modifiers");
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-            rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-            return parseActorClass(actorKind, modifiers.visibility);
+            Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+            return parseActorClass(actorKind, modifiers.visibility, maxThreads);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -703,8 +703,8 @@ public final class Parser {
                     "actor class declarations accept only visibility and actor-kind modifiers");
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
-        rejectDiscardedDeclarationAnnotations(annotations, "actor class declarations");
-        return parseActorClass(kind, modifiers.visibility);
+        Ast.MaxActorThreads maxThreads = actorMaxThreads(annotations);
+        return parseActorClass(kind, modifiers.visibility, maxThreads);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -729,7 +729,8 @@ public final class Parser {
         return match(WHEN) || matchContextualIdentifier("when");
     }
 
-    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility) {
+    private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility,
+                                          Ast.MaxActorThreads maxThreads) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -802,7 +803,8 @@ public final class Parser {
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
         return new Ast.ClassDecl(
-                name, visibility, false, actorKind, generics, parents, interfaces, fields, null, methods);
+                name, visibility, false, actorKind, generics, parents, interfaces, fields,
+                null, methods, maxThreads);
     }
 
     private void validateActorFieldModifiers(Modifiers modifiers) {
@@ -3852,6 +3854,44 @@ public final class Parser {
             throw error(previous(), "duplicate structural callable modifier; use either 'structural' or '@structural', not both");
         }
         return new CallableStructural(modifierStructural || annotationStructural, List.copyOf(remaining));
+    }
+
+    /**
+     * Source actor physical concurrency is a static compiler policy, not a
+     * mutable runtime hint. The parser retains its typed value in ClassDecl.
+     * While per-turn Truffle Context isolation and state loans are incomplete,
+     * fail closed for MEDIUM/HIGH rather than silently executing unsafely.
+     */
+    private Ast.MaxActorThreads actorMaxThreads(List<Ast.Annotation> annotations) {
+        Ast.MaxActorThreads result = Ast.MaxActorThreads.LOW;
+        boolean seen = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("ActorMaxThreads")) {
+                throw error(previous(), "@" + annotation.name()
+                        + " on actor class declarations is not implemented");
+            }
+            if (seen) throw error(previous(), "duplicate @ActorMaxThreads on actor declaration");
+            seen = true;
+            if (annotation.arguments().size() != 1)
+                throw error(previous(), "@ActorMaxThreads requires exactly one MaxActorThreads enum value");
+            Ast.TypeRef value = annotation.arguments().getFirst();
+            if (!value.arguments().isEmpty() || value.inferArguments()
+                    || !value.name().startsWith("MaxActorThreads.")) {
+                throw error(previous(), "@ActorMaxThreads expects MaxActorThreads.LOW, .MEDIUM or .HIGH");
+            }
+            String member = value.name().substring("MaxActorThreads.".length());
+            try {
+                result = Ast.MaxActorThreads.valueOf(member);
+            } catch (IllegalArgumentException invalid) {
+                throw error(previous(), "unknown MaxActorThreads enum member: " + member);
+            }
+            if (result != Ast.MaxActorThreads.LOW) {
+                throw error(previous(), "@ActorMaxThreads(MaxActorThreads." + member
+                        + ") requires compiler-proven per-turn actor state isolation;"
+                        + " parallel actor execution is not yet enabled");
+            }
+        }
+        return result;
     }
 
     /**
