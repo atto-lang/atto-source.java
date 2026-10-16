@@ -2199,5 +2199,50 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
 
+    def test_api_json_rejects_duplicate_repository_id(self):
+        with self.assertRaisesRegex(pub.Denied, "duplicate"):
+            pub.strict_github_api_json('{"id":123,"id":999}')
+
+    def test_api_json_rejects_nested_duplicate_owner_id(self):
+        with self.assertRaisesRegex(pub.Denied, "duplicate"):
+            pub.strict_github_api_json('{"owner":{"id":123,"id":999}}')
+
+    def test_api_json_rejects_unicode_escaped_duplicate_key(self):
+        with self.assertRaisesRegex(pub.Denied, "duplicate"):
+            pub.strict_github_api_json('{"id":123,"\\u0069d":999}')
+
+    def test_api_json_rejects_nonstandard_numeric_values(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(constant=constant):
+                with self.assertRaisesRegex(pub.Denied, "nonstandard"):
+                    pub.strict_github_api_json('{"id":' + constant + '}')
+
+    def test_api_json_rejects_oversized_response(self):
+        with self.assertRaisesRegex(pub.Denied, "oversized"):
+            pub.strict_github_api_json('{"value":"' + "x" * (2 * 1024 * 1024) + '"}')
+
+    def test_api_json_rejects_malformed_and_non_object(self):
+        for value in ("{", "[1]", "null", "true", "123"):
+            with self.subTest(value=value):
+                with self.assertRaises(pub.Denied):
+                    pub.strict_github_api_json(value)
+
+    def test_api_json_accepts_normal_nested_repository_response(self):
+        self.assertEqual(pub.strict_github_api_json(
+            '{"id":123,"owner":{"id":456},"private":true}'),
+            {"id":123,"owner":{"id":456},"private":True})
+
+    def test_gh_api_rejects_ambiguous_metadata_before_repo_identity_check(self):
+        response = type("Response", (), {
+            "returncode": 0,
+            "stdout": '{"full_name":"trusted/ci","id":123,"id":999}',
+            "stderr": "",
+        })()
+        with patch.object(pub.subprocess, "run", return_value=response):
+            with self.assertRaisesRegex(pub.Denied, "duplicate"):
+                pub.checked_repo("trusted/ci", expected_id=123)
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
