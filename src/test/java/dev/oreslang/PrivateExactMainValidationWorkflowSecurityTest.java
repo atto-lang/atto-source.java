@@ -779,13 +779,26 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                         case 9 -> Files.write(target, new byte[] {1});
                         default -> throw new AssertionError("unexpected fixture");
                     }
+                    // Bound the subprocess so a mutated selection fragment
+                    // cannot hang this JUnit security regression indefinitely.
+                    Path outputPath = temp.resolve("isolate-selection.log");
                     Process shell = new ProcessBuilder("bash", "-c", program)
                             .directory(temp.toFile())
                             .redirectErrorStream(true)
+                            .redirectOutput(outputPath.toFile())
                             .start();
-                    String output = new String(shell.getInputStream().readAllBytes(),
+                    boolean completed = shell.waitFor(10,
+                            java.util.concurrent.TimeUnit.SECONDS);
+                    if (!completed) {
+                        shell.destroyForcibly();
+                        shell.waitFor();
+                    }
+                    assertTrue(completed,
+                            "native isolate selection hung in fixture " + i
+                                    + " for " + workflowFile);
+                    String output = Files.readString(outputPath,
                             java.nio.charset.StandardCharsets.UTF_8);
-                    int exitCode = shell.waitFor();
+                    int exitCode = shell.exitValue();
                     assertEquals(i < 2, exitCode == 0,
                             "isolate selection exit status for fixture " + i + " in "
                                     + workflowFile + ": " + output);
