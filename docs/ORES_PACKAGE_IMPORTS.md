@@ -22,7 +22,9 @@ import class ArrayList from "java:java.util.ArrayList";
   under the corresponding zed-pkg installation. The compiler does **not**
   download packages, resolve semver, or run installers.
 - Bare imports check project `source.roots`, `source.import_paths`,
-  `ORES_PATHS`, then legacy `ORESLANG_PATH`, in that order.
+  `ORES_PATHS`, then legacy `ORESLANG_PATH`, in that order. An omitted
+  `source.roots` defaults to `["."]`; an explicitly empty `roots = []`
+  disables that implicit project-root lookup without disabling `@/` imports.
 - `./` and `../` keep their existing importer-relative meaning.
 - `java:` remains capability-gated Java host interop, not a filesystem import.
 
