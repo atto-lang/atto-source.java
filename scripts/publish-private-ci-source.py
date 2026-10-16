@@ -163,6 +163,41 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
 
+def protected_main_commit():
+    """Pin a protected original-source mainline for export authorization."""
+    data = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main")
+    commit_ref = data.get("commit")
+    if data.get("protected") is not True or not isinstance(commit_ref, dict):
+        raise Denied("original source main is not protected")
+    return valid_sha(commit_ref.get("sha"))
+
+
+def verified_protected_main_policy(local_policy_fingerprint):
+    """Require exact local approval bytes on protected original-source main."""
+    approved_main = protected_main_commit()
+    route = (f"repos/{SOURCE_REPOSITORY}/contents/"
+             f".github/private-ci-approved-repositories.txt?ref={approved_main}")
+    file_metadata = gh_api(route)
+    if (file_metadata.get("type") != "file"
+            or file_metadata.get("encoding") != "base64"
+            or not isinstance(file_metadata.get("content"), str)):
+        raise Denied("protected-main source policy is missing or malformed")
+    try:
+        policy_bytes = base64.b64decode(
+            file_metadata["content"].replace("\\n", ""), validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected-main source policy cannot be decoded") from exc
+    if (len(policy_bytes) > 16 * 1024
+            or hashlib.sha256(policy_bytes).digest() != local_policy_fingerprint):
+        raise Denied("local destination policy differs from protected source main")
+    expected_blob = hashlib.sha1(
+        b"blob " + str(len(policy_bytes)).encode("ascii")
+        + b"\\0" + policy_bytes).hexdigest()
+    if file_metadata.get("sha") != expected_blob:
+        raise Denied("protected-main policy blob SHA does not match contents")
+    return approved_main
+
+
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
 
@@ -448,6 +483,7 @@ def publish(repository, source, branch, trusted_root,
     # accessing source bytes; neither the slug nor visibility alone is enough.
     checked_source()
     checked_repo(repository)
+    approved_source_main = verified_protected_main_policy(approved_policy)
     trusted = trusted_root.resolve(strict=True)
     resolved_source = source.resolve(strict=True)
     try:
@@ -472,6 +508,8 @@ def publish(repository, source, branch, trusted_root,
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
+        if protected_main_commit() != approved_source_main:
+            raise Denied("approved protected source main changed during transfer")
         checked_source()
         checked_repo(repository)
 
