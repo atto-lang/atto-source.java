@@ -245,6 +245,67 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void changingIteratorCannotExhaustDataFreezePrecheck() {
+        java.util.concurrent.atomic.AtomicInteger walks = new java.util.concurrent.atomic.AtomicInteger();
+        List<Object> hostile = listWhoseSecondTraversalExpands(walks);
+        IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(hostile));
+        assertTrue(rejection.getMessage().contains("maximum node count"),
+                rejection.getMessage());
+        assertEquals(2, walks.get(),
+                "capability precheck must stop oversized traversal before snapshot allocation");
+    }
+
+    @Test
+    void changingIteratorCannotExhaustUntrustedDataAdmission() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                dev.oreslang.runtime.IsolatePolicy.developer())) {
+            java.util.concurrent.atomic.AtomicInteger walks = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicInteger received = new java.util.concurrent.atomic.AtomicInteger();
+            var untrusted = runtime.<Object>spawnUntrusted(context ->
+                    (message, turn) -> received.incrementAndGet());
+
+            IllegalArgumentException rejection = assertThrows(IllegalArgumentException.class,
+                    () -> untrusted.send(listWhoseSecondTraversalExpands(walks)));
+            assertTrue(rejection.getMessage().contains("maximum node count"),
+                    rejection.getMessage());
+            assertEquals(2, walks.get(), "untrusted checks must reject the second oversized walk");
+            assertEquals(0, received.get(), "rejected DATA must never be queued");
+
+            untrusted.send("recovered");
+            untrusted.drain().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(1, received.get(), "failed admission must return its mailbox slot");
+            untrusted.stop();
+            untrusted.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    private static List<Object> listWhoseSecondTraversalExpands(
+            java.util.concurrent.atomic.AtomicInteger walks) {
+        return new AbstractList<>() {
+            @Override public int size() { return 1; }
+            @Override public Object get(int index) {
+                if (index != 0) throw new IndexOutOfBoundsException(index);
+                return "safe";
+            }
+            @Override public java.util.Iterator<Object> iterator() {
+                // The initial validateMessageGraph() walk is ordinary DATA;
+                // only the second capability/ownership walk is oversized.
+                int length = walks.incrementAndGet() == 2 ? 100_010 : 1;
+                return new java.util.Iterator<>() {
+                    private int index;
+                    @Override public boolean hasNext() { return index < length; }
+                    @Override public Object next() {
+                        if (!hasNext()) throw new java.util.NoSuchElementException();
+                        index++;
+                        return "safe";
+                    }
+                };
+            }
+        };
+    }
+
+    @Test
     void changingListCannotSmuggleCapabilitiesIntoFrozenData() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<Object>spawnShared(() -> (message, context) -> { });
