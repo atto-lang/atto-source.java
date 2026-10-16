@@ -209,21 +209,21 @@ jobs:
                             for k in ("failures", "errors", "skipped")]
               except ValueError:
                   raise SystemExit(f"Invalid full-suite JUnit totals: {report}")
-              if declared != len(cases) or any(n < 0 for n in totals):
-                  raise SystemExit(f"Inconsistent full-suite JUnit totals: {report}")
-              successful = 0
+              if declared < 1 or declared != len(cases) or any(n != 0 for n in totals):
+                  raise SystemExit(f"Unsuccessful or inconsistent JUnit suite: {report}")
+              # A green Maven exit code is not sufficient evidence when a
+              # module/plugin can suppress failures or skip tests. Every
+              # report and testcase must pass, including flaky reruns.
               for case in cases:
                   if case.get("classname") != classname:
                       raise SystemExit(f"Incorrect testcase identity: {report}")
                   if any(case.find(k) is not None for k in
                          ("failure", "error", "skipped", "flakyFailure",
                           "flakyError", "rerunFailure", "rerunError")):
-                      continue
-                  successful += 1
-              if successful:
-                  executed.add(classname)
-                  if classname in focused:
-                      focused_seen.add(classname)
+                      raise SystemExit(f"Failed/skipped/flaky testcase in {report}")
+              executed.add(classname)
+              if classname in focused:
+                  focused_seen.add(classname)
           if focused_seen != focused:
               raise SystemExit("Full Maven verification omitted focused classes: "
                                + ", ".join(sorted(focused - focused_seen)))
