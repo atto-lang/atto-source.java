@@ -199,8 +199,16 @@ Each native AOT, hybrid, and
 strict-isolate stage separately runs `mvn -Pnative-... -DskipTests clean package`
 before executing its smoke test. This prevents a stale binary or shared
 library left by another profile (or provided in the candidate checkout) from
-being mistaken for the tested output. These clean builds are more expensive
-than incremental builds but are necessary for trustworthy exact-source evidence.
+being mistaken for the tested output. Both strict-isolate stages also require
+**exactly one**, non-empty, regular (not symlinked) `target/oresvm.so` or
+`target/liboresvm.so` after the clean build. Missing, ambiguous or invalid
+libraries fail with an explicit shell `exit 1`. Do not rely on `set -e`
+alone after a shell `&&` chain: Bash can continue after a failed intermediate
+condition and accidentally admit invalid artifacts. The workflow's Java
+security regression executes this exact shell fragment against synthetic
+filesystem fixtures, including symlinks with otherwise valid library bytes.
+These clean builds are more expensive than incremental builds but are necessary
+for trustworthy exact-source evidence.
 Capture actual workflow job steps, exit
 codes, SHA/tree prints and complete test results; **a queued, skipped or
 zero-step job is never passing evidence**.
