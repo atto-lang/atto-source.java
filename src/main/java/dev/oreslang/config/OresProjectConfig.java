@@ -86,17 +86,22 @@ public final class OresProjectConfig {
         if (physicalBoundary != null && !searchFrom.startsWith(physicalBoundary)) {
             searchFrom = physicalBoundary;
         }
+        Path nearestLegacy = null;
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
             if (physicalBoundary != null && !cursor.startsWith(physicalBoundary)) break;
-            // Prefer the package manifest when both are in the same directory.
+            // @/ must always bind the nearest package manifest, even when a
+            // legacy compiler config exists in a lower source directory.
             Path packageManifest = cursor.resolve(PACKAGE_MANIFEST_NAME);
             if (Files.isRegularFile(packageManifest)) {
                 return load(packageManifest, environment).withDiscoveryBoundary(physicalBoundary);
             }
             Path legacyManifest = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(legacyManifest)) {
-                return load(legacyManifest, environment).withDiscoveryBoundary(physicalBoundary);
+            if (nearestLegacy == null && Files.isRegularFile(legacyManifest)) {
+                nearestLegacy = legacyManifest;
             }
+        }
+        if (nearestLegacy != null) {
+            return load(nearestLegacy, environment).withDiscoveryBoundary(physicalBoundary);
         }
 
         Path root = physicalBoundary == null ? searchFrom.toAbsolutePath().normalize() : physicalBoundary;
