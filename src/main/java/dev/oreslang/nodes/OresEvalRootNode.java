@@ -6127,6 +6127,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
                     return BooleanOpsNamespace.INSTANCE;
                 }
+                if (name.name().equals("DecimalOps") && !modules.containsKey("DecimalOps")) {
+                    return DecimalOpsNamespace.INSTANCE;
+                }
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -7080,6 +7083,33 @@ public final class OresEvalRootNode extends RootNode {
                     case "release" -> (Invokable) args -> { requireZero(args, "MutexGuard.release"); guard.release(); return null; };
                     case "is_released" -> (Invokable) args -> { requireZero(args, "MutexGuard.is_released"); return guard.released(); };
                     default -> member(guard.value(), name, env);
+                };
+            }
+            if (receiver == DecimalOpsNamespace.INSTANCE) {
+                return switch (name) {
+                    case "divide" -> (Invokable) args -> {
+                        if (args.size() != 4) throw new IllegalArgumentException("DecimalOps.divide expects 4 arguments");
+                        return dev.oreslang.runtime.ExactDecimalMath.divide(
+                                requireExactDecimal(args.get(0)),
+                                requireExactDecimal(args.get(1)),
+                                requireDecimalPrecision(args.get(2)),
+                                requireString(args.get(3), "decimal rounding mode"));
+                    };
+                    case "round" -> (Invokable) args -> {
+                        if (args.size() != 3) throw new IllegalArgumentException("DecimalOps.round expects 3 arguments");
+                        return dev.oreslang.runtime.ExactDecimalMath.round(
+                                requireExactDecimal(args.get(0)),
+                                requireDecimalPrecision(args.get(1)),
+                                requireString(args.get(2), "decimal rounding mode"));
+                    };
+                    case "sqrt" -> (Invokable) args -> {
+                        if (args.size() != 3) throw new IllegalArgumentException("DecimalOps.sqrt expects 3 arguments");
+                        return dev.oreslang.runtime.ExactDecimalMath.sqrt(
+                                requireExactDecimal(args.get(0)),
+                                requireDecimalPrecision(args.get(1)),
+                                requireString(args.get(2), "decimal rounding mode"));
+                    };
+                    default -> throw new IllegalArgumentException("unknown DecimalOps intrinsic " + name);
                 };
             }
             if (receiver == BooleanOpsNamespace.INSTANCE && isBooleanIntrinsicName(name)) {
@@ -8758,6 +8788,21 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
+
+        private java.math.BigDecimal requireExactDecimal(Object value) {
+            if (value instanceof java.math.BigDecimal decimal) return decimal;
+            if (value instanceof Number number && isIntegral(number)) {
+                return java.math.BigDecimal.valueOf(number.longValue());
+            }
+            throw new IllegalArgumentException("DecimalOps requires decimal or exact integer operands");
+        }
+
+        private long requireDecimalPrecision(Object value) {
+            if (!(value instanceof Number number) || !isIntegral(number)) {
+                throw new IllegalArgumentException("decimal precision must be an integer");
+            }
+            return number.longValue();
+        }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
@@ -9508,6 +9553,7 @@ public final class OresEvalRootNode extends RootNode {
     }
     private enum FutureFactory { INSTANCE }
     private enum BooleanOpsNamespace { INSTANCE }
+    private enum DecimalOpsNamespace { INSTANCE }
 
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
