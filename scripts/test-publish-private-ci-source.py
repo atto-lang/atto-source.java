@@ -97,7 +97,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"type": "commit", "sha": A}},
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"type": "commit", "sha": A}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -106,6 +111,48 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A, D)
+
+    def test_git_pointer_metadata_denied_before_any_git_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").write_text("untrusted redirect")
+            (root / "source.ores").write_text("value")
+            with self.assertRaisesRegex(pub.Denied, "real directory"):
+                pub.collect_source(root, root, omit_checkout_metadata=True)
+            with self.assertRaisesRegex(pub.Denied, "real Git metadata"):
+                pub.require_source_tree_match(
+                    root, root, [("source.ores", b"value", "100644")])
+
+    def test_ref_create_acknowledgement_and_readback_both_required(self):
+        ref = "refs/heads/ci/oreslang-test"
+        good = {"ref": ref, "object": {"type": "commit", "sha": A}}
+        invalid = [{"ref": ref}, {"ref": ref, "object": {"type": "commit", "sha": B}},
+                   {"ref": ref, "object": {"type": "tree", "sha": A}},
+                   {"ref": "refs/heads/main", "object": {"type": "commit", "sha": A}}]
+        with patch.object(pub, "gh_api", return_value=good):
+            pub.verify_private_ci_ref("trusted/ci", "ci/oreslang-test", A, good)
+        for bad in invalid:
+            with self.subTest(creation=bad):
+                with patch.object(pub, "gh_api", side_effect=AssertionError("must deny early")):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_private_ci_ref("trusted/ci", "ci/oreslang-test", A, bad)
+            with self.subTest(readback=bad):
+                with patch.object(pub, "gh_api", return_value=bad):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_private_ci_ref("trusted/ci", "ci/oreslang-test", A, good)
+
+    def test_ref_switched_between_write_and_readback_rejected(self):
+        actual = self.fake_api
+        def changed(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                self.route_calls.append((method, route, payload))
+                return {"ref": "refs/heads/ci/oreslang-test",
+                        "object": {"type": "commit", "sha": B}}
+            return actual(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changed):
+            with self.assertRaisesRegex(pub.Denied, "readback"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, A, D)
 
     def test_explicit_commit_and_tree_inputs_are_required(self):
         for commit, tree in [(None, D), (A, None), ("bad", D),
