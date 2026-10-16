@@ -109,6 +109,46 @@ final class PersistentActorMapTest {
     }
 
     @Test
+    void allMapMutationSurfacesRejectBeforeInvokingForeignCallbacks() {
+        var empty = PersistentActorMap.empty();
+        var map = empty.with("present", 7);
+        var called = new java.util.concurrent.atomic.AtomicBoolean();
+        assertThrows(UnsupportedOperationException.class, empty::clear);
+        assertThrows(UnsupportedOperationException.class, () -> empty.putAll(Map.of()));
+        assertThrows(UnsupportedOperationException.class, () -> empty.remove("absent"));
+        assertThrows(UnsupportedOperationException.class, () -> map.put("x", 8));
+        assertThrows(UnsupportedOperationException.class, () -> map.remove("present", 7));
+        assertThrows(UnsupportedOperationException.class, () -> map.putIfAbsent("present", 4));
+        assertThrows(UnsupportedOperationException.class, () -> map.replace("present", 9));
+        assertThrows(UnsupportedOperationException.class, () -> map.replace("present", 7, 9));
+        assertThrows(UnsupportedOperationException.class, () -> map.computeIfAbsent("absent", k -> {
+            called.set(true);
+            return 3;
+        }));
+        assertThrows(UnsupportedOperationException.class, () -> map.computeIfPresent("present", (k, v) -> {
+            called.set(true);
+            return 3;
+        }));
+        assertThrows(UnsupportedOperationException.class, () -> map.compute("present", (k, v) -> {
+            called.set(true);
+            return 3;
+        }));
+        assertThrows(UnsupportedOperationException.class, () -> map.merge("present", 9, (a, b) -> {
+            called.set(true);
+            return 3;
+        }));
+        assertThrows(UnsupportedOperationException.class, () -> map.replaceAll((k, v) -> {
+            called.set(true);
+            return 3;
+        }));
+        assertThrows(UnsupportedOperationException.class, () -> empty.entrySet().clear());
+        assertThrows(UnsupportedOperationException.class, () -> empty.entrySet().remove(Map.entry("x", 7)));
+        assertFalse(called.get(), "a mutation callback must not run even once");
+        assertSame(empty, PersistentActorMap.empty());
+        assertEquals(7, map.get("present"));
+    }
+
+    @Test
     void sharedMailboxPreservesRootButPrivateMailboxStillIsolates() throws Exception {
         var payload = PersistentActorMap.empty()
                 .with("id", "pipeline-1")
