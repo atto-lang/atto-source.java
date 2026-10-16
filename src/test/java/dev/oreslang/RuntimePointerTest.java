@@ -51,6 +51,9 @@ final class RuntimePointerTest {
         for (Object capability : java.util.List.of(
                 new dev.oreslang.runtime.ChannelRuntime.Channel<>(1),
                 dev.oreslang.runtime.OresMutex.local(7),
+                dev.oreslang.runtime.OresMutex.shared(7),
+                dev.oreslang.runtime.ChannelRuntime.SelectPlan.of(
+                        dev.oreslang.runtime.ChannelRuntime.defaultCase()),
                 new java.util.concurrent.CompletableFuture<Integer>())) {
             var error = assertThrows(IllegalArgumentException.class,
                     () -> new dev.oreslang.runtime.OresPointer(capability));
