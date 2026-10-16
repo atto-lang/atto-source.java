@@ -22,6 +22,12 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
         throw new AssertionError(why);
     }
 
+    private static void rejectsMutation(Runnable operation, String why) {
+        try { operation.run(); }
+        catch (UnsupportedOperationException expected) { return; }
+        throw new AssertionError(why);
+    }
+
     private static ActorPipelineRoutePlan makePlan() {
         var stages = List.of(
                 new ActorPipelineRoutePlan.Stage(
@@ -41,7 +47,7 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
         check(plan.forwardAll("producer-1").size() == 2, "fan-out omitted a consumer");
         check(plan.forwardAll("producer-1") == plan.forwardAll("producer-1"),
                 "fan-out results must retain stable immutable edge order");
-        rejects(() -> plan.forwardAll("producer-1").clear(),
+        rejectsMutation(() -> plan.forwardAll("producer-1").clear(),
                 "fan-out graph must be immutable");
         rejects(() -> plan.forward("producer-1"), "ambiguous forwarding must fail");
         rejects(() -> plan.forwardAll("worker-a"), "sink has no outbound authority");
@@ -64,7 +70,7 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
             check(plan.forwardByKey("producer-1", key).target().equals(stable),
                     "key affinity changed without graph reconfiguration");
         }
-        rejects(() -> plan.forwardByKey("producer-1", "\uD800"),
+        rejects(() -> plan.forwardByKey("producer-1", String.valueOf((char) 0xD800)),
                 "unpaired surrogate must fail strict UTF-8 encoding");
         rejects(() -> plan.forwardByKey("producer-1", "x".repeat(4097)),
                 "oversized affinity key must fail");
