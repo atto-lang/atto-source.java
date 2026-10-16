@@ -106,12 +106,20 @@ public final class OresProjectConfig {
             }
             OresProjectConfig selected = load(manifest, environment);
             Path absoluteStart = start.toAbsolutePath().normalize();
-            // An entry may be reached through a symlink to the selected root,
-            // but it must belong physically to that package. Check existing
-            // paths by identity, not just a lexical startsWith comparison.
-            if (Files.exists(absoluteStart)
-                    ? !absoluteStart.toRealPath().startsWith(manifestRoot.toRealPath())
-                    : !absoluteStart.startsWith(manifestRoot)) {
+            // A generated entrypoint may not exist yet. Resolve its closest
+            // existing ancestor physically, so a symlinked parent cannot
+            // move a future source outside the explicit +/ authority.
+            // A dangling source/ancestor symlink also fails closed.
+            Path existingAncestor = absoluteStart;
+            while (existingAncestor != null && !Files.exists(existingAncestor)) {
+                if (Files.isSymbolicLink(existingAncestor)) {
+                    throw new IllegalArgumentException(
+                            "entry source traverses a dangling symlink: " + absoluteStart);
+                }
+                existingAncestor = existingAncestor.getParent();
+            }
+            if (existingAncestor == null
+                    || !existingAncestor.toRealPath().startsWith(manifestRoot.toRealPath())) {
                 throw new IllegalArgumentException("entry source is outside explicitly selected package root: "
                         + absoluteStart);
             }
