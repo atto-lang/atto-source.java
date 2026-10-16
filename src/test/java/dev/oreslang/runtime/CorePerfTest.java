@@ -189,6 +189,24 @@ class CorePerfTest {
         assertEquals(Long.MAX_VALUE, CorePerf.Recorder.relativeNanos(Long.MAX_VALUE, Long.MIN_VALUE));
     }
 
+    @Test void randomizedDurationAndOffsetArithmeticUsesExactOracle() {
+        java.util.SplittableRandom samples = new java.util.SplittableRandom(20261016L);
+        java.math.BigInteger max = java.math.BigInteger.valueOf(Long.MAX_VALUE);
+        for (int i = 0; i < 20_000; i++) {
+            long started = samples.nextLong();
+            long finished = samples.nextLong();
+            java.math.BigInteger exact = java.math.BigInteger.valueOf(finished)
+                    .subtract(java.math.BigInteger.valueOf(started));
+            boolean durationValid = exact.signum() >= 0 && exact.compareTo(max) <= 0;
+            long offset = exact.signum() < 0 ? 0L
+                    : exact.compareTo(max) > 0 ? Long.MAX_VALUE : exact.longValueExact();
+            assertEquals(durationValid, CorePerf.validDuration(started, finished),
+                    "validDuration iteration " + i);
+            assertEquals(offset, CorePerf.Recorder.relativeNanos(finished, started),
+                    "relativeNanos iteration " + i);
+        }
+    }
+
     @Test void invalidPublicDiagnosticIdsAreInertEvenWhenEnabled() {
         assertFalse(CorePerf.knownPhase(-1));
         assertFalse(CorePerf.knownPhase(0));
