@@ -3,6 +3,8 @@ on:
   pull_request:
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPipelineMailboxRouterTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanStandaloneSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanTest.java'
@@ -10,12 +12,15 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRouteSessionTest.java'
       - 'src/test/java/dev/oreslang/ActorPipelineRoutingAdmissionTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'scripts/test-actor-pipeline-route-plan.sh'
       - '.github/workflows/actor-pipeline-routing.yml'
   push:
     branches: [main]
     paths:
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPipelineMailboxRouterTest.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanStandaloneSmoke.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanTest.java'
@@ -23,6 +28,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineRouteSessionTest.java'
       - 'src/test/java/dev/oreslang/ActorPipelineRoutingAdmissionTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'scripts/test-actor-pipeline-route-plan.sh'
       - '.github/workflows/actor-pipeline-routing.yml'
 permissions:
@@ -50,4 +56,4 @@ jobs:
           javac -version
           sh scripts/test-actor-pipeline-route-plan.sh
           mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
-            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineRoutingAdmissionTest test
+            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineRoutingAdmissionTest test
