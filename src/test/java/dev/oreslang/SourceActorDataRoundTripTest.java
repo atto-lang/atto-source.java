@@ -45,7 +45,7 @@ final class SourceActorDataRoundTripTest {
     @Test
     void compiledSupervisorMediatesTwoDistinctActorsWithoutSharingTheirMail() throws Exception {
         // First actor's outbound DATA becomes the supervisor-owned input to
-        // the second actor. This exercises two real typed-mail admissions and
+        // the second (untrusted) actor. This exercises two real typed-mail admissions and
         // lifecycle barriers, not a compiler-derived ActorMessageCodec<T>.
         String program = """
                 define actor First as
@@ -56,7 +56,7 @@ final class SourceActorDataRoundTripTest {
                   }
                 end
 
-                define actor Second as
+                define untrusted actor Second as
                   receive(ActorMail<String> mail): void {
                     self.send(mail.value);
                     self.end();
