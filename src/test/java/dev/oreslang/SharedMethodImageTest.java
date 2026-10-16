@@ -53,7 +53,7 @@ final class SharedMethodImageTest {
         assertSame(definition.methods().get(1), shared.get(CallableSelector.instance("add", 1)));
 
         Class<?> objectClass = Class.forName(
-                "dev.oreslang.nodes.OresEvalRootNode$Evaluator$OresObject");
+                "dev.oreslang.nodes.OresEvalRootNode$OresObject");
         Constructor<?> objectConstructor = objectClass.getDeclaredConstructor(
                 evaluatorClass, Ast.ClassDecl.class, Map.class);
         objectConstructor.setAccessible(true);
