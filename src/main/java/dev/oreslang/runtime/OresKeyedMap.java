@@ -93,6 +93,9 @@ public final class OresKeyedMap<K, V> {
     private final LinkedHashMap<K, V> entries = new LinkedHashMap<>();
     // Tracked while holding this map's monitor; never expose a mutable view.
     private long storedKeyWireBytes;
+    // Java monitors are reentrant. A key-aware validator must never be able
+    // to mutate this same map while an outer mutation is still validating.
+    private boolean entryValidationActive;
 
     private OresKeyedMap(
             KeyDomain domain,
@@ -258,7 +261,23 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException(
                     "value is incompatible with Map value domain " + valueDomain);
         }
-        entryValidator.validate(key, value);
+        if (entryValidationActive) {
+            throw new IllegalStateException(
+                    "typed Map entry validator cannot recursively validate the same map");
+        }
+        entryValidationActive = true;
+        try {
+            entryValidator.validate(key, value);
+        } finally {
+            entryValidationActive = false;
+        }
+    }
+
+    private void rejectReentrantMutation() {
+        if (entryValidationActive) {
+            throw new IllegalStateException(
+                    "typed Map entry validator cannot mutate the map being validated");
+        }
     }
 
     private static int wireKeyBytes(Object key) {
@@ -268,6 +287,7 @@ public final class OresKeyedMap<K, V> {
     }
 
     public synchronized V put(K key, V value) {
+        rejectReentrantMutation();
         checkKey(key);
         checkValue(key, value);
         long addedBytes = 0L;
@@ -292,6 +312,7 @@ public final class OresKeyedMap<K, V> {
      * objects cannot change after the validation pass.
      */
     public synchronized void putAll(Map<? extends K, ? extends V> values) {
+        rejectReentrantMutation();
         Objects.requireNonNull(values, "map entries");
         // Host-supplied Map.size() is not trusted. Enforce the guest bound
         // before using it as an allocation hint, then enforce it again while
@@ -347,6 +368,7 @@ public final class OresKeyedMap<K, V> {
      * an explicit outer state.  No public has/get/remove sequence is needed.
      */
     public synchronized Lookup<V> take(Object key) {
+        rejectReentrantMutation();
         checkKey(key);
         V removed = entries.remove(key);
         if (removed == null) return Lookup.missing();
@@ -360,6 +382,7 @@ public final class OresKeyedMap<K, V> {
     }
 
     public synchronized void clear() {
+        rejectReentrantMutation();
         entries.clear();
         storedKeyWireBytes = 0L;
     }
