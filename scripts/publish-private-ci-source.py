@@ -106,6 +106,41 @@ def verified_child_env():
     return env
 
 
+MAX_GITHUB_API_JSON_BYTES = 2 * 1024 * 1024
+
+
+def strict_github_api_json(raw):
+    """Deny ambiguous or nonstandard responses used for security decisions."""
+    if not isinstance(raw, str):
+        raise Denied("invalid GitHub API JSON response")
+    try:
+        size = len(raw.encode("utf-8"))
+    except UnicodeError as exc:
+        raise Denied("invalid GitHub API JSON encoding") from exc
+    if size > MAX_GITHUB_API_JSON_BYTES:
+        raise Denied("oversized GitHub API JSON response")
+
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise Denied("ambiguous duplicate GitHub API JSON key")
+            result[key] = value
+        return result
+
+    def reject_nonstandard_number(value):
+        raise Denied("nonstandard GitHub API JSON number")
+
+    try:
+        data = json.loads(raw, object_pairs_hook=unique_keys,
+                          parse_constant=reject_nonstandard_number)
+    except json.JSONDecodeError as exc:
+        raise Denied("invalid GitHub API JSON response") from exc
+    if not isinstance(data, dict):
+        raise Denied("unexpected GitHub response shape")
+    return data
+
+
 def gh_api(route, method="GET", payload=None):
     argv = ["gh", "api", "--method", method, route,
             "--header", "Accept: application/vnd.github+json"]
@@ -115,18 +150,12 @@ def gh_api(route, method="GET", payload=None):
     try:
         p = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                            capture_output=True, text=True, env=env, timeout=45, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
         raise Denied("authenticated GitHub API request unavailable") from exc
     if p.returncode != 0:
         # Never echo stderr: a client can include private file bytes in errors.
         raise Denied("authenticated GitHub API request failed")
-    try:
-        data = json.loads(p.stdout)
-    except json.JSONDecodeError as exc:
-        raise Denied("invalid GitHub API JSON response") from exc
-    if not isinstance(data, dict):
-        raise Denied("unexpected GitHub response shape")
-    return data
+    return strict_github_api_json(p.stdout)
 
 
 def checked_repo(repository, expected_id=None):
