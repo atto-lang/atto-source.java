@@ -116,4 +116,109 @@ final class OresProjectConfigTest {
                 () -> OresProjectConfig.load(manifest, Map.of()));
         assertTrue(error.getMessage().contains("schema_version"));
     }
+
+    @Test
+    void oresPathsIsColonSeparatedAndFollowsProjectRoots() throws Exception {
+        Path local = temp.resolve("local");
+        Path first = temp.resolve("one");
+        Path second = temp.resolve("two");
+        Files.createDirectories(local.resolve("src"));
+        Files.createDirectories(first);
+        Files.createDirectories(second);
+        Files.writeString(local.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "app"
+                [source]
+                roots = ["src"]
+                """);
+        OresProjectConfig config = OresProjectConfig.discover(local.resolve("src/main.ores"),
+                Map.of(OresProjectConfig.ENV_ORES_PATHS,
+                        first + "::" + second + ":",
+                        OresProjectConfig.ENV_ORESLANG_PATH, second.toString()));
+
+        assertEquals(java.util.List.of(first, second), config.environmentPaths());
+        assertEquals(java.util.List.of(local.resolve("src"), first, second), config.searchRoots());
+    }
+
+    @Test
+    void rootPrefixResolvesFromPackageManifestRatherThanImporterFolder() throws Exception {
+        Path project = temp.resolve("pkg-root");
+        Files.createDirectories(project.resolve("src/nested"));
+        Files.createDirectories(project.resolve("src/shared"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "package-demo"
+                version = "1.0.0"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(project.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "legacy"
+                """);
+        Path helper = project.resolve("src/shared/util.ores");
+        Files.writeString(helper, "pub fnc util() : int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(project.resolve("src/nested/main.ores"), Map.of());
+
+        assertEquals("package-demo", config.projectName().orElseThrow());
+        assertEquals(helper.toRealPath(), config.resolveImport(project.resolve("src/nested/main.ores"),
+                "@/src/shared/util").orElseThrow());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/../escape"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/"));
+    }
+
+    @Test
+    void symlinkedEnvironmentRootsAndInstalledZedPackagesResolveToPhysicalFiles() throws Exception {
+        Path real = temp.resolve("real");
+        Path project = temp.resolve("consumer");
+        Files.createDirectories(real.resolve("src"));
+        Files.createDirectories(project.resolve("zed_modules/acme"));
+        Files.writeString(real.resolve("src/answer.ores"), "pub fnc answer() : int { return 42; }");
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "consumer"
+                [dependencies]
+                answer = { zed = "acme/math" }
+                """);
+        Path envLink = temp.resolve("env-link");
+        Path packageLink = project.resolve("zed_modules/acme/math");
+        try {
+            Files.createSymbolicLink(envLink, real.resolve("src"));
+            Files.createSymbolicLink(packageLink, real);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+
+        OresProjectConfig config = OresProjectConfig.discover(project.resolve("main.ores"),
+                Map.of(OresProjectConfig.ENV_ORES_PATHS, envLink.toString()));
+        Path physical = real.resolve("src/answer.ores").toRealPath();
+        assertEquals(physical, config.resolveImport(project.resolve("main.ores"),
+                "answer").orElseThrow());
+        assertEquals(physical, config.resolveImport(project.resolve("main.ores"),
+                "pkg:answer/src/answer").orElseThrow());
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.ores"), "pkg:unknown/src/answer"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("main.ores"), "pkg:answer/../../escape"));
+    }
+
+    @Test
+    void malformedPackageAliasesFailClosed() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [dependencies]
+                unsafe = "../escape"
+                """);
+        IllegalArgumentException invalid = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(invalid.getMessage().contains("invalid zed-pkg identifier"));
+    }
+
 }
