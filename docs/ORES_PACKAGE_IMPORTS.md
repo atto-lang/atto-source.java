@@ -75,7 +75,9 @@ directory setting, and resolves `pkg:math/src/answer` as:
 zed's per-project links into the content-addressed global store work normally.
 The compiler follows symlinks and canonicalizes existing source files with
 `toRealPath()`; this prevents duplicate compilation or self-imports from
-different paths to the same file. Symlink traversal can resolve files outside
+different paths to the same file. At a `pkg:` boundary, recursive source imports
+use the dependency's own nearest manifest, so its internal `@/` refers to that
+dependency rather than the application. Symlink traversal can resolve files outside
 the project root. These rules are **import discovery**, not filesystem
 confinement or a defense against a hostile concurrent filesystem mutator.
 
@@ -118,5 +120,5 @@ whole-program linking and symlinked self-imports.
 
 Outstanding: exact-head JDK25/JUnit execution, Graal/native validation,
 LLVM frontend/linker parity, lockfile/version consistency checks, and
-per-dependency package-root semantics when compiling separately authored
-packages containing their own `@/` imports.
+full transitive dependency-layout parity. Cross-package project-root imports
+have a Java regression test, but no JDK25 execution evidence yet.
