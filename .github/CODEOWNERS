@@ -5,6 +5,7 @@
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
+/scripts/test-private-ci-guard-only.sh @ORESoftware
 /.github/workflows/private-ci-mirror-preflight.yml @ORESoftware
 /docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
