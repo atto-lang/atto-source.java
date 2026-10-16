@@ -159,9 +159,19 @@ public final class OresProjectConfig {
     public Map<String, Path> dependencyRoots() { return dependencyRoots; }
     public Optional<Path> mainEntrypoint() { return Optional.ofNullable(mainEntrypoint); }
 
-    /** Resolve an imported package in its own physical project context. */
-    public OresProjectConfig forImportedPackage(Path importedSource) throws IOException {
-        return discover(importedSource, environment);
+    /**
+     * Import context is based on the imported source, not the entrypoint.
+     * This includes nested packages reached through ./ or bare search roots.
+     * Preserve legacy manifest search behavior when an external source has
+     * no own manifest; new package manifests fail closed at that boundary.
+     */
+    public OresProjectConfig forImportedSource(Path importedSource) throws IOException {
+        OresProjectConfig found = discover(importedSource, environment);
+        if (found.manifestPath != null) return found;
+        if (manifestPath != null && MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+            return this;
+        }
+        return found;
     }
 
     /**
@@ -211,6 +221,7 @@ public final class OresProjectConfig {
             if (dependency == null) {
                 throw new IllegalArgumentException("undeclared package alias '" + alias + "' in " + importPath);
             }
+            validateInstalledPackage(dependency);
             return rootedSource(dependency, remainder.substring(slash + 1), importPath);
         }
         if (unix.startsWith("@") || unix.startsWith("pkg:")) {
@@ -236,6 +247,33 @@ public final class OresProjectConfig {
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    /**
+     * The lockfile remains zed's authority. When package metadata exists,
+     * reject an install tree whose identity disagrees with the declared
+     * org/name instead of compiling an unrelated source checkout.
+     */
+    private static void validateInstalledPackage(Path expectedDirectory) {
+        Path zpkg = expectedDirectory.resolve(".zpkg.toml");
+        if (!Files.isRegularFile(zpkg)) return;
+        try {
+            TomlParseResult metadata = Toml.parse(zpkg);
+            if (!metadata.errors().isEmpty()) {
+                throw new IllegalArgumentException("invalid installed .zpkg.toml: "
+                        + metadata.errors().getFirst());
+            }
+            String org = metadata.getString("package.org");
+            String name = metadata.getString("package.name");
+            String expected = expectedDirectory.getParent().getFileName()
+                    + "/" + expectedDirectory.getFileName();
+            if (org == null || name == null || !expected.equals(org + "/" + name)) {
+                throw new IllegalArgumentException("installed zed package identity mismatch: expected "
+                        + expected + ", got " + org + "/" + name);
+            }
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("cannot read installed zed package: " + zpkg, failure);
+        }
     }
 
     private static Optional<Path> rootedSource(Path root, String relative, String importPath) {
