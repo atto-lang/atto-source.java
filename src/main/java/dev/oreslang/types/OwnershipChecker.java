@@ -1798,8 +1798,10 @@ public final class OwnershipChecker {
     private ValueInfo checkBuiltinSumCall(Ast.MemberExpr member, List<Ast.Expr> arguments, Scope scope) {
         boolean query = member.member().equals("is_some") || member.member().equals("is_none")
                 || member.member().equals("is_ok") || member.member().equals("is_err");
+        boolean flatten = member.member().equals("flatten");
         boolean extracting = member.member().equals("unwrap") || member.member().equals("unwrap_safe")
-                || member.member().equals("expect") || member.member().equals("unwrap_or");
+                || member.member().equals("expect") || member.member().equals("unwrap_or")
+                || flatten;
         if (!query && !extracting) return null;
 
         ValueInfo receiver = checkExpr(member.receiver(), scope, false);
@@ -1808,6 +1810,14 @@ public final class OwnershipChecker {
         boolean option = receiverType.name().equals("Option") && receiverType.arguments().size() == 1;
         boolean result = receiverType.name().equals("Result") && receiverType.arguments().size() == 2;
         if (!option && !result) return null;
+        if (flatten && !option) return null;
+        if (flatten && !arguments.isEmpty()) {
+            throw error("Option.flatten takes no arguments");
+        }
+        if (flatten && receiver.kind == ValueKind.MOVE_ONLY
+                && !(member.receiver() instanceof Ast.NameExpr)) {
+            throw error("move-only Option.flatten requires a named owned receiver");
+        }
 
         if (query) {
             for (Ast.Expr argument : arguments) checkExpr(argument, scope, true);
@@ -1820,6 +1830,20 @@ public final class OwnershipChecker {
         }
 
         Ast.TypeRef okType = option ? receiverType.arguments().getFirst() : receiverType.arguments().get(0);
+        if (flatten) {
+            if (containsMutexGuardType(receiverType)) {
+                throw error("Option.flatten cannot discard or transfer MutexGuard layers until owned drop semantics are proven");
+            }
+            Ast.TypeRef leaf = okType;
+            while (leaf.name().equals("Option") && leaf.arguments().size() == 1) {
+                leaf = leaf.arguments().getFirst();
+            }
+            if (leaf.isBorrow()) {
+                throw error("Option.flatten cannot extract an owned nested borrow without lifetime proof");
+            }
+            Ast.TypeRef flat = new Ast.TypeRef("Option", List.of(leaf), false);
+            return new ValueInfo(flat, kindOfType(flat), null);
+        }
         if (okType.isBorrow()) {
             throw error(member.member()
                     + " cannot extract a borrow from an owned Option/Result until explicit lifetime parameters are supported");
