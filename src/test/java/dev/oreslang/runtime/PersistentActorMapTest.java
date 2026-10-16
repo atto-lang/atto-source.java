@@ -143,6 +143,18 @@ final class PersistentActorMapTest {
         }));
         assertThrows(UnsupportedOperationException.class, () -> empty.entrySet().clear());
         assertThrows(UnsupportedOperationException.class, () -> empty.entrySet().remove(Map.entry("x", 7)));
+        assertThrows(UnsupportedOperationException.class, () -> empty.keySet().remove("absent"));
+        assertThrows(UnsupportedOperationException.class, () -> empty.values().remove(100));
+        assertThrows(UnsupportedOperationException.class, () -> empty.keySet().clear());
+        assertThrows(UnsupportedOperationException.class, () -> empty.values().clear());
+        assertThrows(UnsupportedOperationException.class, () -> map.keySet().removeIf(k -> {
+            called.set(true);
+            return false;
+        }));
+        assertThrows(UnsupportedOperationException.class, () -> map.values().removeIf(v -> {
+            called.set(true);
+            return false;
+        }));
         assertFalse(called.get(), "a mutation callback must not run even once");
         assertSame(empty, PersistentActorMap.empty());
         assertEquals(7, map.get("present"));
