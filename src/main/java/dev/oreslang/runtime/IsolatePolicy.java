@@ -460,9 +460,22 @@ public record IsolatePolicy(
     public static ExecutionProfile executionProfileFromApplicationArguments(String[] args) {
         String mode = NativeBuildMode.defaultExecutionMode();
         String platform = "SERVER";
+        boolean sawMode = false;
+        boolean sawPlatform = false;
         for (String arg : args) {
-            if (arg.startsWith("--ores-execution-mode=")) mode = arg.substring("--ores-execution-mode=".length());
-            else if (arg.startsWith("--ores-platform=")) platform = arg.substring("--ores-platform=".length());
+            if (arg == null)
+                throw new IllegalArgumentException("null Oreslang application argument");
+            if (arg.startsWith("--ores-execution-mode=")) {
+                if (sawMode)
+                    throw new IllegalArgumentException("duplicate Oreslang execution mode");
+                sawMode = true;
+                mode = arg.substring("--ores-execution-mode=".length());
+            } else if (arg.startsWith("--ores-platform=")) {
+                if (sawPlatform)
+                    throw new IllegalArgumentException("duplicate Oreslang platform");
+                sawPlatform = true;
+                platform = arg.substring("--ores-platform=".length());
+            }
         }
         ExecutionProfile profile = ExecutionProfile.parse(mode, platform);
         NativeBuildMode.requireCompatible(profile);
