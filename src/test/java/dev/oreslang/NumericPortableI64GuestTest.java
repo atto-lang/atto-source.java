@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -8,6 +9,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Execute the seven portable signed-i64 source controls against the actual
@@ -16,6 +19,34 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 final class NumericPortableI64GuestTest {
     private record Case(String expression, long expected) { }
+
+    @Test
+    void signedI64OverflowDoesNotSilentlyWrap() {
+        // These expressions are valid Oreslang syntax but their mathematical
+        // result exceeds signed i64. Failure must be attributable to the
+        // numeric boundary, rather than an unrelated parser/grammar problem.
+        String[] invalid = {
+            "9223372036854775807+1",
+            "-9223372036854775808-1",
+            "3037000500*3037000500",
+            "-(-9223372036854775808)"
+        };
+        for (String expression : invalid) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                String source = "pub routine main(): int { return "
+                        + expression + "; }";
+                PolyglotException error = assertThrows(PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, source),
+                        "guest silently admitted overflow: " + expression);
+                assertTrue(error.getMessage() != null
+                                && error.getMessage().toLowerCase(
+                                        java.util.Locale.ROOT).contains("overflow"),
+                        "unexpected rejection reason for " + expression
+                                + ": " + error.getMessage());
+            }
+        }
+    }
 
     @Test
     void portableI64InputsReturnFullWidthSignedResults() throws Exception {
