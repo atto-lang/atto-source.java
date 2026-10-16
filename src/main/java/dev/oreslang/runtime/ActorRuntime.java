@@ -523,6 +523,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-");
         } catch (RuntimeException | Error failure) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
             if (sharedPool != null) sharedPool.shutdownNow();
             throw failure;
