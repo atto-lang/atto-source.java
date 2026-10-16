@@ -78,7 +78,7 @@ jobs:
           native-image --version
           mvn --version
       - name: Focused permissions and scoped host interop regressions
-        run: mvn -B -ntp '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,ScopedPermissionInteropTest' test
+        run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' test
       - name: Full Java 25 Maven candidate verification
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Native AOT candidate build and guest execution
