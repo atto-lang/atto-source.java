@@ -52,6 +52,11 @@ final class SharedMethodImageTest {
         assertSame(definition.methods().getFirst(), shared.get(CallableSelector.instance("first", 0)));
         assertSame(definition.methods().get(1), shared.get(CallableSelector.instance("add", 1)));
 
+        // A single per-class code image must also be immutable after linking.
+        assertThrows(UnsupportedOperationException.class, shared::clear,
+                "shared method dispatch table must be frozen before instance creation");
+        assertEquals(2, shared.size(), "failed mutation must preserve both linked methods");
+
         Class<?> objectClass = Class.forName(
                 "dev.oreslang.nodes.OresEvalRootNode$OresObject");
         Constructor<?> objectConstructor = objectClass.getDeclaredConstructor(
@@ -68,6 +73,7 @@ final class SharedMethodImageTest {
                 "an instance must not contain method copies or vtable slots");
 
         Object first = null;
+        Object last = null;
         for (int i = 0; i < 1024; i++) {
             LinkedHashMap<String, Object> ownData = new LinkedHashMap<>();
             ownData.put("value", i);
@@ -76,11 +82,18 @@ final class SharedMethodImageTest {
             assertSame(ownData, instanceFields.get(instance));
             assertSame(shared, slots.get(definition));
             if (first == null) first = instance;
+            last = instance;
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> firstFields = (Map<String, Object>) instanceFields.get(first);
         firstFields.put("value", -1);
         assertEquals(-1, firstFields.get("value"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> lastFields = (Map<String, Object>) instanceFields.get(last);
+        assertEquals(1023, lastFields.get("value"),
+                "updating one instance must not overwrite another instance's data");
+        assertNotSame(firstFields, lastFields,
+                "separate instances must retain independent data maps");
         assertSame(shared, slots.get(definition));
     }
 }
