@@ -73,13 +73,19 @@ public final class DopKernelIR {
     public static final class HostBuffer implements AutoCloseable {
         /** Opaque allocation identity; never exposes the underlying bytes. */
         public static final class RegionToken {
-            private final State owner;
-            private RegionToken(State owner) { this.owner = owner; }
-            public long rows() { return owner.layout.rows(); }
-            public int fields() { return owner.layout.fields(); }
-            public boolean isLive() {
-                synchronized (owner) { return !owner.closed; }
+            private final long rows;
+            private final int fields;
+            // Volatile retirement is monotonic; a region cannot be resurrected.
+            // Never retain State or its direct ByteBuffer in a region descriptor.
+            private volatile boolean live = true;
+            private RegionToken(long rows, int fields) {
+                this.rows = rows;
+                this.fields = fields;
             }
+            public long rows() { return rows; }
+            public int fields() { return fields; }
+            public boolean isLive() { return live; }
+            private void retire() { live = false; }
         }
         private final State state;
         private boolean moved;
