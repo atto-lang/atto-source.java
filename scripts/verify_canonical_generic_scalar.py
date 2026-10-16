@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
+from pinned_generic_worktree import attest_pinned_worktree
 
 COMMON_ROOT_TREE = "858c37d48a4c3a886260b26320bb0dd931b228ab"
 COMMON_CONTRACT_TREE = "fd5301ebd354049917e2ecaf1da920b661d6d829"
@@ -40,6 +41,7 @@ def validate_common_source(root):
         raise ValueError("untrusted common-source Git tree (requires merged PR #32 snapshot)")
     if contract.returncode or contract.stdout.strip() != COMMON_CONTRACT_TREE:
         raise ValueError("generic corpus does not match canonical pinned subtree")
+    attest_pinned_worktree(top, root, COMMON_ROOT_TREE)
     status = read(["git", "-C", str(top), "status", "--porcelain=v1",
                    "--untracked-files=all", "--", rel_root.as_posix() if rel_root.parts else "."])
     if status.returncode or status.stdout.strip():
