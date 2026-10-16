@@ -28,6 +28,9 @@ PREFIX = "private-oreslang-source"
 # The local checkout cannot grant itself a private-source transfer approval.
 # Always confirm the exact same bytes exist on the protected source main ref.
 REQUIRED_PRIVATE_CI_CONTEXT = "preflight-regressions"
+# GitHub Actions is App ID 15368. Merely naming a required status context
+# does not constrain its author; other actors can publish matching statuses.
+REQUIRED_PRIVATE_CI_APP_ID = 15368
 PROTECTED_POLICY_ROUTE = (
     "repos/ores-truffle-oreslang/oreslang-source.java/contents/"
     ".github/private-ci-approved-repositories.txt?ref=main"
@@ -193,24 +196,20 @@ def checked_source_main_protection():
             or not (isinstance(checks.get("contexts"), list) and checks["contexts"]
                     or isinstance(checks.get("checks"), list) and checks["checks"])):
         raise Denied("source main lacks mandatory independent security review and CI")
-    # An arbitrary CI context is insufficient to attest this security gate.
-    # For app-scoped checks, reject app_id=-1, which accepts anyone's status.
-    contexts = checks.get("contexts")
+    # A legacy contexts-only requirement matches the *name*, not its author.
+    # Require the GitHub Actions App ID in checks[] instead. Any second
+    # source for this security context would dilute branch protection.
     app_checks = checks.get("checks")
-    trusted_context = isinstance(contexts, list) and REQUIRED_PRIVATE_CI_CONTEXT in contexts
-    trusted_app = (isinstance(app_checks, list) and any(
-        isinstance(entry, dict)
-        and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT
-        and type(entry.get("app_id")) is int and entry["app_id"] > 0
-        for entry in app_checks))
-    if isinstance(app_checks, list) and any(
-            isinstance(entry, dict)
-            and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT
-            and (type(entry.get("app_id")) is not int or entry["app_id"] <= 0)
-            for entry in app_checks):
-        raise Denied("source main private CI check allows an untrusted app")
-    if not (trusted_context or trusted_app):
-        raise Denied("source main does not require the private CI security check")
+    if not isinstance(app_checks, list):
+        raise Denied("source main security CI check must be app-bound")
+    relevant = [entry for entry in app_checks
+                if isinstance(entry, dict)
+                and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT]
+    if (not relevant or any(
+            type(entry.get("app_id")) is not int
+            or entry["app_id"] != REQUIRED_PRIVATE_CI_APP_ID
+            for entry in relevant)):
+        raise Denied("source main security CI check is not bound to trusted GitHub Actions app")
     # Explicit bypass allowances negate the code-owner review guarantee.
     bypass = reviews.get("bypass_pull_request_allowances")
     if bypass is not None:
