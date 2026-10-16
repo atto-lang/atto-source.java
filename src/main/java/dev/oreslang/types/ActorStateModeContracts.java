@@ -78,6 +78,7 @@ public final class ActorStateModeContracts {
     public static void validate(ActorModel actor) {
         Objects.requireNonNull(actor, "actor");
         int messageReducers = 0;
+        int controlReducers = 0;
         Set<String> names = new HashSet<>();
         for (Handler handler : actor.handlers()) {
             if (!names.add(handler.qualifiedName())) {
@@ -94,6 +95,7 @@ public final class ActorStateModeContracts {
                 continue; // ordinary state loan safety stays in ownership checker
             }
             if (handler.role() == HandlerRole.MESSAGE_REDUCER) messageReducers++;
+            if (handler.role() == HandlerRole.CONTROL_REDUCER) controlReducers++;
             if (handler.suspends()) reject("REDUCER_MUST_NOT_SUSPEND", handler.qualifiedName());
             if (handler.accessesActorState()) {
                 reject("PURE_ACTOR_MUST_NOT_USE_HANDLE_STATE", handler.qualifiedName());
@@ -119,6 +121,10 @@ public final class ActorStateModeContracts {
             if (!actor.commandUpperBound().containsAll(handler.commandEffects())) {
                 reject("COMMAND_EXCEEDS_WITH_EFFECTS", handler.qualifiedName());
             }
+        }
+        if (actor.mode() == Mode.PURE_REDUCER && controlReducers > 1) {
+            reject("PURE_ACTOR_HAS_MULTIPLE_CONTROL_REDUCERS",
+                    "found " + controlReducers);
         }
         if (actor.mode() == Mode.PURE_REDUCER && messageReducers != 1) {
             reject("PURE_ACTOR_REQUIRES_ONE_MESSAGE_REDUCER",
