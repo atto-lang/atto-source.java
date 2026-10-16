@@ -478,8 +478,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         listed = re.findall(
             r"^  ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)[)] expected_id=([0-9]+) ;;$",
             script, flags=re.MULTILINE)
+        # setUp adds trusted/ci only inside this offline fixture. It must
+        # never appear in the actual reviewed production destination pins.
+        production = {name: repo_id
+                      for name, repo_id in pub.PINNED_DESTINATION_IDS.items()
+                      if name != "trusted/ci"}
         self.assertEqual({name: int(repo_id) for name, repo_id in listed},
-                         pub.PINNED_DESTINATION_IDS)
+                         production)
+        self.assertNotIn("trusted/ci", dict(listed))
 
     def test_same_slug_but_different_destination_id_aborts_before_upload(self):
         self.destination_ids = [987654321]
