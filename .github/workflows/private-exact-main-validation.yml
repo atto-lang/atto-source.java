@@ -178,7 +178,18 @@ jobs:
         run: |
           set -euo pipefail
           mvn -B -ntp -Pnative-isolate -DskipTests clean package
-          lib="$(find target -maxdepth 1 -type f \( -name 'oresvm.so' -o -name 'liboresvm.so' \) | head -n1)"
-          test -n "$lib"
+          # Choose exactly one fresh regular shared library; reject absent,
+          # ambiguous or symlinked artifacts rather than picking arbitrarily.
+          test -d target && test ! -L target
+          libraries=()
+          for candidate in target/oresvm.so target/liboresvm.so; do
+            if test -e "$candidate" || test -L "$candidate"; then
+              test -f "$candidate" && test ! -L "$candidate" && test -s "$candidate"
+              libraries+=("$candidate")
+            fi
+          done
+          test "${#libraries[@]}" -eq 1
+          lib="${libraries[0]}"
+          echo "VERIFIED_ISOLATE_LIBRARY=$lib"
           timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
           timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/native-core-library.ores"
