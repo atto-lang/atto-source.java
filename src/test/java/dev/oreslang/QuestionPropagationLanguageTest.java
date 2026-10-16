@@ -406,6 +406,34 @@ final class QuestionPropagationLanguageTest {
                 """, "expected ':'");
     }
 
+    @Test
+    void questionNeverCoercesBetweenSumKindsOrUnawaitedFutures() {
+        reject("""
+                fnc bad(Result<int, String> value): Option<int> {
+                  val int item = value?;
+                  return Some(item);
+                }
+                """, "matching Result<T,E> or Option<T>");
+        reject("""
+                fnc bad(Option<int> value): Result<int, String> {
+                  val int item = value?;
+                  return Ok(item);
+                }
+                """, "matching Result<T,E> or Option<T>");
+        reject("""
+                fnc bad(Result<int, String> value): Result<int, bool> {
+                  val int item = value?;
+                  return Ok(item);
+                }
+                """, "error type must exactly match");
+        reject("""
+                fnc bad(Future<Result<int, String>> value): Result<int, String> {
+                  val int item = value?;
+                  return Ok(item);
+                }
+                """, "matching Result<T,E> or Option<T>");
+    }
+
     private static void reject(String source, String expected) {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
