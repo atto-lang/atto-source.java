@@ -179,6 +179,13 @@ public final class CorePerf {
             this.threadIds = new long[capacity];
         }
 
+        /** Clamp out-of-order samples and saturate signed subtraction overflow. */
+        static long relativeNanos(long sample, long origin) {
+            if (sample < origin) return 0L;
+            long delta = sample - origin;
+            return delta < 0L ? Long.MAX_VALUE : delta;
+        }
+
         void record(int phase, long started, long finished) {
             long duration = finished - started;
             if (phase < 1 || phase >= NAMES.length || !validDuration(started, finished)) {
@@ -188,7 +195,7 @@ public final class CorePerf {
             if (index < 0) {
                 return;
             }
-            offsets[index] = Math.max(0L, started - origin);
+            offsets[index] = relativeNanos(started, origin);
             durations[index] = duration;
             threadIds[index] = Thread.currentThread().threadId();
             // Release-publish last. Dumps use acquire-reads, never partial rows.
@@ -203,7 +210,7 @@ public final class CorePerf {
             if (index < 0) {
                 return;
             }
-            offsets[index] = Math.max(0L, System.nanoTime() - origin);
+            offsets[index] = relativeNanos(System.nanoTime(), origin);
             durations[index] = value;
             threadIds[index] = Thread.currentThread().threadId();
             published.set(index, -event);
