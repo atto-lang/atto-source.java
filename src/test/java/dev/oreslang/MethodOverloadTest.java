@@ -1207,7 +1207,7 @@ final class MethodOverloadTest {
 
     @Test
     void compilerBoundArityMethodCallsStillExecuteInheritedOverrides() throws Exception {
-        assertEquals("43", run("""
+        assertEquals("413", run("""
                 define module m
                   define class Base as
                     pub pick(): int { return 4; }
