@@ -45,11 +45,15 @@ define abstract class Foo as
 end
 ```
 
-Such signatures are *implicitly public and abstract* unless a visibility
-modifier was written. Explicit `private` remains private and is rejected
-for abstract instance methods by the type checker; a signature-only
-declaration in a concrete class is rejected. Executable methods in an
-abstract class are still permitted and require a body.
+Signature-only declarations are abstract and retain their explicit visibility;
+use `pub` for a publicly callable abstract method. A `private abstract`
+instance method is an **override-only slot**: concrete subclasses must
+implement it, but only code lexically declared in the slot's originating
+superclass may invoke virtual dispatch. Overrides cannot publish the slot,
+call it themselves, or expose method references to it. Unrelated ordinary
+private methods still follow their existing declaring-class access rules.
+Signature-only declarations in concrete classes are rejected. Abstract
+static class functions remain rejected.
 
 A second `abc(int, bool)` conflicts with `abc(int, int)`: both select
 `abc/2`. An implementing subclass must implement each inherited abstract
