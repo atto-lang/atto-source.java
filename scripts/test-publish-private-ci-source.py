@@ -95,13 +95,17 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
-            # Synthetic fixture reuses SHA A to avoid changing unrelated
-            # historical tests. Before the POST it represents destination
-            # main; after commit creation it represents the returned snapshot.
+            # The synthetic fixture reuses A for existing test compatibility.
+            # Distinguish each publish's main-commit lookup from its new
+            # commit readback, even when one test invokes publish repeatedly.
             "repos/trusted/ci/git/commits/"+A: (
                 {"sha": A, "tree": {"sha": E}, "parents": [{"sha": A}]}
-                if any(m == "POST" and r == "repos/trusted/ci/git/commits"
-                       for m, r, _ in self.route_calls)
+                if max((i for i, (m, r, _) in enumerate(self.route_calls)
+                        if m == "POST" and r == "repos/trusted/ci/git/commits"),
+                       default=-1)
+                   > max((i for i, (m, r, _) in enumerate(self.route_calls)
+                          if m == "GET" and r == "repos/trusted/ci/git/ref/heads/main"),
+                         default=-1)
                 else {"tree": {"sha": B}}),
             "repos/trusted/ci/git/commits": {"sha": A},
             "repos/trusted/ci/git/refs": {
