@@ -20,6 +20,9 @@ and is not permission to bypass issue #991 or security review of PR #992.
 2. Resolve the exact reviewed `main` commit and its tree from an authenticated
    trusted checkout:
    `git rev-parse HEAD` and `git rev-parse HEAD^{tree}`.
+   The reviewed workflow now requires the original numeric GitHub repository
+   ID `1400792274` as well as the exact repository name and private status;
+   a repository recreated under an old slug must fail authorization.
    An administrator must explicitly set all **repository variables**:
    `ORESLANG_PRIVATE_EPHEMERAL_RUNNER=true`,
    `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA=<40-character main commit>`,
@@ -30,7 +33,8 @@ and is not permission to bypass issue #991 or security review of PR #992.
    Unapproved SHA/ref/visibility/runner variable combinations fail closed.
    A source-mainline advance invalidates the approval until the commit/tree
    values are deliberately updated. The workflow checkout checks immutable
-   commit and tree provenance *before* invoking the toolchain.
+   40-hex commit/tree values, the GitHub-provided repository ID, the checked-out
+   commit and tree, and a clean worktree *before* invoking the toolchain.
 4. Confirm that focused JUnit, full JDK 25 Maven verify, ten stress replays,
    native AOT, native hybrid, and strict-isolate guest execution all ran.
    Do not claim success from a skipped job or a GitHub Actions job with
