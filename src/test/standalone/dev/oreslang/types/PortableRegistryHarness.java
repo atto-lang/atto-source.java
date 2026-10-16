@@ -79,6 +79,6 @@ public final class PortableRegistryHarness {
           for(Future<Descriptor> future:pending)check(future.get()==first,"concurrent canonical descriptor");
           check(concurrent.size()==1,"concurrent table coherent");
         } finally {ex.shutdownNow();}
-        System.out.println("PASS " + count + " registry executable assertions (standalone JDK 21)");
+        System.out.println("PASS " + count + " registry executable assertions (standalone JDK " + Runtime.version().feature() + ")");
     }
 }
