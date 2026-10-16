@@ -262,7 +262,7 @@ Dispatch from protected main with `candidate_sha` equal to the approved
 publisher PR head. The workflow checks trusted workflow/candidate commit/tree
 identity, then syntax-checks the scripts, runs the complete Bash destination
 policy suite and runs all discovered Python publisher tests three times.
-It rejects fewer than 57 discovered tests or any incomplete/failed run.
+It rejects fewer than 64 discovered tests or any incomplete/failed run.
 
 A successful publisher run is distinct from Java 25/GraalVM validation of
 PR #1034. This workflow does not copy source to another organization or
