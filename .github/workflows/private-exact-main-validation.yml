@@ -16,7 +16,7 @@ jobs:
   # onto the private runner. GitHub-hosted denial may itself fail on exhausted
   # Actions minutes, which remains a failure rather than a false green.
   deny-unapproved:
-    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.private != true || github.ref != 'refs/heads/main' || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != github.sha || vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -26,7 +26,7 @@ jobs:
           exit 1
 
   validate-exact-main:
-    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.private == true && github.ref == 'refs/heads/main' && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA == github.sha && vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE != '' }}
     # Administrator must register a disposable *repository-scoped* single-use
     # Linux x64 runner with this exact label. No public/hosted fallback.
     runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
@@ -44,10 +44,15 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
           test "$GITHUB_REF" = 'refs/heads/main'
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_TREE" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git rev-parse --verify HEAD)" = "$GITHUB_SHA"
           test "$GITHUB_SHA" = "$APPROVED_SHA"
-          test "$(git rev-parse HEAD^{tree})" = "$APPROVED_TREE"
+          test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
           echo "SOURCE_COMMIT=$GITHUB_SHA"
           echo "SOURCE_TREE=$APPROVED_TREE"
       - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
