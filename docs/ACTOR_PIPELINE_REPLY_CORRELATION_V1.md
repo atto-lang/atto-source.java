@@ -1,9 +1,11 @@
 # Actor pipeline reply correlation — host contract (pre-1.0)
 
-**Status:** Java-only host reference `ActorPipelineRouteSession` implemented
-on the multi-consumer routing draft. **No guest Oreslang `self.*` lowering**
-or typed mailbox delivery is implemented by this file. Do not advertise
-host traces as compiled language execution.
+**Status:** Java host reference `ActorPipelineRouteSession` plus an
+authenticated, real-mailbox delivery adapter
+`ActorPipelineMailboxRouter<M>` implemented on the multi-consumer draft.
+**No compiled Oreslang `self.*` lowering** exists. The adapter is restricted
+to trusted Java actor code and preserves the existing `ActorRuntime.send`
+mailbox/admission/ownership guards. Host traces are not compiled guest proof.
 
 ## Message identity and path
 
@@ -26,6 +28,35 @@ one-shot terminal use. A copied or replayed Java handle cannot reply or
 complete a second time. A stale or foreign handle cannot be used after graph
 generation changes or STOP. Branch allocation is checked before fan-out; this
 does **not** turn later mailbox admission into an atomic fan-out transaction.
+
+## Executing Java actor mailboxes (not guest Oreslang lowering)
+
+The supervisor may construct `ActorPipelineMailboxRouter<M>` on a trusted
+host turn with a validated `ActorPipelineRoutePlan` and an exact set of live,
+same-runtime `ActorRef<M>` bindings. Every graph instance must be uniquely
+bound; no missing, extra, duplicate or foreign actor references are accepted.
+The owner runtime's supervisor authority check forbids construction from actor
+turns, ActorGroup CONTROL Mailmen, scheduler continuations and force-cancel
+callbacks.
+
+The router does **not** accept a caller-selected source identity. Each route
+derives its source from the current runtime's actor execution context and
+denies unknown, stopped, foreign-runtime, or untrusted callers **before**
+mutating per-source round-robin state. A named target must be an actual
+supervisor-approved outgoing edge.
+
+`forwardAll` independently invokes `ActorRuntime.send` for each declared
+edge, returning one ordered per-target `Admission` with its individual
+success or failure. Partial success is not a transaction or a processing
+acknowledgment. `forwardRoundRobin`, `forwardTo`, `forwardByKey` and
+single-edge `forward` admit through the same established mailbox invariants.
+
+**Unverified integration gate:** `ActorPipelineMailboxRouterTest` exercises
+actual Java actor callbacks, STOP of one fan-out recipient, identity spoofing,
+and foreign/duplicate actor binding rejection. It must pass under the full
+Java Maven/JUnit runner; creating that JUnit fixture is not equivalent to
+executing it. The standalone routing-plan and correlation-ledger tests do
+not run the full ActorRuntime.
 
 ## Backward versus reply
 
