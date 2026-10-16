@@ -12,6 +12,8 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -37,6 +39,10 @@ public final class OresContext implements AutoCloseable {
     public AsyncNativeIo nativeIo() { return nativeIo; }
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
+
+    /** Host-only child-process registries associated with each actor execution domain. */
+    private final ConcurrentHashMap<Object, Set<ChildProcOwnedRuntime>> ownedChildProcesses =
+            new ConcurrentHashMap<>();
 
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
@@ -113,7 +119,13 @@ public final class OresContext implements AutoCloseable {
                     vm::executeControl);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
-            actors.setActorExitHook(gc::retireActorDomain);
+            actors.setActorExitHook(domain -> {
+                try {
+                    retireOwnedChildProcesses(domain);
+                } finally {
+                    gc.retireActorDomain(domain);
+                }
+            });
 
             this.vm = vm;
             this.actors = actors;
@@ -142,6 +154,35 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
+
+    /** Register only on the owning actor turn; never let a guest choose a domain. */
+    void registerOwnedChildProcesses(ChildProcOwnedRuntime manager) {
+        Object domain = ActorRuntime.currentActorExecutionDomain();
+        if (domain == null || ActorRuntime.currentActorRuntime() != actors) {
+            throw new SecurityException("child process registry requires an actor execution domain");
+        }
+        ownedChildProcesses.compute(domain, (key, existing) -> {
+            Set<ChildProcOwnedRuntime> registries =
+                    existing == null ? ConcurrentHashMap.newKeySet() : existing;
+            if (registries.size() >= 1) {
+                throw new IllegalStateException("actor already owns a child process manager");
+            }
+            registries.add(manager);
+            return registries;
+        });
+    }
+
+    private void retireOwnedChildProcesses(Object domain) {
+        Set<ChildProcOwnedRuntime> registries = ownedChildProcesses.remove(domain);
+        if (registries == null) return;
+        for (ChildProcOwnedRuntime manager : registries) manager.close();
+    }
+
+    private void closeAllOwnedChildProcesses() {
+        for (Object domain : Set.copyOf(ownedChildProcesses.keySet())) {
+            retireOwnedChildProcesses(domain);
+        }
+    }
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -428,6 +469,7 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        closeAllOwnedChildProcesses();
         nativeIo.close();
         http.close();
         RuntimeException failure = null;
