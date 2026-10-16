@@ -195,6 +195,38 @@ final class ActorPipelineMailboxRouterTest {
     }
 
     @Test
+    void selfStopFencesAdditionalRoutingInSameActorTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorPipelineMailboxRouter<String>> router =
+                    new AtomicReference<>();
+            AtomicInteger correctlyDenied = new AtomicInteger();
+            CountDownLatch completed = new CountDownLatch(1);
+            var a = runtime.<String>spawnShared(() -> (message, actor) -> { });
+            var b = runtime.<String>spawnShared(() -> (message, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (message, actor) -> {
+                actor.self().stop();
+                try {
+                    router.get().forwardAll(message);
+                } catch (IllegalStateException stopped) {
+                    correctlyDenied.incrementAndGet();
+                } finally {
+                    completed.countDown();
+                }
+            });
+            router.set(new ActorPipelineMailboxRouter<>(runtime, graph(),
+                    Map.of("producer", source, "worker-a", a, "worker-b", b)));
+            source.send("cannot-route-after-stop");
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            source.getDone().get(5, TimeUnit.SECONDS);
+            assertEquals(1, correctlyDenied.get());
+            a.stop();
+            b.stop();
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void bindingRejectsMissingDuplicateAndForeignActorIdentities() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
