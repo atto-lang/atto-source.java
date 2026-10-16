@@ -67,6 +67,60 @@ final class RecursiveFutureFlattenTest {
     }
 
     @Test
+    void cancellationRacingWithNestedSubscriptionDetachesEveryWaiter()
+            throws InterruptedException {
+        for (int round = 0; round < 256; round++) {
+            OresFuture<Object> outer = new OresFuture<>();
+            OresFuture<Object> middle = new OresFuture<>();
+            OresFuture<Integer> inner = new OresFuture<>();
+            OresFuture<Integer> flattened = OresFutures.flatten(outer);
+
+            java.util.concurrent.CountDownLatch begin =
+                    new java.util.concurrent.CountDownLatch(1);
+            Thread publisher = Thread.startVirtualThread(() -> {
+                try {
+                    begin.await();
+                    outer.completeFromRuntime(middle);
+                    middle.completeFromRuntime(inner);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            Thread canceller = Thread.startVirtualThread(() -> {
+                try {
+                    begin.await();
+                    flattened.cancel(false);
+                } catch (InterruptedException error) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            begin.countDown();
+            publisher.join();
+            canceller.join();
+            assertTrue(flattened.isCancelled(), "round " + round);
+            assertEquals(0, outer.pendingRuntimeWaiterCount(), "outer round " + round);
+            assertEquals(0, middle.pendingRuntimeWaiterCount(), "middle round " + round);
+            assertEquals(0, inner.pendingRuntimeWaiterCount(), "inner round " + round);
+            assertFalse(outer.isCancelled());
+            assertFalse(middle.isCancelled());
+            assertFalse(inner.isCancelled());
+        }
+    }
+
+    @Test
+    void earlyInnerCancellationNeverResurrectsFlattenedResult() {
+        OresFuture<Object> outer = new OresFuture<>();
+        OresFuture<Integer> inner = new OresFuture<>();
+        OresFuture<Integer> flattened = OresFutures.flatten(outer);
+        outer.completeFromRuntime(inner);
+        assertTrue(inner.cancel(false));
+        assertTrue(flattened.isCancelled());
+        assertThrows(CancellationException.class, flattened::join);
+        assertEquals(0, inner.pendingRuntimeWaiterCount());
+        assertFalse(flattened.cancel(false));
+    }
+
+    @Test
     void cyclicNestedFutureFailsClosedInsteadOfWaitingForever() {
         OresFuture<Object> self = new OresFuture<>();
         OresFuture<Integer> flattened = OresFutures.flatten(self);
