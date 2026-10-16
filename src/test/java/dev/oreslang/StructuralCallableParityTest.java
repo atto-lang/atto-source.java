@@ -70,8 +70,8 @@ final class StructuralCallableParityTest {
         for (String call : new String[] {
                 "byFunction(new Wrong())",
                 "byRoutine(new Wrong())",
-                "(new Consumer()).byMethod(new Wrong())",
-                "(new Consumer()).byBareMethod(new Wrong())",
+                "consumer.byMethod(new Wrong())",
+                "consumer.byBareMethod(new Wrong())",
                 "Consumer.byStatic(new Wrong())"
         }) {
             String source = """
