@@ -432,6 +432,56 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void fullMavenVerificationMustExecuteFreshTestsBeyondFocusedSubset() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String runner = workflow.substring(
+                workflow.indexOf("  validate-approved-candidate:"));
+        String expected = "run: mvn -B -ntp -Dores.runtime.carriers=native "
+                + "-DskipTests=false -Dmaven.test.skip=false clean verify";
+        assertTrue(hasExactLine(runner, 8, expected),
+                "full Maven verify must be clean and explicitly execute tests");
+        assertFalse(hasExactLine(runner.replace("clean verify", "verify"), 8, expected),
+                "an incremental full-suite build cannot satisfy the admission gate");
+
+        String proof = section(workflow,
+                "      - name: Prove full Maven suite executed beyond focused security classes",
+                "      - name: Native AOT candidate build and guest execution");
+        assertTrue(runner.indexOf("Full Java 25 Maven candidate verification")
+                < runner.indexOf("Prove full Maven suite executed beyond focused security classes"));
+        assertTrue(runner.indexOf("Prove full Maven suite executed beyond focused security classes")
+                < runner.indexOf("Native AOT candidate build and guest execution"));
+        assertTrue(hasExactLine(proof, 10, "python3 - <<'PY'"),
+                "full-suite attestation must live in the reviewed workflow");
+        for (String required : new String[] {
+                "if len(reports) <= len(focused):",
+                "if focused_seen != focused:",
+                "extra = executed - focused",
+                "if not extra:",
+                "report_dir = Path(\"target/surefire-reports\")",
+                "if report.is_symlink() or not report.is_file():",
+                "declared != len(cases)",
+                "case.get(\"classname\") != classname",
+                "VERIFIED_FULL_JUNIT_EXTRA_CLASSES="
+        }) {
+            assertTrue(proof.contains(required), "full-suite evidence guard missing: " + required);
+        }
+        assertFalse(proof.contains("python3 scripts/"),
+                "attestation must not run code from the untrusted candidate checkout");
+        for (String classname : new String[] {
+                "dev.oreslang.launcher.DenoCliDefaultPermissionsTest",
+                "dev.oreslang.runtime.RuntimePermissionsNetworkAuditTest",
+                "dev.oreslang.runtime.RuntimePermissionsTest",
+                "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
+                "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
+                "dev.oreslang.runtime.ScopedPermissionInteropTest"
+        }) {
+            assertTrue(proof.contains("\"" + classname + "\""),
+                    "full Maven suite must re-execute focused class: " + classname);
+        }
+    }
+
+    @Test
     void candidateNativeStagesMustRebuildFromCleanTargets() throws Exception {
         String workflow = Files.readString(
                 Path.of(".github/workflows/private-exact-candidate-validation.yml"));
