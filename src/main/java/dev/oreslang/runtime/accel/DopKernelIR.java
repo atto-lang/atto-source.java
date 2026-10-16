@@ -162,6 +162,7 @@ public final class DopKernelIR {
                 if (moved) return; // The successor owns the same storage.
                 if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("borrowed buffer must be released before close");
                 state.closed = true;
+                state.regionToken.retire();
             }
         }
     }
