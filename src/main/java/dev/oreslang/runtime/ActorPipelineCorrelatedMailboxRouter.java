@@ -66,8 +66,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         Map<ActorRuntime.ActorId, String> reverse = new HashMap<>();
         for (String instance : required) {
             var ref = Objects.requireNonNull(bindings.get(instance));
-            if (!owner.isAlive(ref))
-                throw new IllegalArgumentException("pipeline actor must be alive in owning runtime");
+            owner.requireSharedPipelineBinding(ref);
             if (reverse.putIfAbsent(ref.id(), instance) != null)
                 throw new IllegalArgumentException("duplicate bound actor identity");
             bound.put(instance, ref);
@@ -162,6 +161,14 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
                 ActorPipelineRouteSession.retireDelivered(child);
                 result.add(new Admission(edges.get(edge), child.receiver(),
                         child.flowId(), child.routeId(), false, failure));
+            } catch (Error fatal) {
+                ActorPipelineRouteSession.retireDelivered(child);
+                // No publication was attempted on these reserved frames.
+                // Preserve previous accepted branches but reclaim everything
+                // not handed to ActorRuntime before rethrowing the fatal error.
+                for (int rest = i + 1; rest < children.size(); rest++)
+                    ActorPipelineRouteSession.retireDelivered(children.get(rest));
+                throw fatal;
             }
         }
         return List.copyOf(result);
