@@ -314,7 +314,9 @@ public final class RuntimePermissions {
      * A bind to port 0 delegates the choice of port to the OS. It can only
      * be admitted when the requested host is allowed without a port AND no
      * denied port or address could be selected by that bind. Port 0 is an
-     * API sentinel, never a valid NET permission scope.
+     * API sentinel, never a valid NET permission scope. A selected IPv4
+     * wildcard address (0.0.0.0) can listen on every local interface, so it
+     * requires an explicit wildcard request with no deny rules at all.
      */
     public boolean allowsEphemeralNetworkBind(String requestedHost, String selectedIpv4) {
         if (!allows(Permission.NET, requestedHost)) return false;
