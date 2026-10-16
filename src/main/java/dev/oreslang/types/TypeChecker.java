@@ -1746,6 +1746,17 @@ public final class TypeChecker {
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
             else env.define(binding.name(), declared, binding.kind(), missingExplicitFields);
+            // Closed argument-pack provenance belongs only to immutable
+            // bindings originally initialized from an explicit record literal.
+            // A LET can be rebound (including after a deferred closure was
+            // checked) and could then carry a structurally assignable but
+            // wider/different runtime record. Do not grant stable slot labels
+            // to such a mutable binding until flow-sensitive invalidation exists.
+            if (declaredAhead == null && binding.initializer() instanceof Ast.ObjectExpr record
+                    && record.recordLiteral() && !binding.mutableReferent()
+                    && binding.kind() != Ast.BindingKind.LET) {
+                env.markRecordPack(binding.name());
+            }
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -2421,7 +2432,7 @@ public final class TypeChecker {
                     && env.lookup(functionName.name()) == null) {
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
-                        "function " + functionName.name());
+                        "function " + functionName.name(), true);
                 Ast.FunctionDecl target = findFunction(functionName.name(), arity);
                 if (target != null) {
                     rejectImplicitClassCallable(functionName.name());
@@ -2444,7 +2455,7 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
-                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles(), true);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -2460,7 +2471,7 @@ public final class TypeChecker {
                 rejectUnimportedModuleNamespace(namespace.name());
                 int arity = fixedCallArity(
                         call.arguments(), env, generics, self,
-                        "function " + namespace.name() + "." + qualifiedCall.member());
+                        "function " + namespace.name() + "." + qualifiedCall.member(), true);
                 Ast.FunctionDecl target = findQualifiedFunction(
                         namespace.name() + "." + qualifiedCall.member(),
                         arity);
@@ -2484,7 +2495,7 @@ public final class TypeChecker {
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label, target.genericSpecs(),
                             GenericCallArguments.bind(
-                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles());
+                                    target.genericParameters(), call.typeArguments(), label).inferenceHoles(), true);
                     requireSuspendableCall(target.suspends(), "function '" + target.name() + "'");
                     return trapResult(target.trapped(), callableResult(target.async(), target.generator(), result));
                 }
@@ -3822,14 +3833,14 @@ public final class TypeChecker {
                 Type exactValueType = typeOf(field.value(), env, generics, self);
                 if (members.putIfAbsent(
                         field.name(),
-                        object.inferredStruct()
+                        (object.inferredStruct() || object.recordLiteral())
                                 ? widenCollectionElement(exactValueType)
                                 : exactValueType) != null) {
                     throw new IllegalArgumentException(
                             "duplicate struct field '" + field.name() + "'");
                 }
             }
-            return new Record(members, object.inferredStruct());
+            return new Record(members, object.inferredStruct() || object.recordLiteral());
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -7270,7 +7281,21 @@ public final class TypeChecker {
         }
     }
 
-    private record ExpandedCallArgument(Ast.Expr expression, Type staticType) { }
+    private record ExpandedCallArgument(Ast.Expr expression, Type staticType, String label) {
+        private ExpandedCallArgument(Ast.Expr expression, Type staticType) {
+            this(expression, staticType, null);
+        }
+    }
+
+    private static boolean isCopyRecordSlot(Type type) {
+        return type instanceof Primitive p && p != Primitive.VOID && p != Primitive.NULL
+                || type instanceof Types.StringLiteral || type instanceof Types.BoolLiteral;
+    }
+
+    private boolean isSupportedRecordPack(Ast.Expr expression, Env env) {
+        return expression instanceof Ast.ObjectExpr object && object.recordLiteral()
+                || expression instanceof Ast.NameExpr name && env.isRecordPack(name.name());
+    }
 
     private List<ExpandedCallArgument> expandFixedCallArguments(
             List<Ast.Expr> arguments,
@@ -7278,6 +7303,12 @@ public final class TypeChecker {
             Set<String> generics,
             Type self,
             String label) {
+        return expandFixedCallArguments(arguments, env, generics, self, label, false);
+    }
+
+    private List<ExpandedCallArgument> expandFixedCallArguments(
+            List<Ast.Expr> arguments, Env env, Set<String> generics, Type self,
+            String label, boolean permitRecords) {
         List<ExpandedCallArgument> expanded = new ArrayList<>();
         for (Ast.Expr argument : arguments) {
             if (!(argument instanceof Ast.SpreadExpr spread)) {
@@ -7286,6 +7317,19 @@ public final class TypeChecker {
             }
 
             Type spreadType = deref(typeOf(spread.expression(), env, generics, self));
+            if (spreadType instanceof Record record) {
+                if (!permitRecords || !isSupportedRecordPack(spread.expression(), env)
+                        || !record.readOnly() || record.members().isEmpty()
+                        || !record.members().values().stream().allMatch(TypeChecker::isCopyRecordSlot)) {
+                    throw new IllegalArgumentException(
+                            label + " record spread requires an explicitly closed, readonly Copy-only "
+                                    + "record pack in a supported direct function call");
+                }
+                for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                    expanded.add(new ExpandedCallArgument(null, field.getValue(), field.getKey()));
+                }
+                continue;
+            }
             if (!(spreadType instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
                 throw new IllegalArgumentException(
                         label + " spread requires a statically known tuple; got " + spreadType
@@ -7305,6 +7349,11 @@ public final class TypeChecker {
             Type self,
             String label) {
         return expandFixedCallArguments(arguments, env, generics, self, label).size();
+    }
+
+    private int fixedCallArity(List<Ast.Expr> arguments, Env env, Set<String> generics,
+                               Type self, String label, boolean permitRecords) {
+        return expandFixedCallArguments(arguments, env, generics, self, label, permitRecords).size();
     }
 
     private Type expandedCallArgumentType(
@@ -7347,12 +7396,46 @@ public final class TypeChecker {
             String label,
             List<Ast.GenericParameter> genericSpecs,
             Set<String> inferenceHoles) {
+        return checkGenericCallable(genericNames, params, returnRef, arguments,
+                env, callerGenerics, callerSelf, callableSelf,
+                initialBindings, label, genericSpecs, inferenceHoles, false);
+    }
+
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type callableSelf,
+            Map<String, Type> initialBindings,
+            String label,
+            List<Ast.GenericParameter> genericSpecs,
+            Set<String> inferenceHoles,
+            boolean permitRecords) {
         List<ExpandedCallArgument> expanded =
-                expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
+                expandFixedCallArguments(arguments, env, callerGenerics, callerSelf,
+                        label, permitRecords);
         if (params.size() != expanded.size()) {
             throw new IllegalArgumentException(
                     label + " arity mismatch: expected " + params.size()
                             + " argument(s), got " + expanded.size());
+        }
+        if (expanded.stream().anyMatch(slot -> slot.label() != null)) {
+            // Structural labels cannot disambiguate overloads; mapping occurs
+            // only after direct callable selection, with generic cases closed.
+            if (!genericNames.isEmpty()) {
+                throw new IllegalArgumentException(label
+                        + " record spread with generic parameters is not yet supported");
+            }
+            FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                    params.stream().map(Ast.Param::name).toList(),
+                    expanded.stream().map(slot -> new FixedProductCallPlan.InputSlot(slot.label())).toList());
+            List<ExpandedCallArgument> byAbi = new ArrayList<>(expanded.size());
+            for (int source : plan.abiToSource()) byAbi.add(expanded.get(source));
+            expanded = List.copyOf(byAbi);
         }
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
@@ -8440,6 +8523,12 @@ public final class TypeChecker {
         private final boolean descendantsNonLexical;
         private final boolean deferredCaptureBoundary;
         private final Map<String, Binding> bindings = new HashMap<>();
+        private final Set<String> recordPacks = new HashSet<>();
+        private void markRecordPack(String name) { recordPacks.add(name); }
+        private boolean isRecordPack(String name) {
+            if (bindings.containsKey(name)) return recordPacks.contains(name);
+            return parent != null && parent.isRecordPack(name);
+        }
         private final Map<String, Type> inferredTypes = new HashMap<>();
         private final Set<String> reservedInferredNames = new HashSet<>();
         private void reserveInferredType(String name) {

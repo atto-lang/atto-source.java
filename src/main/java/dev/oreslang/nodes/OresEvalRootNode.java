@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.types.FixedProductCallPlan;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -22,6 +23,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ChannelRuntime;
 import dev.oreslang.runtime.Awaitable;
 import dev.oreslang.runtime.OresScheduler;
+import dev.oreslang.runtime.OneShotCompletionGate;
 import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
@@ -896,6 +898,39 @@ public final class OresEvalRootNode extends RootNode {
         @FunctionalInterface
         private interface SourceArgsCont {
             void accept(SourceTask task, List<Object> values, Throwable failure);
+        }
+
+        @FunctionalInterface
+        private interface SourceDirectArgsCont {
+            void accept(SourceTask task, DirectArguments args, Throwable failure);
+        }
+
+        private record DirectArguments(List<Object> values,
+                                       List<FixedProductCallPlan.InputSlot> inputs) {
+            private DirectArguments {
+                // Guest/host payloads may contain null. List.copyOf rejects
+                // them, turning a completed argument evaluation into an
+                // uncaught NullPointerException before the call can proceed.
+                // Snapshot without permitting subsequent mutation.
+                values = immutableValuesAllowingNull(values);
+                inputs = List.copyOf(inputs);
+                if (values.size() != inputs.size()) {
+                    throw new IllegalArgumentException("direct product values/labels out of sync");
+                }
+            }
+
+            private static List<Object> immutableValuesAllowingNull(List<Object> source) {
+                return java.util.Collections.unmodifiableList(new ArrayList<>(source));
+            }
+
+            private List<Object> inAbiOrder(Ast.FunctionDecl fn) {
+                if (inputs.stream().noneMatch(slot -> slot.label() != null)) return values;
+                FixedProductCallPlan plan = FixedProductCallPlan.bind(
+                        fn.parameters().stream().map(Ast.Param::name).toList(), inputs);
+                ArrayList<Object> ordered = new ArrayList<>(values.size());
+                for (int source : plan.abiToSource()) ordered.add(values.get(source));
+                return immutableValuesAllowingNull(ordered);
+            }
         }
 
         @FunctionalInterface
@@ -3059,6 +3094,21 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Expr expr,
                 Env env,
                 SourceValueCont continuation) {
+            // Each evaluation is a one-shot operation, even if a synchronous
+            // downstream callback throws or a completion races cancellation.
+            // The marker must be set BEFORE entering user continuation code.
+            OneShotCompletionGate delivery = new OneShotCompletionGate();
+            SourceValueCont singleDelivery = (t, value, failure) ->
+                    delivery.deliver(() -> continuation.accept(t, value, failure));
+            evalSuspendableExprImpl(task, expr, env, singleDelivery, delivery);
+        }
+
+        private void evalSuspendableExprImpl(
+                SourceTask task,
+                Ast.Expr expr,
+                Env env,
+                SourceValueCont continuation,
+                OneShotCompletionGate delivery) {
             try {
                 if (!expressionContainsPotentialSuspension(
                         expr,
@@ -3190,6 +3240,14 @@ public final class OresEvalRootNode extends RootNode {
                                                                     : null,
                                                             failure2));
                                 } catch (RuntimeException | Error failure2) {
+                                    // A select may complete synchronously: its
+                                    // callback can enter downstream guest code
+                                    // before selectAsync/suspend returns. Once
+                                    // completion was claimed, its exception is
+                                    // the consumer's, not a second select error.
+                                    // Do not swallow it behind the one-shot
+                                    // delivery gate.
+                                    if (delivery.delivered()) throw failure2;
                                     continuation.accept(
                                             t,
                                             null,
@@ -3294,22 +3352,17 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                final Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
-                                                } catch (RuntimeException | Error failure3) {
-                                                    continuation.accept(
-                                                            t2,
-                                                            null,
-                                                            failure3);
+                                                    result = binary(
+                                                            binary.operator(),
+                                                            left,
+                                                            right);
+                                                } catch (RuntimeException | Error binaryFailure) {
+                                                    continuation.accept(t2, null, binaryFailure);
+                                                    return;
                                                 }
+                                                continuation.accept(t2, result, null);
                                             }
                                         });
                             });
@@ -3385,33 +3438,28 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final boolean matches;
+                                final Throwable castFailure;
                                 try {
-                                    boolean matches =
-                                            oresTypeMatches(
-                                                    value,
-                                                    cast.targetType());
-                                    if (cast.mode()
-                                            == Ast.CastMode.OPTIONAL) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        matches,
-                                                        matches ? value : null),
-                                                null);
-                                    } else if (!matches) {
-                                        continuation.accept(
-                                                t,
-                                                null,
-                                                new OresCastError(
-                                                        "cannot cast runtime type "
-                                                                + oresRuntimeTypeName(value)
-                                                                + " to "
-                                                                + cast.targetType().name()));
-                                    } else {
-                                        continuation.accept(t, value, null);
-                                    }
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    matches = oresTypeMatches(value, cast.targetType());
+                                    castFailure = !matches && cast.mode() != Ast.CastMode.OPTIONAL
+                                            ? new OresCastError(
+                                                    "cannot cast runtime type "
+                                                            + oresRuntimeTypeName(value)
+                                                            + " to "
+                                                            + cast.targetType().name())
+                                            : null;
+                                } catch (RuntimeException | Error typeFailure) {
+                                    continuation.accept(t, null, typeFailure);
+                                    return;
+                                }
+                                if (castFailure != null) {
+                                    continuation.accept(t, null, castFailure);
+                                } else if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                                    continuation.accept(t,
+                                            new OptionValue(matches, matches ? value : null), null);
+                                } else {
+                                    continuation.accept(t, value, null);
                                 }
                             });
                     return;
@@ -3432,17 +3480,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Object memberValue;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            member(
-                                                    receiver,
-                                                    member.member(),
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    memberValue = member(receiver, member.member(), env);
+                                } catch (RuntimeException | Error memberFailure) {
+                                    continuation.accept(t, null, memberFailure);
+                                    return;
                                 }
+                                continuation.accept(t, memberValue, null);
                             });
                     return;
                 }
@@ -3469,19 +3514,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         failure2);
                                                 return;
                                             }
+                                            final Object indexed;
                                             try {
-                                                continuation.accept(
-                                                        t2,
-                                                        indexValue(
-                                                                receiver,
-                                                                key),
-                                                        null);
-                                            } catch (RuntimeException | Error failure3) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure3);
+                                                indexed = indexValue(receiver, key);
+                                            } catch (RuntimeException | Error indexFailure) {
+                                                continuation.accept(t2, null, indexFailure);
+                                                return;
                                             }
+                                            continuation.accept(t2, indexed, null);
                                         });
                             });
                     return;
@@ -3497,17 +3537,15 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Object assigned;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            assignEvaluated(
-                                                    assignment.target(),
-                                                    value,
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    assigned = assignEvaluated(
+                                            assignment.target(), value, env);
+                                } catch (RuntimeException | Error assignmentFailure) {
+                                    continuation.accept(t, null, assignmentFailure);
+                                    return;
                                 }
+                                continuation.accept(t, assigned, null);
                             });
                     return;
                 }
@@ -3531,17 +3569,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Object instantiated;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            instantiateEvaluated(
-                                                    created,
-                                                    values,
-                                                    env),
-                                            null);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    instantiated = instantiateEvaluated(created, values, env);
+                                } catch (RuntimeException | Error constructorFailure) {
+                                    continuation.accept(t, null, constructorFailure);
+                                    return;
                                 }
+                                continuation.accept(t, instantiated, null);
                             });
                     return;
                 }
@@ -3587,6 +3622,9 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // Never translate a downstream consumer exception into a second
+                // completion, even if it escapes synchronously.
+                if (delivery.delivered()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -3657,6 +3695,80 @@ public final class OresEvalRootNode extends RootNode {
                     });
         }
 
+        private void appendDirectArgument(
+                Ast.Expr argument, Object value,
+                ArrayList<Object> values,
+                ArrayList<FixedProductCallPlan.InputSlot> slots) {
+            if (!(argument instanceof Ast.SpreadExpr)) {
+                values.add(value);
+                slots.add(FixedProductCallPlan.InputSlot.positional());
+                return;
+            }
+            if (value instanceof ReadonlyRecordValue record) {
+                for (Map.Entry<String, Object> field : record.entrySet()) {
+                    slots.add(FixedProductCallPlan.InputSlot.named(field.getKey()));
+                    values.add(field.getValue());
+                }
+                return;
+            }
+            List<Object> expanded = expandArgumentSequence(value, "direct call spread");
+            values.addAll(expanded);
+            for (int i = 0; i < expanded.size(); i++) {
+                slots.add(FixedProductCallPlan.InputSlot.positional());
+            }
+        }
+
+        private DirectArguments evaluateDirectArguments(List<Ast.Expr> arguments, Env env) {
+            ArrayList<Object> values = new ArrayList<>();
+            ArrayList<FixedProductCallPlan.InputSlot> slots = new ArrayList<>();
+            for (Ast.Expr argument : arguments) {
+                // Evaluates the entire operand exactly once, in lexical order.
+                Ast.Expr operand = argument instanceof Ast.SpreadExpr spread
+                        ? spread.expression() : argument;
+                appendDirectArgument(argument, eval(operand, env), values, slots);
+            }
+            return new DirectArguments(values, slots);
+        }
+
+        private void evalSuspendableDirectArguments(
+                SourceTask task, List<Ast.Expr> arguments, Env env,
+                SourceDirectArgsCont continuation) {
+            ArrayList<Object> values = new ArrayList<>();
+            ArrayList<FixedProductCallPlan.InputSlot> slots = new ArrayList<>();
+            evalSuspendableDirectArgumentAt(task, arguments, env, values, slots, 0, continuation);
+        }
+
+        private void evalSuspendableDirectArgumentAt(
+                SourceTask task, List<Ast.Expr> arguments, Env env,
+                ArrayList<Object> values,
+                ArrayList<FixedProductCallPlan.InputSlot> slots,
+                int index, SourceDirectArgsCont continuation) {
+            if (index == arguments.size()) {
+                continuation.accept(task, new DirectArguments(values, slots), null);
+                return;
+            }
+            Ast.Expr argument = arguments.get(index);
+            Ast.Expr operand = argument instanceof Ast.SpreadExpr spread
+                    ? spread.expression() : argument;
+            evalSuspendableExpr(task, operand, env, (t, value, failure) -> {
+                if (failure != null) {
+                    continuation.accept(t, null, failure);
+                    return;
+                }
+                // Catch only local expansion. Once recursion reaches the
+                // terminal continuation, downstream exceptions must not be
+                // reclassified as another completion of the same call.
+                try {
+                    appendDirectArgument(argument, value, values, slots);
+                } catch (RuntimeException | Error expansionFailure) {
+                    continuation.accept(t, null, expansionFailure);
+                    return;
+                }
+                evalSuspendableDirectArgumentAt(
+                        t, arguments, env, values, slots, index + 1, continuation);
+            });
+        }
+
         private void evalSuspendableArguments(
                 SourceTask task,
                 List<Ast.Expr> expressions,
@@ -3683,23 +3795,36 @@ public final class OresEvalRootNode extends RootNode {
                 continuation.accept(task, List.copyOf(values), null);
                 return;
             }
+            Ast.Expr argument = expressions.get(index);
+            Ast.Expr evaluated = argument instanceof Ast.SpreadExpr spread
+                    ? spread.expression() : argument;
             evalSuspendableExpr(
                     task,
-                    expressions.get(index),
+                    evaluated,
                     env,
                     (t, value, failure) -> {
                         if (failure != null) {
                             continuation.accept(t, List.of(), failure);
-                        } else {
-                            values.add(value);
-                            evalSuspendableArgumentAt(
-                                    t,
-                                    expressions,
-                                    env,
-                                    values,
-                                    index + 1,
-                                    continuation);
+                            return;
                         }
+                        // Separate expansion failures from recursive delivery:
+                        // a thrown downstream continuation is not a new
+                        // argument failure and must never be delivered twice.
+                        try {
+                            if (argument instanceof Ast.SpreadExpr) {
+                                // A spread aggregate is evaluated exactly
+                                // once. Expand its finite elements only after
+                                // the awaitable operand has completed.
+                                values.addAll(expandArgumentSequence(value, "argument spread"));
+                            } else {
+                                values.add(value);
+                            }
+                        } catch (RuntimeException | Error expansionFailure) {
+                            continuation.accept(t, List.of(), expansionFailure);
+                            return;
+                        }
+                        evalSuspendableArgumentAt(
+                                t, expressions, env, values, index + 1, continuation);
                     });
         }
 
@@ -3730,7 +3855,9 @@ public final class OresEvalRootNode extends RootNode {
                 int index,
                 SourceValueCont continuation) {
             if (index >= object.fields().size()) {
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                Object built;
+                try {
+                    LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 if (object.explicitStruct()) {
                     for (Ast.StructFieldSpec field : object.declaredFields()) {
                         if (result.putIfAbsent(field.name(), UNINITIALIZED_FIELD) != null) {
@@ -3753,14 +3880,23 @@ public final class OresEvalRootNode extends RootNode {
                                     "duplicate explicit struct initializer field " + entry.getKey());
                         }
                         result.put(entry.getKey(), entry.getValue());
-                    } else if (result.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
-                        throw new IllegalArgumentException(
-                                "duplicate struct field " + entry.getKey());
+                    } else {
+                        if (result.containsKey(entry.getKey())) {
+                            throw new IllegalArgumentException(
+                                    "duplicate struct field " + entry.getKey());
+                        }
+                        result.put(entry.getKey(), entry.getValue());
                     }
                 }
-                Object built = object.explicitStruct()
-                        ? result
-                        : new ReadonlyRecordValue(result);
+                    built = object.explicitStruct()
+                            ? result
+                            : new ReadonlyRecordValue(result);
+                } catch (RuntimeException | Error assemblyFailure) {
+                    // A malformed record must terminate its suspended call
+                    // through the continuation, not escape into the carrier.
+                    continuation.accept(task, null, assemblyFailure);
+                    return;
+                }
                 continuation.accept(task, built, null);
                 return;
             }
@@ -3775,7 +3911,17 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
-                        values.add(Map.entry(field.name(), value));
+                        // Stage the field before recursive delivery. The
+                        // catch must NOT include the downstream continuation:
+                        // an exception from a consumer cannot be converted
+                        // into a second delivery of the same call result.
+                        try {
+                            values.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
+                                    field.name(), value));
+                        } catch (RuntimeException | Error fieldFailure) {
+                            continuation.accept(t, null, fieldFailure);
+                            return;
+                        }
                         evalSuspendableObjectField(
                                 t,
                                 object,
@@ -3834,14 +3980,14 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (future.isDone()) {
+                final Object completed;
                 try {
-                    continuation.accept(
-                            task,
-                            future.join(),
-                            null);
-                } catch (RuntimeException | Error failure) {
-                    continuation.accept(task, null, failure);
+                    completed = future.join();
+                } catch (RuntimeException | Error completionFailure) {
+                    continuation.accept(task, null, completionFailure);
+                    return;
                 }
+                continuation.accept(task, completed, null);
                 return;
             }
 
@@ -4133,14 +4279,14 @@ public final class OresEvalRootNode extends RootNode {
                             continuation.accept(t, null, failure);
                             return;
                         }
+                        final Object owned;
                         try {
-                            continuation.accept(
-                                    t,
-                                    applyRuntimeOwnership(runtime.operation(), value),
-                                    null);
+                            owned = applyRuntimeOwnership(runtime.operation(), value);
                         } catch (RuntimeException | Error ownershipFailure) {
                             continuation.accept(t, null, ownershipFailure);
+                            return;
                         }
+                        continuation.accept(t, owned, null);
                     });
         }
 
@@ -4151,30 +4297,46 @@ public final class OresEvalRootNode extends RootNode {
                 SourceValueCont continuation) {
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
-                if (direct != null) {
+                boolean spread = call.arguments().stream()
+                        .anyMatch(argument -> argument instanceof Ast.SpreadExpr);
+                Ast.FunctionDecl direct = spread ? null
+                        : findFunction(name.name(), call.arguments().size());
+                if (direct != null || (spread && hasFunctionFamily(name.name()))) {
                     requireExplicitClassCallableImport(env, name.name());
-                    evalSuspendableArguments(
+                    evalSuspendableDirectArguments(
                             task,
                             call.arguments(),
                             env,
-                            (t, values, failure) -> {
+                            (t, evaluated, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                final Invocation invocation;
                                 try {
-                                    Invocation invocation =
-                                            functionInvocation(direct, values);
-                                    completeSourceInvocation(
-                                            t,
-                                            invocation,
-                                            invocationDeclaresAsync(invocation),
-                                            env,
-                                            continuation);
-                                } catch (RuntimeException | Error failure2) {
-                                    continuation.accept(t, null, failure2);
+                                    // Overload identity depends only on expanded
+                                    // arity; source labels bind after selection.
+                                    Ast.FunctionDecl selected = spread
+                                            ? findFunction(name.name(), evaluated.values().size()) : direct;
+                                    if (selected == null) {
+                                        throw new IllegalArgumentException(
+                                                "no function " + name.name()
+                                                        + " with expanded arity " + evaluated.values().size());
+                                    }
+                                    invocation =
+                                            functionInvocation(selected, evaluated.inAbiOrder(selected));
+                                } catch (RuntimeException | Error bindingFailure) {
+                                    continuation.accept(t, null, bindingFailure);
+                                    return;
                                 }
+                                // Guest completion may invoke the caller synchronously.
+                                // Do not catch and re-deliver consumer exceptions here.
+                                completeSourceInvocation(
+                                        t,
+                                        invocation,
+                                        invocationDeclaresAsync(invocation),
+                                        env,
+                                        continuation);
                             });
                     return;
                 }
@@ -4190,6 +4352,34 @@ public final class OresEvalRootNode extends RootNode {
                                 continuation.accept(t, null, failure);
                                 return;
                             }
+                            if (receiver instanceof ModuleFacade module
+                                    && call.arguments().stream().anyMatch(
+                                            arg -> arg instanceof Ast.SpreadExpr)) {
+                                evalSuspendableDirectArguments(
+                                        t, call.arguments(), env,
+                                        (t2, evaluated, argumentFailure) -> {
+                                            if (argumentFailure != null) {
+                                                continuation.accept(t2, null, argumentFailure);
+                                                return;
+                                            }
+                                            final Invocation invocation;
+                                            try {
+                                                invocation = module.owner()
+                                                        .prepareModuleInvocation(
+                                                                module.module(),
+                                                                member.member(),
+                                                                evaluated);
+                                            } catch (RuntimeException | Error bindingFailure) {
+                                                continuation.accept(t2, null, bindingFailure);
+                                                return;
+                                            }
+                                            completeSourceInvocation(
+                                                    t2, invocation,
+                                                    invocationDeclaresAsync(invocation),
+                                                    env, continuation);
+                                        });
+                                return;
+                            }
                             evalSuspendableArguments(
                                     t,
                                     call.arguments(),
@@ -4199,25 +4389,24 @@ public final class OresEvalRootNode extends RootNode {
                                             continuation.accept(t2, null, failure2);
                                             return;
                                         }
+                                        final Invocation invocation;
                                         try {
-                                            Invocation invocation =
+                                            invocation =
                                                     prepareInvocationEvaluated(
                                                             call,
                                                             receiver,
                                                             values,
                                                             env);
-                                            boolean declaredFuture =
-                                                    invocationDeclaresAsync(
-                                                            invocation);
-                                            completeSourceInvocation(
-                                                    t2,
-                                                    invocation,
-                                                    declaredFuture,
-                                                    env,
-                                                    continuation);
-                                        } catch (RuntimeException | Error failure3) {
-                                            continuation.accept(t2, null, failure3);
+                                        } catch (RuntimeException | Error bindingFailure) {
+                                            continuation.accept(t2, null, bindingFailure);
+                                            return;
                                         }
+                                        completeSourceInvocation(
+                                                t2,
+                                                invocation,
+                                                invocationDeclaresAsync(invocation),
+                                                env,
+                                                continuation);
                                     });
                         });
                 return;
@@ -4267,46 +4456,44 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            final Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
+                result = invoke(invocation);
+            } catch (RuntimeException | Error invocationFailure) {
+                continuation.accept(task, null, invocationFailure);
+                return;
+            }
+
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                // An already settled Future does not relinquish the actor
+                // lane or release a no-yield guard. Only join() belongs
+                // inside the completion-failure catch.
+                if (future.isDone()) {
+                    final Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completionFailure) {
+                        continuation.accept(task, null, completionFailure);
                         return;
                     }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
+                    continuation.accept(task, completed, null);
+                    return;
                 }
-            } catch (RuntimeException | Error failure) {
-                continuation.accept(task, null, failure);
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null,
+                            new IllegalStateException(
+                                    "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                task.suspend(
+                        future,
+                        (t, value, failure) ->
+                                continuation.accept(t, value, failure));
+                return;
             }
+
+            // Never catch the consumer's exception and invoke it again.
+            continuation.accept(task, result, null);
         }
 
         private boolean invocationDeclaresAsync(Invocation invocation) {
@@ -5770,16 +5957,34 @@ public final class OresEvalRootNode extends RootNode {
         private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
             if (call.callee() instanceof Ast.NameExpr directName
                     && env.lookup(directName.name()) == Env.MISSING) {
-                Ast.FunctionDecl direct = findFunction(directName.name(), call.arguments().size());
-                if (direct != null) {
+                boolean spread = call.arguments().stream()
+                        .anyMatch(argument -> argument instanceof Ast.SpreadExpr);
+                Ast.FunctionDecl direct = spread ? null
+                        : findFunction(directName.name(), call.arguments().size());
+                if (direct != null || (spread && hasFunctionFamily(directName.name()))) {
                     requireExplicitClassCallableImport(env, directName.name());
-                    List<Object> args = evaluateArguments(call.arguments(), env);
-                    return functionInvocation(direct, args);
+                    DirectArguments args = evaluateDirectArguments(call.arguments(), env);
+                    Ast.FunctionDecl selected = spread
+                            ? findFunction(directName.name(), args.values().size()) : direct;
+                    if (selected == null) {
+                        throw new IllegalArgumentException(
+                                "no function " + directName.name()
+                                        + " with expanded arity " + args.values().size());
+                    }
+                    return functionInvocation(selected, args.inAbiOrder(selected));
                 }
             }
 
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
+                // A module namespace names a statically resolved source
+                // function. Flatten record packs once while retaining labels;
+                // other member receivers keep their existing invocation path.
+                if (receiver instanceof ModuleFacade module) {
+                    DirectArguments args = evaluateDirectArguments(call.arguments(), env);
+                    return module.owner().prepareModuleInvocation(
+                            module.module(), methodCall.member(), args);
+                }
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
@@ -6480,8 +6685,13 @@ public final class OresEvalRootNode extends RootNode {
                                     "duplicate explicit struct initializer field " + key);
                         }
                         result.put(key, value);
-                    } else if (result.putIfAbsent(key, value) != null) {
-                        throw new IllegalArgumentException("duplicate struct field " + key);
+                    } else {
+                        // putIfAbsent considers a present null field absent.
+                        // Field identity is determined by membership, not value.
+                        if (result.containsKey(key)) {
+                            throw new IllegalArgumentException("duplicate struct field " + key);
+                        }
+                        result.put(key, value);
                     }
                 }
                 if (object.explicitStruct()) return result;
@@ -7813,6 +8023,32 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        private Invocation prepareModuleInvocation(
+                Ast.ModuleDecl module, String name, DirectArguments evaluated) {
+            Ast.FunctionDecl match = null;
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name)
+                        && fn.parameters().size() == evaluated.values().size()
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    if (match != null) {
+                        throw new IllegalArgumentException(
+                                "duplicate callable slot '" + module.name() + "." + name
+                                        + "' at arity " + evaluated.values().size());
+                    }
+                    match = fn;
+                }
+            }
+            if (match == null) {
+                throw new IllegalArgumentException("module '" + module.name()
+                        + "' does not export callable '" + name
+                        + "' at expanded arity " + evaluated.values().size());
+            }
+            // Permutation occurs only after the selected ABI signature is
+            // known. Neither field labels nor types influence overload choice.
+            return functionInvocation(match, evaluated.inAbiOrder(match));
         }
 
         private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
