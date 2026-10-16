@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -454,6 +455,30 @@ final class ProjectManifestImportTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void directIncrementalBuildsRequireHostMappingsForRootAndPackageImports() {
+        for (String rooted : List.of("+/src/helper", "pkg:tools/src/helper")) {
+            Map<String, String> sources = Map.of(
+                    "src/main.ores", """
+                            import fnc helper from "%s";
+                            pub fnc main(): void { return; }
+                            """.formatted(rooted),
+                    "src/helper.ores", "pub fnc helper(): int { return 42; }"
+            );
+
+            IllegalArgumentException unmapped = assertThrows(IllegalArgumentException.class,
+                    () -> new IncrementalCompiler().compile(sources), rooted);
+            assertTrue(unmapped.getMessage().contains("requires a resolved filesystem import mapping"),
+                    unmapped.getMessage());
+
+            // A trusted host may supply a source-ID mapping. Only then may
+            // the same rooted import participate in compilation and linking.
+            var linked = new IncrementalCompiler().compile(sources,
+                    Map.of("src/main.ores", Map.of(rooted, "src/helper.ores")));
+            assertEquals(2, linked.units().size());
+        }
+    }
 
     @Test
     void deepRestRouteImportsModulesThroughPackageRootAndExecutes() throws Exception {
