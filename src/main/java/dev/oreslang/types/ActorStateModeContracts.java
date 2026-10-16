@@ -65,6 +65,19 @@ public final class ActorStateModeContracts {
         }
     }
 
+    // Only delayed runtime operations can be described as reducer Commands.
+    // Compiler exceptional/control effects and ambient mutable access are not
+    // command intents. Keep this allowlist narrow until typed lowering exists.
+    private static final Set<EffectContracts.Effect> ALLOWED_COMMAND_EFFECTS =
+            Set.copyOf(EnumSet.of(
+                    EffectContracts.Effect.ACTOR,
+                    EffectContracts.Effect.IO,
+                    EffectContracts.Effect.EXTERNAL_WRITE,
+                    EffectContracts.Effect.ENVIRONMENT,
+                    EffectContracts.Effect.CLOCK,
+                    EffectContracts.Effect.RANDOM,
+                    EffectContracts.Effect.SCHEDULER));
+
     public static Mode selectMode(boolean actorLevelPureModifier) {
         return actorLevelPureModifier ? Mode.PURE_REDUCER : Mode.HANDLE_STATE;
     }
@@ -117,6 +130,10 @@ public final class ActorStateModeContracts {
             if (handler.commandEffects().contains(EffectContracts.Effect.UNKNOWN_CALL)
                     || handler.commandEffects().contains(EffectContracts.Effect.FFI_UNKNOWN)) {
                 reject("UNKNOWN_COMMAND_EFFECT", handler.qualifiedName());
+            }
+            if (!ALLOWED_COMMAND_EFFECTS.containsAll(handler.commandEffects())) {
+                reject("INVALID_COMMAND_EFFECT", handler.qualifiedName()
+                        + " only runtime-executable declarative effects are supported");
             }
             if (!actor.commandUpperBound().containsAll(handler.commandEffects())) {
                 reject("COMMAND_EXCEEDS_WITH_EFFECTS", handler.qualifiedName());
