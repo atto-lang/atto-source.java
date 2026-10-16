@@ -458,7 +458,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
-    void candidatePermissionsMustRunAllSixClassesWithNativeCarrier() throws Exception {
+    void candidatePermissionsMustRunAllEightClassesWithNativeCarrier() throws Exception {
         String workflow = Files.readString(
                 Path.of(".github/workflows/private-exact-candidate-validation.yml"));
         String runner = workflow.substring(
@@ -466,7 +466,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String expected = "run: mvn -B -ntp -Dores.runtime.carriers=native "
                 + "'-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,"
                 + "RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,"
-                + "IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' clean test";
+                + "IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest,"
+                + "VerifiedTcpSocketTest,NativeSocketBoundaryTest' clean test";
         assertTrue(hasExactLine(runner, 8, expected),
                 "the reviewed focused Maven command must execute the full policy suite");
 
@@ -494,7 +495,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         assertTrue(runner.indexOf("Clear and attest focused Surefire report provenance")
                 < runner.indexOf("Focused permissions and scoped host interop regressions"));
         assertTrue(runner.indexOf("Focused permissions and scoped host interop regressions")
-                < runner.indexOf("Prove all six security JUnit classes executed"));
+                < runner.indexOf("Prove all eight security JUnit classes executed"));
 
         for (String command : new String[] {
                 "set -euo pipefail",
@@ -522,13 +523,13 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String workflow = Files.readString(
                 Path.of(".github/workflows/private-exact-candidate-validation.yml"));
         String proof = section(workflow,
-                "      - name: Prove all six security JUnit classes executed",
+                "      - name: Prove all eight security JUnit classes executed",
                 "      - name: Full Java 25 Maven candidate verification");
         String runner = workflow.substring(
                 workflow.indexOf("  validate-approved-candidate:"));
         assertTrue(runner.indexOf("Focused permissions and scoped host interop regressions")
-                < runner.indexOf("Prove all six security JUnit classes executed"));
-        assertTrue(runner.indexOf("Prove all six security JUnit classes executed")
+                < runner.indexOf("Prove all eight security JUnit classes executed"));
+        assertTrue(runner.indexOf("Prove all eight security JUnit classes executed")
                 < runner.indexOf("Full Java 25 Maven candidate verification"));
 
         assertTrue(hasExactLine(proof, 10, "python3 - <<'PY'"),
@@ -539,7 +540,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "dev.oreslang.runtime.RuntimePermissionsTest",
                 "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
                 "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
-                "dev.oreslang.runtime.ScopedPermissionInteropTest"
+                "dev.oreslang.runtime.ScopedPermissionInteropTest",
+                "dev.oreslang.runtime.VerifiedTcpSocketTest",
+                "dev.oreslang.runtime.NativeSocketBoundaryTest"
         }) {
             assertTrue(hasExactLine(proof, 14, "\"" + className + "\","),
                     "a required security class was omitted from report verification: " + className);
