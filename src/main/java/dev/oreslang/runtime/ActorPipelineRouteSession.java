@@ -19,14 +19,29 @@ import java.util.Objects;
 public final class ActorPipelineRouteSession {
     /** Reverse route begins with the replying actor and ends at the parent or
      * authenticated original source. Not a bearer ActorRef or send authority. */
-    public record ReturnPath(long generation, long flowId, long routeId,
-                             List<String> reverseActors) {
-        public ReturnPath {
-            reverseActors = List.copyOf(reverseActors);
-            if (reverseActors.size() < 2) {
+    public static final class ReturnPath {
+        private final long generation;
+        private final long flowId;
+        private final long routeId;
+        private final List<String> reverseActors;
+
+        // A routing result is a sealed VM-created witness, never an
+        // arbitrary caller-constructed bearer reply path.
+        private ReturnPath(long generation, long flowId, long routeId,
+                           List<String> reverseActors) {
+            this.reverseActors = List.copyOf(reverseActors);
+            if (this.reverseActors.size() < 2) {
                 throw new IllegalArgumentException("reply requires a parent actor");
             }
+            this.generation = generation;
+            this.flowId = flowId;
+            this.routeId = routeId;
         }
+
+        public long generation() { return generation; }
+        public long flowId() { return flowId; }
+        public long routeId() { return routeId; }
+        public List<String> reverseActors() { return reverseActors; }
         public String nextHop() { return reverseActors.get(1); }
         public String origin() { return reverseActors.getLast(); }
     }
