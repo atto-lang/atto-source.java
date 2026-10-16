@@ -74,3 +74,40 @@ Both B and C inherit A's managed group G. No implicit new supervisor or group; s
 ## Integration boundary
 
 The present JVM `ActorGroup` is a **cooperation domain plus explicitly managed-worker registry**, not itself a supervisor process or dispatcher. The new inherited-ownership behavior concerns that managed-worker registry only; a real supervisor scheduler/CONTROL callback integration remains a release gate. The LLVM `NativeActorGroup` is a host-side lifecycle authority; it does not yet execute guest spawn expressions or guest recovery frames. Do not conflate tested host primitives or docs with compiler-level parity.
+
+
+## Explicit actor-owned sub-supervision (host substrate; 2026-10-16)
+
+**Default remains flat:** ordinary B.spawn(C) inherits B's existing lifecycle
+ActorGroup/supervisor. An actor does **not** become a supervisor merely because
+it spawned a child.
+
+**Explicit opt-in:** on an admitted actor turn, B may create a distinct
+`ActorGroup Q`, then call `Q.spawnWorker(...)` to create child C directly
+managed by Q rather than B's inherited group P. C's ordinary descendants still
+inherit Q. Runtime spawn ancestry B->C is preserved even across distinct group
+owners; cancelling B structurally cancels the entire descendant subtree.
+Q has a fresh `SupervisorId`; its creator B is its only implicit event-bus
+member, and C is never implicitly added as a member.
+
+On an admitted B actor turn, `Q.pollSupervisorNotice()` consumes one genuine
+runtime-created terminal/cancellation notice from Q's reserved, bounded CONTROL
+queue. A host handler/process and actor polling are mutually exclusive and
+cannot split the same queue. Calling from the host, another actor, a Mailman or
+after close rejects; packet bytes, user actor mail, and numeric actor/supervisor
+IDs cannot be injected into this CONTROL queue. Child finalization publishes
+notices, not inline callbacks. An actor supervisor therefore remains subject
+to its own single-flight turn admission and cannot re-enter from C's carrier.
+
+The parent P does **not** receive Q's leaf failures as if Q were a managed
+actor failure; aggregation, process-level escalation and policy decisions
+must be explicit, and automatic escalation is **not yet implemented**. If B
+terminates, Q closes and cancels its managed children. Saturated CONTROL
+queues report undelivered counts; they do not fabricate ACK/restart success.
+
+This Java host substrate does **not** parse guest `define supervisor actor`,
+automatically invoke guest `on_panic`, or implement hierarchical restarts.
+Compiler-owned supervisor identities, guest CONTROL callbacks, resource quotas
+for nested hierarchies, policy hot-upgrade fencing and native parity are release
+gates. Typechecker `Sendable` data mailboxes and `Serializable<MessagePack>`
+network codecs are distinct from runtime-authenticated CONTROL notices.
