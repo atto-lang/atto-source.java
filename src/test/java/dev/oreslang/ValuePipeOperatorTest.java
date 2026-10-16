@@ -398,4 +398,40 @@ final class ValuePipeOperatorTest {
         assertTrue(aliased.getMessage().contains("first-class callable"), aliased::toString);
     }
 
+    @Test
+    void rejectsUnknownNestedSumCallbackOutputs() {
+        // Unknown inside Option/Result is not a sound inferred result type.
+        // and_then and or_else may leave only the *unchanged* Result branch
+        // unknown: the newly-produced branch still needs a concrete type.
+        String[] programs = {
+                "fnc broken(Option<int> value): void { "
+                    + "val nested = value |> Option.map(|n| -> None); return; }",
+                "fnc broken(Option<int> value): void { "
+                    + "val nested = value |> Option.and_then(|n| -> None); return; }",
+                "fnc broken(Result<int,String> value): void { "
+                    + "val nested = value |> Result.map(|n| -> None); return; }",
+                "fnc broken(Result<int,String> value): void { "
+                    + "val nested = value |> Result.and_then(|n| -> Ok(None)); return; }",
+                "fnc broken(Result<int,String> value): void { "
+                    + "val nested = value |> Result.or_else(|e| -> Err(None)); return; }"
+        };
+        for (String source : programs) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+            assertTrue(failure.getMessage().contains("callback result cannot be inferred safely"),
+                    failure::toString);
+        }
+
+        // Bare Ok and Err constructors have a deliberately unbound invariant
+        // branch. Preserve these valid callbacks by reconstructing from the
+        // typed Result receiver.
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc valid(Result<int,String> value): Result<int,String> {
+                  return value
+                      |> Result.and_then(|n| -> Ok(n + 1))
+                      |> Result.or_else(|e| -> Err(e + "!"));
+                }
+                """)));
+    }
+
 }

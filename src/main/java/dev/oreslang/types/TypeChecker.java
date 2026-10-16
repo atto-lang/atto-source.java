@@ -6162,7 +6162,13 @@ public final class TypeChecker {
         // invariant generic parameter identities.
         if (mapped instanceof StringLiteral) mapped = Primitive.STRING;
         if (mapped instanceof dev.oreslang.types.Types.BoolLiteral) mapped = Primitive.BOOL;
-        if (mapped == Unknown.INSTANCE) {
+        // Unknown may hide inside a nested callback result (for example
+        // Option<Unknown>). Do not publish it as an inferred output type.
+        // Result.and_then/or_else are the only exceptions: their unchanged
+        // error/success slot may be Unknown for Ok/Err constructors, and is
+        // rebuilt from the receiver after the invariant check below.
+        if (containsUnknown(mapped)
+                && (option || (!operation.equals("and_then") && !operation.equals("or_else")))) {
             throw new IllegalArgumentException(kind + "." + operation
                     + " callback result cannot be inferred safely");
         }
@@ -6201,6 +6207,15 @@ public final class TypeChecker {
                             "Result." + operation + " callback must return Result");
                 }
                 // and_then cannot rewrite E, and or_else cannot rewrite T.
+                // Only the preserved invariant branch may remain unknown.
+                // The newly-produced success/error branch must be fully
+                // inferred, including every nested generic component.
+                final Type produced = nested.arguments().get(
+                        operation.equals("and_then") ? 0 : 1);
+                if (containsUnknown(produced)) {
+                    throw new IllegalArgumentException("Result." + operation
+                            + " callback result cannot be inferred safely");
+                }
                 final Type invariant = operation.equals("and_then") ? error : input;
                 final Type actual = nested.arguments().get(
                         operation.equals("and_then") ? 1 : 0);
