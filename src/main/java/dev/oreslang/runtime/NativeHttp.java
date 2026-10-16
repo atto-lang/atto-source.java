@@ -40,7 +40,13 @@ public final class NativeHttp implements AutoCloseable {
         context.requirePermission(RuntimePermissions.Permission.NET, host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
         configureTransportDefaults();
         try {
-            Server server = new Server(HttpServer.create(new InetSocketAddress(host, port), capacity),
+            // Bind only the numeric address selected by the same strict
+            // resolved-IP policy as outbound sockets. Hostname-based
+            // InetSocketAddress constructors can re-resolve after admission.
+            InetSocketAddress pinned = NativeIo.resolveAuthorizedAddress(
+                    context.runtimePermissions(), host, port);
+            context.requireCapability(IsolatePolicy.Capability.NETWORK, "http.listen");
+            Server server = new Server(HttpServer.create(pinned, capacity),
                     capacity, bodyLimit, deadlineMillis);
             servers.add(server);
             server.transport.start();
