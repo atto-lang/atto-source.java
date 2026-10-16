@@ -62,6 +62,9 @@ public final class LinkedProgramRunner {
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        // Import identity is physical: the same source reached through two
+        // symlinks must not initialize twice or bypass self-import checks.
+        entry = entry.toRealPath();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -178,6 +181,9 @@ public final class LinkedProgramRunner {
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
         OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        // Import identity is physical: the same source reached through two
+        // symlinks must not initialize twice or bypass self-import checks.
+        entry = entry.toRealPath();
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
@@ -399,7 +405,8 @@ public final class LinkedProgramRunner {
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
             if (target.isEmpty()) {
-                if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
+                if (raw.startsWith(".") || raw.startsWith("@") || raw.startsWith("pkg:")
+                        || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
                 }
