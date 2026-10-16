@@ -46,16 +46,39 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void rejectsMapErrOnOptionAtTypeCheck() {
+        Ast.Program bad = Parser.parse("""
+                fnc f(int n): int { return n + 1; }
+                fnc bad(Option<int> value): Option<int> {
+                  return value |> Result.map_err(f);
+                }
+                """);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(bad));
+        assertTrue(error.getMessage().contains("unknown Option member"), error::toString);
+    }
+
+    @Test
     void executesOptionAndResultCombinators() throws Exception {
         String program = """
                 fnc double(int n): int { return n * 2; }
                 fnc fail(String s): String { return s + "!"; }
+                fnc maybe(int n): Option<int> { return Some(n + 1); }
+                fnc checked(int n): Result<int, String> { return Ok(n + 1); }
+                fnc recover(String s): Result<int, String> { return Ok(12); }
+                fnc positive(int n): bool { return n > 0; }
                 pub fnc main(): void {
                   stdio.println(3 |> double);
                   stdio.println(Some(4) |> Option.map(double) |> Option.unwrap_or(0));
                   stdio.println(Err("bad") |> Result.map_err(fail));
                   stdio.println(Ok(9) |> Result.map(double) |> Result.unwrap_or(0));
                   stdio.println(None |> Option.ok_or_else(|| -> "absent"));
+                  stdio.println(Some(7) |> Option.and_then(maybe) |> Option.unwrap_or(0));
+                  stdio.println(Some(-3) |> Option.filter(positive) |> Option.unwrap_or(99));
+                  stdio.println(Ok(20) |> Result.and_then(checked) |> Result.unwrap_or(0));
+                  stdio.println(Err("oops") |> Result.or_else(recover) |> Result.unwrap_or(0));
+                  stdio.println(Some(Ok(42)) |> Option.transpose());
+                  stdio.println(Ok(33) |> Result.ok() |> Option.unwrap_or(0));
                   return;
                 }
                 """;
@@ -73,5 +96,10 @@ final class ValuePipeOperatorTest {
         assertTrue(actual.contains("18"), actual);
         assertTrue(actual.contains("bad!"), actual);
         assertTrue(actual.contains("absent"), actual);
+        assertTrue(actual.contains("99"), actual);
+        assertTrue(actual.contains("12"), actual);
+        assertTrue(actual.contains("21"), actual);
+        assertTrue(actual.contains("Ok(Some(42))"), actual);
+        assertTrue(actual.contains("33"), actual);
     }
 }
