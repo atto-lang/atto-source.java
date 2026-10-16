@@ -68,21 +68,14 @@ final class DopCpuWriteLoanIsolationTest {
         try (var writer = output.borrowWrite()) {
             assertThrows(IllegalStateException.class,
                     () -> DopKernelIR.executeCpu(kernel, input, output));
-            assertEquals(101.0f, writerWriteReadViaReleaseValue(output, writer));
+            assertThrows(IllegalStateException.class, () -> output.read(0, 0));
+            writer.write(0, 1, 55.0f);
         }
         // The failed acquisition must have released its input read loan.
         var transferred = input.take();
         transferred.close();
         assertEquals(101.0f, output.read(0, 0));
         output.close();
-    }
-
-    private static float writerWriteReadViaReleaseValue(
-            DopKernelIR.HostBuffer output, DopKernelIR.WriteLoan writer) {
-        // Probe a rejected competing read rather than bypassing the write loan.
-        assertThrows(IllegalStateException.class, () -> output.read(0, 0));
-        writer.write(0, 1, 55.0f);
-        return 101.0f;
     }
 
     @Test
