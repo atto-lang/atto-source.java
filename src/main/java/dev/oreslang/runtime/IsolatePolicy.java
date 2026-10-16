@@ -332,13 +332,14 @@ public record IsolatePolicy(
                 || authorizationRoot.equals("java.lang.ref.Cleaner")
                 || authorizationRoot.equals("java.util.Arrays")
                 || className.startsWith("java.util.stream.")
+                // Public CompletableFuture, Executors and ForkJoinPool APIs
+                // may run guest callbacks outside the single-flight lane.
+                // THREAD_CREATE is not permission to bypass actor scheduling.
+                || className.startsWith("java.util.concurrent.")
                 || authorizationRoot.equals("java.util.ResourceBundle")) {
             throw new SecurityException(
                     "direct Java host I/O is blocked from class-level interop; "
                             + "use Oreslang fs/network/http APIs: " + className);
-        }
-        if (className.startsWith("java.util.concurrent.")) {
-            require(Capability.THREAD_CREATE, "Java host class " + className);
         }
         if (className.startsWith("java.lang.foreign.")) {
             require(Capability.NATIVE, "Java host class " + className);
