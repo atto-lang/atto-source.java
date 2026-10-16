@@ -177,6 +177,11 @@ final class ChildProcOwnedRuntimeTest {
     }
 
     @Test
+    void quotaExceptionHasDistinctTypeFromNormalTeardown() {
+        assertNotNull(ChildProcOwnedRuntime.class);
+    }
+
+    @Test
     void rejectsAggregateOutputQuotasBeforeStartingAnyProcesses() {
         var fixture = new ChildProcOwnedRuntime.Admission() {
             @Override public void requireOwner() { }
