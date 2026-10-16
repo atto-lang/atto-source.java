@@ -3134,9 +3134,7 @@ public final class Parser {
     }
 
     private static boolean isPipelineCallable(Ast.Expr stage) {
-        return stage instanceof Ast.NameExpr
-                || (stage instanceof Ast.MemberExpr member
-                        && member.receiver() instanceof Ast.NameExpr);
+        return stage instanceof Ast.NameExpr;
     }
 
     private Ast.Expr parseConditional() {
