@@ -5411,7 +5411,19 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        requireMutexTransport(target, value, visiting, depth, new long[]{0L});
+    }
+
+    private void requireMutexTransport(
+            ActorCell<?> target,
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth, long[] nodes) {
         requireGraphDepth(depth);
+        // Validate each traversal independently: a caller-owned List/Map/Set
+        // can change its iterator after the initial actor graph preflight.
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability) return;
@@ -5451,7 +5463,7 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof Shared<?> shared) {
-            requireMutexTransport(target, shared.value(), visiting, depth + 1);
+            requireMutexTransport(target, shared.value(), visiting, depth + 1, nodes);
             return;
         }
         if (value instanceof SyncCell<?>) return;
@@ -5460,18 +5472,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) requireMutexTransport(target, item, visiting, depth + 1);
+                for (Object item : list) requireMutexTransport(target, item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) requireMutexTransport(target, item, visiting, depth + 1);
+                for (Object item : set) requireMutexTransport(target, item, visiting, depth + 1, nodes);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    requireMutexTransport(target, entry.getKey(), visiting, depth + 1);
-                    requireMutexTransport(target, entry.getValue(), visiting, depth + 1);
+                    requireMutexTransport(target, entry.getKey(), visiting, depth + 1, nodes);
+                    requireMutexTransport(target, entry.getValue(), visiting, depth + 1, nodes);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    requireMutexTransport(target, Array.get(value, i), visiting, depth + 1);
+                    requireMutexTransport(target, Array.get(value, i), visiting, depth + 1, nodes);
                 }
             }
         } finally {
@@ -5562,7 +5574,18 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        requireOwnedActorRefs(value, visiting, depth, new long[]{0L});
+    }
+
+    private void requireOwnedActorRefs(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth, long[] nodes) {
         requireGraphDepth(depth);
+        // Validate each traversal independently: a caller-owned List/Map/Set
+        // can change its iterator after the initial actor graph preflight.
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
@@ -5579,12 +5602,12 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof Shared<?> shared) {
-            requireOwnedActorRefs(shared.value(), visiting, depth + 1);
+            requireOwnedActorRefs(shared.value(), visiting, depth + 1, nodes);
             return;
         }
         if (value instanceof SyncCell<?>) return;
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1);
+            requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1, nodes);
             return;
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -5595,18 +5618,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1);
+                for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1);
+                for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1, nodes);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    requireOwnedActorRefs(entry.getKey(), visiting, depth + 1);
-                    requireOwnedActorRefs(entry.getValue(), visiting, depth + 1);
+                    requireOwnedActorRefs(entry.getKey(), visiting, depth + 1, nodes);
+                    requireOwnedActorRefs(entry.getValue(), visiting, depth + 1, nodes);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    requireOwnedActorRefs(Array.get(value, i), visiting, depth + 1);
+                    requireOwnedActorRefs(Array.get(value, i), visiting, depth + 1, nodes);
                 }
             }
         } finally {
@@ -5618,7 +5641,18 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        requireOwnedSharedHandles(value, visiting, depth, new long[]{0L});
+    }
+
+    private void requireOwnedSharedHandles(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth, long[] nodes) {
         requireGraphDepth(depth);
+        // Validate each traversal independently: a caller-owned List/Map/Set
+        // can change its iterator after the initial actor graph preflight.
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
@@ -5662,18 +5696,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) requireOwnedSharedHandles(item, visiting, depth + 1);
+                for (Object item : list) requireOwnedSharedHandles(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) requireOwnedSharedHandles(item, visiting, depth + 1);
+                for (Object item : set) requireOwnedSharedHandles(item, visiting, depth + 1, nodes);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    requireOwnedSharedHandles(entry.getKey(), visiting, depth + 1);
-                    requireOwnedSharedHandles(entry.getValue(), visiting, depth + 1);
+                    requireOwnedSharedHandles(entry.getKey(), visiting, depth + 1, nodes);
+                    requireOwnedSharedHandles(entry.getValue(), visiting, depth + 1, nodes);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    requireOwnedSharedHandles(Array.get(value, i), visiting, depth + 1);
+                    requireOwnedSharedHandles(Array.get(value, i), visiting, depth + 1, nodes);
                 }
             }
         } finally {
@@ -5769,7 +5803,18 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        rejectUntrustedInboundCapabilities(value, visiting, depth, new long[]{0L});
+    }
+
+    private static void rejectUntrustedInboundCapabilities(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth, long[] nodes) {
         requireGraphDepth(depth);
+        // Validate each traversal independently: a caller-owned List/Map/Set
+        // can change its iterator after the initial actor graph preflight.
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (value instanceof OresSymbol symbol && !symbol.publicToUntrustedCoreV1()) {
             // Check every nested key and value before admitting untrusted mailbox data.
             throw new SecurityException("Symbol is not visible to untrusted actor");
@@ -5791,22 +5836,22 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             if (value instanceof List<?> list) {
                 for (Object item : list) {
-                    rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
+                    rejectUntrustedInboundCapabilities(item, visiting, depth + 1, nodes);
                 }
             } else if (value instanceof Set<?> set) {
                 for (Object item : set) {
-                    rejectUntrustedInboundCapabilities(item, visiting, depth + 1);
+                    rejectUntrustedInboundCapabilities(item, visiting, depth + 1, nodes);
                 }
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    rejectUntrustedInboundCapabilities(entry.getKey(), visiting, depth + 1);
-                    rejectUntrustedInboundCapabilities(entry.getValue(), visiting, depth + 1);
+                    rejectUntrustedInboundCapabilities(entry.getKey(), visiting, depth + 1, nodes);
+                    rejectUntrustedInboundCapabilities(entry.getValue(), visiting, depth + 1, nodes);
                 }
             } else if (value.getClass().isArray()) {
                 int length = java.lang.reflect.Array.getLength(value);
                 for (int i = 0; i < length; i++) {
                     rejectUntrustedInboundCapabilities(
-                            java.lang.reflect.Array.get(value, i), visiting, depth + 1);
+                            java.lang.reflect.Array.get(value, i), visiting, depth + 1, nodes);
                 }
             }
         } finally {
@@ -5975,7 +6020,18 @@ public final class ActorRuntime implements AutoCloseable {
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
+        rejectDataFreezeCapabilities(value, visiting, depth, new long[]{0L});
+    }
+
+    private static void rejectDataFreezeCapabilities(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth, long[] nodes) {
         requireGraphDepth(depth);
+        // Validate each traversal independently: a caller-owned List/Map/Set
+        // can change its iterator after the initial actor graph preflight.
+        requireGraphNodeCapacity(nodes[0], 1L);
+        nodes[0]++;
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.ActorGroupJoinCapability
@@ -5991,18 +6047,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1);
+                for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1);
+                for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1, nodes);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    rejectDataFreezeCapabilities(entry.getKey(), visiting, depth + 1);
-                    rejectDataFreezeCapabilities(entry.getValue(), visiting, depth + 1);
+                    rejectDataFreezeCapabilities(entry.getKey(), visiting, depth + 1, nodes);
+                    rejectDataFreezeCapabilities(entry.getValue(), visiting, depth + 1, nodes);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    rejectDataFreezeCapabilities(Array.get(value, i), visiting, depth + 1);
+                    rejectDataFreezeCapabilities(Array.get(value, i), visiting, depth + 1, nodes);
                 }
             }
         } finally {
