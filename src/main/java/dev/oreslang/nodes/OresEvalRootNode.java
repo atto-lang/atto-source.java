@@ -6491,7 +6491,7 @@ public final class OresEvalRootNode extends RootNode {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
-                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
+                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshotForLambda(lambda);
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
@@ -9016,6 +9016,22 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
+        private Env snapshotForLambda(Ast.LambdaExpr lambda) {
+            // Flatten the visible lexical bindings without retaining a chain
+            // of parent environments (which would retain a forbidden self).
+            // Preserve Slot identity for mutable capture semantics.
+            Env captured = new Env(null, false, accessClass, null,
+                    lexicalModule, lexicalContainerClass);
+            for (Env frame = this; frame != null; frame = frame.parent) {
+                for (Map.Entry<String, Slot> entry : frame.slots.entrySet()) {
+                    if (lambda.permitsOuterBinding(entry.getKey())) {
+                        captured.slots.putIfAbsent(entry.getKey(), entry.getValue());
+                    }
+                }
+            }
+            return captured;
+        }
+
         private Env snapshot() {
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
