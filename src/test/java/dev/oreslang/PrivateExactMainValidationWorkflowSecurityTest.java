@@ -394,6 +394,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "if report.is_symlink() or not report.is_file():",
                 "if not 0 < report.stat().st_size <= 16 * 1024 * 1024:",
                 "if root.tag != \"testsuite\" or root.get(\"name\") != classname:",
+                "cases = root.findall(\"testcase\")",
+                "declared = int(root.get(\"tests\", \"-1\"))",
+                "if declared < 1 or declared != len(cases):",
                 "if case.get(\"classname\") != classname:",
                 "missing = sorted(name for name, count in executed.items() if count == 0)",
                 "if missing:"
