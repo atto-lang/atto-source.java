@@ -542,6 +542,53 @@ def verify_private_ci_root_tree(repository, root_tree_sha, subtree_sha):
         raise Denied("destination CI root tree missing exact source subtree")
 
 
+def checked_private_ci_root_entries(repository, root_tree_sha):
+    """Read an entire GitHub root tree, rejecting truncated/ambiguous objects.
+
+    A write response and its SHA cannot prove that unrelated destination
+    workflows and files were preserved. Compare every root entry independently.
+    """
+    valid_sha(root_tree_sha)
+    result = gh_api(f"repos/{repository}/git/trees/{root_tree_sha}")
+    entries = result.get("tree")
+    if (result.get("sha") != root_tree_sha
+            or result.get("truncated") is not False
+            or not isinstance(entries, list)):
+        raise Denied("destination Git root tree attestation unavailable")
+    accepted = {}
+    allowed = {("tree", "040000"), ("blob", "100644"),
+               ("blob", "100755"), ("blob", "120000"),
+               ("commit", "160000")}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Denied("destination Git root tree entry is malformed")
+        name, kind, mode, digest = (
+            entry.get("path"), entry.get("type"), entry.get("mode"), entry.get("sha"))
+        if (not isinstance(name, str) or not name or name in (".", "..")
+                or "/" in name or "\\" in name
+                or any(ord(char) < 32 or ord(char) == 127 for char in name)
+                or (kind, mode) not in allowed or name in accepted):
+            raise Denied("destination Git root tree entry is ambiguous")
+        valid_sha(digest)
+        accepted[name] = (kind, mode, digest)
+    return accepted
+
+
+def verify_private_ci_preserves_root(repository, base_tree_sha,
+                                     published_tree_sha, source_tree_sha):
+    """Allow replacing only the exact private source subtree at PREFIX."""
+    valid_sha(source_tree_sha)
+    previous = checked_private_ci_root_entries(repository, base_tree_sha)
+    current = checked_private_ci_root_entries(repository, published_tree_sha)
+    source = current.pop(PREFIX, None)
+    previous.pop(PREFIX, None)
+    if source != ("tree", "040000", source_tree_sha):
+        raise Denied("published CI root is missing exact private source tree")
+    if current != previous:
+        raise Denied("published CI root changed unrelated destination files or workflows")
+    return True
+
+
 def verify_private_ci_commit(repository, commit_sha, expected_tree, expected_parent):
     """Attest the destination commit object before exposing a new CI ref.
 
@@ -660,6 +707,8 @@ def publish(repository, source, branch, trusted_root,
     new_tree_sha = valid_sha(new_tree.get("sha"))
     authorize_write()
     verify_private_ci_root_tree(repository, new_tree_sha, isolated_sha)
+    authorize_write()
+    verify_private_ci_preserves_root(repository, base_tree, new_tree_sha, isolated_sha)
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": ("ci: source snapshot from approved private Oreslang checkout\n\n"
