@@ -103,6 +103,13 @@ public final class SupervisorProcess implements AutoCloseable {
             mailbox.addLast(notice);
             admitted.incrementAndGet();
             scheduleLocked();
+            // Dispatch refusal is an admission failure. A caller such as the
+            // parent CONTROL lane must not record the notice as handed off
+            // after this process has already failed closed.
+            if (state != State.RUNNING) {
+                throw new IllegalStateException(
+                        "supervisor process failed during CONTROL admission", fatal);
+            }
         }
     }
 
