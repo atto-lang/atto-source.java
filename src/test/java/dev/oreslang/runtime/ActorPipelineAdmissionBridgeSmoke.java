@@ -15,7 +15,7 @@ public final class ActorPipelineAdmissionBridgeSmoke {
         if (!valid) throw new AssertionError(message);
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         var graph = new ActorPipelineRoutePlan(
                 List.of(new ActorPipelineRoutePlan.Stage("source", "Source",
                                 ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
