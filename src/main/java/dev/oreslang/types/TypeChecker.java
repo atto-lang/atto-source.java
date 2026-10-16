@@ -74,6 +74,10 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.TypeAliasDecl, String> typeAliasOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    // Only statically checked, arity-unique instance method calls are bound.
+    // A slot is still identified by (name, arity), not runtime argument type.
+    private final IdentityHashMap<Ast.CallExpr, Ast.MethodCallBinding> boundMethodCalls =
+            new IdentityHashMap<>();
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -129,7 +133,11 @@ public final class TypeChecker {
         checker.validateImports(program);
         checker.collect(program);
         checker.validate(program);
-        return new TypeCheckResult(program, checker.warnings);
+        // Publish immutable metadata only after all type/effect validation.
+        Ast.Program checked = new Ast.Program(
+                program.namespace(), program.imports(), program.modules(),
+                checker.boundMethodCalls);
+        return new TypeCheckResult(checked, checker.warnings);
     }
 
     /**
@@ -179,7 +187,29 @@ public final class TypeChecker {
             throw new IllegalArgumentException("orphaned linked class field alias metadata");
         }
         checker.validate(program);
-        return program;
+        return new Ast.Program(
+                program.namespace(), program.imports(), program.modules(),
+                checker.boundMethodCalls);
+    }
+
+    private void bindMethodCall(
+            Ast.CallExpr call, Ast.ClassDecl staticReceiver, Ast.MethodDecl target) {
+        // A linked imported class is not the current source image. Remote
+        // class identity needs a separate linker proof before publication.
+        if (!classOwners.containsKey(staticReceiver)
+                || !classOwners.containsKey(findDeclaringClass(
+                        staticReceiver, target, new LinkedHashSet<>()))) {
+            return;
+        }
+        Ast.MethodCallBinding binding = new Ast.MethodCallBinding(
+                staticReceiver, target);
+        Ast.MethodCallBinding old = boundMethodCalls.putIfAbsent(call, binding);
+        if (old != null
+                && (old.staticReceiver() != staticReceiver
+                    || old.declaredMethod() != target)) {
+            throw new IllegalArgumentException(
+                    "one call expression selected conflicting method declarations");
+        }
     }
 
     private void validateImports(Ast.Program program) {
@@ -3118,7 +3148,7 @@ public final class TypeChecker {
                         Type callableReceiver = receiverValueType instanceof SelfType
                                 ? receiverValueType
                                 : named;
-                        return checkGenericCallable(
+                        Type result = checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
                                 method.returnType(),
@@ -3127,6 +3157,15 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
+                        // Full type and effect validation precedes binding;
+                        // OwnershipChecker is run separately by OresCompiler.
+                        // Actor entrypoints and imported class images never
+                        // participate in this ordinary instance-call table.
+                        if (klass.actorKind() == Ast.ActorKind.NONE
+                                && owner.actorKind() == Ast.ActorKind.NONE) {
+                            bindMethodCall(call, klass, method);
+                        }
+                        return result;
                     }
 
                     Ast.InterfaceDecl iface = findInterface(named.name());
