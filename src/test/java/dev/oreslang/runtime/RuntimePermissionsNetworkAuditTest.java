@@ -11,6 +11,35 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class RuntimePermissionsNetworkAuditTest {
     @Test
+    void ephemeralPortAuthorizationRejectsUnknownPortAndIpBypasses() {
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*");
+        assertTrue(broad.allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertTrue(broad.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.1"));
+        assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "127.0.0.2"));
+        assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1:443", "127.0.0.1"));
+        assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "127.1"));
+        assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "[::1]"));
+
+        RuntimePermissions scoped = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "localhost");
+        assertTrue(scoped.allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertFalse(scoped.allowsEphemeralNetworkBind("otherhost", "127.0.0.1"));
+        assertFalse(RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "localhost:8080")
+                .allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+
+        assertFalse(broad.withDenied(RuntimePermissions.Permission.NET, "localhost:443")
+                .allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertFalse(broad.withDenied(RuntimePermissions.Permission.NET, "127.0.0.1:443")
+                .allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertFalse(broad.withDenied(RuntimePermissions.Permission.NET, "127.0.0.1")
+                .allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+        assertFalse(broad.withDenied(RuntimePermissions.Permission.NET, "*")
+                .allowsEphemeralNetworkBind("localhost", "127.0.0.1"));
+    }
+
+    @Test
     void deniedResourceCannotInjectControlsOrForgedLogLines() {
         RuntimePermissions policy = RuntimePermissions.denyAll()
                 .allowAll(RuntimePermissions.Permission.NET);
