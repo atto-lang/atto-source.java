@@ -616,7 +616,8 @@ public final class TreeShaker {
                         klass.interfaces(),
                         fields,
                         constructor,
-                        methods);
+                        methods,
+                        klass.mapKeys());
             }
             return declaration;
         }
