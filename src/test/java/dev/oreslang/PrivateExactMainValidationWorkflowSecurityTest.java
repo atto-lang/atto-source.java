@@ -115,7 +115,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "ChannelCommittedCompletionDrainTest",
                 "ChannelMappedCancellationStressTest",
                 "OresFutureHostWaiterDetachmentTest",
-                "mvn -B -ntp -Dores.runtime.carriers=native verify",
+                "mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify",
                 "seq 1 10",
                 "-Pnative-aot", "-Pnative-hybrid", "-Pnative-isolate",
                 "examples/native-channel-select-smoke.ores",
@@ -123,6 +123,56 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }) {
             assertTrue(job.contains(required), "required gate missing: " + required);
         }
+    }
+
+    @Test
+    void exactMainMustAttestFreshFullJUnitCoverageAndRejectBadReports() throws Exception {
+        String workflow = Files.readString(WORKFLOW);
+        String job = workflow.substring(workflow.indexOf("  validate-exact-main:"));
+        String exactCommand = "run: mvn -B -ntp -Dores.runtime.carriers=native "
+                + "-DskipTests=false -Dmaven.test.skip=false clean verify";
+        assertTrue(hasExactLine(job, 8, exactCommand),
+                "full exact-main Maven suite must be clean and tests cannot be skipped");
+        String proof = section(workflow,
+                "      - name: Prove fresh exact-main full JUnit suite execution",
+                "      - name: Ten deterministic Future/channel stress replays");
+        assertTrue(job.indexOf("Complete GraalVM JDK 25 Maven verification")
+                < job.indexOf("Prove fresh exact-main full JUnit suite execution"));
+        assertTrue(job.indexOf("Prove fresh exact-main full JUnit suite execution")
+                < job.indexOf("Ten deterministic Future/channel stress replays"));
+        assertTrue(hasExactLine(proof, 10, "python3 - <<'PY'"),
+                "JUnit attestation must run from the trusted workflow");
+        for (String classname : new String[] {
+                "ChannelCompletionPublicationIsolationTest",
+                "FutureSelectAttachmentPublicationBarrierTest",
+                "FutureChannelSelectTest",
+                "ChannelCommittedCompletionDrainTest",
+                "ChannelMappedCancellationStressTest",
+                "OresFutureHostWaiterDetachmentTest"
+        }) {
+            assertTrue(proof.contains("dev.oreslang.runtime." + classname),
+                    "required focused class missing from exact-main evidence: " + classname);
+        }
+        for (String token : new String[] {
+                "Path(\"target/surefire-reports\")",
+                "if len(reports) <= len(required):",
+                "if report.is_symlink() or not report.is_file():",
+                "if not 0 < report.stat().st_size <= 16 * 1024 * 1024:",
+                "declared < 1 or declared != len(cases) or any(n != 0 for n in totals)",
+                "if not required.issubset(executed):",
+                "additional = executed - required",
+                "if not additional:",
+                "\"flakyFailure\"", "\"flakyError\"",
+                "\"rerunFailure\"", "\"rerunError\""
+        }) {
+            assertTrue(proof.contains(token), "missing fail-closed exact-main suite guard: " + token);
+        }
+        assertFalse(proof.contains("python3 scripts/"),
+                "untrusted source checkout must not provide the report verifier");
+        String commented = proof.replace("          python3 - <<'PY'",
+                "          # python3 - <<'PY'");
+        assertFalse(hasExactLine(commented, 10, "python3 - <<'PY'"),
+                "disabled exact-main attestation is not executable evidence");
     }
 
     @Test
@@ -330,7 +380,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "RuntimePermissionsExplicitPolicyTest",
                 "IsolatePolicySerializationAuditTest", "ScopedPermissionInteropTest",
                 "mvn -B -ntp -Dores.runtime.carriers=native",
-                "mvn -B -ntp -Dores.runtime.carriers=native verify",
+                "mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false -Dmaven.test.skip=false clean verify",
                 "-Pnative-aot", "-Pnative-hybrid", "-Pnative-isolate"
         }) {
             assertTrue(runner.contains(required), "candidate validation phase missing " + required);
