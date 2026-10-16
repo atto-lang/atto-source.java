@@ -5,11 +5,14 @@ import java.math.BigInteger;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 
 /**
  * Prototype runtime-owned persistent HAMT for actor message data.
@@ -106,6 +109,39 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
         Node next = delete(root, key, hash(key), 0, removed);
         if (!removed.set) return this;
         return next == null ? EMPTY : new PersistentActorMap(next, count - 1);
+    }
+
+    // AbstractMap and Map default mutators may silently accept no-op writes
+    // or invoke callbacks before throwing. Reject the operation up front.
+    private static UnsupportedOperationException immutable() {
+        return new UnsupportedOperationException("PersistentActorMap is immutable; use with/without");
+    }
+
+    @Override public Object put(String key, Object value) { throw immutable(); }
+    @Override public Object remove(Object key) { throw immutable(); }
+    @Override public void putAll(Map<? extends String, ? extends Object> map) { throw immutable(); }
+    @Override public void clear() { throw immutable(); }
+    @Override public Object putIfAbsent(String key, Object value) { throw immutable(); }
+    @Override public boolean remove(Object key, Object value) { throw immutable(); }
+    @Override public boolean replace(String key, Object oldValue, Object newValue) { throw immutable(); }
+    @Override public Object replace(String key, Object value) { throw immutable(); }
+    @Override public void replaceAll(BiFunction<? super String, ? super Object, ? extends Object> f) {
+        throw immutable();
+    }
+    @Override public Object computeIfAbsent(String key, Function<? super String, ? extends Object> f) {
+        throw immutable();
+    }
+    @Override public Object computeIfPresent(String key,
+            BiFunction<? super String, ? super Object, ? extends Object> f) {
+        throw immutable();
+    }
+    @Override public Object compute(String key,
+            BiFunction<? super String, ? super Object, ? extends Object> f) {
+        throw immutable();
+    }
+    @Override public Object merge(String key, Object value,
+            BiFunction<? super Object, ? super Object, ? extends Object> f) {
+        throw immutable();
     }
 
     private static Object find(Node node, String key, int hash, int shift) {
@@ -250,7 +286,7 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
      */
     @Override
     public Set<Map.Entry<String, Object>> entrySet() {
-        return new AbstractSet<>() {
+        return Collections.unmodifiableSet(new AbstractSet<>() {
             @Override
             public int size() {
                 return count;
@@ -297,6 +333,6 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
                     }
                 };
             }
-        };
+        });
     }
 }
