@@ -67,6 +67,18 @@ public final class MessagePackWireV2Harness {
     Arrays.fill(owned,(byte)0);receiver.set(1,"receiver");
     if(!receiver.equals(List.of("before","receiver"))||!sender.equals(List.of("after","stable")))throw new AssertionError("ownership isolation broken");
     mutationAudit();
+    // A caller-supplied descriptor list must not be copied or traversed
+    // before its declared size is checked. This is a resource-safety gate,
+    // not proof of runtime mailbox admission or compiler codec lowering.
+    List<Shape> oversizedShape = new AbstractList<>() {
+      @Override public int size() { return MessagePackWireV2.MAX_ELEMENTS + 1; }
+      @Override public Shape get(int index) {
+        throw new AssertionError("oversized shape traversed before validation");
+      }
+    };
+    reject(() -> new Shape(MessagePackWireV2.Kind.TUPLE, oversizedShape));
+    reject(() -> new Shape(MessagePackWireV2.Kind.LIST, oversizedShape));
+    reject(() -> new Shape(MessagePackWireV2.Kind.LIST, null));
     System.out.println("PASS MessagePack v2 Java portable golden/negative assertions="+cases);
   }
 }
