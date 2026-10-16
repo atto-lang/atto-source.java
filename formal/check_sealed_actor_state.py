@@ -203,7 +203,30 @@ def main():
                                 actors=(Actor(readers=1, data=1, version=1),),
                                 audit=((0, 0, 0),))
     require(not authenticated_write_transition(reading, forged_during_read, (0,)))
-    print("PASS raw store, forged receipt, and read/write overlap mutants rejected")
+
+    # Prove receipt binding to the exact actor, turn, and epoch, and that
+    # the write edge cannot carry unrelated state/continuation changes.
+    for bad in (
+        replace(authorized, audit=((0, 0, 1),)),  # future epoch
+        replace(authorized, audit=((1, 0, 0),)),  # foreign actor
+        replace(authorized, audit=((0, 1, 0),)),  # different turn
+        replace(authorized, audit=()),             # missing receipt
+        replace(authorized, audit=((0, 0, 0), (0, 0, 0))),  # replay
+        replace(authorized, actors=(replace(authorized.actors[0], version=2),)),
+        replace(authorized, actors=(replace(authorized.actors[0], writer=-1),)),
+        replace(authorized, turns=(Turn("done", 0),)),
+    ):
+        require(not authenticated_write_transition(admitted, bad, (0,)),
+                "forged write metadata unexpectedly accepted")
+    # STOP invalidates even an authentic previously held write capability.
+    stopped = next(nxt for action, nxt in successors(admitted, (0,))
+                   if action == "stop actor0")
+    replay = replace(stopped,
+                     actors=(replace(stopped.actors[0], data=1, version=1),),
+                     audit=((0, 0, 0),))
+    require(not authenticated_write_transition(stopped, replay, (0,)),
+            "stale writer accepted after actor STOP")
+    print("PASS raw store, forged receipt, metadata and STOP-replay mutants rejected")
 
 
 if __name__ == "__main__":
