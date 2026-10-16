@@ -79,6 +79,49 @@ jobs:
           mvn --version
       - name: Focused permissions and scoped host interop regressions
         run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' test
+      - name: Prove all six security JUnit classes executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This verifier is in the *trusted workflow*, not a script loaded
+          # from the untrusted candidate checkout.
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          required = {
+              "dev.oreslang.launcher.DenoCliDefaultPermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsNetworkAuditTest",
+              "dev.oreslang.runtime.RuntimePermissionsTest",
+              "dev.oreslang.runtime.RuntimePermissionsExplicitPolicyTest",
+              "dev.oreslang.runtime.IsolatePolicySerializationAuditTest",
+              "dev.oreslang.runtime.ScopedPermissionInteropTest",
+          }
+          executed = {name: 0 for name in required}
+          reports = [
+              p for p in Path(".").rglob("TEST-*.xml")
+              if p.parent.name == "surefire-reports"
+              and p.parent.parent.name == "target"
+          ]
+          if not reports:
+              raise SystemExit("No Maven Surefire XML reports; tests did not execute")
+          for report in reports:
+              root = ElementTree.parse(report).getroot()
+              for case in root.iter("testcase"):
+                  classname = case.get("classname", "")
+                  if classname not in executed:
+                      continue
+                  if any(case.find(tag) is not None
+                         for tag in ("failure", "error", "skipped")):
+                      raise SystemExit(f"Unsuccessful required test in {classname}")
+                  executed[classname] += 1
+          missing = sorted(name for name, count in executed.items() if count == 0)
+          if missing:
+              raise SystemExit("Required security test classes not executed: "
+                               + ", ".join(missing))
+          for name, count in sorted(executed.items()):
+              print(f"VERIFIED_SECURITY_JUNIT {name}: {count} executed")
+          PY
       - name: Full Java 25 Maven candidate verification
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Native AOT candidate build and guest execution
