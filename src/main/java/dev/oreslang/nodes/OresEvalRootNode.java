@@ -7606,7 +7606,8 @@ public final class OresEvalRootNode extends RootNode {
             // Never silently reinterpret that declaration as a static
             // namespace, callable field, foreign host value, or actor.
             if (program.boundMethodCalls().containsKey(call)
-                    && !(receiver instanceof OresObject)) {
+                    && (!(receiver instanceof OresObject object)
+                        || object.klass.actorKind() != Ast.ActorKind.NONE)) {
                 throw new IllegalStateException(
                         "compiler-bound instance call received a non-object receiver");
             }
