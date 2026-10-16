@@ -30,6 +30,8 @@ public final class ActorPipelineRouteSessionSmoke {
                 ));
     }
     public static void main(String[] args) throws Exception {
+        check(ActorPipelineRouteSession.ReturnPath.class.getConstructors().length == 0,
+                "host caller could construct a forged reply path");
         var plan = graph();
         var ledger = new ActorPipelineRouteSession(plan, 7, 8);
         var origin = ledger.ingress("source");
