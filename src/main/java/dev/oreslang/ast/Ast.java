@@ -70,6 +70,16 @@ public final class Ast {
                         throw new IllegalArgumentException(
                                 "compiler-bound method call site does not match its selected slot");
                     }
+                    // Spreads have a separately checked expansion arity, but
+                    // ordinary calls expose an exact syntactic argument count.
+                    // Reject forged metadata before it reaches the evaluator.
+                    boolean hasSpread = entry.getKey().arguments().stream()
+                            .anyMatch(SpreadExpr.class::isInstance);
+                    if (!hasSpread
+                            && entry.getKey().arguments().size() != binding.slot().arity()) {
+                        throw new IllegalArgumentException(
+                                "compiler-bound method call arity differs from selected slot");
+                    }
                     if (binding.staticReceiver().actorKind() != ActorKind.NONE) {
                         throw new IllegalArgumentException(
                                 "actor entrypoints cannot enter ordinary method call bindings");
