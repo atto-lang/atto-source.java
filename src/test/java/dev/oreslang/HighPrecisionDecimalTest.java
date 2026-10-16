@@ -107,6 +107,22 @@ final class HighPrecisionDecimalTest {
     }
 
     @Test
+    void tinyNonzeroBinaryFloatLiteralsMustNotSilentlyBecomeZero() {
+        for (String literal : new String[] { "1e-9999", "-1e-9999", "4e-324" }) {
+            IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                    () -> Parser.parse("fnc invalid(): float { return " + literal + "; }"));
+            assertTrue(error.getMessage().contains("underflows binary64"),
+                    () -> "expected underflow diagnostic for " + literal + ": " + error);
+        }
+        // Valid signed zeros and the smallest normal/subnormal finite values
+        // must not be rejected by the underflow hardening.
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc zeros(): float { return 0e-9999 + -0.0; }
+                fnc subnormal(): float { return 5e-324; }
+                """));
+    }
+
+    @Test
     void relationalNanIsUnorderedAndLargeIntFloatComparisonsAreExact() throws Exception {
         assertEquals("false|false|false|true", eval("""
                 pub routine main(): void {
