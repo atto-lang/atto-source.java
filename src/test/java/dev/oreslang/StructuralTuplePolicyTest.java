@@ -115,6 +115,14 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void selectedCallableIdentifierCannotBeEmpty() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new StructuralTuplePolicy.Selection("", true));
+        assertThrows(IllegalArgumentException.class,
+                () -> new StructuralTuplePolicy.Selection(null, false));
+    }
+
+    @Test
     void excessiveRecursiveOptionalDepthFailsClosed() {
         dev.oreslang.types.Types.Type type = Primitive.STRING;
         for (int i = 0; i < 80; i++) {
