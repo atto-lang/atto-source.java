@@ -486,7 +486,7 @@ final class ProjectManifestImportTest {
                 pub fnc internal() : string { return "zed"; }
                 """);
         Files.writeString(external.resolve("src/remote.ores"), """
-                import fnc internal from "@/src/internal";
+                import fnc internal from "+/src/internal";
                 pub fnc remote() : string { return internal(); }
                 """);
         try {
@@ -496,7 +496,7 @@ final class ProjectManifestImportTest {
         }
         Path main = src.resolve("main.ores");
         Files.writeString(main, """
-                import fnc local from "@/src/local";
+                import fnc local from "+/src/local";
                 import fnc remote from "pkg:tools/src/remote";
 
                 pub fnc main() : void {
@@ -523,7 +523,7 @@ final class ProjectManifestImportTest {
                 """);
         Path main = project.resolve("main.ores");
         Files.writeString(main, """
-                import fnc helper from "@/alias";
+                import fnc helper from "+/alias";
                 pub fnc helper() : int { return 42; }
                 pub fnc main() : void { return; }
                 """);
@@ -562,7 +562,7 @@ final class ProjectManifestImportTest {
                 pub fnc util(): string { return "nested-root"; }
                 """);
         Files.writeString(nested.resolve("src/child.ores"), """
-                import fnc util from "@/src/util";
+                import fnc util from "+/src/util";
                 pub fnc child(): string { return util(); }
                 """);
 
@@ -599,7 +599,7 @@ final class ProjectManifestImportTest {
                 pub fnc secret(): string { return "consumer-data"; }
                 """);
         Files.writeString(installed.resolve("src/child.ores"), """
-                import fnc secret from "@/src/secret";
+                import fnc secret from "+/src/secret";
                 pub fnc child(): string { return secret(); }
                 """);
         Path main = project.resolve("src/main.ores");
@@ -765,9 +765,9 @@ final class ProjectManifestImportTest {
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("configured-root"));
 
         // Ambient source files with no package manifest cannot borrow the
-        // consumer's @/ authority simply because it imported them.
+        // consumer's +/ authority simply because it imported them.
         Files.writeString(ambient.resolve("outer.ores"), """
-                import fnc helper from "@/src/common/helper";
+                import fnc helper from "+/src/common/helper";
                 pub fnc outer(): string { return helper(); }
                 """);
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
