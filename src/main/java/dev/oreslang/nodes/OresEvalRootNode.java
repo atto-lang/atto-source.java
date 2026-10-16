@@ -8866,16 +8866,17 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (declared.name().equals("bigint")) {
-                if (value instanceof java.math.BigInteger) return value;
-                if (value instanceof Number number && isIntegral(number)) {
-                    return java.math.BigInteger.valueOf(number.longValue());
+                if (value instanceof java.math.BigInteger
+                        || value instanceof Number number && isIntegral(number)) {
+                    return dev.oreslang.math.ExactScalarMath.admitInteger((Number) value);
                 }
                 throw returnTypeMismatch(callable, declared, value);
             }
             if (declared.name().equals("decimal")) {
-                if (value instanceof java.math.BigDecimal) return value;
-                if (value instanceof Number number && isIntegral(number)) {
-                    return java.math.BigDecimal.valueOf(number.longValue());
+                if (value instanceof java.math.BigDecimal
+                        || value instanceof Number number && isIntegral(number)
+                        || value instanceof java.math.BigInteger) {
+                    return dev.oreslang.math.ExactScalarMath.admitDecimal((Number) value);
                 }
                 // A binary64/32 value cannot silently masquerade as exact decimal.
                 throw returnTypeMismatch(callable, declared, value);
@@ -9117,7 +9118,22 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
-                slot.value = value;
+                // Preserve the exact carrier chosen at initial binding.
+                // Otherwise reassigning a declared Decimal/BigInt from an int
+                // silently changes later arithmetic into binary64/long math.
+                if (slot.value instanceof java.math.BigDecimal) {
+                    if (!(value instanceof Number replacement)) {
+                        throw new IllegalArgumentException("Decimal binding requires an exact numeric value");
+                    }
+                    slot.value = dev.oreslang.math.ExactScalarMath.admitDecimal(replacement);
+                } else if (slot.value instanceof java.math.BigInteger) {
+                    if (!(value instanceof Number replacement)) {
+                        throw new IllegalArgumentException("BigInt binding requires an exact integer value");
+                    }
+                    slot.value = dev.oreslang.math.ExactScalarMath.admitInteger(replacement);
+                } else {
+                    slot.value = value;
+                }
                 return;
             }
             if (parent != null) { parent.assign(name, value); return; }
