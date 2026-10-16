@@ -33,6 +33,13 @@ class Model:
     audit: tuple[tuple[int, int, int], ...] = ()
 
 
+def require(condition, message="sealed actor-state model check failed"):
+    # Unlike 'assert', this check must survive python -O/-OO. This script
+    # reports safety evidence; silently disabled checks would be a false pass.
+    if not condition:
+        raise AssertionError(message)
+
+
 def put(xs, i, value):
     return xs[:i] + (value,) + xs[i + 1:]
 
@@ -153,12 +160,12 @@ def explore(owners):
     edges = 0
     while queue:
         current = queue.popleft()
-        assert invariant(current, owners), f"safety violation: {current!r}"
+        require(invariant(current, owners), f"safety violation: {current!r}")
         for action, nxt in successors(current, owners):
             edges += 1
-            assert invariant(nxt, owners), f"unsafe transition: {action} {current!r} -> {nxt!r}"
-            assert authenticated_write_transition(current, nxt, owners), (
-                f"unauthenticated mutation: {action} {current!r} -> {nxt!r}")
+            require(invariant(nxt, owners), f"unsafe transition: {action} {current!r} -> {nxt!r}")
+            require(authenticated_write_transition(current, nxt, owners),
+                    f"unauthenticated mutation: {action} {current!r} -> {nxt!r}")
             if nxt not in seen:
                 seen.add(nxt)
                 queue.append(nxt)
@@ -171,31 +178,31 @@ def main():
         print(f"PASS owners={owners}: {nodes} states, {edges} transitions")
     # Negative control: a write without its authenticated ledger entry.
     mutant = Model((Actor(data=1, version=1),), (Turn(),))
-    assert not invariant(mutant, (0,))
+    require(not invariant(mutant, (0,)))
     bare_store = Model((Actor(data=1),), (Turn(),))
-    assert not invariant(bare_store, (0,))
+    require(not invariant(bare_store, (0,)))
     overlap = Model((Actor(readers=1, writer=0),), (Turn("write", 0),))
-    assert not invariant(overlap, (0,))
+    require(not invariant(overlap, (0,)))
     # A forged receipt may satisfy the *snapshot* invariant. It must fail the
     # causal edge check because no write-capable continuation was admitted.
     root = Model((Actor(),), (Turn(),))
     coherent_forgery = Model((Actor(data=1, version=1),),
                              (Turn(),), ((0, 0, 0),))
-    assert invariant(coherent_forgery, (0,))
-    assert not authenticated_write_transition(root, coherent_forgery, (0,))
+    require(invariant(coherent_forgery, (0,)))
+    require(not authenticated_write_transition(root, coherent_forgery, (0,)))
     # Even an audit append without changing data is not an authorized write.
     receipt_only = replace(root, audit=((0, 0, 0),))
-    assert not authenticated_write_transition(root, receipt_only, (0,))
+    require(not authenticated_write_transition(root, receipt_only, (0,)))
     admitted = Model((Actor(writer=0),), (Turn("write", 0),))
     authorized = next(nxt for action, nxt in successors(admitted, (0,))
                       if action == "critical-write t0")
-    assert authenticated_write_transition(admitted, authorized, (0,))
+    require(authenticated_write_transition(admitted, authorized, (0,)))
     # No writer can retroactively authorize a raw write during an active read.
     reading = Model((Actor(readers=1),), (Turn("read", 0),))
     forged_during_read = replace(reading,
                                 actors=(Actor(readers=1, data=1, version=1),),
                                 audit=((0, 0, 0),))
-    assert not authenticated_write_transition(reading, forged_during_read, (0,))
+    require(not authenticated_write_transition(reading, forged_during_read, (0,)))
     print("PASS raw store, forged receipt, and read/write overlap mutants rejected")
 
 
