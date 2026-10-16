@@ -7,6 +7,9 @@ on:
   pull_request:
     paths:
       - '.oreslangc.cfg.toml'
+      - '.ores.pkg.toml'
+      - '.cli-flags.toml'
+      - 'docs/PROJECT_MANIFEST.md'
       - 'contracts/oreslangc-config.*'
       - 'src/**'
       - 'pom.xml'
