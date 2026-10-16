@@ -103,6 +103,19 @@ public final class ActorPipelineRouteSessionSmoke {
         ledger.close();
         reject(() -> ledger.ingress("source"), "STOP accepted data");
 
+        // Host handles belong to exactly one graph session, even when
+        // topology, generation and actor instance names are identical.
+        var foreign = new ActorPipelineRouteSession(plan, 10, 3);
+        var foreignFrame = foreign.ingress("source");
+        var otherSession = new ActorPipelineRouteSession(plan, 10, 3);
+        reject(() -> otherSession.forwardAll(foreignFrame),
+                "foreign session message frame crossed graph authority");
+        check(otherSession.outstanding() == 0,
+                "foreign frame created local graph credits");
+        foreign.complete(foreignFrame);
+        foreign.close();
+        reject(() -> foreign.ingress("source"), "closed graph admitted new ingress");
+
         var bounded = new ActorPipelineRouteSession(plan, 9, 2);
         var root = bounded.ingress("source");
         reject(() -> bounded.forwardAll(root), "partial fan-out frame reservation permitted");
