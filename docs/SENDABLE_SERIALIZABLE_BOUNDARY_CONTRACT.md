@@ -72,6 +72,12 @@ Require strict UTF-8 and JSON token/string decoding, bounded nesting/bytes/colle
 
 ### Protobuf
 
+Portable descriptor admission now rejects nested `List<List<T>>`/nested
+repeated fields until a compiler-generated wrapper message with explicit field
+tags and a pinned nested schema is available. Repeated nested *messages* are
+still representable through an explicitly tagged record element. This is
+schema-validation hardening only; no Protobuf encoder/decoder is enabled.
+
 Bind to a compiled descriptor identity and schema version (message full name alone is insufficient); preserve `oneof` discriminators and explicit presence, validate numeric ranges and length-delimited fields before allocation, and apply a specified unknown-field/extension policy for each trust boundary. Unsupported groups, unexpected extensions, schema conflicts, deeply nested messages and excessively repeated fields fail closed. Deterministic protobuf serialization is not automatically a unique canonical byte representation, a signature, or authorization.
 
 ### Common envelope/security requirements
