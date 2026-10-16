@@ -193,9 +193,12 @@ public final class OresProjectConfig {
     public OresProjectConfig forImportedSource(Path importedSource) throws IOException {
         OresProjectConfig found = discover(importedSource, environment, discoveryBoundary);
         if (found.manifestPath != null) return found;
-        if (discoveryBoundary == null && manifestPath != null
-                && MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
-            // Legacy compiler configuration keeps its original ambient fallback.
+        if (discoveryBoundary == null
+                && (manifestPath == null
+                    || MANIFEST_NAME.equals(manifestPath.getFileName().toString()))) {
+            // The original resolver propagated its source roots through the
+            // entire import closure. Keep that behavior for manifest-less and
+            // legacy projects, without overriding an explicit nested manifest.
             return this;
         }
         return found;
