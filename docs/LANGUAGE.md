@@ -445,6 +445,12 @@ end
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
+> **Planned, not yet implemented:** `sealed`, `non-sealed`, `final` class headers
+> and explicit `permits` lists are specified by the
+> [sealed class hierarchy v1 design](SEALED_CLASS_HIERARCHIES_V1.md).
+> This is a prospective contract and the current Java/LLVM compilers must not be
+> assumed to parse, typecheck, or execute these declarations yet.
+
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
