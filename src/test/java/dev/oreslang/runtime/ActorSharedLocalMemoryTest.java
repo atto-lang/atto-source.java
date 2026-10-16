@@ -122,6 +122,85 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void sharedBlockCloseRetriesFailedAggregateRefundWithoutReopeningBytes() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var aggregateField = ActorRuntime.class.getDeclaredField("sharedActorLocalMemoryBytes");
+            aggregateField.setAccessible(true);
+            var aggregate = (java.util.concurrent.atomic.AtomicLong) aggregateField.get(runtime);
+            CountDownLatch checked = new CountDownLatch(1);
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var slice = turn.localMemory().orElseThrow();
+                var block = slice.allocateActorLocalBytes(8);
+                block.writeLong(0, 42);
+                assertEquals(8, aggregate.get());
+                // A native/global accounting failure must not permanently
+                // consume the right to refund this already-scrubbed block.
+                aggregate.set(0);
+                assertThrows(IllegalStateException.class, block::close);
+                assertTrue(block.closed());
+                assertEquals(8, slice.usedBytes());
+                assertThrows(IllegalStateException.class, () -> block.readLong(0));
+                aggregate.set(8);
+                block.close();
+                block.close(); // retry remains idempotent
+                assertEquals(0, aggregate.get());
+                assertEquals(0, slice.usedBytes());
+
+                var reservation = slice.reserveHeap(8);
+                aggregate.set(0);
+                assertThrows(IllegalStateException.class, reservation::close);
+                assertEquals(8, slice.usedBytes());
+                aggregate.set(8);
+                reservation.close();
+                reservation.close();
+                assertEquals(0, aggregate.get());
+                assertEquals(0, slice.usedBytes());
+                checked.countDown();
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("retry-refund");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+        }
+    }
+
+    @Test
+    void sharedSliceRetirementRetriesFailedAggregateRefundAfterRevocation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var aggregateField = ActorRuntime.class.getDeclaredField("sharedActorLocalMemoryBytes");
+            aggregateField.setAccessible(true);
+            var aggregate = (java.util.concurrent.atomic.AtomicLong) aggregateField.get(runtime);
+            CountDownLatch checked = new CountDownLatch(1);
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var slice = turn.localMemory().orElseThrow();
+                var block = slice.allocateActorLocalBytes(8);
+                block.writeLong(0, 123);
+                aggregate.set(0);
+                assertThrows(IllegalStateException.class, slice::close);
+                assertTrue(slice.closed());
+                assertTrue(block.closed());
+                assertThrows(IllegalStateException.class, () -> block.readLong(0));
+                assertEquals(8, slice.usedBytes(),
+                        "failed retirement must retain the charge for retry");
+                aggregate.set(8);
+                slice.close();
+                slice.close();
+                assertEquals(0, slice.usedBytes());
+                assertEquals(0, aggregate.get());
+                checked.countDown();
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("retry-retirement");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+        }
+    }
+
+    @Test
     void sharedActorLocalQuotaCanRejectWithoutAggregateAccountingLeak() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
