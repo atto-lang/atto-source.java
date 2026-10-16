@@ -58,3 +58,39 @@ move private source into a public repository.
 6. Reconcile all stacked prerequisites and rebase/adapt against current `main`
    before proposing an upstream merge. Do not mark unimplemented platforms
    as conformant.
+
+## Follow-up verification — fail-closed CONTROL handoff
+
+A failed synchronous dispatcher was found to be accepted as a successful
+`SupervisorProcess.accept` call. This allowed the upstream
+`SupervisorFailureControl` lane to treat a child notice as handed off,
+although its supervisor process had already terminally failed.
+
+Both process admission and CONTROL handler installation now reject an
+immediately detected dispatch failure. Failure counters remain observable,
+failed queues retain no notice payloads, and callback/decision handlers are
+not invoked on forbidden inline carriers. Regression JUnit tests cover:
+- immediate rejection at the process boundary;
+- asynchronous upstream CONTROL noticing the downstream rejection;
+- handler installation refusing a known failed dispatch.
+
+**Reproduced before the fix:** `accept_returned_normally=true`,
+`process_failed=true`, `undelivered=1`, `queued=0`.
+**Reproduced after the fix:** admission throws and upstream CONTROL reports its
+own failed handoff; all retained queues are empty.
+
+**Executed locally:** Java 21, **5,063 passing smoke assertions**, including
+1,000 concurrent host-vs-actor CONTROL ownership races and 50 repeated
+terminal-retention scenarios. Three production files have identical Git
+blob hashes in local checks and PR branch:
+- CONTROL: `c475b31da9008907814700aa09bcab17071380ce`
+- supervisor process: `f32c523fad337af6cfed075e4ba9158b600686bd`
+- dispatch guard: `d65624e62a444e931e4cd7c15a292b918f0ef556`
+
+This is **not** an integrated Oreslang build. The test harness stubs only
+`ActorRuntime` identities. Source repository Actions on this integration
+branch continue to report failures with **zero executed steps** (for example
+run `38978455358`); no Maven/JDK25 compilation evidence is available.
+A private funded alternate org's successful **source-free** runner check does
+not establish complete source-tree testability, because connector-side
+cross-org private-source copying is restricted. Keep the PR draft.
