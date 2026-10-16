@@ -48,6 +48,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         final long generation;
         final CompletableFuture<Child> ready = new CompletableFuture<>();
         Process process;
+        volatile boolean terminationRequested;
 
         Slot(long generation) { this.generation = generation; }
     }
@@ -229,8 +230,8 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         try { process.getOutputStream().close(); }
         catch (IOException ignored) { /* process exit/reap remains mandatory */ }
 
-        CompletableFuture<byte[]> stdout = capture(process, process.getInputStream());
-        CompletableFuture<byte[]> stderr = capture(process, process.getErrorStream());
+        CompletableFuture<byte[]> stdout = capture(slot, process, process.getInputStream());
+        CompletableFuture<byte[]> stderr = capture(slot, process, process.getErrorStream());
         CompletableFuture<Exit> done = new CompletableFuture<>();
         process.onExit().thenCombine(stdout, (exited, out) -> new Object[]{exited, out})
                 .thenCombine(stderr, (pair, err) ->
@@ -243,22 +244,31 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         slot.ready.complete(new Child(slot.generation, process, done));
     }
 
-    private CompletableFuture<byte[]> capture(Process process, InputStream stream) {
+    private CompletableFuture<byte[]> capture(Slot slot, Process process, InputStream stream) {
         CompletableFuture<byte[]> result = new CompletableFuture<>();
         Thread.ofVirtual().name("ores-childproc-pipe").start(() -> {
-            try (InputStream in = stream; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (InputStream in = stream) {
                 byte[] buffer = new byte[4096];
                 int used = 0;
                 for (int count; (count = in.read(buffer)) != -1;) {
                     if (count > maxOutputBytes - used) {
-                        destroyTree(process, true);
                         throw new IOException("child process output quota exceeded");
                     }
                     out.write(buffer, 0, count);
                     used += count;
                 }
                 result.complete(out.toByteArray());
-            } catch (IOException | RuntimeException failure) {
+            } catch (IOException failure) {
+                // JDK21 may throw "Stream closed" when destroy()/destroyForcibly()
+                // closes a process pipe while a virtual thread is reading it.
+                // An intentional owner termination yields a normal exit result
+                // with partial output; quota overruns and unexpected I/O faults
+                // must still fail the exit future.
+                if (slot.terminationRequested) result.complete(out.toByteArray());
+                else result.completeExceptionally(failure);
+                if (!slot.terminationRequested) destroyTree(process, true);
+            } catch (RuntimeException failure) {
                 result.completeExceptionally(failure);
                 destroyTree(process, true);
             }
@@ -273,6 +283,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             Slot slot = slots.get(child.generation);
             if (closed || slot == null || slot.process == null
                     || slot.process.pid() != child.pid) return false;
+            slot.terminationRequested = true;
             process = slot.process;
         }
         // Descendant enumeration and OS signalling must not run on an actor
@@ -314,6 +325,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
             slots.clear();
         }
         for (Slot slot : active) {
+            slot.terminationRequested = true;
             slot.ready.completeExceptionally(new IllegalStateException("child process registry closed"));
             if (slot.process != null) terminateOffCarrier(slot.process, true);
         }
