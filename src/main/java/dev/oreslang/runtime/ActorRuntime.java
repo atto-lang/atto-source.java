@@ -431,6 +431,12 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
+    /**
+     * Actor-private arena bytes owned by SHARED actors. Keep these separate
+     * from explicit shared regions/mailboxes so "shared actor" never becomes
+     * synonymous with "shared heap".
+     */
+    private final AtomicLong sharedActorLocalMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
@@ -718,7 +724,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
-    public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
+    public long sharedActorLocalMemoryBytes() { return sharedActorLocalMemoryBytes.get(); }
+    public long actorMemoryBytes() {
+        return privateMemoryBytes.get()
+                + sharedMemoryBytes.get()
+                + sharedActorLocalMemoryBytes.get();
+    }
 
     /**
      * Actor-confined logical memory slice for every actor incarnation.
@@ -829,7 +840,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             if (ownerKind == ActorKind.SHARED) {
-                reserveSharedRuntimeBytes(bytes, purpose);
+                reserveSharedActorLocalRuntimeBytes(bytes, owner, purpose);
             } else {
                 reservePrivateRuntimeBytes(bytes, owner, purpose);
             }
@@ -854,7 +865,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("private actor memory accounting underflow for " + owner);
             }
             try {
-                if (ownerKind == ActorKind.SHARED) releaseSharedRuntimeBytes(bytes);
+                if (ownerKind == ActorKind.SHARED) releaseSharedActorLocalRuntimeBytes(bytes, owner);
                 else releasePrivateRuntimeBytes(bytes, owner);
             } catch (RuntimeException failure) {
                 usedBytes.addAndGet(bytes);
@@ -869,7 +880,7 @@ public final class ActorRuntime implements AutoCloseable {
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
             if (bytes != 0) {
-                if (ownerKind == ActorKind.SHARED) releaseSharedRuntimeBytes(bytes);
+                if (ownerKind == ActorKind.SHARED) releaseSharedActorLocalRuntimeBytes(bytes, owner);
                 else releasePrivateRuntimeBytes(bytes, owner);
             }
         }
@@ -4642,16 +4653,21 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (memoryBudgetLock) {
             long privateBytes = privateMemoryBytes.get();
             long sharedBytes = sharedMemoryBytes.get();
+            long sharedActorLocalBytes = sharedActorLocalMemoryBytes.get();
             long total;
             try {
-                total = Math.addExact(Math.addExact(privateBytes, sharedBytes), bytes);
+                total = Math.addExact(
+                        Math.addExact(Math.addExact(privateBytes, sharedBytes), sharedActorLocalBytes),
+                        bytes);
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " aggregate accounting overflow");
             }
             if (total > policyCeiling.maxHeapBytes()) {
                 throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner
                         + ": requested=" + bytes + " privateUsed=" + privateBytes
-                        + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
+                        + " sharedUsed=" + sharedBytes
+                        + " sharedActorLocalUsed=" + sharedActorLocalBytes
+                        + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
             privateMemoryBytes.addAndGet(bytes);
         }
@@ -4677,16 +4693,21 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (memoryBudgetLock) {
             long privateBytes = privateMemoryBytes.get();
             long sharedBytes = sharedMemoryBytes.get();
+            long sharedActorLocalBytes = sharedActorLocalMemoryBytes.get();
             long total;
             try {
-                total = Math.addExact(Math.addExact(privateBytes, sharedBytes), bytes);
+                total = Math.addExact(
+                        Math.addExact(Math.addExact(privateBytes, sharedBytes), sharedActorLocalBytes),
+                        bytes);
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " aggregate accounting overflow");
             }
             if (total > policyCeiling.maxHeapBytes()) {
                 throw new IllegalStateException(purpose + " aggregate runtime limit exceeded"
                         + ": requested=" + bytes + " privateUsed=" + privateBytes
-                        + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
+                        + " sharedUsed=" + sharedBytes
+                        + " sharedActorLocalUsed=" + sharedActorLocalBytes
+                        + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
             sharedMemoryBytes.addAndGet(bytes);
         }
@@ -4704,6 +4725,51 @@ public final class ActorRuntime implements AutoCloseable {
                                 + " sharedUsed=" + current);
             }
             sharedMemoryBytes.set(current - bytes);
+        }
+    }
+
+    private void reserveSharedActorLocalRuntimeBytes(
+            long bytes,
+            ActorId owner,
+            String purpose) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (bytes < 0) throw new IllegalArgumentException("actor-local memory reservation cannot be negative");
+        if (bytes == 0) return;
+        synchronized (memoryBudgetLock) {
+            long privateBytes = privateMemoryBytes.get();
+            long sharedBytes = sharedMemoryBytes.get();
+            long sharedActorLocalBytes = sharedActorLocalMemoryBytes.get();
+            long total;
+            try {
+                total = Math.addExact(
+                        Math.addExact(Math.addExact(privateBytes, sharedBytes), sharedActorLocalBytes),
+                        bytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException(purpose + " aggregate accounting overflow");
+            }
+            if (total > policyCeiling.maxHeapBytes()) {
+                throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner
+                        + ": requested=" + bytes + " privateUsed=" + privateBytes
+                        + " sharedUsed=" + sharedBytes
+                        + " sharedActorLocalUsed=" + sharedActorLocalBytes
+                        + " runtimeLimit=" + policyCeiling.maxHeapBytes());
+            }
+            sharedActorLocalMemoryBytes.addAndGet(bytes);
+        }
+    }
+
+    private void releaseSharedActorLocalRuntimeBytes(long bytes, ActorId owner) {
+        if (bytes < 0) throw new IllegalArgumentException("actor-local memory release cannot be negative");
+        if (bytes == 0 || closed.get()) return;
+        synchronized (memoryBudgetLock) {
+            if (closed.get()) return;
+            long current = sharedActorLocalMemoryBytes.get();
+            if (bytes > current) {
+                throw new IllegalStateException(
+                        "shared actor local memory accounting underflow for " + owner
+                                + ": release=" + bytes + " localUsed=" + current);
+            }
+            sharedActorLocalMemoryBytes.set(current - bytes);
         }
     }
 
@@ -6534,6 +6600,7 @@ public final class ActorRuntime implements AutoCloseable {
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
+        sharedActorLocalMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
