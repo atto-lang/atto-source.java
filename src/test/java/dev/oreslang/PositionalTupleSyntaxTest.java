@@ -46,6 +46,14 @@ final class PositionalTupleSyntaxTest {
     }
 
     @Test
+    void structurallyWidenedTupleWithoutOptionalTailStillFailsClosed() {
+        var parsed = Parser.parse(declaration("structural (int, int) value"));
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(parsed));
+        assertTrue(error.getMessage().contains("not yet executable"), error.getMessage());
+    }
+
+    @Test
     void optionalMiddleTupleSlotIsRejectedImmediatelyByTheParser() {
         for (String parameter : new String[] {
                 "tuple (int?, int, string?) value",
