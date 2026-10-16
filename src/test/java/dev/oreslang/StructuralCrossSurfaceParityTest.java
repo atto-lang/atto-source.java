@@ -54,11 +54,16 @@ final class StructuralCrossSurfaceParityTest {
         for (String expression : new String[]{
                 "by_function(new Bad())",
                 "by_routine(new Bad())",
-                "new Consumer().by_method(new Bad())"
+                "consumer.by_method(new Bad())"
         }) {
-            String source = prefix + "fnc check(): int { return " + expression + "; }\nend";
+            String setup = expression.startsWith("consumer.")
+                    ? "val consumer = new Consumer(); " : "";
+            String source = prefix + "fnc check(): int { " + setup
+                    + "return " + expression + "; }\nend";
+            var parsed = assertDoesNotThrow(() -> Parser.parse(source),
+                    "Negative test must reach the type checker: " + expression);
             assertThrows(IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(source)), expression);
+                    () -> TypeChecker.check(parsed), expression);
         }
     }
 
