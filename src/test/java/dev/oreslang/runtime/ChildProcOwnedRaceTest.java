@@ -195,4 +195,50 @@ final class ChildProcOwnedRaceTest {
                 Path.of("").toAbsolutePath().toString(), Map.of());
     }
 
+    @Test
+    void callerCancellationCannotCancelRegistryOwnedLaunch() throws Exception {
+        java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
+        try (ChildProcOwnedRuntime manager =
+                     new ChildProcOwnedRuntime(allow(), queued::addLast, 1, 1024)) {
+            var observed = manager.spawnAsync(printfSpec("unmodified"));
+            var internal = internalLaunchFuture(manager);
+            assertNotSame(observed, internal, "guest must not obtain mutable registry completion authority");
+            assertTrue(observed.cancel(true));
+            assertFalse(internal.isDone(), "observer cancellation must not mutate host-owned launch");
+            assertThrows(IllegalStateException.class,
+                    () -> manager.spawnAsync(printfSpec("capacity-still-reserved")));
+            manager.close();
+            assertTrue(internal.isCompletedExceptionally(), "shutdown must settle internal launch");
+        }
+    }
+
+    @Test
+    void callerCannotForgeRegistryOwnedLaunchResult() throws Exception {
+        java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
+        try (ChildProcOwnedRuntime manager =
+                     new ChildProcOwnedRuntime(allow(), queued::addLast, 1, 1024)) {
+            var observed = manager.spawnAsync(printfSpec("unmodified"));
+            var internal = internalLaunchFuture(manager);
+            assertNotSame(observed, internal);
+            assertTrue(observed.complete(null), "callers can only complete their own observer");
+            assertFalse(internal.isDone(), "forged result must not complete actual launch");
+            manager.close();
+            assertTrue(internal.isCompletedExceptionally());
+        }
+    }
+
+    private static CompletableFuture<?> internalLaunchFuture(ChildProcOwnedRuntime manager)
+            throws ReflectiveOperationException {
+        // Security regression: inspect private completion capability without
+        // introducing an unsafe production accessor to the registry.
+        var field = ChildProcOwnedRuntime.class.getDeclaredField("slots");
+        field.setAccessible(true);
+        var slots = (Map<?, ?>) field.get(manager);
+        assertEquals(1, slots.size());
+        Object slot = slots.values().iterator().next();
+        var ready = slot.getClass().getDeclaredField("ready");
+        ready.setAccessible(true);
+        return (CompletableFuture<?>) ready.get(slot);
+    }
+
 }
