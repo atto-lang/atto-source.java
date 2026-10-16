@@ -2126,6 +2126,15 @@ public final class TypeChecker {
                             + "' is direct-call-only and cannot be used as a first-class callable value; "
                             + "wrap the call in an explicit lambda when a callback is required");
                 }
+                // A Function value records async but not suspends. Reifying
+                // this declaration would silently erase the suspension effect
+                // and make a synchronous Option/Result callback unsafe.
+                if (fn.suspends()) {
+                    throw new IllegalArgumentException(
+                            "suspends function '" + fn.name()
+                            + "' cannot be used as a first-class callable until Fnc types encode suspension; "
+                            + "invoke it directly from an async or suspends callable");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "generic callable '" + fn.name()
@@ -2382,6 +2391,16 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr sumMethod
+                    && Set.of("map", "map_err", "and_then", "or_else", "filter",
+                              "ok_or_else", "transpose", "ok").contains(sumMethod.member())) {
+                Type sumReceiver = deref(typeOf(sumMethod.receiver(), env, generics, self));
+                if (sumReceiver instanceof Named sum
+                        && (sum.name().equals("Option") || sum.name().equals("Result"))) {
+                    return checkTypedSumCombinator(call, sum, sumMethod.member(),
+                            env, generics, self);
+                }
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -3377,7 +3396,19 @@ public final class TypeChecker {
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
             if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
-            if (sumMember != null) return sumMember;
+            if (sumMember != null) {
+                // The synthetic callback signatures for combinators are not
+                // first-class polymorphic function values. Reifying them would
+                // expose Unknown result parameters and bypass direct-call
+                // inference, allowing unsound generic widening.
+                if (Set.of("map", "map_err", "and_then", "or_else",
+                           "filter", "ok_or_else").contains(member.member())) {
+                    throw new IllegalArgumentException(
+                            "Option/Result combinators require a direct call; "
+                            + "first-class extraction is not yet type-safe");
+                }
+                return sumMember;
+            }
             if (sumReceiver instanceof Named sumNamed
                     && (sumNamed.name().equals("Option") || sumNamed.name().equals("Result"))) {
                 throw new IllegalArgumentException(
@@ -5928,6 +5959,265 @@ public final class TypeChecker {
         };
     }
 
+    /**
+     * Unlike the old Unknown-returning synthetic Function descriptors, these
+     * combinators must propagate the callback's *actual* return type. Otherwise
+     * Option<int> can silently widen to Option<String> and Result.and_then
+     * can change its error domain without a checked conversion.
+     *
+     * This v1 path requires a statically typed callable result. Lambdas whose
+     * return type cannot be inferred are rejected, never treated as safe.
+     */
+    /**
+     * Contextually type an inline pipe lambda from the sum payload, rather
+     * than turning unannotated pipe parameters into Unknown or $infer$.
+     * Only expression-bodied lambdas have an inferable return value in v1;
+     * block-bodied callbacks require an explicitly typed named function.
+     *
+     * As for ordinary lambdas, checking the body must not leak definite
+     * initialization into its surrounding lexical scope.
+     */
+    /**
+     * An eager sum callback is not an async/suspending continuation.
+     * Inspect nested expressions as well as the top level: a containing
+     * async fnc must not implicitly authorize await or blocking channel
+     * operations inside a callback typed as a synchronous Function.
+     * Future expression variants fail closed until their effects are audited.
+     */
+    private static boolean hasSuspendingSumCallbackSyntax(Ast.Expr expr) {
+        if (expr instanceof Ast.AwaitExpr || expr instanceof Ast.ChannelOpExpr
+                || expr instanceof Ast.DynamicSelectExpr) return true;
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.BinaryExpr binary)
+            return hasSuspendingSumCallbackSyntax(binary.left())
+                    || hasSuspendingSumCallbackSyntax(binary.right());
+        if (expr instanceof Ast.UnaryExpr unary)
+            return hasSuspendingSumCallbackSyntax(unary.operand());
+        if (expr instanceof Ast.AssignExpr assignment)
+            return hasSuspendingSumCallbackSyntax(assignment.target())
+                    || hasSuspendingSumCallbackSyntax(assignment.value());
+        if (expr instanceof Ast.ConditionalExpr conditional)
+            return hasSuspendingSumCallbackSyntax(conditional.condition())
+                    || hasSuspendingSumCallbackSyntax(conditional.whenTrue())
+                    || hasSuspendingSumCallbackSyntax(conditional.whenFalse());
+        if (expr instanceof Ast.MatchExpr match) {
+            if (hasSuspendingSumCallbackSyntax(match.subject())) return true;
+            for (Ast.MatchValueArm arm : match.arms())
+                if ((arm.guard() != null && hasSuspendingSumCallbackSyntax(arm.guard()))
+                        || hasSuspendingSumCallbackSyntax(arm.value())) return true;
+            return false;
+        }
+        if (expr instanceof Ast.TypeTestExpr test)
+            return hasSuspendingSumCallbackSyntax(test.value());
+        if (expr instanceof Ast.PatternTestExpr test)
+            return hasSuspendingSumCallbackSyntax(test.value());
+        if (expr instanceof Ast.CastExpr cast)
+            return hasSuspendingSumCallbackSyntax(cast.value());
+        if (expr instanceof Ast.SpreadExpr spread)
+            return hasSuspendingSumCallbackSyntax(spread.expression());
+        if (expr instanceof Ast.CallExpr call)
+            return hasSuspendingSumCallbackSyntax(call.callee())
+                    || call.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.RuntimeCallExpr runtime)
+            return runtime.operation().equals("cooperate")
+                    || runtime.operation().equals("yield")
+                    || runtime.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.MemberExpr member)
+            return hasSuspendingSumCallbackSyntax(member.receiver());
+        if (expr instanceof Ast.IndexExpr index)
+            return hasSuspendingSumCallbackSyntax(index.receiver())
+                    || hasSuspendingSumCallbackSyntax(index.index());
+        if (expr instanceof Ast.NewExpr created)
+            return created.arguments().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.TrapExpr trap)
+            return hasSuspendingSumCallbackSyntax(trap.expression());
+        if (expr instanceof Ast.ListExpr list)
+            return list.elements().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.TupleExpr tuple)
+            return tuple.elements().stream().anyMatch(TypeChecker::hasSuspendingSumCallbackSyntax);
+        if (expr instanceof Ast.ObjectExpr object)
+            return object.fields().stream()
+                    .anyMatch(field -> hasSuspendingSumCallbackSyntax(field.value()));
+        if (expr instanceof Ast.LambdaExpr nested)
+            return nested.expressionBody() == null
+                    || hasSuspendingSumCallbackSyntax(nested.expressionBody());
+        throw new IllegalArgumentException(
+                "sum callback contains an unaudited expression form: " + expr.getClass().getSimpleName());
+    }
+
+    private Function inferSumLambda(
+            Ast.LambdaExpr lambda, Type input, boolean zeroArg,
+            Env parent, Set<String> generics, Type self, String operation) {
+        int expected = zeroArg ? 0 : 1;
+        if (lambda.parameters().size() != expected) {
+            throw new IllegalArgumentException(
+                    operation + " lambda expects " + expected + " parameter(s)");
+        }
+        if (lambda.expressionBody() == null) {
+            throw new IllegalArgumentException(
+                    operation + " block lambda result cannot be inferred safely");
+        }
+        if (hasSuspendingSumCallbackSyntax(lambda.expressionBody())) {
+            throw new IllegalArgumentException(
+                    operation + " inline callback cannot suspend or await");
+        }
+
+        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical, !nonLexical);
+        List<Type> arguments = new ArrayList<>(expected);
+        if (!zeroArg) {
+            Ast.Param param = lambda.parameters().getFirst();
+            if (param.mutable() || param.structural()) {
+                throw new IllegalArgumentException(
+                        operation + " lambda cannot mutate or erase its input capability");
+            }
+            Type declared = param.type().name().equals("$infer$")
+                    ? input : resolveParam(param, generics, self);
+            requireAssignable(input, declared, operation + " lambda parameter");
+            requireAssignable(declared, input, operation + " lambda parameter");
+            arguments.add(declared);
+            lambdaEnv.define(param.name(), declared, Ast.BindingKind.VAL);
+        }
+        defineImplicitArguments(lambdaEnv, arguments);
+
+        Ast.ClassDecl previousClass = currentClassOwner;
+        Ast.ClassDecl previousConstructor = currentConstructorOwner;
+        Map<Env.Binding, Set<String>> initialized = parent.initializationSnapshot();
+        boolean previousMaySuspend = currentMaySuspend;
+        if (nonLexical) currentClassOwner = null;
+        currentConstructorOwner = null;
+        currentMaySuspend = false;
+        try {
+            Type result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+            return new Function(arguments, result);
+        } finally {
+            currentMaySuspend = previousMaySuspend;
+            parent.restoreInitialization(initialized);
+            currentClassOwner = previousClass;
+            currentConstructorOwner = previousConstructor;
+        }
+    }
+
+    private Type checkTypedSumCombinator(
+            Ast.CallExpr call, Named sum, String operation,
+            Env env, Set<String> generics, Type self) {
+        final boolean option = sum.name().equals("Option");
+        final String kind = option ? "Option" : "Result";
+        final Type input = sum.arguments().getFirst();
+        final Type error = option ? null : sum.arguments().get(1);
+        final boolean noCallback = operation.equals("transpose") || operation.equals("ok");
+
+        if (option) {
+            if (!Set.of("map", "and_then", "filter", "ok_or_else", "transpose")
+                    .contains(operation)) {
+                throw new IllegalArgumentException("unknown Option member '" + operation + "'");
+            }
+        } else if (!Set.of("map", "map_err", "and_then", "or_else", "ok")
+                .contains(operation)) {
+            throw new IllegalArgumentException("unknown Result member '" + operation + "'");
+        }
+        if (call.typeArgumentsPresent()) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " does not accept call-site type arguments");
+        }
+        if (call.arguments().size() != (noCallback ? 0 : 1)
+                || (!noCallback && call.arguments().getFirst() instanceof Ast.SpreadExpr)) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " expects " + (noCallback ? "zero arguments" : "one callable"));
+        }
+        if (noCallback) {
+            if (operation.equals("ok")) return new Named("Option", List.of(input));
+            if (input instanceof Named nested
+                    && nested.name().equals("Result") && nested.arguments().size() == 2) {
+                return new Named("Result", List.of(
+                        new Named("Option", List.of(nested.arguments().getFirst())),
+                        nested.arguments().get(1)));
+            }
+            throw new IllegalArgumentException(
+                    "Option.transpose requires Option<Result<T,E>>");
+        }
+
+        final Type callbackInput = operation.equals("map_err") || operation.equals("or_else")
+                ? error : input;
+        final boolean zeroArg = operation.equals("ok_or_else");
+        Ast.Expr callbackExpression = call.arguments().getFirst();
+        Type callbackType = callbackExpression instanceof Ast.LambdaExpr lambda
+                ? inferSumLambda(lambda, callbackInput, zeroArg, env, generics, self,
+                        kind + "." + operation)
+                : typeOf(callbackExpression, env, generics, self);
+        if (!(callbackType instanceof Function callback)
+                || callback.parameters().size() != (zeroArg ? 0 : 1)
+                || callback.async()
+                || callback.mutableParameters().contains(true)) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " requires a synchronous, non-mutating "
+                    + (zeroArg ? "zero-argument" : "one-argument") + " callable");
+        }
+        if (!zeroArg) {
+            requireAssignable(callbackInput, callback.parameters().getFirst(),
+                    kind + "." + operation + " callback parameter");
+        }
+        Type mapped = callback.result();
+        // String and boolean singleton literals are scalar *values*, not
+        // invariant generic parameter identities.
+        if (mapped instanceof StringLiteral) mapped = Primitive.STRING;
+        if (mapped instanceof dev.oreslang.types.Types.BoolLiteral) mapped = Primitive.BOOL;
+        if (mapped == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " callback result cannot be inferred safely");
+        }
+        if (containsChannelBorrow(mapped, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(kind + "." + operation
+                    + " cannot publish a borrowed callback result, including nested payloads");
+        }
+        if (option) {
+            return switch (operation) {
+                case "map" -> new Named("Option", List.of(mapped));
+                case "filter" -> {
+                    requireAssignable(mapped, Primitive.BOOL, "Option.filter predicate");
+                    yield sum;
+                }
+                case "ok_or_else" -> new Named("Result", List.of(input, mapped));
+                case "and_then" -> {
+                    if (!(mapped instanceof Named nested) ||
+                            !nested.name().equals("Option") ||
+                            nested.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Option.and_then callback must return Option<U>");
+                    }
+                    yield mapped;
+                }
+                default -> throw new IllegalArgumentException("unknown Option member '" + operation + "'");
+            };
+        }
+        return switch (operation) {
+            case "map" -> new Named("Result", List.of(mapped, error));
+            case "map_err" -> new Named("Result", List.of(input, mapped));
+            case "and_then", "or_else" -> {
+                if (!(mapped instanceof Named nested) ||
+                        !nested.name().equals("Result") ||
+                        nested.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Result." + operation + " callback must return Result");
+                }
+                // and_then cannot rewrite E, and or_else cannot rewrite T.
+                final Type invariant = operation.equals("and_then") ? error : input;
+                final Type actual = nested.arguments().get(
+                        operation.equals("and_then") ? 1 : 0);
+                requireAssignable(actual, invariant, "Result." + operation + " invariant");
+                requireAssignable(invariant, actual, "Result." + operation + " invariant");
+                // A success-only Ok(...) callback has an unbound error slot;
+                // an error-only Err(...) callback has an unbound success slot.
+                // The untouched branch still carries the receiver's original
+                // type, never the callback constructor's Unknown parameter.
+                yield operation.equals("and_then")
+                        ? new Named("Result", List.of(nested.arguments().getFirst(), error))
+                        : new Named("Result", List.of(input, nested.arguments().get(1)));
+            }
+            default -> throw new IllegalArgumentException("unknown Result member '" + operation + "'");
+        };
+    }
+
     private Type builtinOptionResultMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)) return null;
         if (named.name().equals("Option") && named.arguments().size() == 1) {
@@ -5940,6 +6230,23 @@ public final class TypeChecker {
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
                 case "expect" -> new Function(List.of(Primitive.STRING), element);
                 case "unwrap_or" -> new Function(List.of(element), element);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "and_then" -> new Function(
+                        List.of(new Function(List.of(element), new Named("Option", List.of(Unknown.INSTANCE)))),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "filter" -> new Function(
+                        List.of(new Function(List.of(element), Primitive.BOOL)), named);
+                case "ok_or_else" -> new Function(
+                        List.of(new Function(List.of(), Unknown.INSTANCE)),
+                        new Named("Result", List.of(element, Unknown.INSTANCE)));
+                case "transpose" -> element instanceof Named inner
+                        && inner.name().equals("Result") && inner.arguments().size() == 2
+                        ? new Function(List.of(),
+                                new Named("Result", List.of(
+                                        new Named("Option", List.of(inner.arguments().get(0))),
+                                        inner.arguments().get(1)))) : null;
                 default -> null;
             };
         }
@@ -5951,6 +6258,21 @@ public final class TypeChecker {
                 case "unwrap_safe" -> new Function(List.of(), named);
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(ok), Unknown.INSTANCE)),
+                        new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))));
+                case "map_err" -> new Function(
+                        List.of(new Function(List.of(named.arguments().get(1)), Unknown.INSTANCE)),
+                        new Named("Result", List.of(ok, Unknown.INSTANCE)));
+                case "and_then" -> new Function(
+                        List.of(new Function(List.of(ok),
+                                new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))))),
+                        new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))));
+                case "or_else" -> new Function(
+                        List.of(new Function(List.of(named.arguments().get(1)),
+                                new Named("Result", List.of(ok, Unknown.INSTANCE)))),
+                        new Named("Result", List.of(ok, Unknown.INSTANCE)));
+                case "ok" -> new Function(List.of(), new Named("Option", List.of(ok)));
                 default -> null;
             };
         }
@@ -7359,9 +7681,17 @@ public final class TypeChecker {
         Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
+        // Keep the result of the inference pass. Re-checking an unchanged,
+        // non-lambda argument below duplicates its entire call subtree.
+        // A chain of N nested calls then takes exponential rather than linear
+        // typechecking time (the 128-stage value-pipeline boundary exposed it).
+        // Preserve a second context-sensitive pass for lambdas and for
+        // arguments whose expected type changes after generic inference.
+        List<Type> inferredArgumentTypes = new ArrayList<>(expanded.size());
         for (int i = 0; i < expanded.size(); i++) {
             Type actual = expandedCallArgumentType(
                     expanded.get(i), patterns.get(i), env, callerGenerics, callerSelf);
+            inferredArgumentTypes.add(actual);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         GenericCallArguments.applyDefaults(
@@ -7384,8 +7714,12 @@ public final class TypeChecker {
             if (argument.expression() != null) {
                 validateLambdaArgument(argument.expression(), expected, env, callerGenerics, callerSelf);
             }
-            Type actual = expandedCallArgumentType(
-                    argument, expected, env, callerGenerics, callerSelf);
+            Type actual = argument.expression() != null
+                    && !(argument.expression() instanceof Ast.LambdaExpr)
+                    && expected.equals(patterns.get(i))
+                    ? inferredArgumentTypes.get(i)
+                    : expandedCallArgumentType(
+                            argument, expected, env, callerGenerics, callerSelf);
             if (!params.get(i).structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,
