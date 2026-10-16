@@ -22,6 +22,10 @@ public final class DecimalMatrix {
     private static final long MAX_TOTAL_SIGNIFICANT_DIGITS = 1_000_000L;
     private static final int MAX_ABSOLUTE_SCALE = 16_384;
     private static final long MAX_SCALAR_MULTIPLIES = 100_000;
+    // Work varies dramatically with decimal limb sizes even at the same
+    // matrix dimensions. Bound digit-work and temporary alignment separately.
+    private static final long MAX_DIGIT_WORK = 16_000_000L;
+    private static final long MAX_INTERMEDIATE_DIGITS = 16_384L;
     private final int rows;
     private final int columns;
     private final BigDecimal[] cells;
@@ -107,11 +111,31 @@ public final class DecimalMatrix {
         // Failure must not publish a partially updated caller-owned matrix.
         BigDecimal[] staged = new BigDecimal[output.cells.length];
         long significantDigits = 0;
+        long digitWork = 0;
         for (int row = 0; row < left.rows; row++) {
             for (int column = 0; column < right.columns; column++) {
                 BigDecimal sum = BigDecimal.ZERO;
                 for (int inner = 0; inner < left.columns; inner++) {
-                    BigDecimal product = left.get(row, inner).multiply(right.get(inner, column));
+                    BigDecimal a = left.get(row, inner);
+                    BigDecimal b = right.get(inner, column);
+                    // BigDecimal product precision is at most p(a)+p(b).
+                    // Reject expensive jobs before constructing the product.
+                    long productDigits = (long) a.precision() + b.precision();
+                    digitWork += productDigits;
+                    if (digitWork > MAX_DIGIT_WORK) {
+                        throw new IllegalArgumentException("matrix decimal digit-work budget exceeded");
+                    }
+                    BigDecimal product = a.multiply(b);
+                    if (sum.signum() != 0 && product.signum() != 0) {
+                        int alignedScale = Math.max(sum.scale(), product.scale());
+                        long alignedDigits = Math.max(
+                                (long) sum.precision() + alignedScale - sum.scale(),
+                                (long) product.precision() + alignedScale - product.scale());
+                        if (alignedDigits > MAX_INTERMEDIATE_DIGITS) {
+                            throw new IllegalArgumentException(
+                                    "matrix decimal accumulator alignment budget exceeded");
+                        }
+                    }
                     sum = sum.add(product);
                 }
                 BigDecimal rounded = sum.round(context);
