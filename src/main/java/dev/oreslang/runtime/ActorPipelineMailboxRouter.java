@@ -7,6 +7,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
 
 /**
  * Host-authorized, actual mailbox delivery for one immutable typed actor DAG.
@@ -36,6 +38,14 @@ public final class ActorPipelineMailboxRouter<M> {
     private final ActorPipelineRoutePlan graph;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
+    // Each bound graph generation owns an independent round-robin cursor.
+    private final Map<String, Integer> roundRobinCursors = new HashMap<>();
+    private final Object selectionLock = new Object();
+    // Admissions hold the read lease through ActorRuntime.send. Retirement
+    // obtains the exclusive lease and forbids any post-close publication.
+    private final ReentrantReadWriteLock retirementGate =
+            new ReentrantReadWriteLock(true);
+    private boolean retired;
 
     /**
      * Must run on the trusted host/supervisor, never from actor code,
@@ -87,6 +97,32 @@ public final class ActorPipelineMailboxRouter<M> {
         this.identities = Map.copyOf(reverse);
     }
 
+    /** Supervisor-only generation retirement; does not stop actors or
+     * cancel already admitted messages. */
+    public void close() {
+        owner.requirePipelineRegistrationHostAuthority();
+        var write = retirementGate.writeLock();
+        write.lock();
+        try {
+            retired = true;
+        } finally {
+            write.unlock();
+        }
+    }
+
+    private <R> R inLiveRoutingGeneration(Supplier<R> operation) {
+        var read = retirementGate.readLock();
+        read.lock();
+        try {
+            if (retired) {
+                throw new IllegalStateException("pipeline routing generation is retired");
+            }
+            return operation.get();
+        } finally {
+            read.unlock();
+        }
+    }
+
     /** The caller is the actual executing actor, never a guessed name. */
     private String currentSource() {
         // Actor identity alone also exists during startup/lifecycle callbacks.
@@ -130,39 +166,58 @@ public final class ActorPipelineMailboxRouter<M> {
 
     /** One downstream only. Branching requires an explicit routing policy. */
     public void forward(M value) {
-        admit(graph.forward(currentSource()), value);
+        inLiveRoutingGeneration(() -> {
+            admit(graph.forward(currentSource()), value);
+            return null;
+        });
     }
 
-    /** One real admitted mailbox message for each successful destination.
-     * Failures remain visible even when earlier destinations succeeded.
-     * Do not await or execute actor code inside this fan-out admission loop. */
+    /** Independent real mailbox admission with explicit partial results. */
     public List<Admission> forwardAll(M value) {
-        List<ActorPipelineRoutePlan.Edge> edges = graph.forwardAll(currentSource());
-        Objects.requireNonNull(value, "pipeline payload; use Option<T> for null");
-        ArrayList<Admission> receipts = new ArrayList<>(edges.size());
-        for (ActorPipelineRoutePlan.Edge edge : edges) {
-            try {
-                admit(edge, value);
-                receipts.add(new Admission(edge.target(), true, null));
-            } catch (RuntimeException admissionFailure) {
-                receipts.add(new Admission(edge.target(), false, admissionFailure));
+        return inLiveRoutingGeneration(() -> {
+            List<ActorPipelineRoutePlan.Edge> edges = graph.forwardAll(currentSource());
+            Objects.requireNonNull(value, "pipeline payload; use Option<T> for null");
+            ArrayList<Admission> receipts = new ArrayList<>(edges.size());
+            for (ActorPipelineRoutePlan.Edge edge : edges) {
+                try {
+                    admit(edge, value);
+                    receipts.add(new Admission(edge.target(), true, null));
+                } catch (RuntimeException admissionFailure) {
+                    receipts.add(new Admission(edge.target(), false, admissionFailure));
+                }
             }
-        }
-        return List.copyOf(receipts);
+            return List.copyOf(receipts);
+        });
     }
 
-    /** Attempt always consumes one turn of the source-local cursor. */
+    /** Every selection counts, even if the subsequent mailbox rejects it. */
     public void forwardRoundRobin(M value) {
-        admit(graph.forwardRoundRobin(currentSource()), value);
+        inLiveRoutingGeneration(() -> {
+            String source = currentSource();
+            List<ActorPipelineRoutePlan.Edge> connected = graph.forwardAll(source);
+            ActorPipelineRoutePlan.Edge selected;
+            synchronized (selectionLock) {
+                int cursor = roundRobinCursors.getOrDefault(source, 0);
+                selected = connected.get(cursor);
+                roundRobinCursors.put(source,
+                        cursor + 1 == connected.size() ? 0 : cursor + 1);
+            }
+            admit(selected, value);
+            return null;
+        });
     }
 
-    /** Target must be a declared outbound edge of the executing actor. */
     public void forwardTo(String target, M value) {
-        admit(graph.forwardTo(currentSource(), target), value);
+        inLiveRoutingGeneration(() -> {
+            admit(graph.forwardTo(currentSource(), target), value);
+            return null;
+        });
     }
 
-    /** Stable, strict UTF-8 routing under this immutable graph generation. */
     public void forwardByKey(String key, M value) {
-        admit(graph.forwardByKey(currentSource(), key), value);
+        inLiveRoutingGeneration(() -> {
+            admit(graph.forwardByKey(currentSource(), key), value);
+            return null;
+        });
     }
 }
