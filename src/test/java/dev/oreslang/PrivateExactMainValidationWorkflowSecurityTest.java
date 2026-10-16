@@ -290,7 +290,10 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         assertTrue(hasExactLine(runner, 10, "ref: " + "$" + "{{ inputs.candidate_sha }}"));
         for (String required : new String[] {
                 "DenoCliDefaultPermissionsTest",
-                "RuntimePermissionsNetworkAuditTest", "ScopedPermissionInteropTest",
+                "RuntimePermissionsNetworkAuditTest", "RuntimePermissionsTest",
+                "RuntimePermissionsExplicitPolicyTest",
+                "IsolatePolicySerializationAuditTest", "ScopedPermissionInteropTest",
+                "mvn -B -ntp -Dores.runtime.carriers=native",
                 "mvn -B -ntp -Dores.runtime.carriers=native verify",
                 "-Pnative-aot", "-Pnative-hybrid", "-Pnative-isolate"
         }) {
