@@ -259,4 +259,24 @@ final class ActorSealedStateAdmissionHardeningTest {
                 Parser.parse("define actor Pair as "
                         + "state { z: int = 1; a: bool = true; } end")));
     }
+
+    @Test void wrappedTypedMapRejectsMalformedNestedRecordLayout() {
+        Ast.Program parsed = Parser.parse("define actor A as "
+                + "state: Map<string,int> { value: int = 0; } end");
+        Ast.FieldDecl state = ((Ast.ClassDecl) parsed.modules().getFirst()
+                .declarations().getFirst()).fields().getFirst();
+        Ast.TypeRef valueField = new Ast.TypeRef("$field$value",
+                List.of(Ast.TypeRef.simple("int")), false);
+        Ast.TypeRef duplicate = new Ast.TypeRef("$record$",
+                List.of(valueField, valueField), false);
+        Ast.TypeRef forgedMap = new Ast.TypeRef("$actor_state_map$",
+                List.of(state.type().arguments().getFirst(), duplicate), false);
+        Ast.FieldDecl changed = new Ast.FieldDecl(state.name(),
+                state.visibility(), state.bindingKind(), forgedMap,
+                state.annotations(), state.initializer(), state.mutableReferent());
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> ActorStateContract.verify(replaceStateField(parsed, changed)));
+        assertTrue(denied.getMessage().contains("malformed sealed actor state record schema"),
+                denied::getMessage);
+    }
 }
