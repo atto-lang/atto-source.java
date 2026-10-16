@@ -15,13 +15,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class SendableActorBoundaryTest {
 
     @Test
-    void validLocalActorReferenceMayAppearInTypedSupervisorMailbox() {
+    void sourceActorRefPayloadFailsClosedUntilLocalCapabilityTransferExists() {
+        IllegalArgumentException rejected = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Child as
+                          receive(ActorMail<String> mail): void { return; }
+                        end
+                        define actor Supervisor as
+                          receive(ActorMail<ActorRef<Child>> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(rejected.getMessage().contains("proven local Sendable capability transport"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void ordinaryOwnedDataRemainsSendableToLocalActor() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define actor Child as
-                  receive(ActorMail<String> mail): void { return; }
-                end
                 define actor Supervisor as
-                  receive(ActorMail<ActorRef<Child>> mail): void { return; }
+                  receive(ActorMail<Option<String>> mail): void { return; }
                 end
                 """)));
     }
