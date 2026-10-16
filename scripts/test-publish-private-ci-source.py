@@ -74,7 +74,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
-            "repos/trusted/ci/git/refs": {"ref": "refs/heads/ci/oreslang-test"},
+            "repos/trusted/ci/git/refs": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"type": "commit", "sha": A}},
+            "repos/trusted/ci/git/ref/heads/ci/oreslang-test": {
+                "ref": "refs/heads/ci/oreslang-test",
+                "object": {"type": "commit", "sha": A}},
         }
         if route not in mapping:
             raise AssertionError("unexpected or cross-repository GitHub API route " + route)
@@ -351,6 +356,55 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes[2][2]["base_tree"], B)
         self.assertEqual(writes[3][2]["tree"], E)
         self.assertTrue(all(r.startswith("repos/trusted/ci") for _, r, _ in writes))
+
+    def test_new_branch_ref_must_confirm_the_created_commit_sha(self):
+        base = self.fake_api
+        for value in [
+            {"ref": "refs/heads/ci/oreslang-test"},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "commit", "sha": B}},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "tree", "sha": A}},
+            {"ref": "refs/heads/main",
+             "object": {"type": "commit", "sha": A}},
+        ]:
+            with self.subTest(value=value):
+                self.route_calls.clear()
+                def swapped(route, method="GET", payload=None):
+                    if method == "POST" and route == "repos/trusted/ci/git/refs":
+                        return value
+                    return base(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=swapped):
+                    with self.assertRaisesRegex(pub.Denied, "exact new CI ref"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root)
+                self.assertFalse(any(r == "repos/trusted/ci/git/ref/heads/ci/oreslang-test"
+                                     for _, r, _ in self.route_calls))
+
+    def test_new_branch_readback_must_match_verified_commit(self):
+        base = self.fake_api
+        for value in [
+            {"ref": "refs/heads/ci/oreslang-test"},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "commit", "sha": B}},
+            {"ref": "refs/heads/ci/oreslang-test",
+             "object": {"type": "tree", "sha": A}},
+            {"ref": "refs/heads/other",
+             "object": {"type": "commit", "sha": A}},
+        ]:
+            with self.subTest(value=value):
+                self.route_calls.clear()
+                def swapped(route, method="GET", payload=None):
+                    if method == "GET" and route == "repos/trusted/ci/git/ref/heads/ci/oreslang-test":
+                        return value
+                    return base(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=swapped):
+                    with self.assertRaisesRegex(pub.Denied, "does not point"):
+                        pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                                    self.root)
+                self.assertEqual(
+                    sum(1 for method, route, _ in self.route_calls
+                        if method == "POST" and route == "repos/trusted/ci/git/refs"), 1)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
