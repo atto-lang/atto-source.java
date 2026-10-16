@@ -55,6 +55,7 @@ public final class ActorPipelineRoutePlan {
      * Never use UTF-16 code-unit counts or lossy UTF-8 replacement here. */
     private static boolean validComponent(String component, boolean optional) {
         if (component.isEmpty()) return optional;
+        if (component.length() > MAX_NAME_BYTES) return false;
         if (component.indexOf('\0') >= 0) return false;
         try {
             ByteBuffer bytes = StandardCharsets.UTF_8.newEncoder()
