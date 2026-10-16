@@ -374,6 +374,32 @@ def verify_exact_source_snapshot(source, trusted_root, files, commit, tree):
     return tree
 
 
+def verify_upstream_commit_tree(commit, expected_tree, relative_directory):
+    """Bind the local snapshot to the immutable original private GitHub tree."""
+    valid_sha(commit)
+    valid_sha(expected_tree)
+    commit_data = gh_api(f"repos/{SOURCE_REPOSITORY}/git/commits/{commit}")
+    root_tree = valid_sha(commit_data.get("tree", {}).get("sha"))
+    current = root_tree
+    if relative_directory:
+        for name in relative_directory.split("/"):
+            if not name or name in (".", ".."):
+                raise Denied("invalid source subtree path")
+            listing = gh_api(f"repos/{SOURCE_REPOSITORY}/git/trees/{current}")
+            entries = listing.get("tree")
+            if listing.get("truncated") is not False or not isinstance(entries, list):
+                raise Denied("original source tree listing unavailable or truncated")
+            candidates = [x for x in entries if isinstance(x, dict)
+                          and x.get("path") == name]
+            if len(candidates) != 1 or candidates[0].get("type") != "tree":
+                raise Denied("source subtree absent from original private repository")
+            if candidates[0].get("mode") != "040000":
+                raise Denied("source subtree has unexpected Git mode")
+            current = valid_sha(candidates[0].get("sha"))
+    if current != expected_tree:
+        raise Denied("source subtree not attested by original GitHub commit")
+
+
 def publish(repository, source, branch, trusted_root,
             source_commit=None, source_tree=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
@@ -394,6 +420,10 @@ def publish(repository, source, branch, trusted_root,
     files = collect_source(source, trusted_root)
     expected_source_tree = verify_exact_source_snapshot(
         source, trusted_root, files, source_commit, source_tree)
+    relative_source = resolved_source.relative_to(trusted).as_posix()
+    verify_upstream_commit_tree(
+        source_commit, expected_source_tree,
+        "" if relative_source == "." else relative_source)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
