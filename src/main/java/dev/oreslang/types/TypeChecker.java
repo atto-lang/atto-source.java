@@ -8157,7 +8157,7 @@ public final class TypeChecker {
                 }
                 if (!isRuntimeMapValueSource(ref.arguments().get(1))) {
                     throw new IllegalArgumentException(
-                            "v1 Map value type must be a runtime-reifiable scalar: int, bool, String or Symbol");
+                            "Map value type must be recursively runtime-reifiable: int, bool, String, Symbol, Option or Result");
                 }
                 Type key = resolve(ref.arguments().getFirst(), generics, self);
                 Type value = resolve(ref.arguments().get(1), generics, self);
@@ -8762,10 +8762,20 @@ public final class TypeChecker {
     }
 
     private boolean isRuntimeMapValueSource(Ast.TypeRef ref) {
-        if (ref.inferArguments() || !ref.arguments().isEmpty() || ref.isUnion()
-                || ref.isBorrow()) return false;
-        return Set.of("int", "bool", "Bool", "String", "string", "Symbol")
-                .contains(ref.name());
+        if (ref.inferArguments() || ref.isUnion() || ref.isBorrow()
+                || ref.isTupleType() || ref.isRecordType()) return false;
+        if (ref.arguments().isEmpty()) {
+            return Set.of("int", "bool", "Bool", "String", "string", "Symbol")
+                    .contains(ref.name());
+        }
+        if (ref.name().equals("Option") && ref.arguments().size() == 1) {
+            return isRuntimeMapValueSource(ref.arguments().getFirst());
+        }
+        if (ref.name().equals("Result") && ref.arguments().size() == 2) {
+            return isRuntimeMapValueSource(ref.arguments().get(0))
+                    && isRuntimeMapValueSource(ref.arguments().get(1));
+        }
+        return false;
     }
 
     private boolean isRuntimeMapKeyAtom(Ast.TypeRef ref) {
