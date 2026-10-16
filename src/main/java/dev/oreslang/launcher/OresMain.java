@@ -18,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -91,6 +92,7 @@ public final class OresMain {
         List<IsolatePolicy.Capability> additionalCapabilities = new ArrayList<>();
         Set<String> allowedHostClasses = new LinkedHashSet<>();
         String filename = null;
+        String projectRootOverride = null;
 
         for (String arg : args) {
             try {
@@ -101,6 +103,12 @@ public final class OresMain {
                 else if (arg.equals("--core-debug")) coreDebug = true;
                 else if (arg.equals("--no-core-debug")) coreDebug = false;
                 else if (arg.equals("--build-analysis")) buildAnalysis = true;
+                else if (arg.startsWith("--project-root=")) {
+                    projectRootOverride = arg.substring("--project-root=".length());
+                    if (projectRootOverride.isBlank()) {
+                        throw new UsageException("--project-root requires a directory");
+                    }
+                }
                 else if (arg.equals("--no-prompt")) {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
@@ -157,6 +165,11 @@ public final class OresMain {
             throw new UsageException("--check and --build-analysis are mutually exclusive");
         }
 
+        Map<String, String> projectEnvironment = new HashMap<>(System.getenv());
+        if (projectRootOverride != null) {
+            projectEnvironment.put(OresProjectConfig.ENV_PROJECT_ROOT, projectRootOverride);
+        }
+
         CorePerf.configure(corePerf);
         CoreDebug.configure(coreDebug);
         try {
@@ -168,7 +181,7 @@ public final class OresMain {
         if (filename == null) {
             OresProjectConfig project = OresProjectConfig.discover(
                     Path.of("").toAbsolutePath().normalize(),
-                    System.getenv());
+                    projectEnvironment);
             path = project.mainEntrypoint().orElse(null);
             if (path == null) {
                 printUsage();
@@ -223,7 +236,7 @@ public final class OresMain {
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
                 OresCompiler.validateForIsolate(source, policy);
             }
-            Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
+            Map<String, String> defines = BuildOptions.mergeDefines(projectEnvironment, buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
             TreeShaker.Result result = OresCompiler.compileForBuild(
                     directOresSource,
@@ -244,7 +257,7 @@ public final class OresMain {
             try {
                 LinkedProgramRunner.validate(
                         path,
-                        System.getenv(),
+                        projectEnvironment,
                         policy,
                         permissionCheckMode);
             } catch (Exception error) {
@@ -262,7 +275,7 @@ public final class OresMain {
                 permissionCheckMode,
                 profile,
                 allowedHostClasses,
-                System.getenv(),
+                projectEnvironment,
                 System.out,
                 System.err).exitStatus();
         return exitStatus;
@@ -333,7 +346,7 @@ public final class OresMain {
                         + "[--allow-ffi[=PATH,...]] [--deny-ffi[=PATH,...]] "
                         + "[--allow-import[=PATH,...]] [--deny-import[=PATH,...]] "
                         + "[--no-prompt] [--define=name=value ...] [--entry=symbol ...] "
-                        + "[--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
+                        + "[--project-root=DIR] [--strict-isolate] [--core-perf|--no-core-perf] [--core-debug|--no-core-debug] [--mode=aot|jit|hybrid] "
                         + "[--platform=server|windows|macos|linux|android|ios] "
                         + "[--allow=CAP,...] [--allow-host-class=java.util.ArrayList ...] "
                         + "[file.ores|file.java]");
