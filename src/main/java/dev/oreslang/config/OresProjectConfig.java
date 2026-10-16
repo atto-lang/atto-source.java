@@ -188,6 +188,14 @@ public final class OresProjectConfig {
         if (!packageManifest && !MANIFEST_NAME.equals(manifestName)) {
             throw new IllegalArgumentException("unsupported Oreslang manifest: " + absoluteManifest);
         }
+        // A .ores.pkg.toml is root authority, not just configuration text:
+        // importing a foreign manifest through a symlink must not grant a
+        // different directory's contents authority over this +/ namespace.
+        if (packageManifest && !absoluteManifest.toRealPath().getParent()
+                .equals(absoluteManifest.getParent().toRealPath())) {
+            throw new IllegalArgumentException(
+                    ".ores.pkg.toml must physically reside within its package directory");
+        }
         TomlParseResult toml = Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
