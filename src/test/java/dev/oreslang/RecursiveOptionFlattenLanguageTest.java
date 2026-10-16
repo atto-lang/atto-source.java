@@ -32,6 +32,22 @@ final class RecursiveOptionFlattenLanguageTest {
     }
 
     @Test
+    void flattenMovesAffineOptionExactlyOnce() {
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                        end
+
+                        fnc bad(): void {
+                          val Option<Option<Box>> nested = Some(Some(new Box()));
+                          val Option<Box> first = nested.flatten();
+                          val Option<Box> second = nested.flatten();
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void explicitFlattenCollapsesNestedOptionsWithoutCollapsingByDefault() throws Exception {
         String program = """
                 pub fnc main(): void {
