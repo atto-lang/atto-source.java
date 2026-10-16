@@ -101,6 +101,13 @@ public final class SupervisorFailureControl {
         }
         this.handler = handler;
         scheduleLocked();
+        // A synchronous dispatcher rejection is an installation failure.
+        // Never acknowledge CONTROL handler installation if queued notices
+        // were already abandoned on a failed dispatch attempt.
+        if (handlerFailure != null) {
+            throw new IllegalStateException(
+                    "supervisor CONTROL handler dispatch failed", handlerFailure);
+        }
     }
 
     /** Runtime-only publication; public callers cannot forge terminal CONTROL. */
