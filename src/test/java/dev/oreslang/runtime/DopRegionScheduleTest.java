@@ -56,6 +56,35 @@ final class DopRegionScheduleTest {
                 () -> new DopRegionSchedule.Task("bad", java.util.Arrays.asList((DopRegionSchedule.Access) null)));
     }
 
+
+    @Test
+    void exhaustiveReferenceCellOracleMatchesNativeRules() {
+        var root = DopRegionSchedule.Root.trustedCreate(5, 2);
+        var modes = DopRegionSchedule.Mode.values();
+        for (int fa = 0; fa < 2; fa++)
+        for (int fb = 0; fb < 2; fb++)
+        for (int aa = 0; aa <= 5; aa++)
+        for (int az = aa; az <= 5; az++)
+        for (int ba = 0; ba <= 5; ba++)
+        for (int bz = ba; bz <= 5; bz++)
+        for (var ma : modes)
+        for (var mb : modes) {
+            var a = DopRegionSchedule.Access.rows(root, fa, aa, az-aa, ma,
+                    ma == DopRegionSchedule.Mode.REDUCE ? "sum" : null);
+            var b = DopRegionSchedule.Access.rows(root, fb, ba, bz-ba, mb,
+                    mb == DopRegionSchedule.Mode.REDUCE ? "sum" : null);
+            boolean intersects = false;
+            for (int row = 0; row < 5; row++) {
+                if (fa == fb && row >= aa && row < az && row >= ba && row < bz)
+                    intersects = true;
+            }
+            boolean expected = !intersects ||
+                    (ma == DopRegionSchedule.Mode.READ && mb == DopRegionSchedule.Mode.READ);
+            assertEquals(expected, DopRegionSchedule.independent(a, b));
+            assertEquals(expected, DopRegionSchedule.independent(b, a));
+        }
+    }
+
     @Test
     void graphLevelsPreserveEveryEarlierConflictInInputOrder() {
         var r = DopRegionSchedule.Root.trustedCreate(10, 3);
