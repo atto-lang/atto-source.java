@@ -382,7 +382,7 @@ public final class LinkedProgramRunner {
             int depth) throws IOException {
         Path normalized = unit.toAbsolutePath().normalize();
         String id = unitId(normalized);
-        // A physical file cannot be compiled with two different @/ or pkg:
+        // A physical file cannot be compiled with two different +/ or pkg:
         // namespaces. Otherwise traversal order silently changes its imports.
         OresProjectConfig.ImportContext context = projectConfig.importContext();
         OresProjectConfig.ImportContext previous = sourceContexts.putIfAbsent(id, context);
