@@ -724,6 +724,79 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void nativeIsolateSelectionRejectsInvalidArtifactsInRealBash() throws Exception {
+        // Execute the actual trusted-workflow shell fragment. Structural
+        // assertions alone previously missed Bash's set -e exceptions for
+        // a failed AND-list followed by a successful array append.
+        for (String workflowFile : new String[] {
+                ".github/workflows/private-exact-main-validation.yml",
+                ".github/workflows/private-exact-candidate-validation.yml"
+        }) {
+            String workflow = Files.readString(Path.of(workflowFile));
+            String stage = workflow.substring(
+                    workflow.indexOf("      - name: Strict polyglot isolate "));
+            String first = "          test -d target && test ! -L target";
+            String last = "          echo \"VERIFIED_ISOLATE_LIBRARY=$lib\"";
+            int start = stage.indexOf(first);
+            int end = stage.indexOf(last);
+            assertTrue(start >= 0 && end > start, "missing isolate selection shell code");
+            String program = "set -euo pipefail\n"
+                    + stage.substring(start, end + last.length()) + "\n";
+
+            for (int i = 0; i < 10; i++) {
+                Path temp = Files.createTempDirectory("ores-isolate-library-proof-");
+                try {
+                    Path target = temp.resolve("target");
+                    if (i < 7) {
+                        Files.createDirectory(target);
+                    }
+                    switch (i) {
+                        case 0 -> Files.write(target.resolve("oresvm.so"), new byte[] {1});
+                        case 1 -> Files.write(target.resolve("liboresvm.so"), new byte[] {1});
+                        case 2 -> {
+                            Files.write(target.resolve("oresvm.so"), new byte[] {1});
+                            Files.write(target.resolve("liboresvm.so"), new byte[] {1});
+                        }
+                        case 3 -> {
+                            Files.write(temp.resolve("real.so"), new byte[] {1});
+                            Files.createSymbolicLink(target.resolve("oresvm.so"),
+                                    Path.of("../real.so"));
+                        }
+                        case 4 -> Files.createSymbolicLink(
+                                target.resolve("oresvm.so"), Path.of("missing.so"));
+                        case 5 -> Files.createDirectory(target.resolve("oresvm.so"));
+                        case 6 -> Files.write(target.resolve("oresvm.so"), new byte[0]);
+                        case 7 -> { /* missing target */ }
+                        case 8 -> {
+                            Files.createDirectory(temp.resolve("real-target"));
+                            Files.createSymbolicLink(target, Path.of("real-target"));
+                        }
+                        case 9 -> Files.write(target, new byte[] {1});
+                        default -> throw new AssertionError("unexpected fixture");
+                    }
+                    Process shell = new ProcessBuilder("bash", "-c", program)
+                            .directory(temp.toFile())
+                            .redirectErrorStream(true)
+                            .start();
+                    String output = new String(shell.getInputStream().readAllBytes(),
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    int exitCode = shell.waitFor();
+                    assertEquals(i < 2, exitCode == 0,
+                            "isolate selection exit status for fixture " + i + " in "
+                                    + workflowFile + ": " + output);
+                } finally {
+                    try (var files = Files.walk(temp)) {
+                        for (Path candidate : files.sorted(
+                                java.util.Comparator.reverseOrder()).toList()) {
+                            Files.deleteIfExists(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
