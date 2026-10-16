@@ -294,10 +294,11 @@ public final class OresProjectConfig {
         if (importedSource == null) {
             throw new IllegalArgumentException("imported source path cannot be null");
         }
-        if (importPath == null || !importPath.startsWith("pkg:")) {
+        String normalizedImport = importPath == null ? null : importPath.replace('\\\\', '/');
+        if (normalizedImport == null || !normalizedImport.startsWith("pkg:")) {
             throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
         }
-        String remainder = importPath.substring("pkg:".length());
+        String remainder = normalizedImport.substring("pkg:".length());
         int slash = remainder.indexOf('/');
         if (slash <= 0 || slash == remainder.length() - 1) {
             throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
