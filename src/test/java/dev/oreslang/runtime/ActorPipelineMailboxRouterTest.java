@@ -149,6 +149,52 @@ final class ActorPipelineMailboxRouterTest {
     }
 
     @Test
+    void actorTurnsCannotInstallTheirOwnGraphOrSpoofAnotherPipelineSource()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorPipelineMailboxRouter<String>> attached =
+                    new AtomicReference<>();
+            AtomicInteger registrationDenied = new AtomicInteger();
+            AtomicInteger spoofDenied = new AtomicInteger();
+            CountDownLatch checked = new CountDownLatch(1);
+            var a = runtime.<String>spawnShared(() -> (message, actor) -> {
+                try {
+                    attached.get().forwardTo("worker-b", "spoofed");
+                } catch (IllegalArgumentException denied) {
+                    spoofDenied.incrementAndGet();
+                }
+                checked.countDown();
+            });
+            var b = runtime.<String>spawnShared(() -> (message, actor) -> { });
+            AtomicReference<ActorRuntime.ActorRef<String>> producerRef =
+                    new AtomicReference<>();
+            var producer = runtime.<String>spawnShared(() -> (message, actor) -> {
+                try {
+                    new ActorPipelineMailboxRouter<>(runtime, graph(),
+                            Map.of("producer", producerRef.get(),
+                                    "worker-a", a, "worker-b", b));
+                } catch (SecurityException denied) {
+                    registrationDenied.incrementAndGet();
+                }
+                attached.get().forwardTo("worker-a", "check");
+            });
+            producerRef.set(producer);
+            attached.set(new ActorPipelineMailboxRouter<>(runtime, graph(),
+                    Map.of("producer", producer, "worker-a", a, "worker-b", b)));
+            producer.send("start");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertEquals(1, registrationDenied.get());
+            assertEquals(1, spoofDenied.get());
+            producer.stop();
+            a.stop();
+            b.stop();
+            producer.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void bindingRejectsMissingDuplicateAndForeignActorIdentities() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
