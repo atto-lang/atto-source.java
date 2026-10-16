@@ -17,7 +17,7 @@ public final class ActorRuntime {
     public static final class ActorRef<M> {
         private final ActorId id = new ActorId(UUID.randomUUID());
         private boolean alive = true;
-        private final List<M> received = new ArrayList<>();
+        private final List<M> received = Collections.synchronizedList(new ArrayList<>());
         public ActorId id() { return id; }
         public boolean isAlive() { return alive; }
         public void stop() { alive = false; }
@@ -163,11 +163,77 @@ public final class RouterHarness {
     }
 }
 JAVA
+# Synthetic multi-carrier race (test double only): verifies router's read/write
+# retirement barrier, NOT the runtime's single-flight actor execution.
+cat > "$tmp/src/dev/oreslang/runtime/RetirementRaceHarness.java" <<'JAVA'
+package dev.oreslang.runtime;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+public final class RetirementRaceHarness {
+    public static void main(String[] args) throws Exception {
+        for (int round = 0; round < 40; round++) {
+            var runtime = new ActorRuntime();
+            var source = new ActorRuntime.ActorRef<String>();
+            var a = new ActorRuntime.ActorRef<String>();
+            var b = new ActorRuntime.ActorRef<String>();
+            var graph = new ActorPipelineRoutePlan(List.of(
+                    new ActorPipelineRoutePlan.Edge("src", "a", "Event"),
+                    new ActorPipelineRoutePlan.Edge("src", "b", "Event")));
+            var router = new ActorPipelineMailboxRouter<>(runtime, graph,
+                    Map.of("src", source, "a", a, "b", b));
+            var closed = new AtomicBoolean();
+            var acceptedAfterClose = new AtomicInteger();
+            var unexpected = new AtomicInteger();
+            var start = new CountDownLatch(1);
+            var workers = new ArrayList<Thread>();
+            for (int t = 0; t < 8; t++) {
+                var worker = new Thread(() -> {
+                    runtime.enter(source, ActorRuntime.ActorKind.SHARED);
+                    try {
+                        start.await();
+                        for (int i = 0; i < 1200; i++) {
+                            boolean startedAfterClose = closed.get();
+                            try {
+                                router.forwardRoundRobin("value");
+                                if (startedAfterClose) acceptedAfterClose.incrementAndGet();
+                            } catch (IllegalStateException expected) {
+                                // Retiring/retired state must deny, never wait.
+                            } catch (RuntimeException wrong) {
+                                unexpected.incrementAndGet();
+                            }
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        unexpected.incrementAndGet();
+                    } finally {
+                        runtime.leave();
+                    }
+                });
+                workers.add(worker);
+                worker.start();
+            }
+            start.countDown();
+            Thread.sleep(1);
+            router.close();
+            closed.set(true);
+            for (Thread worker : workers) worker.join();
+            if (acceptedAfterClose.get() != 0 || unexpected.get() != 0) {
+                throw new AssertionError("post-close routed admission at round " + round);
+            }
+        }
+        System.out.println(
+                "ORES_PIPELINE_ROUTER_CLOSE_RACE_PASS rounds=40 threads=8 attempts=384000");
+    }
+}
+JAVA
 # Compile the real production router source, never a copy of its methods.
 javac --release 21 -Xlint:all -Werror -d "$tmp/classes" \
     "$tmp/src/dev/oreslang/runtime/ActorRuntime.java" \
     "$tmp/src/dev/oreslang/runtime/OresScheduler.java" \
     "$tmp/src/dev/oreslang/runtime/ActorPipelineRoutePlan.java" \
     src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java \
-    "$tmp/src/dev/oreslang/runtime/RouterHarness.java"
+    "$tmp/src/dev/oreslang/runtime/RouterHarness.java" \
+    "$tmp/src/dev/oreslang/runtime/RetirementRaceHarness.java"
 java -cp "$tmp/classes" dev.oreslang.runtime.RouterHarness
+java -cp "$tmp/classes" dev.oreslang.runtime.RetirementRaceHarness
