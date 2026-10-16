@@ -448,7 +448,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                  "tree": [{"path": pub.PREFIX, "type": "tree",
                            "mode": "040000", "sha": D}]}
         invalid = [
-            {},
+            None, [], "malformed", 0, {},
             {"sha": C, "truncated": False, "tree": valid["tree"]},
             {"sha": E, "truncated": True, "tree": valid["tree"]},
             {"sha": E, "truncated": False, "tree": None},
