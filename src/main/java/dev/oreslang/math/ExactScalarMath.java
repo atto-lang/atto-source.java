@@ -21,6 +21,20 @@ public final class ExactScalarMath {
 
     private ExactScalarMath() { }
 
+    /** Admit an exact integer carrier without silent truncation or unbounded limbs. */
+    public static BigInteger admitInteger(Number value) {
+        BigInteger result = toBigInteger(Objects.requireNonNull(value, "integer"));
+        validate(result);
+        return result;
+    }
+
+    /** Admit an exact decimal carrier, rejecting binary floats and excess scale. */
+    public static BigDecimal admitDecimal(Number value) {
+        BigDecimal result = toDecimal(Objects.requireNonNull(value, "decimal"));
+        validate(result);
+        return result;
+    }
+
     public static Number evaluate(Number left, Number right, char operator) {
         Objects.requireNonNull(left, "left");
         Objects.requireNonNull(right, "right");
