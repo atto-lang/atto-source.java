@@ -73,6 +73,49 @@ final class SendableActorBoundaryTest {
     }
 
     @Test
+    void unprovenNominalTypeIsRejectedRecursively() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<UnresolvedPayload> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(direct.getMessage().contains("no proven Sendable contract"), direct.getMessage());
+
+        IllegalArgumentException nested = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<Option<UnresolvedPayload>> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(nested.getMessage().contains("no proven Sendable contract"), nested.getMessage());
+    }
+
+    @Test
+    void runtimeOutputEnvelopeAndStreamAreNotOrdinaryMailboxPayloads() {
+        IllegalArgumentException output = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<ActorOutput<int>> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(output.getMessage().contains("ActorMail/ActorOutput envelope"), output.getMessage());
+
+        IllegalArgumentException stream = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<ActorOutputStream<int>> mail): void { return; }
+                        end
+                        """)));
+        assertTrue(stream.getMessage().contains("ActorOutputStream runtime capability"),
+                stream.getMessage());
+    }
+
+    @Test
     void malformedBuiltinSumArityCannotBypassSendability() {
         IllegalArgumentException option = assertThrows(
                 IllegalArgumentException.class,
