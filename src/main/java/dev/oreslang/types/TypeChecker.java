@@ -227,6 +227,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("ChildProcManager")) {
+                throw new IllegalArgumentException("ChildProcManager is a reserved built-in actor base; "
+                        + "user-defined modules cannot impersonate a runtime process manager");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
@@ -239,7 +243,11 @@ public final class TypeChecker {
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
-                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
+                    if (iface.name().equals("ChildProcManager")) {
+                        throw new IllegalArgumentException("ChildProcManager is a reserved built-in actor base; "
+                                + "user-defined interfaces/contracts cannot impersonate a runtime process manager");
+                    }
+                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("ChildProcManager")) {
