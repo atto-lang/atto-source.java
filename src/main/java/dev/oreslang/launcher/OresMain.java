@@ -192,6 +192,14 @@ public final class OresMain {
         } else {
             try {
                 path = Path.of(filename);
+                // Explicit package selection also anchors relative CLI entry files.
+                // An absolute entry keeps its exact caller-supplied identity.
+                if (!path.isAbsolute() && projectEnvironment.containsKey(OresProjectConfig.ENV_PROJECT_ROOT)
+                        && !projectEnvironment.get(OresProjectConfig.ENV_PROJECT_ROOT).isBlank()) {
+                    OresProjectConfig selected = OresProjectConfig.discover(
+                            Path.of("").toAbsolutePath().normalize(), projectEnvironment);
+                    path = selected.projectRoot().resolve(path).normalize();
+                }
             } catch (java.nio.file.InvalidPathException invalidPath) {
                 throw new UsageException("invalid source path: " + invalidPath.getMessage());
             }
