@@ -425,4 +425,32 @@ final class OresProjectConfigTest {
         assertTrue(entrypoint.getMessage().contains("entrypoints.main"), entrypoint.getMessage());
     }
 
+
+    @Test
+    void explicitlyEmptySourceRootsDoNotSilentlyExposeProjectFiles() throws Exception {
+        Path project = temp.resolve("no-implicit-roots");
+        Files.createDirectories(project);
+        Path importer = project.resolve("main.ores");
+        Files.writeString(importer, "pub fnc main(): void { return; }");
+        Files.writeString(project.resolve("secret.ores"), "pub fnc secret(): int { return 7; }");
+        Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [source]
+                roots = []
+                """);
+        OresProjectConfig restricted = OresProjectConfig.discover(importer, Map.of());
+        assertTrue(restricted.sourceRoots().isEmpty());
+        assertTrue(restricted.resolveImport(importer, "secret").isEmpty());
+        assertEquals(project.resolve("secret.ores").toRealPath(),
+                restricted.resolveImport(importer, "@/secret").orElseThrow());
+
+        // Omitted roots preserve the legacy/default project-root lookup.
+        Files.writeString(manifest, "schema_version = \"1\"\n");
+        OresProjectConfig defaults = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(java.util.List.of(project.toAbsolutePath().normalize()), defaults.sourceRoots());
+        assertEquals(project.resolve("secret.ores").toRealPath(),
+                defaults.resolveImport(importer, "secret").orElseThrow());
+    }
+
 }
