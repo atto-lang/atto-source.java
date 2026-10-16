@@ -472,6 +472,29 @@ def verify_private_ci_ref(repository, branch, commit_sha, created):
         raise Denied("new private CI ref does not point to the verified commit")
 
 
+
+def verify_destination_root_tree(repository, root_tree_sha, source_tree_sha):
+    """Read back GitHub's root tree before committing any private CI branch.
+
+    The server-side overlay must contain exactly our attested source subtree
+    under the reserved prefix. A POST response SHA alone does not prove this.
+    """
+    valid_sha(root_tree_sha)
+    valid_sha(source_tree_sha)
+    listing = gh_api(f"repos/{repository}/git/trees/{root_tree_sha}")
+    if (listing.get("sha") != root_tree_sha
+            or listing.get("truncated") is not False
+            or not isinstance(listing.get("tree"), list)):
+        raise Denied("destination root tree identity or listing is unverified")
+    candidates = [entry for entry in listing["tree"]
+                  if isinstance(entry, dict) and entry.get("path") == PREFIX]
+    if (len(candidates) != 1
+            or candidates[0].get("type") != "tree"
+            or candidates[0].get("mode") != "040000"
+            or candidates[0].get("sha") != source_tree_sha):
+        raise Denied("destination root tree does not contain exact reviewed source subtree")
+
+
 def publish(repository, source, branch, trusted_root,
             source_commit=None, source_tree=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
@@ -543,6 +566,10 @@ def publish(repository, source, branch, trusted_root,
                           {"path": PREFIX, "mode": "040000", "type": "tree",
                            "sha": isolated_sha}]})
     new_tree_sha = valid_sha(new_tree.get("sha"))
+    # Attest the server-created root before creating a destination commit.
+    # A compromised or incomplete root-tree response must never be published.
+    authorize_write()
+    verify_destination_root_tree(repository, new_tree_sha, isolated_sha)
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": "ci: source snapshot from approved private Oreslang checkout",
