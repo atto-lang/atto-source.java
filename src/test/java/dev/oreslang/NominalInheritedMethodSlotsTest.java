@@ -505,4 +505,84 @@ final class NominalInheritedMethodSlotsTest {
         assertTrue(rejected.getMessage().contains("requires multiple candidates"),
                 rejected::getMessage);
     }
+
+    @Test
+    void typedSelectionValidatesNondiscriminatorScalarArguments() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value, int count): int { return 11; }
+                end
+                define class Child extends Base as
+                    pub pick(Mode value, int count): int { return 22; }
+                end
+                """);
+        var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
+        var selected = NominalInheritedMethodSlots.selectResolved(
+                program, "Child", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                        dev.oreslang.types.Types.Primitive.INT), registry);
+        assertEquals("Base", selected.owner().name());
+        IllegalArgumentException badScalar = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                                dev.oreslang.types.Types.Primitive.STRING), registry));
+        assertTrue(badScalar.getMessage().contains("primitive parameter"),
+                badScalar::getMessage);
+        assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                                dev.oreslang.types.Types.Unknown.INSTANCE), registry));
+    }
+
+    @Test
+    void typedSelectionValidatesNondiscriminatorEnumArguments() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color first, Color second): int { return 11; }
+                end
+                define class Child extends Base as
+                    pub pick(Color first, Mode second): int { return 22; }
+                end
+                """);
+        var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
+        assertEquals("Child", NominalInheritedMethodSlots.selectResolved(
+                program, "Child", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                        new dev.oreslang.types.Types.Named("Mode", List.of())),
+                registry).owner().name());
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(dev.oreslang.types.Types.Unknown.INSTANCE,
+                                new dev.oreslang.types.Types.Named("Mode", List.of())),
+                        registry));
+        assertTrue(mismatch.getMessage().contains("selected nominal enum type"),
+                mismatch::getMessage);
+    }
+
+    @Test
+    void externalRegistryCannotForgeAnEnumCaseForTypedSelection() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color x): int { return 11; }
+                end
+                define class Child extends Base as
+                    pub pick(Mode x): int { return 22; }
+                end
+                """);
+        var fake = new dev.oreslang.types.TaggedMessageContracts.Registry(
+                Map.of("Color", new dev.oreslang.types.TaggedMessageContracts.EnumType(
+                        "Color", List.of(new dev.oreslang.types.TaggedMessageContracts.Case(
+                                "Color", "Invented", 999, null, null)))),
+                Map.of());
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(new dev.oreslang.types.Types.Named(
+                                "Color.Invented", List.of())), fake));
+        assertTrue(rejected.getMessage().contains("cannot prove nominal enum identity"),
+                rejected::getMessage);
+    }
 }
