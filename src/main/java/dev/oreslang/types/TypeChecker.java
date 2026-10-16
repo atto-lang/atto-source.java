@@ -4958,13 +4958,49 @@ public final class TypeChecker {
             return;
         }
 
+        // ActorRef<T> is a scoped *local* capability, not an Actor instance
+        // transported by value and never an implicit wire-serializable value.
+        // Validate the full nominal target before letting a nested actor-ref
+        // payload bypass the ordinary actor-instance rejection below.
+        if (named.name().equals("ActorRef")) {
+            actorClassForRef(named);
+            return;
+        }
+        if (named.name().equals("ActorId")) {
+            if (!named.arguments().isEmpty()) {
+                throw new IllegalArgumentException(where + " ActorId is not generic");
+            }
+            return;
+        }
+        if (named.name().equals("ActorMail")) {
+            throw new IllegalArgumentException(
+                    where + " cannot send an ActorMail envelope as data; "
+                            + "mailbox/supervisor metadata is created by the runtime");
+        }
+
+        // Validate every transitive constituent. Builtin sum types must have
+        // their exact parameter count; malformed arities are not Sendable even
+        // when their surviving type arguments are safe.
         for (Type argument : named.arguments()) {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
         }
 
-        // Built-in sum/container values are data-only when their arguments pass.
-        if (named.name().equals("Option") || named.name().equals("Result")
-                || named.name().equals("OptionUnwrapError")) {
+        if (named.name().equals("Option")) {
+            if (named.arguments().size() != 1) {
+                throw new IllegalArgumentException(where + " requires Option<T>");
+            }
+            return;
+        }
+        if (named.name().equals("Result")) {
+            if (named.arguments().size() != 2) {
+                throw new IllegalArgumentException(where + " requires Result<T, E>");
+            }
+            return;
+        }
+        if (named.name().equals("OptionUnwrapError")) {
+            if (!named.arguments().isEmpty()) {
+                throw new IllegalArgumentException(where + " OptionUnwrapError is not generic");
+            }
             return;
         }
 
