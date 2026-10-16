@@ -112,10 +112,15 @@ public final class NominalInheritedMethodSlots {
         }
         Map<String, String> knownEnumSymbols =
                 NominalEnumOverloads.eligibleEnumSymbols(program);
+        // Do not trust an externally supplied registry to authenticate
+        // Enum.Case names. A caller could forge a case under a real enum
+        // identity while the source program declares no such case.
+        TaggedMessageContracts.Registry localRegistry =
+                TaggedMessageContracts.forTypes(program);
         Map<Integer, String> proofs = new HashMap<>();
         for (int position : discriminators) {
             String symbol = NominalEnumOverloads.staticEnumArgumentSymbol(
-                    resolvedArguments.get(position), tagged, knownEnumSymbols);
+                    resolvedArguments.get(position), localRegistry, knownEnumSymbols);
             if (symbol == null) {
                 throw new IllegalArgumentException(
                         "cannot prove nominal enum identity from resolved argument "
@@ -123,7 +128,70 @@ public final class NominalInheritedMethodSlots {
             }
             proofs.put(position, symbol);
         }
-        return selectPlanned(plan, proofs);
+        Target target = selectPlanned(plan, proofs);
+        // Discriminators establish which overload is chosen, but not whether
+        // all remaining arguments are actually compatible with that target.
+        // Verify the full exact nominal/primitive signature before exposing
+        // the result. Widening, ownership and effect checks are still the
+        // responsibility of the integrated TypeChecker.
+        Slot slot = null;
+        for (Map.Entry<Slot, Target> entry : plan.entrySet()) {
+            if (entry.getValue() == target) {
+                slot = entry.getKey();
+                break;
+            }
+        }
+        if (slot == null) {
+            throw new IllegalStateException("selected nominal method lost its slot");
+        }
+        for (int position = 0; position < arity; position++) {
+            var required = slot.positions().get(position);
+            Types.Type actual = resolvedArguments.get(position);
+            if (required.kind() == NominalEnumOverloads.Kind.ENUM) {
+                String actualEnum = NominalEnumOverloads.staticEnumArgumentSymbol(
+                        actual, localRegistry, knownEnumSymbols);
+                if (!required.id().equals(actualEnum)) {
+                    throw new IllegalArgumentException(
+                            "resolved argument " + (position + 1)
+                                    + " is not the selected nominal enum type");
+                }
+            } else {
+                String actualPrimitive = primitiveIdentity(actual);
+                if (!required.id().equals(actualPrimitive)) {
+                    throw new IllegalArgumentException(
+                            "resolved argument " + (position + 1)
+                                    + " is not the selected primitive parameter type");
+                }
+            }
+        }
+        return target;
+    }
+
+    /** This proof checks exact scalar identities only: language-level numeric
+     * promotions belong to the normal typed call checker, not overload
+     * selection. Unknown, unions, generic placeholders and borrow wrappers
+     * are deliberately not accepted as evidence. */
+    private static String primitiveIdentity(Types.Type argument) {
+        if (argument instanceof Types.Primitive primitive) {
+            return switch (primitive) {
+                case INT -> "int";
+                case BOOL -> "bool";
+                case STRING -> "string";
+                default -> null;
+            };
+        }
+        if (argument instanceof Types.Named named
+                && named.arguments().isEmpty()) {
+            return switch (named.name()) {
+                case "String" -> "string";
+                case "boolean" -> "bool";
+                case "bool", "int", "string", "uint",
+                        "i8", "u8", "i16", "u16", "i32", "u32",
+                        "i64", "u64", "f64" -> named.name();
+                default -> null;
+            };
+        }
+        return null;
     }
 
     private static Target selectPlanned(
