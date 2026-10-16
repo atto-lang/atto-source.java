@@ -109,4 +109,45 @@ final class ChildProcManagerActorContractTest {
         assertTrue(error.getMessage().contains("no process-spawning actor"));
     }
 
+    @Test
+    void interfaceCannotImpersonateReservedRuntimeBase() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        define interface ChildProcManager as
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("interfaces/contracts"));
+    }
+
+    @Test
+    void contractCannotImpersonateReservedRuntimeBase() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        define contract ChildProcManager as
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("interfaces/contracts"));
+    }
+
+    @Test
+    void moduleCannotImpersonateReservedRuntimeBase() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.checkTypes(Parser.parse("""
+                        define module ChildProcManager as
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("user-defined modules"));
+    }
+
+    @Test
+    void explicitRunGrantStillRequiresCoarseCapability() {
+        RuntimePermissions scoped = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.RUN, "/bin/echo");
+        assertTrue(scoped.allows(RuntimePermissions.Permission.RUN, "/bin/echo"));
+        assertFalse(IsolatePolicy.untrustedActor().capabilities()
+                .contains(IsolatePolicy.Capability.CHILD_PROCESS));
+        assertFalse(IsolatePolicy.developer().capabilities()
+                .contains(IsolatePolicy.Capability.CHILD_PROCESS));
+    }
+
 }
