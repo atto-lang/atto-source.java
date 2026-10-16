@@ -169,15 +169,18 @@ public final class StructuralTuplePolicy {
      */
     public static Selection selectExplicitTupleSpread(List<Candidate> family, Type source) {
         Objects.requireNonNull(family, "family");
+        // Freeze the caller's candidate list once: validation and selection
+        // must never traverse different snapshots of a mutable family.
+        List<Candidate> candidates = List.copyOf(family);
         if (!(source instanceof Tuple tuple) || tuple.kind() != TupleKind.TUPLE) {
             throw new IllegalArgumentException("spread needs a statically typed finite tuple");
         }
-        if (family.size() > MAX_FAMILY || tuple.elements().size() > MAX_ARITY) {
+        if (candidates.size() > MAX_FAMILY || tuple.elements().size() > MAX_ARITY) {
             throw new IllegalArgumentException("tuple overload proof exceeds bounded family/arity limits");
         }
         Set<Integer> usedArities = new HashSet<>();
         Set<String> usedIds = new HashSet<>();
-        for (Candidate candidate : family) {
+        for (Candidate candidate : candidates) {
             Objects.requireNonNull(candidate, "candidate");
             if (!usedIds.add(candidate.id())) {
                 throw new IllegalArgumentException("duplicate callable target identity in overload family");
@@ -187,13 +190,13 @@ public final class StructuralTuplePolicy {
                         "same-arity overload requires independent nominal-enum proof");
             }
         }
-        for (Candidate candidate : family) {
+        for (Candidate candidate : candidates) {
             if (candidate.arity() == tuple.elements().size()) {
                 return new Selection(candidate.id(), false);
             }
         }
         List<Candidate> eligible = new ArrayList<>();
-        for (Candidate candidate : family) {
+        for (Candidate candidate : candidates) {
             if (candidate.tupleParameter() != null
                     && admits(candidate.tupleParameter(), source)) eligible.add(candidate);
         }
