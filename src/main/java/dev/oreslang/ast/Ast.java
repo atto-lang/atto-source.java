@@ -5,19 +5,42 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
+    /**
+     * An identity-bound instance method call selected by the type checker.
+     * For now, the executable method ABI remains name + arity; nominal slots
+     * require a separately verified immutable slot and runtime ABI upgrade.
+     * The static receiver is declaration identity, not a runtime name.
+     */
+    public record MethodCallBinding(ClassDecl staticReceiver, MethodDecl declaredMethod) {
+        public MethodCallBinding {
+            java.util.Objects.requireNonNull(staticReceiver, "static method receiver");
+            java.util.Objects.requireNonNull(declaredMethod, "selected method");
+            if (declaredMethod.isStatic()) {
+                throw new IllegalArgumentException("instance method binding cannot target static fnc");
+            }
+        }
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
-                          java.util.Map<CallExpr, FunctionDecl> boundDirectCalls) {
+                          java.util.Map<CallExpr, FunctionDecl> boundDirectCalls,
+                          java.util.Map<CallExpr, MethodCallBinding> boundMethodCalls) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
-            // AST records have *structural* equality: two syntactically equal
-            // call expressions must NOT share a binding by Map.equals/hashCode.
-            // Preserve identity keys and publish an immutable snapshot.
+            // AST records have structural equality: equal-looking call
+            // expressions from different call sites must not share a binding.
             boundDirectCalls = java.util.Collections.unmodifiableMap(
                     new java.util.IdentityHashMap<>(boundDirectCalls));
+            boundMethodCalls = java.util.Collections.unmodifiableMap(
+                    new java.util.IdentityHashMap<>(boundMethodCalls));
+        }
+        /** Keep all existing parser/compiler program construction sites working. */
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
+                       java.util.Map<CallExpr, FunctionDecl> boundDirectCalls) {
+            this(namespace, imports, modules, boundDirectCalls, java.util.Map.of());
         }
         public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
-            this(namespace, imports, modules, java.util.Map.of());
+            this(namespace, imports, modules, java.util.Map.of(), java.util.Map.of());
         }
         public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
