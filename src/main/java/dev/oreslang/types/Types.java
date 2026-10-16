@@ -10,7 +10,7 @@ public final class Types {
     public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
-        INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
+        INT, BIGINT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
     }
 
     public record Named(String name, List<Type> arguments) implements Type {
@@ -268,16 +268,32 @@ public final class Types {
     }
 
     private static boolean numericWidening(Type from, Type to) {
-        if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
-        if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
+        // Fixed-width integers widen exactly to BigInt and Decimal. Never
+        // silently narrow BigInt through binary floating point (2^53 loss).
+        if (from == Primitive.INT && (to == Primitive.BIGINT || to == Primitive.FLOAT
+                || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
+        if (from == Primitive.BIGINT && to == Primitive.DECIMAL) return true;
+        if (from == Primitive.FLOAT && to == Primitive.COMPLEX) return true;
         return false;
     }
 
     public static Type numericJoin(Type left, Type right) {
         if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
+        // BigInt cannot mix with float/complex implicitly: runtime correctly
+        // rejects that lossy conversion, so the checker must do likewise.
+        if ((left == Primitive.BIGINT && (right == Primitive.FLOAT || right == Primitive.COMPLEX))
+                || (right == Primitive.BIGINT && (left == Primitive.FLOAT || left == Primitive.COMPLEX))) {
+            return Unknown.INSTANCE;
+        }
+        // Decimal and float/complex require an explicit conversion.
+        if ((left == Primitive.DECIMAL && (right == Primitive.FLOAT || right == Primitive.COMPLEX))
+                || (right == Primitive.DECIMAL && (left == Primitive.FLOAT || left == Primitive.COMPLEX))) {
+            return Unknown.INSTANCE;
+        }
         if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
         if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
         if (left == Primitive.FLOAT || right == Primitive.FLOAT) return Primitive.FLOAT;
+        if (left == Primitive.BIGINT || right == Primitive.BIGINT) return Primitive.BIGINT;
         return Primitive.INT;
     }
 
@@ -300,6 +316,6 @@ public final class Types {
     }
 
     public static boolean isNumeric(Type type) {
-        return type == Primitive.INT || type == Primitive.FLOAT || type == Primitive.DECIMAL || type == Primitive.COMPLEX;
+        return type == Primitive.INT || type == Primitive.BIGINT || type == Primitive.FLOAT || type == Primitive.DECIMAL || type == Primitive.COMPLEX;
     }
 }
