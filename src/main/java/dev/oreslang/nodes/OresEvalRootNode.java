@@ -7887,16 +7887,25 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.ClassDecl privateAbstractSlotOwner(
                 Ast.ClassDecl klass, CallableSelector selector, Set<Ast.ClassDecl> visited) {
             if (!visited.add(klass)) return null;
+            // Search ancestors first: the original declaring superclass owns call authority.
+            // A redeclaration in a descendant must never grant that descendant access.
+            Ast.ClassDecl origin = null;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = dispatchParent(klass, parentRef);
+                if (parent == null) continue;
+                Ast.ClassDecl candidate = privateAbstractSlotOwner(parent, selector, visited);
+                if (candidate == null) continue;
+                if (origin != null && origin != candidate) {
+                    throw new SecurityException(
+                            "ambiguous private abstract slot authority in " + klass.name());
+                }
+                origin = candidate;
+            }
+            if (origin != null) return origin;
             for (Ast.MethodDecl method : klass.methods()) {
                 if (!method.isStatic() && method.isAbstract()
                         && method.visibility() == Ast.Visibility.PRIVATE
                         && selector.matches(method)) return klass;
-            }
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                Ast.ClassDecl parent = dispatchParent(klass, parentRef);
-                if (parent == null) continue;
-                Ast.ClassDecl owner = privateAbstractSlotOwner(parent, selector, visited);
-                if (owner != null) return owner;
             }
             return null;
         }
