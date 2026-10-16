@@ -315,4 +315,41 @@ final class OresProjectConfigTest {
                 () -> config.resolveImport(project.resolve("main.ores"), "pkg:tools/src/hello"));
     }
 
+
+    @Test
+    void malformedDeclaredSourceAndDependencyTablesFailBeforeCompilation() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [source]
+                roots = "src"
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+
+        Files.writeString(manifest, """
+                schema_version = "1"
+                dependencies = ["acme/tools"]
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+    }
+
+    @Test
+    void nonStringInstallDirectoryIsNotSilentlyReplacedWithDefault() throws Exception {
+        Path project = temp.resolve("malformed-install");
+        Files.createDirectories(project);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                tools = "acme/tools"
+                """);
+        Files.writeString(project.resolve(".zpkg.toml"), """
+                [install]
+                dir = 123
+                """);
+        assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(project.resolve("main.ores"), Map.of()));
+    }
+
 }
