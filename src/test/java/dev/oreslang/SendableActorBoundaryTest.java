@@ -132,7 +132,7 @@ final class SendableActorBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<not int> mail): void { return; }
+                          receive(ActorMail<!int> mail): void { return; }
                         end
                         """)));
         assertTrue(negative.getMessage().contains("not actor-boundary sendable")
@@ -143,7 +143,7 @@ final class SendableActorBoundaryTest {
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define actor Worker as
-                          receive(ActorMail<Option<rt borrow int>> mail): void { return; }
+                          receive(ActorMail<Option<borrow int>> mail): void { return; }
                         end
                         """)));
         assertTrue(borrowed.getMessage().contains("concrete owned/sendable"),
