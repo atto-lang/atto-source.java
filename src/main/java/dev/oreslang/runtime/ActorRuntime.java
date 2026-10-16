@@ -3181,8 +3181,19 @@ public final class ActorRuntime implements AutoCloseable {
         ActorId creator = currentActorId().orElse(null);
         IsolatePolicy creatorPolicy =
                 currentActorPolicy() == null ? policyCeiling : currentActorPolicy();
-        if (creator != null && !actors.containsKey(creator)) {
-            throw new IllegalStateException("current actor is no longer registered");
+        if (creator != null) {
+            // A supervisor group is lifecycle authority, not an ordinary
+            // mutable collection. In particular UNTRUSTED actors with no
+            // ACTOR_SPAWN capability may not mint supervisor identities or
+            // reserve CONTROL queues without admitting any workers.
+            creatorPolicy.require(
+                    IsolatePolicy.Capability.ACTOR_SPAWN, "create an actor-owned supervisor group");
+            ActorCell<?> creatorCell = actors.get(creator);
+            if (creatorCell == null || creatorCell.stopped.get()
+                    || creatorCell.forceKillFenced) {
+                throw new IllegalStateException(
+                        "cannot create supervisor group from a stopping or unknown actor");
+            }
         }
 
         synchronized (runtimeLifecycleLock) {
