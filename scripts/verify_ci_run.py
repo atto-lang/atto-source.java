@@ -57,6 +57,22 @@ def _int(value, label):
     return value
 
 
+def _run_workflow_path_matches(actual, expected):
+    # GitHub returns workflow run 'path' as .github/workflows/foo.yml@main
+    # or with a refs/* qualifier (see the REST example). Match the exact
+    # trusted workflow *file*, not a suffix-sharing or arbitrary URL path.
+    if not isinstance(actual, str):
+        return False
+    if actual == expected:
+        return True
+    prefix = expected + "@"
+    if not actual.startswith(prefix):
+        return False
+    ref = actual[len(prefix):]
+    return bool(re.fullmatch(r"[A-Za-z0-9_./-]+", ref)
+                and not any(p in ("", ".", "..") for p in ref.split("/")))
+
+
 def _timestamp(value, label):
     # GitHub Actions reports UTC RFC3339 second-precision timestamps.
     if not isinstance(value, str) or not re.fullmatch(
@@ -158,7 +174,7 @@ def verify(fetch, backend, commit, tree, run_id, required_jobs, required_steps,
             or type(run_repo.get("id")) is not int or run_repo["id"] != repo_id
             or type(head_repo.get("id")) is not int or head_repo["id"] != repo_id
             or run.get("head_sha") != commit
-            or run.get("path") != workflow_path
+            or not _run_workflow_path_matches(run.get("path"), workflow_path)
             or run.get("status") != "completed"
             or run.get("conclusion") != "success"):
         raise Denied("workflow run is not a successful exact-repository HEAD execution")
