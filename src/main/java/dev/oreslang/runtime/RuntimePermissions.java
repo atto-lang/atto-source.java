@@ -312,11 +312,13 @@ public final class RuntimePermissions {
 
     /**
      * A bind to port 0 delegates the choice of port to the OS. It can only
-     * be admitted when the requested host is allowed without a port AND no
-     * denied port or address could be selected by that bind. Port 0 is an
-     * API sentinel, never a valid NET permission scope. A selected IPv4
-     * wildcard address (0.0.0.0) can listen on every local interface, so it
-     * requires an explicit wildcard request with no deny rules at all.
+     * be admitted when the requested host is allowed without a port AND
+     * there are no NET deny scopes. A denied hostname might alias the
+     * selected IP and the OS can choose any port; checking only a selected
+     * numeric address cannot prove that a hostname/port denial is respected.
+     * Port 0 is an API sentinel, never a valid NET permission scope.
+     * Wildcard IPv4 binds (0.0.0.0) are rejected because they expose every
+     * local interface rather than one authorized address.
      */
     public boolean allowsEphemeralNetworkBind(String requestedHost, String selectedIpv4) {
         if (!allows(Permission.NET, requestedHost)) return false;
@@ -331,26 +333,11 @@ public final class RuntimePermissions {
                 && !requested.host().equals(selected.host())) return false;
 
         Rule rule = rules.get(Permission.NET);
-        if (rule == null || rule.denyAll()
-                || matchesAny(Permission.NET, selected.canonical(), rule.denied())) return false;
-        // 0.0.0.0 is a wildcard bind, not a single interface: listening on
-        // it exposes every local IPv4 address, including any explicitly
-        // denied numeric address. Never approve it as the result of a
-        // narrower host request, and reject it when ANY deny rule exists:
-        // even a hostname/port deny may name one of the interfaces/ports
-        // the OS could select. The caller must bind a concrete interface
-        // or request separate reviewed authority to use wildcard binds.
-        if ("0.0.0.0".equals(selected.host())
-                && (!"0.0.0.0".equals(requested.host())
-                        || !rule.denied().isEmpty())) return false;
-        // A port-specific deny for the numeric destination is also relevant:
-        // the OS might choose exactly that port after our authorization check.
-        for (String denied : rule.denied()) {
-            NetworkScope blocked = parseNetworkScope(denied, true);
-            if (blocked != null && blocked.port() != null
-                    && networkHostMatches(selected, blocked)) return false;
-        }
-        return true;
+        // A port-zero bind may choose any port, and DNS aliases for a denied
+        // hostname are not enumerable from the selected address alone.
+        // Until a port-selection/alias-aware admission mechanism exists,
+        // fail closed on all NET denials (including unrelated-looking names).
+        return rule != null && !rule.denyAll() && rule.denied().isEmpty();
     }
 
     public boolean grantsAnything(Permission permission) {
