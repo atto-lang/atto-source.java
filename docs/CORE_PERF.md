@@ -83,3 +83,20 @@ jq -r 'select(.schema == "ores-core-perf.v1" and .kind == "phase")
 
 `--core-perf` is a diagnostic mode; timing and buffer writes themselves can
 perturb very short operations. Always compare both enabled and disabled runs.
+
+
+## Architecture boundary and backend parity
+
+CorePerf/CoreDebug are **host-owned diagnostic flight recorders**, not a guest
+standard-library logging API and not an implementation of OpenTelemetry.
+The shared cross-backend contract is tracked in
+[core logging / OTel separation](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/audit/core-logging-separation-2026-10-16/docs/CORE_LOGGING_AND_OTEL.md).
+Application code should import `oreslang-otel` explicitly and must guard expensive
+message construction with `should_log`. It currently serializes JSON and writes
+stdout synchronously; never call it from a scheduler, actor mailbox admission,
+GC or borrow-checking critical section.
+
+`--core-log-level` is a proposed future CLI flag, **not accepted today**.
+The implemented Java switches remain `--core-perf` and `--core-debug`.
+The LLVM, .NET, Forge and Wasm backends do not currently implement matching
+native logging/OTel features; do not infer runtime parity from this document.
