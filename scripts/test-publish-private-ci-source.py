@@ -99,8 +99,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             return {"sha": E if "base_tree" in payload else D}
         mapping = {
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
+            "repos/trusted/ci/git/trees/"+B: {
+                "sha": B, "truncated": False, "tree": [
+                    {"path": ".github", "mode": "040000", "type": "tree",
+                     "sha": C}]},
             "repos/trusted/ci/git/trees/"+E: {
                 "sha": E, "truncated": False, "tree": [
+                    {"path": ".github", "mode": "040000", "type": "tree",
+                     "sha": C},
                     {"path": pub.PREFIX, "mode": "040000", "type": "tree",
                      "sha": D}]},
             # The synthetic fixture reuses A for existing test compatibility.
@@ -130,6 +136,90 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, A, D)
+
+
+    def test_private_ci_preserves_existing_root_files_and_workflows(self):
+        base = {"sha": B, "truncated": False, "tree": [
+            {"path": ".github", "type": "tree", "mode": "040000", "sha": C},
+            {"path": "README.md", "type": "blob", "mode": "100644", "sha": A},
+            {"path": pub.PREFIX, "type": "tree", "mode": "040000", "sha": A},
+        ]}
+        published = {"sha": E, "truncated": False, "tree": [
+            {"path": ".github", "type": "tree", "mode": "040000", "sha": C},
+            {"path": "README.md", "type": "blob", "mode": "100644", "sha": A},
+            {"path": pub.PREFIX, "type": "tree", "mode": "040000", "sha": D},
+        ]}
+        def api(route):
+            return {f"repos/trusted/ci/git/trees/{B}": base,
+                    f"repos/trusted/ci/git/trees/{E}": published}[route]
+        with patch.object(pub, "gh_api", side_effect=api):
+            self.assertTrue(pub.verify_private_ci_preserves_root("trusted/ci", B, E, D))
+            # Replacing a stale source subtree is permitted only at PREFIX.
+
+    def test_private_ci_root_injection_or_mutation_is_rejected(self):
+        original_base = {"sha": B, "truncated": False, "tree": [
+            {"path": ".github", "type": "tree", "mode": "040000", "sha": C},
+            {"path": "README.md", "type": "blob", "mode": "100644", "sha": A},
+        ]}
+        original_new = {"sha": E, "truncated": False, "tree": [
+            {"path": ".github", "type": "tree", "mode": "040000", "sha": C},
+            {"path": "README.md", "type": "blob", "mode": "100644", "sha": A},
+            {"path": pub.PREFIX, "type": "tree", "mode": "040000", "sha": D},
+        ]}
+        variations = [
+            ("missing workflow", [{**original_new["tree"][0], "sha": A},
+                                    *original_new["tree"][1:]]),
+            ("injected workflow", [*original_new["tree"],
+                                  {"path": "new-workflow.yml", "type": "blob",
+                                   "mode": "100644", "sha": A}]),
+            ("removed readme", [original_new["tree"][0], original_new["tree"][2]]),
+            ("changed mode", [original_new["tree"][0],
+                              {**original_new["tree"][1], "mode": "100755"},
+                              original_new["tree"][2]]),
+            ("duplicate root entry", [*original_new["tree"], original_new["tree"][0]]),
+            ("wrong source tree", [*original_new["tree"][:2],
+                                   {**original_new["tree"][2], "sha": A}]),
+            ("empty path", [{**original_new["tree"][0], "path": ""},
+                            *original_new["tree"][1:]]),
+            ("slash in path", [{**original_new["tree"][0], "path": "a/b"},
+                               *original_new["tree"][1:]]),
+            ("NUL in path", [{**original_new["tree"][0], "path": "a\x00b"},
+                             *original_new["tree"][1:]]),
+            ("invalid mode", [{**original_new["tree"][0], "mode": "100644"},
+                               *original_new["tree"][1:]]),
+        ]
+        for label, entries in variations:
+            with self.subTest(label=label):
+                new = dict(original_new, tree=entries)
+                with patch.object(pub, "gh_api", side_effect=lambda route:
+                        original_base if route.endswith("/" + B) else new):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_private_ci_preserves_root("trusted/ci", B, E, D)
+        for key, value in (("truncated", True), ("sha", A), ("tree", None)):
+            with self.subTest(invalid_response=key):
+                new = dict(original_new, **{key: value})
+                with patch.object(pub, "gh_api", side_effect=lambda route:
+                        original_base if route.endswith("/" + B) else new):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_private_ci_preserves_root("trusted/ci", B, E, D)
+
+    def test_root_changes_abort_before_source_commit_and_ref_publication(self):
+        original = self.fake_api
+        def injected(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/trees/" + E:
+                response = dict(response)
+                response["tree"] = list(response["tree"]) + [
+                    {"path": "injected", "type": "blob",
+                     "mode": "100644", "sha": A}]
+            return response
+        with patch.object(pub, "gh_api", side_effect=injected):
+            with self.assertRaises(pub.Denied):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root, A, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertNotIn("repos/trusted/ci/git/commits", writes)
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
 
     def test_root_tree_attestation_rejects_wrong_or_ambiguous_prefix(self):
         correct = {"sha": E, "truncated": False,
