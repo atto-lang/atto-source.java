@@ -444,7 +444,11 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 if (shuttingDown.get()) break;
                 // If a command quantum left work behind, do not park for an
                 // extra second; service readiness and return to commands.
-                if (commands.isEmpty()) selector.select(1000);
+                // A readiness quantum can leave selected keys in the set.
+                // Never park while prior ready keys remain unprocessed: that
+                // would delay guest TCP Future completions by a select timeout.
+                if (commands.isEmpty() && selector.selectedKeys().isEmpty())
+                    selector.select(1000);
                 else selector.selectNow();
                 Iterator<SelectionKey> it = selector.selectedKeys().iterator();
                 int readyQuantum = 0;
