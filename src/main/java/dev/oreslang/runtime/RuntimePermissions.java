@@ -280,6 +280,28 @@ public final class RuntimePermissions {
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
     }
 
+    /**
+     * Additional pre-connect check for a trusted socket adapter: the requested
+     * hostname must be permitted and the *actual selected* resolved IPv4
+     * address must not match a network deny. The adapter must pass the same
+     * numeric endpoint it connects to, immediately before connect. This does
+     * not perform DNS, create a socket, or secure a different connection path.
+     * IPv6 is deliberately denied here until the other backends support the
+     * same numeric-address boundary.
+     */
+    public boolean allowsNetworkConnection(String requested, String selectedIpv4) {
+        if (!allows(Permission.NET, requested)) return false;
+        NetworkScope target = parseNetworkScope(requested, false);
+        NetworkScope resolved = parseNetworkScope(selectedIpv4, false);
+        if (target == null || resolved == null || target.port() == null
+                || resolved.port() == null || !target.port().equals(resolved.port())
+                || !resolved.host().matches("[0-9.]+")) return false;
+
+        Rule rule = rules.get(Permission.NET);
+        return rule != null && !rule.denyAll()
+                && !matchesAny(Permission.NET, resolved.canonical(), rule.denied());
+    }
+
     public boolean grantsAnything(Permission permission) {
         Rule rule = rules.get(permission);
         return rule != null && !rule.denyAll() && (rule.allowAll() || !rule.allowed().isEmpty());
