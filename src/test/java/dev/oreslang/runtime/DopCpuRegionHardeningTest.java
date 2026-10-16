@@ -151,6 +151,13 @@ final class DopCpuRegionHardeningTest {
     }
 
     @Test
+    void regionTokenHasOnlyPrimitiveFields() {
+        for (var field : DopKernelIR.HostBuffer.RegionToken.class.getDeclaredFields()) {
+            assertTrue(field.getType().isPrimitive(), "region identity retains buffer memory");
+        }
+    }
+
+    @Test
     void simultaneousRegionCaptureAndTakeNeverMintsASecondIdentity() throws Exception {
         var shape = plan(DataOrientedLayout.Kind.AOS);
         for (int trial = 0; trial < 96; trial++) {
