@@ -115,6 +115,45 @@ type, so this is preliminary runtime hardening, **not completed nominal
 BigInt/f32 typing or LLVM equivalence**. In particular, host JDK and
 source-free oracle results cannot substitute for guest execution.
 
+### Distinct BigInt static type and pre-operation resource admission
+
+`Types.Primitive.BIGINT` now denotes `bigint` independently from
+fixed-width `INT`. Exact widening `INT -> BIGINT -> DECIMAL` is allowed.
+Narrowing `BIGINT -> INT/FLOAT` is rejected. The TypeChecker rejects
+BigInt division until the result domain is explicit, and rejects lossy
+BigInt/Decimal arithmetic with binary floats or complex values. Static
+BigInt return types may no longer falsely claim `int`.
+
+`ExactScalarMath` now preflights BigInt multiplication and Decimal
+multiplication, scale alignment for addition/subtraction, and quotient
+magnitude bounds for division/remainder **before** BigDecimal/BigInteger
+arithmetic. Admission checks are conservative: some mathematically
+representable results can be rejected because their temporary limb
+requirements exceed a fixed budget.
+
+`DecimalMatrix` now preflights an input-derived worst-case digit-work
+budget (16,000,000 limb-digit units) before allocating the output and
+rejects extreme decimal accumulator alignment (over 16,384 digits)
+before performing the potentially expensive addition. Actual digit-work
+is also accumulated at runtime. The existing operation-count limit
+remains 100,000 scalar multiplies.
+
+Regression additions:
+- `NumericStaticBigIntSoundnessTest`: exact widening and narrowing
+  rejection, invalid BigInt division and mixed binary arithmetic
+- `ExactScalarMathTest`: huge-limb product, decimal scale alignment
+  and extreme-quotient preflight cases
+- `DecimalMatrixReferenceTest`: input-derived matrix digit-work
+  rejection before output allocation, and destination failure atomicity
+
+**None of these new JUnit tests has passed on the exact PR head.**
+The source organization has no executed guest test steps, and the
+cross-organization private-source CI publisher is not authorized.
+`f32` still aliases `FLOAT` in the TypeChecker, and actor-specific
+memory budgets, field/collection reification, and LLVM native BigInt
+support remain future work. These changes therefore do **not**
+establish full numeric type soundness or hard-real-time guarantees.
+
 ### Resource and CI admission updates
 
 `DecimalMatrix` now bounds total significant digits per matrix in addition
