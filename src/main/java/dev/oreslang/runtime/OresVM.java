@@ -44,18 +44,18 @@ public final class OresVM implements AutoCloseable {
                 .name("ores-control-plane-" + carrierId.getAndIncrement())
                 .unstarted(runnable);
 
-        this.controlExecutor = new ThreadPoolExecutor(
-                controlParallelism,
-                controlParallelism,
-                0L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(DEFAULT_QUEUE_CAPACITY),
-                factory,
-                new ThreadPoolExecutor.AbortPolicy());
+        // CONTROL keeps its prestarted minimum so the root supervisor and
+        // Mailmen never depend on actor-carrier startup. Extra carriers are
+        // created only when independent runnable CONTROL turns contend.
+        int maximumControlParallelism = Integer.getInteger(
+                "ores.runtime.control.max.parallelism", 20);
+        this.controlExecutor = new AdaptiveCarrierExecutor(
+                controlParallelism, maximumControlParallelism,
+                DEFAULT_QUEUE_CAPACITY, factory);
 
         this.rootScheduler = OresScheduler.runtimeOwned(
                 "ores-root-scheduler",
-                rootAdmission == null ? controlParallelism : 1,
+                rootAdmission == null ? maximumControlParallelism : 1,
                 rootAdmission == null ? controlExecutor : rootAdmission,
                 turnExecutor);
         try {
