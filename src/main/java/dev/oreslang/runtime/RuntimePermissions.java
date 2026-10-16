@@ -297,6 +297,14 @@ public final class RuntimePermissions {
                 || resolved.port() == null || !target.port().equals(resolved.port())
                 || !resolved.host().matches("[0-9.]+")) return false;
 
+        // An IPv4 literal already names the destination. Never let a
+        // different selected IP satisfy an exact numeric-address grant.
+        // This method remains IPv4-only even though the general policy
+        // supports canonical IPv6 host literals.
+        if (target.host().startsWith("[")) return false;
+        if (target.host().matches("[0-9.]+")
+                && !target.host().equals(resolved.host())) return false;
+
         Rule rule = rules.get(Permission.NET);
         return rule != null && !rule.denyAll()
                 && !matchesAny(Permission.NET, resolved.canonical(), rule.denied());
