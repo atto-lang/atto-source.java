@@ -54,7 +54,7 @@ class CoreLogTest {
         assertTrue(output.contains("\"severity\":\"error\""));
         assertTrue(output.contains("\"value\":" + Long.MIN_VALUE));
         assertFalse(output.contains("actor.dispatcher.failed"));
-        assertTrue(output.contains("\"recorded\":2,\"reserved\":2,\"saturated\":true"));
+        assertTrue(output.contains("\"recorded\":2,\"reserved\":2,\"unpublished\":0,\"saturated\":true"));
         assertEquals(2, output.lines().filter(s -> s.contains("\"kind\":\"event\"")).count());
     }
 
@@ -88,7 +88,7 @@ class CoreLogTest {
         }
         String output = dump(recorder);
         assertEquals(96, output.lines().filter(s -> s.contains("\"kind\":\"event\"")).count());
-        assertTrue(output.contains("\"recorded\":96,\"reserved\":96,\"saturated\":true"));
+        assertTrue(output.contains("\"recorded\":96,\"reserved\":96,\"unpublished\":0,\"saturated\":true"));
         assertTrue(output.lines().filter(s -> s.contains("\"kind\":\"event\""))
                 .allMatch(s -> s.contains("\"value\":11") && s.contains("\"thread_id\":")
                         && s.contains("\"severity\":\"warn\"")));
@@ -185,6 +185,92 @@ class CoreLogTest {
         assertTrue(after - before <= baseline + 512L,
                 "disabled hot path must not allocate per event (measured " + (after - before)
                         + " bytes across 300000 calls; counter baseline " + baseline + ")");
+    }
+
+    @Test void snapshotExposesUnpublishedReservationsWithoutReadingPartialValues() {
+        var recorder = new CoreLog.Recorder(2);
+        assertEquals(0, recorder.reserve(), "simulate an interrupted producer");
+        recorder.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 42L);
+        String output = dump(recorder);
+        assertEquals(1L, output.lines().filter(l -> l.contains("\"kind\":\"event\"")).count());
+        assertTrue(output.contains("\"value\":42"));
+        assertTrue(output.contains("\"recorded\":1,\"reserved\":2,\"unpublished\":1,\"saturated\":true"));
+        assertFalse(output.contains("\"value\":0"));
+    }
+
+    @Test void disableCannotCompleteWhileShutdownExportIsStillWriting() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CoreLog.configure(CoreLog.Level.ERROR);
+        CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 11L);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var first = new java.util.concurrent.atomic.AtomicBoolean();
+        var blocked = new java.io.OutputStream() {
+            private void gate() {
+                if (first.compareAndSet(false, true)) {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS))
+                            throw new IllegalStateException("test export gate timed out");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                }
+            }
+            @Override public void write(int value) { gate(); }
+            @Override public void write(byte[] data, int off, int len) { gate(); }
+        };
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var stream = new PrintStream(blocked, true, StandardCharsets.UTF_8);
+            var dumping = pool.submit(() -> CoreLog.dumpRetained(stream));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var disabling = pool.submit(() -> CoreLog.configure(CoreLog.Level.OFF));
+            assertThrows(java.util.concurrent.TimeoutException.class,
+                    () -> disabling.get(100, TimeUnit.MILLISECONDS),
+                    "OFF must not return before an in-progress export completes");
+            release.countDown();
+            dumping.get(5, TimeUnit.SECONDS);
+            disabling.get(5, TimeUnit.SECONDS);
+            assertEquals("", dumpRetained(), "shutdown output is revoked after OFF returns");
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+    }
+
+    @Test void rapidReconfigureWithConcurrentProducersNeverLeaksOldSession() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        var start = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(4)) {
+            var futures = new ArrayList<java.util.concurrent.Future<?>>();
+            for (int t = 0; t < 4; t++) {
+                futures.add(pool.submit(() -> {
+                    start.await();
+                    for (int i = 0; i < 2500; i++) {
+                        CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, -101L);
+                    }
+                    return null;
+                }));
+            }
+            CoreLog.configure(CoreLog.Level.ERROR);
+            start.countDown();
+            for (int i = 0; i < 32; i++) {
+                CoreLog.configure(CoreLog.Level.OFF);
+                CoreLog.configure(CoreLog.Level.WARN);
+            }
+            for (var future : futures) future.get(10, TimeUnit.SECONDS);
+            CoreLog.configure(CoreLog.Level.OFF);
+            assertEquals("", dumpRetained());
+            CoreLog.configure(CoreLog.Level.ERROR);
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, 202L);
+            String result = dumpRetained();
+            assertTrue(result.contains("\"value\":202"));
+            assertFalse(result.contains("\"value\":-101"),
+                    "a stale writer must not publish into the new session");
+        } finally {
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
     }
 
     private static String dumpRetained() {
