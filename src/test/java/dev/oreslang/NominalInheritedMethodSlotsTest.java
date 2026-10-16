@@ -808,4 +808,32 @@ final class NominalInheritedMethodSlotsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> NominalInheritedMethodSlots.declaredSlotSymbol(program, altered));
     }
+
+    @Test
+    void resolvedF64ParameterIsNotMisclassifiedAsUnknownPrimitive() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value, f64 weight): int { return 11; }
+                end
+                define class Child extends Base as
+                    pub pick(Mode value, f64 weight): int { return 22; }
+                end
+                """);
+        var registry = dev.oreslang.types.TaggedMessageContracts.forTypes(program);
+        var color = NominalInheritedMethodSlots.selectResolved(
+                program, "Child", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                        dev.oreslang.types.Types.Primitive.FLOAT), registry);
+        assertEquals("Base", color.owner().name());
+        var mode = NominalInheritedMethodSlots.selectResolved(
+                program, "Child", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Mode", List.of()),
+                        dev.oreslang.types.Types.Primitive.FLOAT), registry);
+        assertEquals("Child", mode.owner().name());
+        assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.selectResolved(
+                        program, "Child", Domain.INSTANCE, "pick",
+                        List.of(new dev.oreslang.types.Types.Named("Color", List.of()),
+                                dev.oreslang.types.Types.Primitive.INT), registry));
+    }
 }
