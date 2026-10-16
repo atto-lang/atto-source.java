@@ -262,13 +262,22 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
 
     private boolean signal(Child child, boolean force) {
         requireOwner();
+        final Process process;
         synchronized (lock) {
             Slot slot = slots.get(child.generation);
             if (closed || slot == null || slot.process == null
                     || slot.process.pid() != child.pid) return false;
-            destroyTree(slot.process, force);
-            return true;
+            process = slot.process;
         }
+        // Descendant enumeration and OS signalling must not run on an actor
+        // carrier. Virtual-thread cleanup is bounded by the child slot cap.
+        terminateOffCarrier(process, force);
+        return true;
+    }
+
+    private static void terminateOffCarrier(Process process, boolean force) {
+        Thread.ofVirtual().name("ores-childproc-terminate").start(
+                () -> destroyTree(process, force));
     }
 
     private void forget(Slot slot) {
@@ -300,7 +309,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
         }
         for (Slot slot : active) {
             slot.ready.completeExceptionally(new IllegalStateException("child process registry closed"));
-            if (slot.process != null) destroyTree(slot.process, true);
+            if (slot.process != null) terminateOffCarrier(slot.process, true);
         }
     }
 }
