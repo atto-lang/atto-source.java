@@ -1613,6 +1613,9 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after positional tuple type");
+        if (slots.size() > 64) {
+            throw error(previous(), "positional tuple type exceeds 64-slot static proof bound");
+        }
         if (!explicit && slots.size() == 1 && !slots.getFirst().isOmittableTupleSlot()) {
             return slots.getFirst();
         }
