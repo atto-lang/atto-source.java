@@ -29,8 +29,24 @@ public final class MessagePackWireV2 {
             require(kind != null && members != null, "missing shape kind or members");
             // Bound hostile or incorrectly compiler-generated descriptors before
             // List.copyOf traverses/allocates from caller-supplied list sizes.
-            require(members.size() <= MAX_ELEMENTS, "shape member budget exceeded");
-            members = List.copyOf(members);
+            int admittedCount = members.size();
+            require(admittedCount <= MAX_ELEMENTS, "shape member budget exceeded");
+            // Copy exactly the admitted number of elements by indexed access.
+            // List.copyOf(members) may traverse a hostile iterator whose
+            // element count grows after the size preflight, or use a second
+            // attacker-controlled size to allocate an oversized backing array.
+            List<Shape> snapshot = new ArrayList<>(admittedCount);
+            for (int i = 0; i < admittedCount; i++) {
+                Shape element;
+                try {
+                    element = members.get(i);
+                } catch (IndexOutOfBoundsException changed) {
+                    throw bad("shape members changed during snapshot");
+                }
+                require(element != null, "null shape member");
+                snapshot.add(element);
+            }
+            members = List.copyOf(snapshot);
         }
         public static Shape bool() { return new Shape(Kind.BOOL, List.of()); }
         public static Shape i64() { return new Shape(Kind.I64, List.of()); }
