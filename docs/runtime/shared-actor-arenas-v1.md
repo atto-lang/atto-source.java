@@ -1,6 +1,6 @@
 # Java/GraalVM — shared actors own private arenas
 
-Status: design/integration gate (2026-10-16). **Not** a claim that current `main` automatically lowers source-language shared actor allocations to native arenas.
+Status: runtime compatibility implementation in this draft (2026-10-16). **Not** a claim that current `main` or this draft lowers all Oreslang source-language allocations to native arenas.
 
 ## Target topology
 
@@ -14,6 +14,14 @@ Status: design/integration gate (2026-10-16). **Not** a claim that current `main
 - `ActorMemorySlice.PrivateMemoryBlock` uses `ByteBuffer.allocateDirect` and scoped alias checks. ByteBuffer reachability does not prove deterministic native deallocation or GC absence.
 - Java actor-owned persistent/scratch FFM i64 prototype was developed in PR #580 (merged into branch `feat/actor-native-record-mutable-i64-20261010`, **not necessarily in main**). It does not yet cover general class/struct layouts or every `await`/cooperate/cancellation unwind.
 - Main Maven compiler config uses `maven.compiler.release=21`. Stable `java.lang.foreign.Arena` was finalized in JDK 22; use the GraalVM/JDK runtime profile that actually supports the stable API, or separate the FFM build module rather than breaking JDK 21 compilation.
+
+## Draft implementation slice (not merged)
+
+- `ActorCell` now creates a per-actor `ActorMemorySlice` for SHARED as well as PRIVATE/UNTRUSTED, rather than returning null for SHARED.
+- `ActorContext.localMemory()` gives each actor its own actor-local allocation authority. The legacy `privateMemory()` continues to be visible only to PRIVATE/UNTRUSTED, so it does not become a shared-memory shortcut.
+- `ActorMemorySlice.allocateActorLocalBytes()` is an owner-validated direct-byte-buffer compatibility path with per-actor quotas, shared aggregate charging for SHARED, private aggregate charging for PRIVATE/UNTRUSTED, and stop-time invalidation. It is **not** a deterministic FFM arena: direct-buffer native backing still depends on JVM collection for physical release.
+- Shared mailbox/output admission includes actor-local used bytes in its per-actor policy budget to prevent state/mailbox aggregate oversubscription.
+- `ActorSharedLocalMemoryTest` exercises owned direct bytes, foreign-carrier and sibling-SHARED access denial, accounting, retirement and quota failure. CI execution is pending.
 
 ## Required integration
 
