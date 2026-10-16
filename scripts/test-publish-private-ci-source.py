@@ -907,7 +907,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 with patch.object(pub, "gh_api",
                                   side_effect=authenticated_synthetic_api):
                     result = pub.publish("trusted/ci", candidate,
-                                         "ci/oreslang-test", self.root, A, D)
+                                         "ci/oreslang-test", self.root, commit, tree)
                     self.assertEqual(result, (A, 1))
                 self.assertEqual(verifier.call_count, 1)
 
@@ -920,7 +920,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                   side_effect=authenticated_synthetic_api):
                     with self.assertRaisesRegex(pub.Denied, "differs"):
                         pub.publish("trusted/ci", candidate,
-                                    "ci/oreslang-test", self.root, A, D)
+                                    "ci/oreslang-test", self.root, commit, tree)
             self.assertFalse(any(method == "POST"
                                  for method, _, _ in self.route_calls))
 
