@@ -41,6 +41,50 @@ final class SourceActorDataRoundTripTest {
         assertEquals("owned-data", evaluate(program));
     }
 
+
+    @Test
+    void compiledSupervisorMediatesTwoDistinctActorsWithoutSharingTheirMail() throws Exception {
+        // First actor's outbound DATA becomes the supervisor-owned input to
+        // the second actor. This exercises two real typed-mail admissions and
+        // lifecycle barriers, not a compiler-derived ActorMessageCodec<T>.
+        String program = """
+                define actor First as
+                  receive(ActorMail<String> mail): void {
+                    self.send(mail.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                define actor Second as
+                  receive(ActorMail<String> mail): void {
+                    self.send(mail.value);
+                    self.end();
+                    return;
+                  }
+                end
+
+                pub async routine main(): void {
+                  val first = spawn First();
+                  val second = spawn Second();
+
+                  await first.get_ready();
+                  await second.get_ready();
+
+                  first.send("two-hop-owned-data");
+                  val firstOutput = (await first.outputs.next()).value.unwrap();
+                  second.send(firstOutput.value);
+                  val secondOutput = (await second.outputs.next()).value.unwrap();
+                  stdio.stdout.write(secondOutput.value);
+
+                  await first.get_done();
+                  await second.get_done();
+                  return;
+                }
+                """;
+        assertEquals("two-hop-owned-data", evaluate(program));
+    }
+
     private static String evaluate(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(
