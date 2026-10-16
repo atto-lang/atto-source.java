@@ -64,6 +64,43 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void runnableBurstDoesNotDependOnWorkerActiveSampling() throws Exception {
+        // All newly created workers deliberately wait before entering the
+        // ThreadPoolExecutor worker body. The old getActiveCount()+queue
+        // heuristic incorrectly stopped growing when newly started carriers
+        // had not yet transitioned to ACTIVE. Admission-based growth cannot.
+        var permitWorkerStart = new CountDownLatch(1);
+        var created = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) runnable ->
+                Thread.ofPlatform().daemon(true)
+                        .name("adaptive-lagged-worker-" + created.incrementAndGet())
+                        .unstarted(() -> {
+                            try {
+                                if (!permitWorkerStart.await(10, TimeUnit.SECONDS))
+                                    throw new AssertionError("worker startup gate timed out");
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                            runnable.run();
+                        });
+        try (var workers = new AdaptiveCarrierExecutor(2, 20, 32, factory)) {
+            assertEquals(2, workers.prestartAllCoreThreads());
+            var submitted = new ArrayList<java.util.concurrent.Future<?>>();
+            try {
+                for (int i = 0; i < 20; i++)
+                    submitted.add(workers.submit(() -> { }));
+                assertEquals(20, workers.getPoolSize(),
+                        "all 20 admitted runnable turns need available carriers even before ACTIVE");
+                assertEquals(20, workers.getLargestPoolSize());
+                assertEquals(20, workers.getCorePoolSize());
+            } finally {
+                permitWorkerStart.countDown();
+            }
+            for (var future : submitted) future.get(10, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void rejectsInvalidLimits() {
         var factory = (java.util.concurrent.ThreadFactory) task -> new Thread(task);
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(0, 5, 1, factory));
