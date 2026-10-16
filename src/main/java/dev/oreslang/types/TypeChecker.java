@@ -4447,6 +4447,7 @@ public final class TypeChecker {
         if (iteratorTarget == null) return source;
 
         Ast.MethodDecl iterator = iteratorTarget.method();
+        requireUserCallableMethodSlot(klass, iterator.name(), iterator.arity());
         requireClassMemberVisible(
                 iterator.visibility(),
                 iteratorTarget.owner(),
@@ -6092,6 +6093,7 @@ public final class TypeChecker {
                         findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
+                    requireUserCallableMethodSlot(klass, iterator.name(), iterator.arity());
                     requireClassMemberVisible(
                             iterator.visibility(),
                             iteratorTarget.owner(),
@@ -6137,6 +6139,7 @@ public final class TypeChecker {
                         findMethodTarget(klass, named, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
+                    requireUserCallableMethodSlot(klass, iterator.name(), iterator.arity());
                     requireClassMemberVisible(
                             iterator.visibility(),
                             iteratorTarget.owner(),
