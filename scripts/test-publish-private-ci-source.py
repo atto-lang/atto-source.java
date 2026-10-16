@@ -487,6 +487,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                          production)
         self.assertNotIn("trusted/ci", dict(listed))
 
+    def test_pinned_funded_carrier_is_not_approved_by_empty_source_policy(self):
+        # A numeric repository identity pin is a prerequisite, NOT consent
+        # to export source code. A reviewed policy entry is indispensable.
+        carrier = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
+        self.assertEqual(pub.PINNED_DESTINATION_IDS[carrier], 1412142815)
+        self.approval.write_text("# No approved private destinations\n")
+        with self.assertRaisesRegex(pub.Denied, "not approved"):
+            self.publish(repo=carrier)
+        self.assertEqual(self.route_calls, [])
+
     def test_same_slug_but_different_destination_id_aborts_before_upload(self):
         self.destination_ids = [987654321]
         with self.assertRaisesRegex(pub.Denied, "numeric identity"):
