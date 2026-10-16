@@ -293,6 +293,10 @@ public final class NominalInheritedMethodSlots {
                     "forged or stale nominal method call-site binding");
         }
         Ast.ClassDecl concrete = planner.resolve(concreteReceiverClass, null);
+        if (concrete.isAbstract()) {
+            throw new IllegalArgumentException(
+                    "abstract class cannot be used as a concrete virtual receiver");
+        }
         // Verify all ancestor contracts before trusting subtype information.
         Map<Slot, Target> concreteSlots = planner.collect(
                 concrete, Domain.INSTANCE, binding.slot().name(),
