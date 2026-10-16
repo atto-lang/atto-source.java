@@ -22,6 +22,8 @@ import java.util.Set;
  */
 public final class PersistentActorMap extends AbstractMap<String, Object> {
     private static final PersistentActorMap EMPTY = new PersistentActorMap(null, 0);
+    /** Reject pathological String hash floods instead of allowing unbounded linear scans. */
+    private static final int MAX_COLLISION_LENGTH = 64;
 
     private interface Node { }
     private record Leaf(String key, Object value, int hash) implements Node { }
@@ -164,6 +166,10 @@ public final class PersistentActorMap extends AbstractMap<String, Object> {
                     copy[i] = entry;
                     return new Collision(collision.hash, copy);
                 }
+            }
+            if (collision.leaves.length >= MAX_COLLISION_LENGTH) {
+                throw new IllegalArgumentException("persistent map hash collision bucket exceeds "
+                        + MAX_COLLISION_LENGTH + " entries");
             }
             Leaf[] grown = java.util.Arrays.copyOf(collision.leaves, collision.leaves.length + 1);
             grown[grown.length - 1] = entry;
