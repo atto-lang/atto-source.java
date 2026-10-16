@@ -139,11 +139,22 @@ jobs:
                   raise SystemExit(f"Invalid Surefire test count: {report}")
               if declared < 1 or declared != len(cases):
                   raise SystemExit(f"Surefire test count mismatch: {report}")
+              # A forged or partially written report can contradict its
+              # aggregate status. Validate the suite totals as well as each
+              # testcase, including rerun/flaky failure markers.
+              for attribute in ("failures", "errors", "skipped"):
+                  try:
+                      count = int(root.get(attribute, "-1"))
+                  except ValueError:
+                      raise SystemExit(f"Invalid Surefire {attribute}: {report}")
+                  if count != 0:
+                      raise SystemExit(f"Unsuccessful Surefire {attribute}: {report}")
               for case in cases:
                   if case.get("classname") != classname:
                       raise SystemExit(f"Mismatched Surefire testcase: {report}")
-                  if any(case.find(tag) is not None
-                         for tag in ("failure", "error", "skipped")):
+                  if any(case.find(tag) is not None for tag in
+                         ("failure", "error", "skipped", "flakyFailure",
+                          "flakyError", "rerunFailure", "rerunError")):
                       raise SystemExit(f"Unsuccessful required test in {classname}")
                   executed[classname] += 1
           missing = sorted(name for name, count in executed.items() if count == 0)
