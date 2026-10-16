@@ -2886,19 +2886,45 @@ public final class OresEvalRootNode extends RootNode {
                 SourceTask task,
                 Ast.Expr expr,
                 Env env,
-                SourceValueCont continuation) {
+                SourceValueCont downstream) {
+            // A synchronous consumer exception is NOT a failure of the
+            // expression being evaluated. Deliver outside the evaluation
+            // catch so that it cannot be re-dispatched as a second result.
+            boolean canSuspend;
             try {
-                if (!expressionContainsPotentialSuspension(
+                canSuspend = expressionContainsPotentialSuspension(
                         expr,
                         java.util.Collections.newSetFromMap(
-                                new IdentityHashMap<>()))) {
-                    continuation.accept(
-                            task,
-                            eval(expr, env),
-                            null);
+                                new IdentityHashMap<>()));
+            } catch (RuntimeException | Error failure) {
+                downstream.accept(task, null, failure);
+                return;
+            }
+            if (!canSuspend) {
+                Object value;
+                try {
+                    value = eval(expr, env);
+                } catch (RuntimeException | Error failure) {
+                    downstream.accept(task, null, failure);
                     return;
                 }
+                downstream.accept(task, value, null);
+                return;
+            }
 
+            // Resumable continuations may race with cancellation. Exactly one
+            // terminal result may be delivered, including when the consumer
+            // itself fails after accepting the result.
+            java.util.concurrent.atomic.AtomicBoolean delivered =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            SourceValueCont continuation = (resumedTask, value, failure) -> {
+                if (!delivered.compareAndSet(false, true)) {
+                    throw new IllegalStateException(
+                            "suspendable expression completed more than once");
+                }
+                downstream.accept(resumedTask, value, failure);
+            };
+            try {
                 if (expr instanceof Ast.AwaitExpr awaited) {
                     evalSuspendableExpr(
                             task,
@@ -3391,6 +3417,9 @@ public final class OresEvalRootNode extends RootNode {
 
                 continuation.accept(task, eval(expr, env), null);
             } catch (RuntimeException | Error failure) {
+                // Once delivered, a failure belongs to the downstream consumer;
+                // re-delivery would repeat guest effects and affine cleanup.
+                if (delivered.get()) throw failure;
                 continuation.accept(task, null, failure);
             }
         }
@@ -4467,17 +4496,21 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        /** Only ordinary recoverable runtime failures belong to Option.None. */
+        /**
+         * A trap handles only explicitly admitted guest failures. A Java
+         * RuntimeException is not, by itself, an Ores throw. In particular,
+         * internal invariants, capability denial, scheduler failures and host
+         * callbacks must not be converted into a silent Option.None.
+         */
         private boolean isTrappableFailure(Throwable failure) {
             Throwable actual = OresFuture.unwrap(failure);
-            return actual instanceof RuntimeException
-                    && !(actual instanceof OresPanic)
-                    && !(actual instanceof java.util.concurrent.CancellationException)
-                    // Capability denial and scheduler shutdown are runtime control
-                    // failures, not ordinary guest exceptions. Never launder
-                    // them into a silent Option.None at a trap boundary.
-                    && !(actual instanceof SecurityException)
-                    && !(actual instanceof java.util.concurrent.RejectedExecutionException);
+            if (actual instanceof OresCastError) return true;
+            if (actual instanceof ActorRuntime.ActorMailboxRejectedException) return true;
+            // Normal actor termination is a definite local admission denial;
+            // a failed actor's termination cause might instead be a security,
+            // cancellation or unexpected host exception, and must propagate.
+            return actual instanceof ActorRuntime.ActorTerminatedException terminated
+                    && terminated.getCause() == null;
         }
 
         private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {

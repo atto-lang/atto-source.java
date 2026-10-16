@@ -238,6 +238,21 @@ final class TrapExpressionSemanticsTest {
         assertTrue(denied.getMessage().contains("PROCESS_INFO"), denied.getMessage());
     }
 
+    @Test
+    void trapDoesNotConvertUnknownHostIndexFailureToNone() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val numbers = [7];
+                  val int index = 99;
+                  val Option<int> ignored = trap numbers[index];
+                  stdio.stdout.write("must not run");
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertThrows(PolyglotException.class, () -> run(source));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (Context context = Context.newBuilder(OresLanguage.ID)

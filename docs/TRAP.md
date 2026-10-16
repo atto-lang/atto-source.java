@@ -74,6 +74,14 @@ lifetime-safe ownership mechanism.
 Use a typed `Result` or explicit `try/catch` when the original error detail
 matters; `trap` deliberately discards it.
 
+Only explicitly admitted recoverable failures become `None`: a checked
+Ores cast failure, a definite local mailbox-capacity rejection, or sending to
+an actor that terminated normally. Arbitrary Java `RuntimeException` values
+(including host indexing faults, internal invariants and unexpected actor
+failures) bypass the boundary, just like security and cancellation. A mailbox
+memory/accounting or validation failure is not automatically recoverable.
+`trap` is not transactional: effects before a recoverable throw remain visible.
+
 Expression-level trap and the callable modifier have the same control-effect
 rules. An untrapped `send()` still throws on definite admission failure; prefix
 `trap` converts that recoverable failure to `None`, **not** a delivery receipt.

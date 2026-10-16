@@ -308,6 +308,14 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * A definite local mailbox-capacity denial before admission commit.
+     * Never use this for validation, security, host or post-commit failures.
+     */
+    public static final class ActorMailboxRejectedException extends IllegalStateException {
+        private ActorMailboxRejectedException(String message) { super(message); }
+    }
+
+    /**
      * Deeply immutable runtime-owned shared value. The backing graph is frozen
      * once, quota-accounted once, and retained until runtime teardown.
      */
@@ -4414,7 +4422,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         if (!cell.reserveMailboxSlot()) {
-            throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+            throw new ActorMailboxRejectedException("actor mailbox limit exceeded for " + ref.id());
         }
         boolean mailboxSlotTransferred = false;
         try {
@@ -4506,7 +4514,7 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
-                        throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+                        throw new ActorMailboxRejectedException("actor mailbox limit exceeded for " + ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
                     mailboxSlotTransferred = true;
