@@ -271,7 +271,93 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def git_snapshot_output(root, *arguments):
+    """Read immutable Git metadata with no shell and no Git env overrides."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("GIT_")}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    try:
+        process = subprocess.run(["git", "-C", str(root), *arguments],
+                                 env=env, capture_output=True, timeout=20,
+                                 check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise Denied("trusted source Git metadata unavailable") from exc
+    if process.returncode != 0 or len(process.stdout) > 2 * 1024 * 1024:
+        raise Denied("trusted source Git snapshot cannot be verified")
+    return process.stdout
+
+
+def verify_exact_source_snapshot(source, trusted_root, files, commit, tree):
+    """Require the entire collected snapshot to match an explicit Git commit/tree.
+
+    Compare every path, mode, and content blob of the in-memory snapshot to
+    Git's committed tree. This catches missing, untracked, modified, and
+    post-checkout swapped files before any private bytes reach an API write.
+    The GitHub destination's new subtree must separately equal this tree SHA.
+    """
+    if not isinstance(commit, str) or not SHA.fullmatch(commit):
+        raise Denied("exact reviewed source commit SHA is required")
+    if not isinstance(tree, str) or not SHA.fullmatch(tree):
+        raise Denied("exact reviewed source Git tree SHA is required")
+    root = trusted_root.resolve(strict=True)
+    target = source.resolve(strict=True)
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise Denied("source directory escapes trusted checkout") from exc
+    relative_name = relative.as_posix()
+    if relative_name == ".":
+        relative_name = ""
+    # A directory snapshot must have a concrete committed tree object.
+    current_commit = git_snapshot_output(root, "rev-parse", "--verify",
+                                         "HEAD^{commit}").strip().decode("ascii")
+    if current_commit != commit:
+        raise Denied("source checkout commit differs from reviewed source commit")
+    object_name = "HEAD:" + relative_name if relative_name else "HEAD^{tree}"
+    current_tree = git_snapshot_output(root, "rev-parse", "--verify",
+                                       object_name).strip().decode("ascii")
+    if current_tree != tree:
+        raise Denied("source Git tree differs from reviewed source tree")
+    pathspec = [relative_name] if relative_name else []
+    records = git_snapshot_output(root, "ls-tree", "-r", "-z", "--full-tree",
+                                  "HEAD", "--", *pathspec).split(b"\\0")
+    tracked = {}
+    for record in records:
+        if not record:
+            continue
+        try:
+            metadata, name_bytes = record.split(b"\\t", 1)
+            mode, kind, blob = metadata.decode("ascii").split()
+            name = name_bytes.decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise Denied("source Git tree contains unrepresentable entries") from exc
+        if kind != "blob" or mode not in ("100644", "100755") or not SHA.fullmatch(blob):
+            raise Denied("source Git tree contains unexportable entry")
+        prefix = relative_name + "/" if relative_name else ""
+        if not name.startswith(prefix):
+            raise Denied("source Git tree contains an unexpected path")
+        name = name[len(prefix):]
+        if not name or name in tracked:
+            raise Denied("source Git tree contains ambiguous paths")
+        tracked[name] = (mode, blob)
+        if len(tracked) > MAX_FILES:
+            raise Denied("source Git tree exceeds file count limit")
+    if not tracked or len(tracked) != len(files):
+        raise Denied("source snapshot is missing or contains untracked files")
+    for name, data, mode in files:
+        blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                            + b"\\0" + data).hexdigest()
+        if tracked.pop(name, None) != (mode, blob):
+            raise Denied("source snapshot diverges from the reviewed Git tree")
+    if tracked:
+        raise Denied("source snapshot omits reviewed Git files")
+    return tree
+
+
+def publish(repository, source, branch, trusted_root,
+            source_commit, source_tree):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
@@ -288,6 +374,8 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    expected_source_tree = verify_exact_source_snapshot(
+        source, trusted_root, files, source_commit, source_tree)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -322,6 +410,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_source_tree:
+        raise Denied("destination subtree differs from reviewed source Git tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -351,11 +441,16 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="explicitly reviewed source Git commit SHA")
+    p.add_argument("--source-tree", required=True,
+                   help="immutable Git tree SHA for --source-dir at that commit")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, args.source_commit, args.source_tree)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
