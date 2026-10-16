@@ -322,13 +322,13 @@ def verify_exact_source_snapshot(source, trusted_root, files, commit, tree):
         raise Denied("source Git tree differs from reviewed source tree")
     pathspec = [relative_name] if relative_name else []
     records = git_snapshot_output(root, "ls-tree", "-r", "-z", "--full-tree",
-                                  "HEAD", "--", *pathspec).split(b"\\0")
+                                  "HEAD", "--", *pathspec).split(b"\0")
     tracked = {}
     for record in records:
         if not record:
             continue
         try:
-            metadata, name_bytes = record.split(b"\\t", 1)
+            metadata, name_bytes = record.split(b"\t", 1)
             mode, kind, blob = metadata.decode("ascii").split()
             name = name_bytes.decode("utf-8")
         except (ValueError, UnicodeDecodeError) as exc:
@@ -348,7 +348,7 @@ def verify_exact_source_snapshot(source, trusted_root, files, commit, tree):
         raise Denied("source snapshot is missing or contains untracked files")
     for name, data, mode in files:
         blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
-                            + b"\\0" + data).hexdigest()
+                            + b"\0" + data).hexdigest()
         if tracked.pop(name, None) != (mode, blob):
             raise Denied("source snapshot diverges from the reviewed Git tree")
     if tracked:
