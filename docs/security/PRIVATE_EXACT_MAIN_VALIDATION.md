@@ -155,7 +155,18 @@ This check is embedded in the reviewed workflow definition rather than loaded as
 from the untrusted candidate source checkout. The administrator's isolated runner
 must provide `python3` in addition to Java, GraalVM and Maven.
 
-It then runs full Java 25 `verify`. Each native AOT, hybrid, and
+The full Java 25 `verify` stage uses `mvn ... -DskipTests=false
+-Dmaven.test.skip=false clean verify` to discard focused-only reports and
+rebuild from scratch. A separate trusted Surefire verifier then requires
+successful testcases in all six focused classes **again**, as well as at
+least one successful class outside that focused subset. Missing, symlinked,
+oversized, mismatched-class, or malformed report evidence fails closed.
+This is a proof of fresh **broader test execution**, not a guarantee that
+every test in the source tree was discovered or that a malicious candidate
+cannot alter its build/test configuration. A qualified security reviewer must
+audit the candidate's Maven build configuration.
+
+Each native AOT, hybrid, and
 strict-isolate stage separately runs `mvn -Pnative-... -DskipTests clean package`
 before executing its smoke test. This prevents a stale binary or shared
 library left by another profile (or provided in the candidate checkout) from
