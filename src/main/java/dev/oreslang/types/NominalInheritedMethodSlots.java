@@ -261,6 +261,33 @@ public final class NominalInheritedMethodSlots {
     }
 
     /**
+     * Stable, injective slot identity used to bridge the future bytecode/JIT
+     * call-site binding with the vtable implementation. The ABI owner is the
+     * declaration that originally contributes the slot, not the concrete
+     * receiver class, so overriding never changes the dispatch key.
+     *
+     * <p>Never use the resulting symbol for runtime argument classification.
+     */
+    public static String declaredSlotSymbol(
+            Ast.Program program, InstanceBinding binding) {
+        Objects.requireNonNull(program, "program");
+        Objects.requireNonNull(binding, "binding");
+        Planner planner = new Planner(program);
+        if (!planner.qualifiedNames.containsKey(binding.staticReceiver())) {
+            throw new IllegalArgumentException(
+                    "nominal slot symbol binding originates outside compiler program");
+        }
+        Map<Slot, Target> slots = planner.collect(
+                binding.staticReceiver(), Domain.INSTANCE,
+                binding.slot().name(), binding.slot().arity());
+        Target selected = slots.get(binding.slot());
+        if (!sameDeclaration(selected, binding.declaredTarget())) {
+            throw new IllegalArgumentException("forged or stale nominal slot symbol binding");
+        }
+        return binding.slot().linkSymbol(selected.ownerId());
+    }
+
+    /**
      * Resolve only the implementation of an ALREADY SELECTED nominal slot on
      * a concrete subclass. No argument values, runtime enum tags or payloads
      * are supplied, and the overload cannot change when the receiver changes.
