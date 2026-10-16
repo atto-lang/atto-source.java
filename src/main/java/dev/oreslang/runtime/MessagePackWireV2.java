@@ -30,7 +30,7 @@ public final class MessagePackWireV2 {
             // Bound hostile or incorrectly compiler-generated descriptors before
             // List.copyOf traverses/allocates from caller-supplied list sizes.
             int admittedCount = members.size();
-            require(admittedCount <= MAX_ELEMENTS, "shape member budget exceeded");
+            require(admittedCount >= 0 && admittedCount <= MAX_ELEMENTS, "shape member budget exceeded");
             // Copy exactly the admitted number of elements by indexed access.
             // List.copyOf(members) may traverse a hostile iterator whose
             // element count grows after the size preflight, or use a second
