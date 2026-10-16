@@ -331,6 +331,31 @@ public final class NativeIo {
         throw new SecurityException("no resolved network address is authorized");
     }
 
+    // A port-zero listener is not a request for an unrestricted fixed port.
+    // Require port-independent host authority, then check the selected IP
+    // against every deny before handing an OS-assigned port to HttpServer.
+    // Fixed-port listeners retain the normal exact-address admission path.
+    static InetSocketAddress resolveAuthorizedListenerAddress(
+            RuntimePermissions permissions, String host, int port) throws IOException {
+        if (port != 0) return resolveAuthorizedAddress(permissions, host, port);
+        if (permissions == null || host == null || host.isBlank())
+            throw new IllegalArgumentException("invalid requested listener endpoint");
+
+        String requested = host.toLowerCase(java.util.Locale.ROOT);
+        if (!permissions.allows(RuntimePermissions.Permission.NET, requested))
+            throw new SecurityException("ephemeral listener requires port-independent host permission");
+
+        InetAddress[] addresses = InetAddress.getAllByName(host);
+        if (addresses.length > 64)
+            throw new SecurityException("DNS response exceeds listener admission limit");
+        for (InetAddress address : addresses) {
+            if (!(address instanceof Inet4Address)) continue;
+            if (permissions.allowsEphemeralNetworkBind(requested, address.getHostAddress()))
+                return new InetSocketAddress(address, 0);
+        }
+        throw new SecurityException("no resolved listener address is authorized for every port");
+    }
+
     static void requirePinnedHttpLiteral(RuntimePermissions permissions, String endpoint) {
         // IPv4-only: the exact numeric endpoint is both the request target and
         // the selected address. Hostnames/IPv6 are denied, not passed to an
