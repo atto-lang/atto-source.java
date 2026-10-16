@@ -10,6 +10,7 @@ import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresKeyedMap;
 import dev.oreslang.runtime.ProcessExitSignal;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -1954,7 +1955,7 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                env.define(binding.name(), value, binding.kind(), binding.mutableReferent());
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -2124,7 +2125,7 @@ public final class OresEvalRootNode extends RootNode {
                                 for (Ast.SwitchCase arm : switched.cases()) {
                                     boolean matchedCase = false;
                                     for (Ast.Expr constant : arm.constants()) {
-                                        if (Objects.equals(subject, eval(constant, env))) {
+                                        if (valueEquals(subject, eval(constant, env))) {
                                             matchedCase = true;
                                             break;
                                         }
@@ -4331,6 +4332,10 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
 
+            if (receiver instanceof OresKeyedMap<?, ?> map) {
+                return prepareTypedMapInvocation(map, member, args, env);
+            }
+
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -4558,6 +4563,11 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Map")) {
+                if (!args.isEmpty()) throw new IllegalArgumentException(
+                        "new Map<K,V>() takes no constructor arguments");
+                return newGuestMap(created.type());
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -4594,6 +4604,13 @@ public final class OresEvalRootNode extends RootNode {
             if (klass == null) {
                 throw new IllegalArgumentException(
                         "unknown class " + created.type().name());
+            }
+            if (owner.isTypedOpenMapClass(klass)) {
+                if (!args.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "typed open Map schema constructors take no arguments");
+                }
+                return owner.newGuestOpenMap(klass);
             }
             return owner.instantiate(klass, args, externalConstruction);
         }
@@ -5078,7 +5095,8 @@ public final class OresEvalRootNode extends RootNode {
                     env.reserve(binding.name(), binding.kind());
                     env.initialize(binding.name(), eval(binding.initializer(), env));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind(),
+                            binding.mutableReferent());
                 }
                 return;
             }
@@ -5782,6 +5800,10 @@ public final class OresEvalRootNode extends RootNode {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
+                if (receiver instanceof OresKeyedMap<?, ?> map) {
+                    return prepareTypedMapInvocation(map, methodCall, args, env);
+                }
+
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
@@ -6089,6 +6111,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
+                if (literal.value() instanceof dev.oreslang.runtime.OresSymbol symbol
+                        && ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED
+                        && !symbol.publicToUntrustedCoreV1()) {
+                    // Runtime backstop: dynamically reached imported/module code,
+                    // not only syntactically local actor source, must obey the
+                    // exact same Symbol namespace-admission policy.
+                    throw new SecurityException("Symbol is not visible to untrusted actor");
+                }
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
                 return literal.value();
             }
@@ -6410,6 +6440,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                if (owner.isTypedOpenMapClass(klass)) {
+                    if (!args.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "typed open Map schema constructors take no arguments");
+                    }
+                    return owner.newGuestOpenMap(klass);
+                }
                 return owner.instantiate(klass, args, externalConstruction);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
@@ -6491,7 +6528,7 @@ public final class OresEvalRootNode extends RootNode {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 // nlex discards captured values and private-member authority,
                 // but MUST preserve declaration-origin lexical isolation.
-                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshot();
+                Env captured = nonLexical ? env.lexicalBoundaryOnly() : env.snapshotForClosure();
                 return tailCallable(args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
@@ -8340,8 +8377,7 @@ public final class OresEvalRootNode extends RootNode {
                     || name.equals("decimal")) return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
-            if (name.equals("Symbol") && findClass("Symbol") == null)
-                return value instanceof dev.oreslang.runtime.OresSymbol;
+            if (name.equals("Symbol")) return value instanceof dev.oreslang.runtime.OresSymbol;
             if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
@@ -8995,7 +9031,25 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean canInitialize(OresObject object) { return constructingObject == object; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            define(name, value, kind, false);
+        }
+        private void define(String name, Object value, Ast.BindingKind kind,
+                            boolean mutableReferent) {
+            if (value instanceof OresKeyedMap<?, ?> && hasExistingMapAlias(value)) {
+                throw new SecurityException(
+                        "typed Map aliases require lifetime tracking; even readonly aliases are currently forbidden");
+            }
+            if (slots.putIfAbsent(name, new Slot(value, kind, mutableReferent)) != null)
+                throw new IllegalArgumentException("duplicate binding " + name);
+        }
+        private boolean hasExistingMapAlias(Object value) {
+            for (Slot slot : slots.values()) if (slot.value == value) return true;
+            return parent != null && parent.hasExistingMapAlias(value);
+        }
+        private boolean canWriteMap(String name, OresKeyedMap<?, ?> expected) {
+            Slot slot = slots.get(name);
+            if (slot != null) return slot.mutableReferent && slot.value == expected;
+            return parent != null && parent.canWriteMap(name, expected);
         }
         private void reserve(String name, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
@@ -9010,6 +9064,10 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                if (slot.value instanceof OresKeyedMap<?, ?> || value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "typed Map rebinding is disabled until exclusive moves can be verified");
+                }
                 slot.value = value;
                 return;
             }
@@ -9017,6 +9075,15 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() {
+            // Deferred callbacks must not smuggle mutable Maps across execution
+            // turns. Actor maps are independently denied, but this also guards
+            // any unchecked host or dynamic entry path.
+            for (Slot slot : slots.values()) {
+                if (slot.value instanceof OresKeyedMap<?, ?>) {
+                    throw new SecurityException(
+                            "cannot snapshot typed Map across deferred execution without ownership proof");
+                }
+            }
             Env cp = new Env(
                     parent == null ? null : parent.snapshot(),
                     descendantsNonLexical,
@@ -9024,6 +9091,24 @@ public final class OresEvalRootNode extends RootNode {
                     null,
                     lexicalModule);
             cp.slots.putAll(slots);
+            return cp;
+        }
+
+        private Env snapshotForClosure() {
+            Env cp = new Env(
+                    parent == null ? null : parent.snapshotForClosure(),
+                    descendantsNonLexical,
+                    accessClass,
+                    null,
+                    lexicalModule);
+            // Only referenced closed-over names should survive a closure,
+            // and typed Maps cannot be captured at all in V1. Omit maps even
+            // when unused; runtime lookup will fail closed on attempted use.
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                if (!(entry.getValue().value instanceof OresKeyedMap<?, ?>)) {
+                    cp.slots.put(entry.getKey(), entry.getValue());
+                }
+            }
             return cp;
         }
         private boolean hasLiveMutexGuards() {
@@ -9149,7 +9234,13 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
-        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+        private final boolean mutableReferent;
+        private Slot(Object value, Ast.BindingKind kind) { this(value, kind, false); }
+        private Slot(Object value, Ast.BindingKind kind, boolean mutableReferent) {
+            this.value = value;
+            this.kind = kind;
+            this.mutableReferent = mutableReferent;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
