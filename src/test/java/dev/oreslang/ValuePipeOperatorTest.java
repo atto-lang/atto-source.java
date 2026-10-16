@@ -59,6 +59,28 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void preservesLeftFirstArgumentOrderAndRejectsDynamicQualifiedStages() {
+        Ast.Program program = Parser.parse("""
+                fnc make_input(): int { return 1; }
+                fnc make_argument(): int { return 2; }
+                fnc combine(int left, int right): int { return left + right; }
+                fnc main(): int { return make_input() |> combine(make_argument()); }
+                """);
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules()
+                .getFirst().declarations().get(3);
+        Ast.CallExpr call = assertInstanceOf(Ast.CallExpr.class,
+                ((Ast.ReturnStmt) fn.body().getFirst()).value());
+        assertEquals("make_input",
+                ((Ast.NameExpr) ((Ast.CallExpr) call.arguments().getFirst()).callee()).name());
+        assertEquals("make_argument",
+                ((Ast.NameExpr) ((Ast.CallExpr) call.arguments().get(1)).callee()).name());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc main(): int { return 1 |> object.method(2); }
+                """));
+    }
+
+    @Test
     void rejectsPipelineAboveBoundedStageLimit() {
         String input = "fnc plus(int n): int { return n + 1; } "
                 + "fnc main(): int { return 1" + " |> plus".repeat(129) + "; }";
