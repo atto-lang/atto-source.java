@@ -145,6 +145,9 @@ nested fixture files and symlinked report paths are rejected. Each required
 fully qualified test class must produce its own `TEST-<classname>.xml`,
 with a matching `testsuite` name, direct `testcase` children whose class
 names match, and a declared test count equal to the actual children.
+The verifier independently requires aggregate `failures`, `errors`, and
+`skipped` counts to be zero, rejects contradictory report totals, and
+rejects flaky/rerun failure markers even if the final status is passing.
 Empty, malformed, skipped-only, failed, or oversized (>16 MiB) evidence is
 rejected. A trusted workflow step first clears any pre-existing report
 directory; reports may never be supplied by a candidate's checked-out tree.
