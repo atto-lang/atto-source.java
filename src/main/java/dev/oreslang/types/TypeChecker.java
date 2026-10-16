@@ -5940,6 +5940,23 @@ public final class TypeChecker {
                         new Named("Result", List.of(element, new Named("OptionUnwrapError", List.of()))));
                 case "expect" -> new Function(List.of(Primitive.STRING), element);
                 case "unwrap_or" -> new Function(List.of(element), element);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(element), Unknown.INSTANCE)),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "and_then" -> new Function(
+                        List.of(new Function(List.of(element), new Named("Option", List.of(Unknown.INSTANCE)))),
+                        new Named("Option", List.of(Unknown.INSTANCE)));
+                case "filter" -> new Function(
+                        List.of(new Function(List.of(element), Primitive.BOOL)), named);
+                case "ok_or_else" -> new Function(
+                        List.of(new Function(List.of(), Unknown.INSTANCE)),
+                        new Named("Result", List.of(element, Unknown.INSTANCE)));
+                case "transpose" -> element instanceof Named inner
+                        && inner.name().equals("Result") && inner.arguments().size() == 2
+                        ? new Function(List.of(),
+                                new Named("Result", List.of(
+                                        new Named("Option", List.of(inner.arguments().get(0))),
+                                        inner.arguments().get(1)))) : null;
                 default -> null;
             };
         }
@@ -5951,6 +5968,21 @@ public final class TypeChecker {
                 case "unwrap_safe" -> new Function(List.of(), named);
                 case "expect" -> new Function(List.of(Primitive.STRING), ok);
                 case "unwrap_or" -> new Function(List.of(ok), ok);
+                case "map" -> new Function(
+                        List.of(new Function(List.of(ok), Unknown.INSTANCE)),
+                        new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))));
+                case "map_err" -> new Function(
+                        List.of(new Function(List.of(named.arguments().get(1)), Unknown.INSTANCE)),
+                        new Named("Result", List.of(ok, Unknown.INSTANCE)));
+                case "and_then" -> new Function(
+                        List.of(new Function(List.of(ok),
+                                new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))))),
+                        new Named("Result", List.of(Unknown.INSTANCE, named.arguments().get(1))));
+                case "or_else" -> new Function(
+                        List.of(new Function(List.of(named.arguments().get(1)),
+                                new Named("Result", List.of(ok, Unknown.INSTANCE)))),
+                        new Named("Result", List.of(ok, Unknown.INSTANCE)));
+                case "ok" -> new Function(List.of(), new Named("Option", List.of(ok)));
                 default -> null;
             };
         }
