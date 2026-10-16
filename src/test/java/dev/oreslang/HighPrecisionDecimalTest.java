@@ -152,6 +152,15 @@ final class HighPrecisionDecimalTest {
                       stdio.stdout.write(decimal.round(2.5d, 1, "HALF_EVEN"));
                       stdio.stdout.write("|");
                       stdio.stdout.write(decimal.sqrt(4d, 50, "HALF_EVEN"));
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(matrix.trace(2, a).expect("trace failed"));
+                      stdio.stdout.write("|");
+                      val Array<decimal> eye = matrix.identity(2).expect("identity failed");
+                      stdio.stdout.write(eye.get(0));
+                      stdio.stdout.write("|");
+                      let mut Array<decimal> single = new Array<decimal>();
+                      single.add(4d);
+                      stdio.stdout.write(matrix.frobenius_norm(1, 1, single, 50, "HALF_EVEN").expect("norm failed"));
                       return;
                     }
                     """);
@@ -162,7 +171,7 @@ final class HighPrecisionDecimalTest {
                     out, err);
             assertTrue(run.units().containsKey("@std/decimal.ores"));
             assertTrue(run.units().containsKey("@std/matrix.ores"));
-            assertEquals("0.7|1.0|1.5|2.2|5.4|true|0.14285714285714285714285714285714285714285714285714|2|2", out.toString(StandardCharsets.UTF_8),
+            assertEquals("0.7|1.0|1.5|2.2|5.4|true|0.14285714285714285714285714285714285714285714|2|2|0.5|1|4", out.toString(StandardCharsets.UTF_8),
                     () -> "guest stderr: " + err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);
