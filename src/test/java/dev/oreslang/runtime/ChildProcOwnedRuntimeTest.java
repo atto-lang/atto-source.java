@@ -83,7 +83,7 @@ final class ChildProcOwnedRuntimeTest {
     }
 
     @Test
-    void childAndRegistryAreOwnedByTheirOriginalActor() throws Exception {
+    void completedChildCannotBeSignaledByStaleHandle() throws Exception {
         try (ExecutorService workers = Executors.newFixedThreadPool(2);
              ChildProcOwnedRuntime manager = manager(workers, 2, 1024)) {
             var child = manager.spawnAsync(spec(executable("/usr/bin/printf"), "hello"))
@@ -173,6 +173,23 @@ final class ChildProcOwnedRuntimeTest {
             byte[] copy = exit.stdout();
             copy[0] = (byte) 'X';
             assertEquals("immutable", new String(exit.stdout(), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void rejectsAggregateOutputQuotasBeforeStartingAnyProcesses() {
+        var fixture = new ChildProcOwnedRuntime.Admission() {
+            @Override public void requireOwner() { }
+            @Override public ChildProcLaunchAdmission.Plan admit(
+                    ChildProcLaunchAdmission.Spec request) throws java.io.IOException {
+                return ChildProcLaunchAdmission.admit(request, (permission, resource) -> { });
+            }
+        };
+        assertThrows(IllegalArgumentException.class, () ->
+                new ChildProcOwnedRuntime(fixture, Runnable::run, 64, 16 * 1024 * 1024));
+        try (ChildProcOwnedRuntime allowed =
+                     new ChildProcOwnedRuntime(fixture, Runnable::run, 64, 256 * 1024)) {
+            assertNotNull(allowed);
         }
     }
 
