@@ -14,6 +14,7 @@ spec = importlib.util.spec_from_file_location("private_publisher", MODULE)
 pub = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pub)
 EXACT_VERIFIER = pub.verify_exact_source_snapshot
+UPSTREAM_VERIFIER = pub.verify_upstream_commit_tree
 A, B, C, D, E = ("a"*40, "b"*40, "c"*40, "d"*40, "e"*40)
 
 
@@ -46,6 +47,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             pub, "verify_exact_source_snapshot", return_value=D)
         self.source_snapshot.start()
         self.addCleanup(self.source_snapshot.stop)
+        self.upstream_snapshot = patch.object(
+            pub, "verify_upstream_commit_tree")
+        self.upstream_snapshot.start()
+        self.addCleanup(self.upstream_snapshot.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -78,6 +83,61 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def publish(self, repo="trusted/ci", branch="ci/oreslang-test"):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
+
+    def test_upstream_commit_tree_requires_original_github_objects(self):
+        source_root = "repos/" + pub.SOURCE_REPOSITORY
+        def exact(route, method="GET", payload=None):
+            self.assertEqual(method, "GET")
+            if route == source_root + "/git/commits/" + A:
+                return {"tree": {"sha": D}}
+            if route == source_root + "/git/trees/" + D:
+                return {"truncated": False, "tree": [
+                    {"path": "source", "type": "tree",
+                     "mode": "040000", "sha": E}]}
+            raise AssertionError("unexpected original-repository route: " + route)
+
+        with patch.object(pub, "gh_api", side_effect=exact):
+            UPSTREAM_VERIFIER(A, D, "")
+            UPSTREAM_VERIFIER(A, E, "source")
+            with self.assertRaisesRegex(pub.Denied, "attested"):
+                UPSTREAM_VERIFIER(A, C, "")
+            with self.assertRaisesRegex(pub.Denied, "attested"):
+                UPSTREAM_VERIFIER(A, C, "source")
+            with self.assertRaisesRegex(pub.Denied, "absent"):
+                UPSTREAM_VERIFIER(A, E, "wrong-subtree")
+            with self.assertRaisesRegex(pub.Denied, "invalid source subtree"):
+                UPSTREAM_VERIFIER(A, E, "../source")
+
+    def test_upstream_github_tree_rejects_truncation_and_forged_metadata(self):
+        source_root = "repos/" + pub.SOURCE_REPOSITORY
+        for data, message in [
+            ({"truncated": True, "tree": []}, "truncated"),
+            ({"truncated": False, "tree": None}, "listing"),
+            ({"truncated": False, "tree": [
+                {"path": "source", "type": "blob",
+                 "mode": "100644", "sha": E}]}, "absent"),
+            ({"truncated": False, "tree": [
+                {"path": "source", "type": "tree",
+                 "mode": "100644", "sha": E}]}, "unexpected"),
+        ]:
+            def metadata(route, method="GET", payload=None):
+                if route == source_root + "/git/commits/" + A:
+                    return {"tree": {"sha": D}}
+                if route == source_root + "/git/trees/" + D:
+                    return data
+                raise AssertionError(route)
+            with self.subTest(data=data):
+                with patch.object(pub, "gh_api", side_effect=metadata):
+                    with self.assertRaisesRegex(pub.Denied, message):
+                        UPSTREAM_VERIFIER(A, E, "source")
+
+    def test_upstream_attestation_failure_halts_private_upload(self):
+        with patch.object(pub, "verify_upstream_commit_tree",
+                          side_effect=pub.Denied("not in original GitHub")):
+            with self.assertRaisesRegex(pub.Denied, "original GitHub"):
+                self.publish()
+        self.assertFalse(any(method == "POST"
+                             for method, _, _ in self.route_calls))
 
     def test_publisher_aborts_before_upload_when_git_snapshot_rejected(self):
         with patch.object(pub, "verify_exact_source_snapshot",
