@@ -2380,6 +2380,28 @@ public final class OwnershipChecker {
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
+    /**
+     * Runtime capture-layout query using the same scope-aware scan as static
+     * ownership analysis. The placeholders carry no guest values; this returns
+     * names only and never grants permission to capture them.
+     */
+    public static Set<String> referencedOuterBindings(
+            Ast.LambdaExpr lambda, Set<String> visibleNames) {
+        if (lambda.nonLexical()) return Set.of();
+        OwnershipChecker scanner = new OwnershipChecker(new Ast.Program(List.of()));
+        Scope outer = new Scope(null);
+        for (String name : visibleNames) {
+            outer.define(name, new VarState(
+                    Ast.TypeRef.inferred(), false, ValueKind.COPY, Origin.LOCAL));
+        }
+        CaptureSet captures = scanner.collectCaptures(lambda, outer, null);
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        for (String name : captures.values.keySet()) {
+            if (lambda.permitsOuterBinding(name)) names.add(name);
+        }
+        return Set.copyOf(names);
+    }
+
     private CaptureSet collectCaptures(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
         CaptureSet captures = new CaptureSet();
         Set<String> locals = new HashSet<>();
