@@ -157,4 +157,40 @@ final class OresProjectConfigRegressionTest {
                     () -> config.resolveImport(source, invalid), invalid);
         }
     }
+
+    @Test
+    void packageManifestEntrypointRejectsOutsideAndDanglingSymlinks() throws Exception {
+        Path project = temp.resolve("manifest-entry-physical");
+        Files.createDirectories(project.resolve("src"));
+        Path manifest = project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [entrypoints]
+                main = "src/main.ores"
+                """);
+        Path outside = Files.writeString(temp.resolve("outside-main.ores"),
+                "pub fnc main(): void { return; }");
+        Path inRoot = Files.writeString(project.resolve("src/inside.ores"),
+                "pub fnc main(): void { return; }");
+        Path linkedMain = project.resolve("src/main.ores");
+        try {
+            Files.createSymbolicLink(linkedMain, outside);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+
+        IllegalArgumentException outsideFailure = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(outsideFailure.getMessage().contains("resolves outside the package root"));
+
+        Files.delete(linkedMain);
+        Files.createSymbolicLink(linkedMain, inRoot);
+        assertEquals(linkedMain, OresProjectConfig.load(manifest, Map.of()).mainEntrypoint().orElseThrow());
+
+        Files.delete(linkedMain);
+        Files.createSymbolicLink(linkedMain, project.resolve("src/does-not-exist.ores"));
+        IllegalArgumentException dangling = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(dangling.getMessage().contains("dangling symbolic link"));
+    }
 }
