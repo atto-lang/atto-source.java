@@ -1301,6 +1301,17 @@ final class MethodOverloadTest {
                 mismatched::getMessage);
 
         entries.clear();
+        var wrongArity = new Ast.CallExpr(
+                new Ast.MemberExpr(sourceMember.receiver(), sourceMember.member()),
+                java.util.List.of());
+        entries.put(wrongArity, binding);
+        var mismatchedArity = assertThrows(IllegalArgumentException.class, () ->
+                new Ast.Program(checked.namespace(), checked.imports(), checked.modules(),
+                        checked.boundDirectCalls(), entries));
+        assertTrue(mismatchedArity.getMessage().contains("arity differs"),
+                mismatchedArity::getMessage);
+
+        entries.clear();
         entries.put(call, binding);
         Ast.Program valid = new Ast.Program(checked.namespace(), checked.imports(),
                 checked.modules(), checked.boundDirectCalls(), entries);
