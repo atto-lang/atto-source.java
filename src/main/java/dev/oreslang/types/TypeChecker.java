@@ -2126,6 +2126,15 @@ public final class TypeChecker {
                             + "' is direct-call-only and cannot be used as a first-class callable value; "
                             + "wrap the call in an explicit lambda when a callback is required");
                 }
+                // A Function value records async but not suspends. Reifying
+                // this declaration would silently erase the suspension effect
+                // and make a synchronous Option/Result callback unsafe.
+                if (fn.suspends()) {
+                    throw new IllegalArgumentException(
+                            "suspends function '" + fn.name()
+                            + "' cannot be used as a first-class callable until Fnc types encode suspension; "
+                            + "invoke it directly from an async or suspends callable");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "generic callable '" + fn.name()
