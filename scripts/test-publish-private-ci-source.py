@@ -28,6 +28,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         (self.root / ".github").mkdir()
         self.approval = self.root / ".github" / "private-ci-approved-repositories.txt"
         self.approval.write_text("trusted/ci\n")
+        self.main_policy = b"trusted/ci\\n"
+        self.main_sha = A
+        self.main_protected = True
         (self.source / "hello.ores").write_text("pub fnc main(): int { return 42; }\n")
         self.route_calls = []
         self.visibility = ["private"] * 200
@@ -54,6 +57,18 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
+        if route == "repos/" + pub.SOURCE_REPOSITORY + "/branches/main":
+            return {"protected": self.main_protected,
+                    "commit": {"sha": self.main_sha}}
+        if route == ("repos/" + pub.SOURCE_REPOSITORY
+                     + "/contents/.github/private-ci-approved-repositories.txt"
+                     + "?ref=" + self.main_sha):
+            raw = self.main_policy
+            return {"type": "file", "encoding": "base64",
+                    "content": base64.b64encode(raw).decode("ascii"),
+                    "sha": hashlib.sha1(
+                        b"blob " + str(len(raw)).encode("ascii")
+                        + b"\\0" + raw).hexdigest()}
         if route == "repos/" + pub.SOURCE_REPOSITORY:
             return dict(id=self.source_ids.pop(0),
                         full_name=pub.SOURCE_REPOSITORY, visibility="private",
