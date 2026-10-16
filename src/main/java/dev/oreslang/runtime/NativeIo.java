@@ -344,8 +344,9 @@ public final class NativeIo {
     }
 
     // A port-zero listener is not a request for an unrestricted fixed port.
-    // Require port-independent host authority, then check the selected IP
-    // against every deny before handing an OS-assigned port to HttpServer.
+    // Require port-independent host authority, no NET deny scopes (because
+    // host aliases and the OS-selected port cannot be excluded otherwise),
+    // and a checked concrete IPv4 bind address before reaching HttpServer.
     // Fixed-port listeners retain the normal exact-address admission path.
     static InetSocketAddress resolveAuthorizedListenerAddress(
             RuntimePermissions permissions, String host, int port) throws IOException {
