@@ -73,7 +73,12 @@ public final class ActorPipelineRouteSessionSmoke {
         check(ledger.outstanding() == 0, "route frames leaked");
 
         var old = ledger.ingress("source");
-        ledger.advanceGeneration(8);
+        reject(() -> ledger.advanceGeneration(8),
+                "clean generation change lost an in-flight message");
+        check(ledger.generation() == 7 && ledger.outstanding() == 1,
+                "rejected reconfiguration mutated graph state");
+        check(ledger.abortAndAdvanceGeneration(8) == 1,
+                "supervisor abort did not account for cancelled frames");
         reject(() -> ledger.forwardRoundRobin(old), "stale generation frame accepted");
         reject(() -> ledger.advanceGeneration(8), "same generation accepted");
         var refreshed = ledger.ingress("source");
