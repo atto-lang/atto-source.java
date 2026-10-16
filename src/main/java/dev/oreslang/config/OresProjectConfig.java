@@ -311,7 +311,12 @@ public final class OresProjectConfig {
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
-        if (unix.startsWith(".")) {
+        // Only explicit ./ and ../ forms are relative to the importing
+        // source. A bare module starting with a dot (e.g. .hidden/util)
+        // still searches configured roots; treating any leading dot as a
+        // relative prefix changes namespace resolution silently.
+        if (unix.equals(".") || unix.equals("..")
+                || unix.startsWith("./") || unix.startsWith("../")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
             return existingSource(parent.resolve(raw).normalize());
