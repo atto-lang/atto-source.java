@@ -399,7 +399,7 @@ public final class LinkedProgramRunner {
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
             if (target.isEmpty()) {
-                if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
+                if (raw.startsWith(".") || raw.startsWith("+") || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
                 }
