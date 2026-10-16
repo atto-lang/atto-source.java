@@ -585,4 +585,133 @@ final class NominalInheritedMethodSlotsTest {
         assertTrue(rejected.getMessage().contains("cannot prove nominal enum identity"),
                 rejected::getMessage);
     }
+
+    @Test
+    void boundInstanceEnumSlotOverridesOnlyMatchingInheritedMethod() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 11; }
+                    pub pick(Mode value): int { return 22; }
+                end
+                define class Child extends Base as
+                    pub pick(Color value): int { return 33; }
+                end
+                define class Grandchild extends Child as
+                    pub pick(Mode value): int { return 44; }
+                end
+                """);
+        var color = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        var mode = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Mode", List.of())));
+        assertNotEquals(color.slot(), mode.slot());
+        assertEquals("Base", color.declaredTarget().owner().name());
+        assertEquals("Base", mode.declaredTarget().owner().name());
+        assertEquals("Base", NominalInheritedMethodSlots.resolveVirtual(
+                program, color, "Base").owner().name());
+        assertEquals("Child", NominalInheritedMethodSlots.resolveVirtual(
+                program, color, "Child").owner().name());
+        assertEquals("Base", NominalInheritedMethodSlots.resolveVirtual(
+                program, mode, "Child").owner().name());
+        assertEquals("Child", NominalInheritedMethodSlots.resolveVirtual(
+                program, color, "Grandchild").owner().name());
+        assertEquals("Grandchild", NominalInheritedMethodSlots.resolveVirtual(
+                program, mode, "Grandchild").owner().name());
+    }
+
+    @Test
+    void boundVirtualMethodRejectsUnrelatedReceiverAndCrossProgramForgery() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 1; }
+                    pub pick(Mode value): int { return 2; }
+                end
+                define class Child extends Base as
+                    pub pick(Color value): int { return 3; }
+                end
+                define class Other as
+                    pub pick(Color value): int { return 4; }
+                end
+                """);
+        var bound = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        var otherProgram = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 1; }
+                    pub pick(Mode value): int { return 2; }
+                end
+                define class Child extends Base as
+                    pub pick(Color value): int { return 3; }
+                end
+                """);
+        var unrelated = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.resolveVirtual(
+                        program, bound, "Other"));
+        assertTrue(unrelated.getMessage().contains("not a subtype"), unrelated::getMessage);
+        var foreign = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.resolveVirtual(
+                        otherProgram, bound, "Child"));
+        assertTrue(foreign.getMessage().contains("outside compiler program"), foreign::getMessage);
+    }
+
+    @Test
+    void forgedCallSiteBindingCannotChangeSelectedNominalSlot() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 1; }
+                    pub pick(Mode value): int { return 2; }
+                end
+                define class Child extends Base as
+                    pub pick(Color value): int { return 3; }
+                end
+                """);
+        var bound = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        var otherTarget = NominalInheritedMethodSlots.selectResolved(
+                program, "Base", Domain.INSTANCE, "pick",
+                List.of(new dev.oreslang.types.Types.Named("Mode", List.of())),
+                dev.oreslang.types.TaggedMessageContracts.forTypes(program));
+        var forged = new NominalInheritedMethodSlots.InstanceBinding(
+                bound.staticReceiver(), bound.slot(), otherTarget);
+        var rejected = assertThrows(IllegalArgumentException.class,
+                () -> NominalInheritedMethodSlots.resolveVirtual(
+                        program, forged, "Child"));
+        assertTrue(rejected.getMessage().contains("forged or stale"), rejected::getMessage);
+        assertThrows(IllegalArgumentException.class,
+                () -> new NominalInheritedMethodSlots.InstanceBinding(
+                        bound.staticReceiver(),
+                        new Slot(Domain.STATIC, bound.slot().name(), bound.slot().positions()),
+                        bound.declaredTarget()));
+    }
+
+    @Test
+    void diamondResolutionKeepsInheritedNominalBinding() {
+        Ast.Program program = Parser.parse(ENUMS + """
+                define class Base as
+                    pub pick(Color value): int { return 1; }
+                    pub pick(Mode value): int { return 2; }
+                end
+                define class Left extends Base as
+                end
+                define class Right extends Base as
+                end
+                define class Diamond extends Left, Right as
+                    pub pick(Mode value): int { return 3; }
+                end
+                """);
+        var color = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Color", List.of())));
+        var mode = NominalInheritedMethodSlots.bindInstance(
+                program, "Base", "pick",
+                List.of(new dev.oreslang.types.Types.Named("Mode", List.of())));
+        assertEquals("Base", NominalInheritedMethodSlots.resolveVirtual(
+                program, color, "Diamond").owner().name());
+        assertEquals("Diamond", NominalInheritedMethodSlots.resolveVirtual(
+                program, mode, "Diamond").owner().name());
+    }
 }
