@@ -35,7 +35,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 "require_code_owner_reviews": True,
                 "dismiss_stale_reviews": True,
                 "required_approving_review_count": 1},
-            "required_status_checks": {"strict": True, "contexts": ["preflight-regressions"]},
+            "required_status_checks": {"strict": True,
+                                       "contexts": ["preflight-regressions"],
+                                       "checks": [{"context": "preflight-regressions",
+                                                   "app_id": pub.REQUIRED_PRIVATE_CI_APP_ID}]},
             "enforce_admins": {"enabled": True},
             "allow_force_pushes": {"enabled": False},
             "allow_deletions": {"enabled": False}}
@@ -193,6 +196,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         checks["checks"] = [{"context": "preflight-regressions", "app_id": 15368}]
         self.publish()
         self.assertTrue(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_legacy_context_only_cannot_authorize_private_export(self):
+        # Names alone are spoofable: a status authored by a different app
+        # must never qualify as the trusted source security check.
+        checks = self.protection_rules["required_status_checks"]
+        checks["contexts"] = ["preflight-regressions"]
+        checks["checks"] = []
+        with self.assertRaisesRegex(pub.Denied, "app-bound"):
+            self.publish()
+        self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
+
+    def test_wrong_positive_app_and_conflicting_app_are_denied(self):
+        checks = self.protection_rules["required_status_checks"]
+        for entries in [
+            [{"context": "preflight-regressions", "app_id": 1234}],
+            [{"context": "preflight-regressions", "app_id": True}],
+            [{"context": "preflight-regressions", "app_id": "15368"}],
+            [{"context": "preflight-regressions", "app_id": 15368},
+             {"context": "preflight-regressions", "app_id": 1234}],
+        ]:
+            with self.subTest(entries=entries):
+                self.route_calls.clear()
+                checks["checks"] = entries
+                with self.assertRaisesRegex(pub.Denied, "trusted GitHub Actions app"):
+                    self.publish()
+                self.assertFalse(any(m == "POST" for m, _, _ in self.route_calls))
 
     def test_source_main_bypass_allowance_denied(self):
         reviews = self.protection_rules["required_pull_request_reviews"]
