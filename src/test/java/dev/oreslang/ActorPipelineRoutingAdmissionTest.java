@@ -33,6 +33,25 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
+    void actorSelfAliasesDoNotEnableUnloweredRoutingIntrinsics() {
+        // Direct self.* calls are already denied. Aliased actor references
+        // must not be interpreted as ordinary user-callable methods either.
+        for (String method : BUILTINS) {
+            String program = """
+                    define actor Worker as
+                      receive(ActorMail<int> mail): void {
+                        val alias = self;
+                        alias.%s(mail.value);
+                        return;
+                      }
+                    end
+                    """.formatted(method);
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(program)), method);
+        }
+    }
+
+    @Test
     void sealedPipelineIntrinsicsCannotBeOverriddenByUserActorMethods() {
         for (String name : BUILTINS) {
             String program = """
