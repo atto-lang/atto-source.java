@@ -275,7 +275,7 @@ final class RuntimePermissionsNetworkAuditTest {
         RuntimePermissions.Builder builder = new RuntimePermissions.Builder();
         assertThrows(IllegalArgumentException.class,
                 () -> builder.allowCsv(RuntimePermissions.Permission.NET,
-                        "api.example.com:443,api.example.com:0"));
+                        "api.example.com:443,api.example.com:-1"));
         assertFalse(builder.build().allows(RuntimePermissions.Permission.NET,
                 "api.example.com:443"), "failed CSV parse must be transactional");
 
