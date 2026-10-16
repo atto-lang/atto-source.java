@@ -3565,8 +3565,16 @@ public final class Parser {
         String lexeme = token.lexeme();
         validateNumericSeparators(token);
         try {
-            double value = Double.parseDouble(lexeme.replace("_", ""));
+            String digits = lexeme.replace("_", "");
+            double value = Double.parseDouble(digits);
             if (!Double.isFinite(value)) throw error(token, "floating-point literal overflows binary64: " + lexeme);
+            // Literal underflow-to-zero silently destroys a nonzero source
+            // quantity. Subnormal nonzero results remain legal IEEE-754
+            // binary64 values; only nonzero literals that round to +/-0
+            // are rejected at the source admission boundary.
+            if (value == 0.0d && new java.math.BigDecimal(digits).signum() != 0) {
+                throw error(token, "floating-point literal underflows binary64 to zero: " + lexeme);
+            }
             return value;
         } catch (NumberFormatException invalid) {
             throw error(token, "malformed floating-point literal: " + lexeme);
