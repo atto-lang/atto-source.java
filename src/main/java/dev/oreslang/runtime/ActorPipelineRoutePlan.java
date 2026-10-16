@@ -232,6 +232,8 @@ public final class ActorPipelineRoutePlan {
 
     /** FNV-1a over strict UTF-8 bytes; deterministic, not authorization. */
     public Edge forwardByKey(String source, String key) {
+        // Validate the source before inspecting caller-supplied key bytes.
+        List<Edge> matches = connected(source);
         Objects.requireNonNull(key);
         // Untrusted selectors must be bounded before allocating UTF-8 bytes.
         if (key.length() > MAX_KEY_BYTES)
@@ -253,7 +255,6 @@ public final class ActorPipelineRoutePlan {
             hash ^= bytes.get() & 0xffL;
             hash *= 0x100000001b3L;
         }
-        List<Edge> matches = connected(source);
         return matches.get((int) Long.remainderUnsigned(hash, matches.size()));
     }
 }
