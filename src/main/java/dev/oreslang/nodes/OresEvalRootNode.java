@@ -9236,7 +9236,40 @@ public final class OresEvalRootNode extends RootNode {
         @Override public Iterable<?> sharedStateChildren(){return List.of();}
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
-        private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
+        private Complex mul(Complex o) {
+            double ac = real * o.real, bd = imaginary * o.imaginary;
+            double ad = real * o.imaginary, bc = imaginary * o.real;
+            double realResult = ac - bd, imaginaryResult = ad + bc;
+            if (Double.isFinite(real) && Double.isFinite(imaginary)
+                    && Double.isFinite(o.real) && Double.isFinite(o.imaginary)
+                    && (Double.isNaN(realResult) || Double.isNaN(imaginaryResult)
+                        || (realResult == 0.0 && ac != 0.0 && bd != 0.0)
+                        || (imaginaryResult == 0.0 && ad != 0.0 && bc != 0.0)
+                        || (ac == 0.0 && real != 0.0 && o.real != 0.0)
+                        || (bd == 0.0 && imaginary != 0.0 && o.imaginary != 0.0)
+                        || (ad == 0.0 && real != 0.0 && o.imaginary != 0.0)
+                        || (bc == 0.0 && imaginary != 0.0 && o.real != 0.0))) {
+                // Exact binary64 inputs and exact products/sums recover components
+                // erased by intermediate underflow or overflow/cancellation.
+                // Only exceptional finite operands take this allocating path.
+                java.math.BigDecimal a = new java.math.BigDecimal(real);
+                java.math.BigDecimal b = new java.math.BigDecimal(imaginary);
+                java.math.BigDecimal c = new java.math.BigDecimal(o.real);
+                java.math.BigDecimal d = new java.math.BigDecimal(o.imaginary);
+                double exactReal = a.multiply(c).subtract(b.multiply(d)).doubleValue();
+                double exactImaginary = a.multiply(d).add(b.multiply(c)).doubleValue();
+                // Preserve the binary64 sign of an existing zero when the
+                // reference calculation also produces a mathematical zero.
+                if (exactReal == 0.0 && realResult == 0.0) {
+                    exactReal = Math.copySign(0.0, realResult);
+                }
+                if (exactImaginary == 0.0 && imaginaryResult == 0.0) {
+                    exactImaginary = Math.copySign(0.0, imaginaryResult);
+                }
+                return new Complex(exactReal, exactImaginary);
+            }
+            return new Complex(realResult, imaginaryResult);
+        }
         private Complex div(Complex o) {
             // Use power-of-two scaling, not magnitude division: the latter
             // can overflow to Infinity before multiplying an exactly zero
