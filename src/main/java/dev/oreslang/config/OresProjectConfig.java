@@ -184,6 +184,11 @@ public final class OresProjectConfig {
 
     private OresProjectConfig withDiscoveryBoundary(Path boundary) {
         if (boundary == null) return this;
+        // A compiler manifest inside a dependency must not redirect its
+        // declared project root upward into the importing application.
+        if (!projectRoot.toAbsolutePath().normalize().startsWith(boundary.toAbsolutePath().normalize())) {
+            throw new IllegalArgumentException("imported project root escapes installed package: " + projectRoot);
+        }
         return new OresProjectConfig(manifestPath, projectRoot, projectName, projectVersion,
                 sourceRoots, importPaths, environmentPaths, dependencyRoots, mainEntrypoint,
                 environment, boundary);
@@ -390,7 +395,12 @@ public final class OresProjectConfig {
 
     private static Map<String, Path> parseDependencies(TomlParseResult toml, Path root) throws IOException {
         TomlTable dependencies = toml.getTable("dependencies");
-        if (dependencies == null) return Map.of();
+        if (dependencies == null) {
+            if (toml.get("dependencies") != null) {
+                throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME + " dependencies must be a TOML table");
+            }
+            return Map.of();
+        }
         Path installationRoot = zedInstallRoot(root);
         java.util.LinkedHashMap<String, Path> result = new java.util.LinkedHashMap<>();
         for (String alias : dependencies.keySet()) {
@@ -427,7 +437,12 @@ public final class OresProjectConfig {
             throw new IllegalArgumentException("invalid .zpkg.toml: " + zed.errors().getFirst());
         }
         String directory = zed.getString("install.dir");
-        if (directory == null) directory = "zed_modules";
+        if (directory == null) {
+            if (zed.get("install.dir") != null) {
+                throw new IllegalArgumentException(".zpkg.toml install.dir must be a string");
+            }
+            directory = "zed_modules";
+        }
         if (directory.isBlank()) {
             throw new IllegalArgumentException("empty .zpkg.toml install.dir");
         }
@@ -463,7 +478,12 @@ public final class OresProjectConfig {
 
     private static List<String> stringArray(TomlParseResult toml, String key) {
         TomlArray array = toml.getArray(key);
-        if (array == null) return List.of();
+        if (array == null) {
+            if (toml.get(key) != null) {
+                throw new IllegalArgumentException("project manifest key '" + key + "' must be an array");
+            }
+            return List.of();
+        }
 
         ArrayList<String> result = new ArrayList<>((int) array.size());
         for (int i = 0; i < array.size(); i++) {
