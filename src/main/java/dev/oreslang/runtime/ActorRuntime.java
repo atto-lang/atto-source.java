@@ -745,6 +745,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
+        // ByteBuffer.allocateDirect(0) still creates managed wrapper/metadata.
+        // Count a zero-byte handle against the actor quota and bound all handles.
+        private static final int MAX_LIVE_DIRECT_BLOCKS = 1024;
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, ActorKind ownerKind, long limitBytes) {
@@ -783,7 +786,26 @@ public final class ActorRuntime implements AutoCloseable {
         public PrivateMemoryBlock allocateActorLocalBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("actor-local block size cannot be negative");
-            MemoryReservation reservation = reserve(bytes, "actor-local direct heap");
+            // Match the actor-mailbox lifecycle -> slice lock order. This also
+            // prevents actor STOP from retiring the slice between native
+            // allocation and its registration for bulk invalidation.
+            if (ownerKind == ActorKind.SHARED) {
+                ActorCell<?> cell = currentActor.get();
+                synchronized (cell.lifecycleLock) {
+                    return allocateRegisteredBlock(bytes);
+                }
+            }
+            return allocateRegisteredBlock(bytes);
+        }
+
+        private synchronized PrivateMemoryBlock allocateRegisteredBlock(int bytes) {
+            if (sliceClosed.get()) {
+                throw new IllegalStateException("actor-local memory slice is closed");
+            }
+            if (blocks.size() >= MAX_LIVE_DIRECT_BLOCKS) {
+                throw new IllegalStateException("actor-local direct block limit exceeded");
+            }
+            MemoryReservation reservation = reserve(Math.max(1L, (long) bytes), "actor-local direct heap");
             try {
                 PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
                 blocks.add(block);
