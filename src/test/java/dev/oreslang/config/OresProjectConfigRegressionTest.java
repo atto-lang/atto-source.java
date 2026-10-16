@@ -66,6 +66,20 @@ final class OresProjectConfigRegressionTest {
         OresProjectConfig imported = consumer.forImportedPackage(source, "pkg:tools/src/a");
         assertEquals(dependency.toRealPath(), imported.projectRoot().toRealPath());
         assertEquals("tools", imported.projectName().orElseThrow());
+
+        // An alternate path to the *same physical source* is legitimate.
+        // Namespace checking must reject substitution without rejecting
+        // canonical symlink aliases for installed package sources.
+        Path alias = temp.resolve("same-physical-source-link.ores");
+        try {
+            Files.createSymbolicLink(alias, source);
+            OresProjectConfig throughAlias = consumer.forImportedPackage(alias, "pkg:tools/src/a");
+            assertEquals(imported.importContext(), throughAlias.importContext());
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unavailable) {
+            // Symlink support is optional on this filesystem; the remaining
+            // package-boundary assertions are still meaningful.
+        }
+
         IllegalArgumentException windowsSeparators = assertThrows(IllegalArgumentException.class,
                 () -> consumer.forImportedPackage(source, "pkg:tools\\src\\a"));
         assertTrue(windowsSeparators.getMessage().contains("forward-slash"));
