@@ -15,6 +15,16 @@
 9. The standalone CLI must use the project's approved `flags-2-env` flag parsing contract where integrated; no independent ad hoc parser should be considered permission parity.
 10. An unsupported implementation slice MUST fail closed; it cannot report `allow` based on a mock evaluator or a contract-only test.
 
+## Dynamic HTTP listener ports
+
+Java `http.listen(host, 0, ...)` requests an OS-assigned port. Port 0 is an API
+sentinel, not a valid `net` permission-scope port. Before binding, the runtime
+requires a port-independent grant for the requested host and checks the
+resolved numeric IPv4 address. Any matching denial for either host or IP,
+including a denial for an individual port, prevents dynamic-port listening.
+A fixed-port-only grant does not authorize a dynamic-port listener.
+
+Unsupported listener address families remain denied until implemented.
 ## Canonical test-vector integrity
 
 The checked-in reference data is pinned to SHA-256
