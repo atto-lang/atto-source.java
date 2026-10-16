@@ -407,17 +407,28 @@ public final class NativeHttp implements AutoCloseable {
             String length = raw.getRequestHeaders().getFirst("Content-Length");
             if (length != null && Long.parseLong(length) > bodyLimit) throw new IllegalArgumentException("body too large");
         }
-        public synchronized OresFuture<Object> shutdown(int graceMillis) {
+        public OresFuture<Object> shutdown(int graceMillis) {
             supervisor();
             if (graceMillis < 0) throw new IllegalArgumentException("negative drain deadline");
-            if (drained != null) return drained;
-            // Server.close() may have already completed forced teardown
-            // without a guest shutdown Future. Never resurrect shutdown
-            // work or claim a successful drain for that closed listener.
-            if (stopped) return OresFuture.failed(
-                    new IllegalStateException("HTTP listener already closed"));
-            drained = new OresFuture<>(() -> false, () -> { });
-            stopAccepting();
+            OresFuture<Object> acceptToFail;
+            OresFuture<Object> result;
+            synchronized (this) {
+                if (drained != null) return drained;
+                // Server.close() may have already completed forced teardown
+                // without a guest shutdown Future. Never resurrect shutdown
+                // work or claim a successful drain for that closed listener.
+                if (stopped) return OresFuture.failed(
+                        new IllegalStateException("HTTP listener already closed"));
+                drained = new OresFuture<>(() -> false, () -> { });
+                result = drained;
+                acceptToFail = stopAcceptingLocked();
+            }
+            // Failing the outstanding accept Future invokes host subscribers
+            // synchronously. They must never run inside Server's monitor.
+            if (acceptToFail != null) {
+                failOutsideMonitor(this, acceptToFail,
+                        new IllegalStateException("HTTP server closed"));
+            }
             try {
                 io.execute(() -> {
                     RuntimeException stopFailure = null;
@@ -449,7 +460,7 @@ public final class NativeHttp implements AutoCloseable {
                 // Never strand awaiters on a stop operation that cannot run.
                 drained.failFromRuntime(unavailable);
             }
-            return drained;
+            return result;
         }
         private synchronized void completeDrain() {
             if (!readyForCarrierBarrier(transportStopped, active.isEmpty(), releasesInProgress.get())
@@ -541,18 +552,22 @@ public final class NativeHttp implements AutoCloseable {
             }
         }
 
-        private synchronized void stopAccepting() {
+        /** Caller holds this server's monitor; never settle the waiter here. */
+        private OresFuture<Object> stopAcceptingLocked() {
             stopped = true;
-            if (waiter != null) { waiter.failFromRuntime(new IllegalStateException("HTTP server closed")); waiter = null; }
+            OresFuture<Object> pendingAccept = waiter;
+            waiter = null;
             pending.clear();
+            return pendingAccept;
         }
         @Override public void close() {
             // Claim exactly once, even if multiple supervisors/teardown paths
             // race on the same listener. Duplicate callers must not stop a
             // transport or re-abort already released state a second time.
+            OresFuture<Object> acceptToFail;
             synchronized (this) {
                 if (!claimForcedClose(forcedCloseClaimed)) return;
-                stopAccepting();
+                acceptToFail = stopAcceptingLocked();
                 // Keep the close claim, admission seal and exceptional drain
                 // publication under ONE listener monitor. Otherwise a
                 // transport-stop callback can publish successful shutdown
@@ -561,6 +576,10 @@ public final class NativeHttp implements AutoCloseable {
                     drained.failFromRuntime(new IllegalStateException(
                             "HTTP runtime closed before pooled actor quiescence"));
                 }
+            }
+            if (acceptToFail != null) {
+                failOutsideMonitor(this, acceptToFail,
+                        new IllegalStateException("HTTP server closed"));
             }
             try {
                 transport.stop(0);
@@ -1006,6 +1025,19 @@ public final class NativeHttp implements AutoCloseable {
                     "HTTP accept Future cannot settle while listener monitor is held");
         }
         observer.completeFromRuntime(value);
+    }
+
+    /** Mirror accept publication's lock boundary for pending accept failures. */
+    static <T> void failOutsideMonitor(
+            Object monitor, OresFuture<T> observer, Throwable failure) {
+        Objects.requireNonNull(monitor, "monitor");
+        Objects.requireNonNull(observer, "observer");
+        Objects.requireNonNull(failure, "failure");
+        if (Thread.holdsLock(monitor)) {
+            throw new IllegalStateException(
+                    "HTTP accept Future cannot fail while listener monitor is held");
+        }
+        observer.failFromRuntime(failure);
     }
 
     private static byte[] byteBuffer(List<?> values, int maximum) {
