@@ -382,6 +382,68 @@ final class ActorPipelineMailboxRouterTest {
     }
 
     @Test
+    void actorCarrierNeverWaitsForHostRetirementGate() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorPipelineMailboxRouter<String>> router =
+                    new AtomicReference<>();
+            AtomicInteger denied = new AtomicInteger();
+            CountDownLatch refused = new CountDownLatch(1);
+            CountDownLatch delivered = new CountDownLatch(1);
+            var a = runtime.<String>spawnShared(() -> (message, actor) ->
+                    delivered.countDown());
+            var b = runtime.<String>spawnShared(() -> (message, actor) -> { });
+            var producer = runtime.<String>spawnShared(() -> (message, actor) -> {
+                if (message.equals("while-retiring")) {
+                    try {
+                        router.get().forwardRoundRobin("must-not-block");
+                    } catch (IllegalStateException unavailable) {
+                        if (unavailable.getMessage().contains("retirement")) {
+                            denied.incrementAndGet();
+                        }
+                    } finally {
+                        refused.countDown();
+                    }
+                } else {
+                    router.get().forwardRoundRobin("valid");
+                }
+            });
+            var attached = new ActorPipelineMailboxRouter<>(runtime, graph(),
+                    Map.of("producer", producer, "worker-a", a, "worker-b", b));
+            router.set(attached);
+
+            // White-box hold models a supervisor reconfiguration lease. The
+            // actor must FAIL immediately instead of blocking a carrier.
+            var field = ActorPipelineMailboxRouter.class
+                    .getDeclaredField("retirementGate");
+            field.setAccessible(true);
+            var lock = (java.util.concurrent.locks.ReentrantReadWriteLock)
+                    field.get(attached);
+            lock.writeLock().lock();
+            try {
+                producer.send("while-retiring");
+                assertTrue(refused.await(5, TimeUnit.SECONDS),
+                        "actor carrier blocked behind host retirement lock");
+                assertEquals(1, denied.get());
+            } finally {
+                lock.writeLock().unlock();
+            }
+            producer.send("normal");
+            producer.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(delivered.await(5, TimeUnit.SECONDS),
+                    "rejected admission must not consume the RR cursor");
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            attached.close();
+            producer.stop();
+            a.stop();
+            b.stop();
+            producer.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void bindingRejectsMissingDuplicateAndForeignActorIdentities() {
         try (ActorRuntime runtime = new ActorRuntime();
              ActorRuntime other = new ActorRuntime()) {
