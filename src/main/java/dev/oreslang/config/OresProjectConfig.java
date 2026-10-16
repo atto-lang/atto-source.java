@@ -4,6 +4,7 @@ import dev.oreslang.imports.ImportRules;
 import org.tomlj.Toml;
 import org.tomlj.TomlArray;
 import org.tomlj.TomlParseResult;
+import org.tomlj.TomlTable;
 
 import java.io.File;
 import java.io.IOException;
@@ -25,6 +26,8 @@ import java.util.Optional;
  */
 public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String PACKAGE_MANIFEST_NAME = ".ores.pkg.toml";
+    public static final String ENV_ORES_PATHS = "ORES_PATHS";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -35,6 +38,7 @@ public final class OresProjectConfig {
     private final List<Path> sourceRoots;
     private final List<Path> importPaths;
     private final List<Path> environmentPaths;
+    private final Map<String, Path> dependencyRoots;
     private final Path mainEntrypoint;
 
     private OresProjectConfig(
@@ -45,6 +49,7 @@ public final class OresProjectConfig {
             List<Path> sourceRoots,
             List<Path> importPaths,
             List<Path> environmentPaths,
+            Map<String, Path> dependencyRoots,
             Path mainEntrypoint) {
         this.manifestPath = manifestPath;
         this.projectRoot = projectRoot;
@@ -53,6 +58,7 @@ public final class OresProjectConfig {
         this.sourceRoots = List.copyOf(sourceRoots);
         this.importPaths = List.copyOf(importPaths);
         this.environmentPaths = List.copyOf(environmentPaths);
+        this.dependencyRoots = Map.copyOf(dependencyRoots);
         this.mainEntrypoint = mainEntrypoint;
     }
 
@@ -62,8 +68,11 @@ public final class OresProjectConfig {
 
         Path searchFrom = directoryFor(start);
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
-            Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            // Prefer the package manifest when both are in the same directory.
+            Path packageManifest = cursor.resolve(PACKAGE_MANIFEST_NAME);
+            if (Files.isRegularFile(packageManifest)) return load(packageManifest, environment);
+            Path legacyManifest = cursor.resolve(MANIFEST_NAME);
+            if (Files.isRegularFile(legacyManifest)) return load(legacyManifest, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -75,6 +84,7 @@ public final class OresProjectConfig {
                 List.of(root),
                 List.of(),
                 parseEnvironmentPaths(environment),
+                Map.of(),
                 null);
     }
 
@@ -87,21 +97,32 @@ public final class OresProjectConfig {
             throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
         }
 
+        String manifestName = absoluteManifest.getFileName().toString();
+        boolean packageManifest = PACKAGE_MANIFEST_NAME.equals(manifestName);
+        if (!packageManifest && !MANIFEST_NAME.equals(manifestName)) {
+            throw new IllegalArgumentException("unsupported Oreslang manifest: " + absoluteManifest);
+        }
         TomlParseResult toml = Toml.parse(absoluteManifest);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
-                    "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
+                    "invalid " + manifestName + ": " + toml.errors().getFirst());
         }
 
         String schemaVersion = toml.getString("schema_version");
         if (schemaVersion == null || !SCHEMA_VERSION.equals(schemaVersion)) {
             throw new IllegalArgumentException(
-                    MANIFEST_NAME + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
+                    manifestName + " requires schema_version = \"" + SCHEMA_VERSION + "\"");
         }
 
         Path manifestDir = absoluteManifest.getParent();
+        // @/ always means the directory containing .ores.pkg.toml.
+        // Legacy compiler manifests keep their explicit project.root behavior.
         String rootText = defaultString(toml.getString("project.root"), ".");
-        Path projectRoot = resolvePath(manifestDir, rootText);
+        if (packageManifest && !".".equals(rootText)) {
+            throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
+                    + " cannot override its physical manifest directory with project.root");
+        }
+        Path projectRoot = packageManifest ? manifestDir : resolvePath(manifestDir, rootText);
 
         List<String> sourceRootValues = stringArray(toml, "source.roots");
         if (sourceRootValues.isEmpty()) sourceRootValues = List.of(".");
@@ -114,11 +135,12 @@ public final class OresProjectConfig {
         return new OresProjectConfig(
                 absoluteManifest,
                 projectRoot,
-                toml.getString("project.name"),
-                toml.getString("project.version"),
+                toml.getString(packageManifest ? "package.name" : "project.name"),
+                toml.getString(packageManifest ? "package.version" : "project.version"),
                 sourceRoots,
                 importPaths,
                 parseEnvironmentPaths(environment),
+                packageManifest ? parseDependencies(toml, projectRoot) : Map.of(),
                 mainEntrypoint);
     }
 
@@ -129,6 +151,7 @@ public final class OresProjectConfig {
     public List<Path> sourceRoots() { return sourceRoots; }
     public List<Path> importPaths() { return importPaths; }
     public List<Path> environmentPaths() { return environmentPaths; }
+    public Map<String, Path> dependencyRoots() { return dependencyRoots; }
     public Optional<Path> mainEntrypoint() { return Optional.ofNullable(mainEntrypoint); }
 
     /**
@@ -161,6 +184,28 @@ public final class OresProjectConfig {
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
         String unix = importPath.replace('\\', '/');
+        if (unix.startsWith("@/")) {
+            if (manifestPath == null || !PACKAGE_MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+                throw new IllegalArgumentException("@/ imports require a " + PACKAGE_MANIFEST_NAME);
+            }
+            return rootedSource(projectRoot, unix.substring(2), importPath);
+        }
+        if (unix.startsWith("pkg:")) {
+            String remainder = unix.substring(4);
+            int slash = remainder.indexOf('/');
+            if (slash <= 0 || slash == remainder.length() - 1) {
+                throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
+            }
+            String alias = remainder.substring(0, slash);
+            Path dependency = dependencyRoots.get(alias);
+            if (dependency == null) {
+                throw new IllegalArgumentException("undeclared package alias '" + alias + "' in " + importPath);
+            }
+            return rootedSource(dependency, remainder.substring(slash + 1), importPath);
+        }
+        if (unix.startsWith("@") || unix.startsWith("pkg:")) {
+            throw new IllegalArgumentException("invalid import prefix: " + importPath);
+        }
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
@@ -183,20 +228,46 @@ public final class OresProjectConfig {
         return Optional.empty();
     }
 
+    private static Optional<Path> rootedSource(Path root, String relative, String importPath) {
+        if (relative.isBlank() || relative.startsWith("/")) {
+            throw new IllegalArgumentException("invalid rooted import: " + importPath);
+        }
+        Path component = Path.of(relative);
+        if (component.isAbsolute()) {
+            throw new IllegalArgumentException("absolute component in rooted import: " + importPath);
+        }
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path candidate = normalizedRoot.resolve(component).normalize();
+        if (!candidate.startsWith(normalizedRoot)) {
+            throw new IllegalArgumentException("rooted import escapes its root: " + importPath);
+        }
+        // Symlinked source files and package mounts are intentional. Their
+        // canonical physical identity is returned by existingSource().
+        return existingSource(candidate);
+    }
+
     private static Optional<Path> existingSource(Path candidate) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
+        if (Files.isRegularFile(normalized)) return Optional.of(realPath(normalized));
 
         String text = normalized.toString().toLowerCase();
         if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
 
         Path ores = Path.of(normalized.toString() + ".ores");
-        if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
+        if (Files.isRegularFile(ores)) return Optional.of(realPath(ores));
 
         Path java = Path.of(normalized.toString() + ".java");
-        if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
+        if (Files.isRegularFile(java)) return Optional.of(realPath(java));
 
         return Optional.empty();
+    }
+
+    private static Path realPath(Path source) {
+        try {
+            return source.toRealPath();
+        } catch (IOException failure) {
+            throw new IllegalArgumentException("cannot resolve source path: " + source, failure);
+        }
     }
 
     private static Path directoryFor(Path start) {
@@ -207,23 +278,55 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
-        if (raw == null || raw.isBlank()) return List.of();
-
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
-        String[] parts = raw.split(java.util.regex.Pattern.quote(File.pathSeparator), -1);
+        // ORES_PATHS is explicitly colon-delimited, independent of the legacy
+        // host-native ORESLANG_PATH. Project-configured paths remain first.
+        addEnvironmentPaths(paths, environment.get(ENV_ORES_PATHS), ":");
+        addEnvironmentPaths(paths, environment.get(ENV_ORESLANG_PATH), File.pathSeparator);
+        return List.copyOf(paths);
+    }
+
+    private static void addEnvironmentPaths(LinkedHashSet<Path> paths, String raw, String delimiter) {
+        if (raw == null || raw.isBlank()) return;
         Path cwd = Path.of("").toAbsolutePath().normalize();
-        for (String part : parts) {
+        for (String part : raw.split(java.util.regex.Pattern.quote(delimiter), -1)) {
             String trimmed = part.trim();
-            // Unlike PATH, an empty entry never means the current directory.
-            // That avoids accidental dependency injection via leading/trailing
-            // separators or "::".
+            // Empty segments are ignored, never implicit cwd.
             if (trimmed.isEmpty()) continue;
             Path path = Path.of(trimmed);
             if (!path.isAbsolute()) path = cwd.resolve(path);
             paths.add(path.toAbsolutePath().normalize());
         }
-        return List.copyOf(paths);
+    }
+
+    private static Map<String, Path> parseDependencies(TomlParseResult toml, Path root) {
+        TomlTable dependencies = toml.getTable("dependencies");
+        if (dependencies == null) return Map.of();
+        java.util.LinkedHashMap<String, Path> result = new java.util.LinkedHashMap<>();
+        for (String alias : dependencies.keySet()) {
+            if (!alias.matches("[A-Za-z][A-Za-z0-9_-]*")) {
+                throw new IllegalArgumentException("invalid dependency alias: " + alias);
+            }
+            Object declaration = dependencies.get(alias);
+            String identifier;
+            if (declaration instanceof String text) {
+                identifier = text;
+            } else if (declaration instanceof TomlTable table) {
+                identifier = table.getString("zed");
+                if (table.keySet().size() != 1 || identifier == null) {
+                    throw new IllegalArgumentException("dependency '" + alias
+                            + "' expects only zed = \"org/name\"");
+                }
+            } else {
+                throw new IllegalArgumentException("invalid dependency declaration: " + alias);
+            }
+            if (identifier == null || !identifier.matches("[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*")
+                    || identifier.contains("..")) {
+                throw new IllegalArgumentException("invalid zed-pkg identifier: " + identifier);
+            }
+            result.put(alias, root.resolve("zed_modules").resolve(identifier).toAbsolutePath().normalize());
+        }
+        return Map.copyOf(result);
     }
 
     private static List<Path> resolvePaths(Path base, List<String> values) {
