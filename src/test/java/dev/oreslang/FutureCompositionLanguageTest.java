@@ -56,6 +56,34 @@ final class FutureCompositionLanguageTest {
         assertEquals("seen:42:42:40", run(program));
     }
 
+    @Test
+    void composeRecursivelyAdoptsThreeNestedFutureResults() throws Exception {
+        String program = """
+                async fnc leaf(): int {
+                  return 21;
+                }
+
+                async fnc two(): Future<int> {
+                  return leaf();
+                }
+
+                async fnc three(): Future<Future<int>> {
+                  return two();
+                }
+
+                pub fnc main(): void {
+                  val Future<int> flattened = leaf().flatMap(|int ignored| -> {
+                    return three();
+                  });
+                  stdio.stdout.write(await flattened);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("21", run(program));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "future-compose.ores")
