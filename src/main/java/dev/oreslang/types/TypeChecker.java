@@ -2889,8 +2889,9 @@ public final class TypeChecker {
                                 callableReceiver,
                                 bindings,
                                 label);
-                        // Bind only after type, effect and ownership checks.
-                        // The production vtable is still arity-only.
+                        // Bind after type/effect validation; the trusted
+                        // compiler performs ownership admission separately
+                        // before execution. The vtable remains arity-only.
                         if (klass.actorKind() == Ast.ActorKind.NONE) {
                             bindMethodCall(call, klass, method);
                         }
