@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -1169,6 +1170,59 @@ final class MethodOverloadTest {
                         pub interface Child extends Left, Right { }
                         """)));
         assertTrue(error.getMessage().contains("incompatible generic arity"), error::getMessage);
+    }
+
+
+    @Test
+    void checkedInstanceCallsPublishIdentityKeyedImmutableMethodBindings() {
+        Ast.Program checked = TypeChecker.checkTypes(Parser.parse("""
+                define module m
+                  define class C as
+                    pub pick(int value): int { return value; }
+                  end
+                end
+                pub routine main(): void {
+                  val c = new m.C();
+                  c.pick(3);
+                  c.pick(3);
+                }
+                """));
+        var bindings = checked.boundMethodCalls();
+        assertEquals(2, bindings.size(),
+                "two structurally identical source calls need distinct declaration bindings");
+        var calls = new java.util.ArrayList<>(bindings.keySet());
+        assertNotSame(calls.get(0), calls.get(1));
+        assertEquals(calls.get(0), calls.get(1),
+                "identity indexing must survive structural AST equality");
+        for (var binding : bindings.values()) {
+            assertEquals("C", binding.staticReceiver().name());
+            assertEquals("pick", binding.declaredMethod().name());
+            assertEquals(1, binding.declaredMethod().arity());
+        }
+        assertThrows(UnsupportedOperationException.class, bindings::clear);
+        var copied = new Ast.Program(checked.namespace(), checked.imports(),
+                checked.modules(), checked.boundDirectCalls(), bindings);
+        assertEquals(2, copied.boundMethodCalls().size());
+    }
+
+    @Test
+    void compilerBoundArityMethodCallsStillExecuteInheritedOverrides() throws Exception {
+        assertEquals("43", run("""
+                define module m
+                  define class Base as
+                    pub pick(): int { return 4; }
+                    pub pick(int value): int { return value; }
+                  end
+                  define class Child extends Base as
+                    pub pick(int value): int { return value + 10; }
+                  end
+                end
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick());
+                  stdio.stdout.write(child.pick(3));
+                }
+                """));
     }
 
     private static String run(String program) throws Exception {
