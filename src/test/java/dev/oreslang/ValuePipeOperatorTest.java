@@ -391,8 +391,8 @@ final class ValuePipeOperatorTest {
                 () -> TypeChecker.check(Parser.parse("""
                     suspends fnc step(int n): int { return n + 1; }
                     fnc broken(Result<int,String> value): Result<int,String> {
-                      val cb = step;
-                      return value |> Result.map(cb);
+                      val local_callback = step;
+                      return value |> Result.map(local_callback);
                     }
                     """)));
         assertTrue(aliased.getMessage().contains("first-class callable"), aliased::toString);
