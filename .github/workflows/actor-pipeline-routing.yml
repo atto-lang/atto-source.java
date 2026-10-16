@@ -34,9 +34,14 @@ jobs:
           git rev-parse HEAD
           git rev-parse 'HEAD^{tree}'
           git hash-object src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java
-      - name: Compile and exercise bounded DAG selection
-        run: sh scripts/test-actor-pipeline-route-plan.sh
-      - name: Compile guest source rejection and JUnit routing tests
+      - name: Compile and test Java routing on the image's pinned JDK 21
         run: |
+          set -euo pipefail
+          : "${JAVA_HOME_21_X64:?hosted image needs Java 21}"
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          javac -version
+          sh scripts/test-actor-pipeline-route-plan.sh
           mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
             -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRoutingAdmissionTest test
