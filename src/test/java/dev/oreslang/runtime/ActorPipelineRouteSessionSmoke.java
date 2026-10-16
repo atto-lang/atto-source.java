@@ -87,6 +87,19 @@ public final class ActorPipelineRouteSessionSmoke {
         check(resetCursor.receiver().equals("worker-a"), "RR cursor did not reset at generation fence");
         ledger.complete(resetCursor);
         ledger.complete(refreshed);
+        check(ledger.outstanding() == 0, "clean generation barrier retained frames");
+        ledger.advanceGeneration(9);
+        check(ledger.generation() == 9 && ledger.outstanding() == 0,
+                "quiescent generation change failed");
+        var epochNine = ledger.ingress("source");
+        reject(() -> ledger.abortAndAdvanceGeneration(9),
+                "abort accepted a non-increasing generation");
+        check(ledger.generation() == 9 && ledger.outstanding() == 1,
+                "rejected abort mutated the graph epoch");
+        check(ledger.abortAndAdvanceGeneration(10) == 1,
+                "abort did not retire the single outstanding route");
+        reject(() -> ledger.complete(epochNine),
+                "aborted message remained valid after epoch change");
         ledger.close();
         reject(() -> ledger.ingress("source"), "STOP accepted data");
 
