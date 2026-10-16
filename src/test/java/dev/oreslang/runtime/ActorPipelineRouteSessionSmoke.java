@@ -72,6 +72,44 @@ public final class ActorPipelineRouteSessionSmoke {
         ledger.complete(origin);
         check(ledger.outstanding() == 0, "route frames leaked");
 
+        // Exercise ACTUAL reverse hop frame transitions, not just
+        // informational ReturnPath lists. Both fan-in branches keep the same
+        // flow but travel back through their own immutable worker path.
+        var returns = new ActorPipelineRouteSession(plan, 11, 5);
+        var start = returns.ingress("source");
+        var fork = returns.forwardAll(start);
+        var sinkA = returns.forward(fork.get(0));
+        var sinkB = returns.forward(fork.get(1));
+        check(returns.outstanding() == 5, "fan-in route quota incorrect");
+        var workerA = returns.returnOneHop(sinkA);
+        var workerB = returns.returnOneHop(sinkB);
+        check(workerA.receiver().equals("worker-a")
+                        && workerB.receiver().equals("worker-b"),
+                "reverse fan-in guessed the wrong worker branch");
+        check(workerA.flowId() == workerB.flowId()
+                        && workerA.routeId() != workerB.routeId(),
+                "reverse fan-in corrupted correlation identities");
+        reject(() -> returns.returnOneHop(sinkA),
+                "one-shot reverse route frame was replayed");
+        reject(() -> returns.forward(workerA),
+                "reverse mail re-entered forward DAG selection");
+        var responseA = returns.returnOneHop(workerA);
+        var responseB = returns.returnOneHop(workerB);
+        check(responseA.receiver().equals("source")
+                        && responseB.receiver().equals("source"),
+                "reverse branch did not reach authenticated origin");
+        reject(() -> returns.returnOneHop(responseA),
+                "pipeline origin manufactured an upstream return hop");
+        ActorPipelineRouteSession.retireDelivered(responseA);
+        ActorPipelineRouteSession.retireDelivered(responseA);
+        ActorPipelineRouteSession.retireDelivered(responseB);
+        returns.complete(fork.get(0));
+        returns.complete(fork.get(1));
+        returns.complete(start);
+        check(returns.outstanding() == 0,
+                "reverse delivery leaked quota at capacity boundary");
+        returns.close();
+
         var old = ledger.ingress("source");
         reject(() -> ledger.advanceGeneration(8),
                 "clean generation change lost an in-flight message");
