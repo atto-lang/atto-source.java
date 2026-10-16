@@ -178,6 +178,9 @@ public final class ActorPipelineRoutePlan {
         Map<String, List<Edge>> immutable = new HashMap<>();
         routes.forEach((name, options) -> immutable.put(name, List.copyOf(options)));
         this.outgoing = Map.copyOf(immutable);
+        // Create every selector cursor during trusted DAG validation, not
+        // on a guest turn's first round-robin attempt.
+        for (String source : immutable.keySet()) cursors.put(source, 0);
         this.edges = List.copyOf(edges);
     }
 
@@ -216,7 +219,8 @@ public final class ActorPipelineRoutePlan {
     /** Attempt counts even if subsequent mailbox admission fails. */
     public synchronized Edge forwardRoundRobin(String source) {
         List<Edge> matches = connected(source);
-        int cursor = cursors.getOrDefault(source, 0);
+        // connected(source) guarantees a constructor-seeded cursor.
+        int cursor = cursors.get(source);
         Edge selected = matches.get(cursor);
         cursors.put(source, cursor + 1 == matches.size() ? 0 : cursor + 1);
         return selected;
