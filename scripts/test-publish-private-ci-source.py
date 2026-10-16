@@ -489,6 +489,32 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                   "repos/trusted/ci/git/trees"])
         self.assertFalse(any(r.endswith("/git/refs") for r in writes))
 
+    def test_git_provenance_does_not_use_replacement_objects_or_global_config(self):
+        files = pub.collect_source(self.source, self.source,
+                                   omit_checkout_metadata=True)
+        tree = pub.snapshot_git_tree_sha(files)
+        captured = []
+
+        def simulated_git(args, **kwargs):
+            captured.append((args, kwargs))
+            response = str(self.source.resolve()) + "\\n" + A + "\\n" + tree + "\\n"
+            return subprocess.CompletedProcess(args, 0, stdout=response, stderr="")
+
+        with patch.dict("os.environ", {
+                "GIT_DIR": "/tmp/malicious-git-dir",
+                "GIT_NO_REPLACE_OBJECTS": "0",
+                "GIT_CONFIG_GLOBAL": "/tmp/malicious-git-config"}):
+            with patch.object(pub.subprocess, "run",
+                              side_effect=simulated_git):
+                self.assertEqual(pub.require_source_tree_match(
+                    self.source, self.source, files), (A, tree))
+        self.assertEqual(len(captured), 1)
+        env = captured[0][1]["env"]
+        self.assertEqual(env["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], pub.os.devnull)
+        self.assertNotIn("GIT_DIR", env)
+
     def test_actual_git_tree_matches_committed_nested_snapshot(self):
         # Independent fixture: do not fake Git's HEAD^{tree}, proving the
         # in-memory snapshot uses Git's directory, mode and blob hashing.
