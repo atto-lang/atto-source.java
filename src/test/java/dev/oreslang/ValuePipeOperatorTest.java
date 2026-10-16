@@ -381,7 +381,7 @@ final class ValuePipeOperatorTest {
         IllegalArgumentException direct = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     suspends fnc step(int n): int { return n + 1; }
-                    fnc invalid(Option<int> value): Option<int> {
+                    fnc broken(Option<int> value): Option<int> {
                       return value |> Option.map(step);
                     }
                     """)));
@@ -390,7 +390,7 @@ final class ValuePipeOperatorTest {
         IllegalArgumentException aliased = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                     suspends fnc step(int n): int { return n + 1; }
-                    fnc invalid(Result<int,String> value): Result<int,String> {
+                    fnc broken(Result<int,String> value): Result<int,String> {
                       val cb = step;
                       return value |> Result.map(cb);
                     }
