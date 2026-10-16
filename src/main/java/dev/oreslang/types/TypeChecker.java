@@ -4958,13 +4958,16 @@ public final class TypeChecker {
             return;
         }
 
-        // ActorRef<T> is a scoped *local* capability, not an Actor instance
-        // transported by value and never an implicit wire-serializable value.
-        // Validate the full nominal target before letting a nested actor-ref
-        // payload bypass the ordinary actor-instance rejection below.
+        // An ActorRef<T> is scoped runtime authority, not wire data. Its
+        // nominal target is checked for a useful diagnostic, but source actor
+        // data mailboxes still use MessagePack until a separately audited
+        // local Sendable capability path is implemented. Do not accidentally
+        // turn a compile-time validation fix into an authority export.
         if (named.name().equals("ActorRef")) {
             actorClassForRef(named);
-            return;
+            throw new IllegalArgumentException(
+                    where + " cannot send ActorRef as a data payload; "
+                            + "a proven local Sendable capability transport is not implemented");
         }
         if (named.name().equals("ActorId")) {
             if (!named.arguments().isEmpty()) {
