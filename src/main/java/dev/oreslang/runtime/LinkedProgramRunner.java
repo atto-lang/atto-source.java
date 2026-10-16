@@ -423,7 +423,11 @@ public final class LinkedProgramRunner {
 
             String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
-            collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
+            // A zed package is compiled against its own manifest and import
+            // roots, not the consumer application's @/ namespace.
+            OresProjectConfig nextConfig = raw.startsWith("pkg:")
+                    ? projectConfig.forImportedPackage(resolvedTarget) : projectConfig;
+            collectImportClosure(resolvedTarget, units, nextConfig, importResolutions,
                     budget, depth + 1);
         }
     }
