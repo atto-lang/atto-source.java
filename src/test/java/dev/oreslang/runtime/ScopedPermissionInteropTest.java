@@ -256,6 +256,33 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void directNativeByteBufferAllocationRequiresAnOresOwnedQuota() throws Exception {
+        // Raw DirectByteBuffer memory is allocated outside an actor-owned
+        // arena. Host class interop must not expose allocateDirect(int),
+        // even though heap-backed ByteBuffer utilities remain allowlistable.
+        assertTrue(IsolatePolicy.isUnscopedNativeAllocation(
+                java.nio.ByteBuffer.class,
+                java.nio.ByteBuffer.class.getMethod("allocateDirect", int.class)));
+        assertFalse(IsolatePolicy.isUnscopedNativeAllocation(
+                java.nio.ByteBuffer.class,
+                java.nio.ByteBuffer.class.getMethod("allocate", int.class)));
+        assertFalse(IsolatePolicy.isUnscopedNativeAllocation(
+                java.nio.ByteBuffer.class,
+                java.nio.ByteBuffer.class.getMethod("wrap", byte[].class)));
+        assertFalse(IsolatePolicy.isUnscopedNativeAllocation(
+                java.nio.ByteBuffer.class,
+                java.nio.ByteBuffer.class.getMethod("get", int.class)));
+        assertFalse(IsolatePolicy.isUnscopedNativeAllocation(
+                java.util.Locale.class,
+                java.util.Locale.class.getMethod("forLanguageTag", String.class)));
+
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP);
+        assertDoesNotThrow(() -> policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.nio.ByteBuffer")));
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
