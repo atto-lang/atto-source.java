@@ -260,7 +260,22 @@ public final class RuntimePermissions {
                 }
             }
         }
-        String normalized = normalize(permission, resource);
+        // A resource is not a policy string: leading/trailing spaces can be
+        // part of an actual filename or environment key. Do not use the scope
+        // normalizer here; it trims whitespace and can authorize a different
+        // resource from the one the native operation will access.
+        String normalized = switch (permission) {
+            case READ, WRITE, FFI, IMPORT -> normalizePath(resource);
+            case ENV, RUN, SYS -> resource;
+            case NET -> {
+                // Network endpoints have no meaningful surrounding spaces.
+                // Never trim attacker-supplied endpoint text into a grant.
+                if (!resource.equals(resource.trim())) yield null;
+                NetworkScope endpoint = parseNetworkScope(resource, false);
+                yield endpoint == null ? null : endpoint.canonical();
+            }
+        };
+        if (normalized == null) return false;
         if (rule.denyAll() || matchesAny(permission, normalized, rule.denied())) return false;
         return rule.allowAll() || matchesAny(permission, normalized, rule.allowed());
     }
