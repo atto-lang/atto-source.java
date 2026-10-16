@@ -53,6 +53,7 @@ public final class ExactScalarMath {
             BigDecimal b = toDecimal(right);
             validate(a);
             validate(b);
+            preflightDecimal(a, b, operator);
             BigDecimal result = switch (operator) {
                 case '+' -> a.add(b);
                 case '-' -> a.subtract(b);
@@ -69,6 +70,7 @@ public final class ExactScalarMath {
         BigInteger b = toBigInteger(right);
         validate(a);
         validate(b);
+        preflightInteger(a, b, operator);
         BigInteger result = switch (operator) {
             case '+' -> a.add(b);
             case '-' -> a.subtract(b);
@@ -94,9 +96,61 @@ public final class ExactScalarMath {
         if (context.getPrecision() <= 0 || context.getPrecision() > MAX_DIGITS) {
             throw new IllegalArgumentException("decimal division context precision out of budget");
         }
+        preflightDecimal(numerator, denominator, '/');
         // RoundingMode.UNNECESSARY already rejects any inexact quotient
         // with ArithmeticException; no special global rounding state.
         return checked(numerator.divide(denominator, context));
+    }
+
+    /**
+     * Conservative pre-allocation admission. A failed estimate is a quota
+     * denial, not a statement that the mathematical result is intrinsically
+     * out of range. All arithmetic is still validated after execution.
+     */
+    private static void preflightInteger(BigInteger a, BigInteger b, char operator) {
+        if (operator == '*' && a.signum() != 0 && b.signum() != 0) {
+            // An integer product needs at least digitCount(a)+digitCount(b)-1
+            // decimal digits. Check before multiplying unbounded limbs.
+            long minimumDigits = (long) a.abs().toString().length()
+                    + b.abs().toString().length() - 1;
+            if (minimumDigits > MAX_DIGITS) {
+                throw new IllegalArgumentException("BigInt multiplication digit budget exceeded");
+            }
+        }
+    }
+
+    private static void preflightDecimal(BigDecimal a, BigDecimal b, char operator) {
+        if (operator == '+' || operator == '-') {
+            // BigDecimal.add/subtract aligns coefficients to the greater
+            // *scale*, possibly materializing tens of thousands of digits.
+            int targetScale = Math.max(a.scale(), b.scale());
+            long first = (long) a.precision() + targetScale - a.scale();
+            long second = (long) b.precision() + targetScale - b.scale();
+            if (Math.max(first, second) > MAX_DIGITS + 1L) {
+                throw new IllegalArgumentException("Decimal scale-alignment budget exceeded");
+            }
+        } else if (operator == '*') {
+            long scale = (long) a.scale() + b.scale();
+            if (Math.abs(scale) > MAX_ABSOLUTE_SCALE) {
+                throw new IllegalArgumentException("Decimal product scale budget exceeded");
+            }
+            if (a.signum() != 0 && b.signum() != 0
+                    && (long) a.precision() + b.precision() - 1 > MAX_DIGITS) {
+                throw new IllegalArgumentException("Decimal product digit budget exceeded");
+            }
+        } else if ((operator == '/' || operator == '%') && b.signum() != 0) {
+            // Bound the magnitude gap before BigDecimal constructs very large
+            // quotient/remainder temporaries. The output scale is checked
+            // precisely after arithmetic; this is an admission guard only.
+            long aOrder = (long) a.precision() - a.scale();
+            long bOrder = (long) b.precision() - b.scale();
+            if (aOrder - bOrder > MAX_ABSOLUTE_SCALE + MAX_DIGITS) {
+                throw new IllegalArgumentException("Decimal quotient magnitude budget exceeded");
+            }
+            if (bOrder - aOrder > MAX_ABSOLUTE_SCALE + MAX_DIGITS) {
+                throw new IllegalArgumentException("Decimal quotient scale budget exceeded");
+            }
+        }
     }
 
     private static BigDecimal divideExactly(BigDecimal a, BigDecimal b) {
