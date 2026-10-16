@@ -6,6 +6,7 @@ writes target the exact repository checked by the private-source policy.
 """
 import argparse
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -24,6 +25,18 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+# The local checkout cannot grant itself a private-source transfer approval.
+# Always confirm the exact same bytes exist on the protected source main ref.
+REQUIRED_PRIVATE_CI_CONTEXT = "preflight-regressions"
+# GitHub Actions is App ID 15368. Merely naming a required status context
+# does not constrain its author; other actors can publish matching statuses.
+REQUIRED_PRIVATE_CI_APP_ID = 15368
+PROTECTED_POLICY_ROUTE = (
+    "repos/ores-truffle-oreslang/oreslang-source.java/contents/"
+    ".github/private-ci-approved-repositories.txt?ref=main"
+)
+
+
 
 # These IDs are bound to reviewed source code, never caller-controlled
 # environment variables or workflow inputs. A reused owner/repo slug with a
@@ -32,8 +45,7 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
-    # Proposed CI destination: requires independent protected-branch
-    # approval AND a separate committed allowlist entry before use.
+    # Candidate identity only: not authorization without protected-main approval.
     "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
@@ -98,18 +110,16 @@ def checked_repo(repository):
 
 
 def require_preflight(repository, root):
-    guard = root / "scripts" / "check-private-ci-destination.sh"
-    if guard.is_symlink() or not guard.is_file():
-        raise Denied("trusted destination approval guard missing")
-    try:
-        p = subprocess.run(["bash", str(guard), repository],
-                           capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise Denied("destination policy check unavailable") from exc
-    if p.returncode != 0:
-        raise Denied("destination not approved by checked-in private policy")
-    checked_repo(repository)
+    """Preflight without executing checkout-controlled shell scripts.
 
+    The separately tested Bash guard is for human/CI use only. Executing it
+    from this privileged publisher would run arbitrary code supplied by a
+    candidate PR *before* verifying protected-main source authorization.
+    Keep the authoritative approval check in descriptor-safe Python, and
+    revalidate the pinned destination's numeric GitHub identity here.
+    """
+    checked_policy_fingerprint(root, repository)
+    checked_repo(repository)
 
 def checked_policy_fingerprint(root, repository):
     """Read approval only through directory descriptors and O_NOFOLLOW.
@@ -163,7 +173,93 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
 
-def collect_source(root, trusted_root):
+def checked_source_main_protection():
+    """Require independently enforced source-main reviews before export.
+
+    A policy on an unprotected main branch is not an authorization boundary.
+    If the GitHub App lacks permission to inspect these rules, the API call
+    fails and publishing must stop rather than assuming protection.
+    """
+    branch = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main")
+    if branch.get("protected") is not True:
+        raise Denied("source main branch is not protected")
+    rules = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main/protection")
+    reviews = rules.get("required_pull_request_reviews")
+    checks = rules.get("required_status_checks")
+    admins = rules.get("enforce_admins")
+    if (not isinstance(reviews, dict) or not isinstance(checks, dict)
+            or not isinstance(admins, dict)
+            or reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or type(reviews.get("required_approving_review_count")) is not int
+            or reviews["required_approving_review_count"] < 1
+            or admins.get("enabled") is not True
+            or checks.get("strict") is not True
+            or not (isinstance(checks.get("contexts"), list) and checks["contexts"]
+                    or isinstance(checks.get("checks"), list) and checks["checks"])):
+        raise Denied("source main lacks mandatory independent security review and CI")
+    # A legacy contexts-only requirement matches the *name*, not its author.
+    # Require the GitHub Actions App ID in checks[] instead. Any second
+    # source for this security context would dilute branch protection.
+    app_checks = checks.get("checks")
+    if not isinstance(app_checks, list):
+        raise Denied("source main security CI check must be app-bound")
+    relevant = [entry for entry in app_checks
+                if isinstance(entry, dict)
+                and entry.get("context") == REQUIRED_PRIVATE_CI_CONTEXT]
+    if (not relevant or any(
+            type(entry.get("app_id")) is not int
+            or entry["app_id"] != REQUIRED_PRIVATE_CI_APP_ID
+            for entry in relevant)):
+        raise Denied("source main security CI check is not bound to trusted GitHub Actions app")
+    # Explicit bypass allowances negate the code-owner review guarantee.
+    bypass = reviews.get("bypass_pull_request_allowances")
+    if bypass is not None:
+        if (not isinstance(bypass, dict)
+                or any(not isinstance(bypass.get(kind, []), list)
+                       or bypass.get(kind, [])
+                       for kind in ("users", "teams", "apps"))):
+            raise Denied("source main permits unreviewed pull request bypass")
+    for setting in ("allow_force_pushes", "allow_deletions"):
+        entry = rules.get(setting)
+        if not isinstance(entry, dict) or entry.get("enabled") is not False:
+            raise Denied("source main permits unsafe history or deletion changes")
+
+
+def checked_protected_main_policy(local_fingerprint):
+    """Deny approvals present only in an unreviewed local working tree/PR.
+
+    GitHub's source-repository protected main is independently authoritative;
+    no checkout-controlled ref, environment variable, or destination response
+    is permitted to replace it. This must be rechecked before every write.
+    """
+    metadata = gh_api(PROTECTED_POLICY_ROUTE)
+    encoded = metadata.get("content")
+    length = metadata.get("size")
+    if (metadata.get("type") != "file"
+            or metadata.get("encoding") != "base64"
+            or not isinstance(encoded, str)
+            or not isinstance(length, int)
+            or isinstance(length, bool)
+            or not 0 <= length <= 16 * 1024
+            or len(encoded) > 24 * 1024):
+        raise Denied("protected main private CI policy unavailable or invalid")
+    try:
+        remote = base64.b64decode("".join(encoded.splitlines()), validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise Denied("protected main private CI policy encoding invalid") from exc
+    if len(remote) != length or hashlib.sha256(remote).digest() != local_fingerprint:
+        raise Denied("local private CI approval differs from protected main")
+    # Verify GitHub's reported blob identifier, guarding malformed responses.
+    reported_sha = valid_sha(metadata.get("sha"))
+    actual_sha = hashlib.sha1(
+        b"blob " + str(length).encode("ascii") + bytes([0]) + remote
+    ).hexdigest()
+    if reported_sha != actual_sha:
+        raise Denied("protected main policy blob integrity mismatch")
+
+
+def collect_source(root, trusted_root, *, omit_checkout_metadata=False):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
 
     O_NOFOLLOW on the final file is insufficient when a parent directory can
@@ -182,6 +278,10 @@ def collect_source(root, trusted_root):
         relative = source.relative_to(trusted)
     except (OSError, RuntimeError, ValueError) as exc:
         raise Denied("source directory escapes trusted checkout") from exc
+    # Synthetic/unit-test snapshots may use a subdirectory. They never gain
+    # the Git metadata exception; the real provenance gate separately refuses
+    # subdirectory exports. Retain strict no-follow traversal for those tests.
+    omit_checkout_metadata = omit_checkout_metadata and not relative.parts
 
     directories = []
     entries = []
@@ -211,7 +311,20 @@ def collect_source(root, trusted_root):
             raise Denied("source directory cannot be listed safely") from exc
         names.sort()
         for name in names:
-            if (name in (".", "..", ".git")
+            if name == ".git":
+                # Git metadata is not part of HEAD^{tree}. Omit it only at
+                # the exact checkout root; nested .git entries stay forbidden.
+                if not (omit_checkout_metadata and depth == 0):
+                    raise Denied("source path contains unsupported name")
+                try:
+                    metadata = os.stat(name, dir_fd=directory_fd,
+                                       follow_symlinks=False)
+                except OSError as exc:
+                    raise Denied("source Git metadata cannot be inspected") from exc
+                if not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+                    raise Denied("source Git metadata must not be a symlink or special file")
+                continue
+            if (name in (".", "..")
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
                     or "\\" in name):
                 raise Denied("source path contains unsupported name")
@@ -330,6 +443,23 @@ def snapshot_git_tree_sha(files):
     return tree_digest(root).hex()
 
 
+def checked_source_commit(commit_sha, source_tree_sha):
+    """Bind the exact local snapshot to a commit object in the pinned source repo.
+
+    A local Git repository (including one redirected via environment variables)
+    is not proof that its HEAD belongs to SOURCE_REPOSITORY. Resolve the commit
+    through the authenticated, fixed source-repository API before any export.
+    """
+    valid_sha(commit_sha)
+    valid_sha(source_tree_sha)
+    response = gh_api(f"repos/{SOURCE_REPOSITORY}/git/commits/{commit_sha}")
+    tree = response.get("tree")
+    if (response.get("sha") != commit_sha
+            or not isinstance(tree, dict)
+            or tree.get("sha") != source_tree_sha):
+        raise Denied("source commit is not authenticated against pinned source Git tree")
+
+
 def require_source_tree_match(source, trusted_root, files):
     """Fail closed unless the snapshot is the *entire committed checkout tree*.
 
@@ -349,6 +479,11 @@ def require_source_tree_match(source, trusted_root, files):
             ["git", "-C", str(trusted), "rev-parse",
              "--show-toplevel", "HEAD", "HEAD^{tree}"],
             capture_output=True, text=True, timeout=20, check=False,
+            env={**{key: value for key, value in os.environ.items()
+                     if not key.startswith("GIT_")},
+                 "GIT_NO_REPLACE_OBJECTS": "1",
+                 "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_CONFIG_GLOBAL": os.devnull},
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Denied("exact-tree Git provenance unavailable") from exc
@@ -368,24 +503,36 @@ def require_source_tree_match(source, trusted_root, files):
     return commit_sha, expected_tree
 
 
-def publish(repository, source, branch, trusted_root):
+def publish(repository, source, branch, trusted_root,
+            source_commit, source_tree):
+    # Caller-selected expected commit/tree must be explicit and immutable.
+    # The live checkout and pinned private source repository independently
+    # attest these exact values before any source-bearing write.
+    valid_sha(source_commit)
+    valid_sha(source_tree)
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
-    # Check both original private source and approved carrier identities before
-    # accessing source bytes; neither the slug nor visibility alone is enough.
+    # Validate the pinned source and independently enforced source-main policy
+    # before touching any source bytes or creating Git objects.
     checked_source()
+    checked_source_main_protection()
+    checked_protected_main_policy(approved_policy)
     checked_repo(repository)
-    trusted = trusted_root.resolve(strict=True)
-    resolved_source = source.resolve(strict=True)
-    try:
-        resolved_source.relative_to(trusted)
-    except ValueError as exc:
-        raise Denied("source directory escapes the trusted checkout") from exc
-    files = collect_source(source, trusted_root)
-    source_commit, exact_source_tree = require_source_tree_match(source, trusted_root, files)
+    # Trust the publisher's checkout for code/policy, not the candidate tree.
+    # The candidate may be an entirely separate Git checkout: it provides
+    # source BYTES only, never scripts or source-side authorization decisions.
+    # collect_source opens files with no-follow directory descriptors, and
+    # require_source_tree_match checks the candidate's complete committed tree.
+    if source.is_symlink():
+        raise Denied("candidate source checkout cannot be a symlink")
+    files = collect_source(source, source, omit_checkout_metadata=True)
+    actual_commit, exact_source_tree = require_source_tree_match(source, source, files)
+    if actual_commit != source_commit or exact_source_tree != source_tree:
+        raise Denied("candidate checkout differs from explicitly reviewed source commit/tree")
+    checked_source_commit(source_commit, source_tree)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -398,6 +545,8 @@ def publish(repository, source, branch, trusted_root):
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_source()
+        checked_source_main_protection()
+        checked_protected_main_policy(approved_policy)
         checked_repo(repository)
 
     elements = []
@@ -452,11 +601,16 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="independently reviewed exact source Git commit SHA")
+    p.add_argument("--source-tree", required=True,
+                   help="independently reviewed complete source Git tree SHA")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, args.source_commit, args.source_tree)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1

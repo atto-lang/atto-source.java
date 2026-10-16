@@ -48,7 +48,7 @@ expect_wrapper_reject() {
   grep -q 'PRIVATE_CI_DESTINATION_REJECTED' "$work/out"
 }
 expect_ok trusted/ci
-# The proposed private carrier remains denied without explicit policy approval.
+# A candidate ID pin is not permission: the destination is absent from this policy.
 expect_fail ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra
 for id in 987654321 null false invalid; do
   export MOCK_ID="$id"
@@ -61,12 +61,11 @@ for field in MOCK_ARCHIVED MOCK_DISABLED; do
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
   unset "$field"
-  # An explicitly empty API field must not silently receive a safe mock default.
-  export "$field"=''
+  export "$field"=null
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
   unset "$field"
-  export "$field"=null
+  export "$field"=""
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
   unset "$field"
