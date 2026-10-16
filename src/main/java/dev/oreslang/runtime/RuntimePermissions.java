@@ -330,6 +330,16 @@ public final class RuntimePermissions {
         Rule rule = rules.get(Permission.NET);
         if (rule == null || rule.denyAll()
                 || matchesAny(Permission.NET, selected.canonical(), rule.denied())) return false;
+        // 0.0.0.0 is a wildcard bind, not a single interface: listening on
+        // it exposes every local IPv4 address, including any explicitly
+        // denied numeric address. Never approve it as the result of a
+        // narrower host request, and reject it when ANY deny rule exists:
+        // even a hostname/port deny may name one of the interfaces/ports
+        // the OS could select. The caller must bind a concrete interface
+        // or request separate reviewed authority to use wildcard binds.
+        if ("0.0.0.0".equals(selected.host())
+                && (!"0.0.0.0".equals(requested.host())
+                        || !rule.denied().isEmpty())) return false;
         // A port-specific deny for the numeric destination is also relevant:
         // the OS might choose exactly that port after our authorization check.
         for (String denied : rule.denied()) {
