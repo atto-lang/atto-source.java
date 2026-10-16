@@ -41,7 +41,7 @@ Not every `actor/*` module must depend on `alloc`: a fixed-capacity actor execut
 ### actor/async: capability-neutral contract
 
 - `ActorRef`, message typing, `ActorMail`, ActorGroup, supervision CONTROL contracts, cancellation, channels, and executor interfaces belong in a portable actor/async layer, not behind `std`.
-- A target may provide a cooperative, interrupt-driven, or native-threaded executor. Oreslang's single-native-thread-per-actor rule, message admission, lifetime completion, actor-state loan nonescape and quiescent retirement are source semantics independent of executor.
+- A target may provide a cooperative, interrupt-driven, or native-threaded executor. Declared serial/concurrent actor behavior, synchronized actor-state access, message admission, lifetime completion, actor-state loan nonescape and quiescent retirement are source semantics independent of executor. This does not require a dedicated native thread or isolate for each actor.
 - Embedded configurations may use fixed-capacity mailboxes and user-provided clock/tick source; no OS services are imported solely by `spawn` or `receive`.
 - `Sendable` applies to in-process actor transfer; network serialization is a separate `Serializable`/codec contract. Wire and network transport live outside core. Neither transfer path may leak pointers or untrusted host capabilities.
 
