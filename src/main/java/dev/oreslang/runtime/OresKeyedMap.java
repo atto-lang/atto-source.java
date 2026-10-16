@@ -80,15 +80,27 @@ public final class OresKeyedMap<K, V> {
         }
     }
 
+    @FunctionalInterface
+    public interface EntryValidator {
+        void validate(Object key, Object value);
+    }
+
+    private static final EntryValidator NO_ENTRY_VALIDATOR = (key, value) -> { };
+
     private final ValueDomain valueDomain;
     private final KeyDomain domain;
+    private final EntryValidator entryValidator;
     private final LinkedHashMap<K, V> entries = new LinkedHashMap<>();
     // Tracked while holding this map's monitor; never expose a mutable view.
     private long storedKeyWireBytes;
 
-    private OresKeyedMap(KeyDomain domain, ValueDomain valueDomain) {
+    private OresKeyedMap(
+            KeyDomain domain,
+            ValueDomain valueDomain,
+            EntryValidator entryValidator) {
         this.domain = Objects.requireNonNull(domain, "key domain");
         this.valueDomain = Objects.requireNonNull(valueDomain, "value domain");
+        this.entryValidator = Objects.requireNonNull(entryValidator, "entry validator");
     }
 
     /** Host-only constructor defaults to explicit dynamic values. */
@@ -97,7 +109,21 @@ public final class OresKeyedMap<K, V> {
     }
 
     public static <V> OresKeyedMap<String, V> stringKeys(ValueDomain values) {
-        return new OresKeyedMap<>(KeyDomain.STRING, values);
+        return new OresKeyedMap<>(KeyDomain.STRING, values, NO_ENTRY_VALIDATOR);
+    }
+
+    /**
+     * String-keyed storage with an additional key-aware value policy.
+     * The validator runs after generic key/value-domain checks and before
+     * every mutation, including each entry of transactional putAll.
+     */
+    public static <V> OresKeyedMap<String, V> stringKeys(
+            ValueDomain values,
+            EntryValidator validator) {
+        return new OresKeyedMap<>(
+                KeyDomain.STRING,
+                values,
+                Objects.requireNonNull(validator, "entry validator"));
     }
 
     /** Host-only constructor defaults to explicit dynamic values. */
@@ -106,7 +132,7 @@ public final class OresKeyedMap<K, V> {
     }
 
     public static <V> OresKeyedMap<OresSymbol, V> symbolKeys(ValueDomain values) {
-        return new OresKeyedMap<>(KeyDomain.SYMBOL, values);
+        return new OresKeyedMap<>(KeyDomain.SYMBOL, values, NO_ENTRY_VALIDATOR);
     }
 
     /** Host-only constructor defaults to explicit dynamic values. */
@@ -115,7 +141,7 @@ public final class OresKeyedMap<K, V> {
     }
 
     public static <V> OresKeyedMap<Object, V> stringOrSymbolKeys(ValueDomain values) {
-        return new OresKeyedMap<>(KeyDomain.STRING_OR_SYMBOL, values);
+        return new OresKeyedMap<>(KeyDomain.STRING_OR_SYMBOL, values, NO_ENTRY_VALIDATOR);
     }
 
     public KeyDomain keyDomain() {
@@ -199,7 +225,7 @@ public final class OresKeyedMap<K, V> {
         return entries.get(key);
     }
 
-    private void checkValue(Object value) {
+    private void checkValue(Object key, Object value) {
         Objects.requireNonNull(value, "map value");
         boolean valid = switch (valueDomain) {
             case ANY -> true;
@@ -214,6 +240,7 @@ public final class OresKeyedMap<K, V> {
             throw new IllegalArgumentException(
                     "value is incompatible with Map value domain " + valueDomain);
         }
+        entryValidator.validate(key, value);
     }
 
     private static int wireKeyBytes(Object key) {
@@ -224,7 +251,7 @@ public final class OresKeyedMap<K, V> {
 
     public synchronized V put(K key, V value) {
         checkKey(key);
-        checkValue(value);
+        checkValue(key, value);
         long addedBytes = 0L;
         if (!entries.containsKey(key)) {
             if (entries.size() >= MAX_ENTRIES) {
@@ -268,7 +295,7 @@ public final class OresKeyedMap<K, V> {
             K key = Objects.requireNonNull(entry, "map entry").getKey();
             V value = entry.getValue();
             checkKey(key);
-            checkValue(value);
+            checkValue(key, value);
             if (!incomingKeys.add(key)) {
                 throw new IllegalArgumentException("duplicate logical key in Map batch");
             }
