@@ -247,7 +247,7 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("ChildProcManager is a reserved built-in actor base; "
                                 + "user-defined interfaces/contracts cannot impersonate a runtime process manager");
                     }
-                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), "interface");
+                    putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     if (alias.name().equals("ChildProcManager")) {
@@ -6835,6 +6835,13 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
+        // This reserved intrinsic base has no source-level parent declaration.
+        // Reject it before class-shape/inheritance traversal can report a
+        // misleading "unknown parent" error or permit an opaque type alias.
+        if (parentRef.name().equals("ChildProcManager")) {
+            throw new IllegalArgumentException("ChildProcManager is reserved but is not implemented yet; "
+                    + "no process-spawning actor can be instantiated from this base");
+        }
         if (parentRef.name().equals("Object") || parentRef.name().equals("List")) return null;
         if (parentRef.name().equals("obj") || parentRef.name().equals("arr")) throw new IllegalArgumentException("inline obj/arr values cannot be subclassed; extend Object or List instead");
         Ast.ClassDecl parent = findClass(parentRef.name());
