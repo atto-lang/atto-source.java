@@ -276,6 +276,44 @@ final class RuntimePermissionsTest {
     }
 
     @Test
+    void actualGuestWriteCannotAliasAWhitespaceSensitiveAllowedFile() throws Exception {
+        Path root = Files.createTempDirectory("ores-native-whitespace-").toRealPath();
+        Path source = root.resolve("program.ores");
+        Path allowed = root.resolve("allowed.txt");
+        Path distinct = root.resolve("allowed.txt ");
+        Files.writeString(allowed, "safe");
+        Files.writeString(distinct, "intact");
+
+        Files.writeString(source, """
+                pub fnc main(): void {
+                  fs.write_text("%s", "unauthorized");
+                  return;
+                }
+                """.formatted(escape(distinct)));
+
+        IsolatePolicy hostPolicy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.FILESYSTEM_WRITE);
+        RuntimePermissions scoped = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.WRITE, allowed.toString());
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> LinkedProgramRunner.run(
+                        source,
+                        hostPolicy,
+                        scoped,
+                        PermissionCheckMode.RUNTIME,
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        System.getenv(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+        assertTrue(deepMessage(failure).contains("permission denied"),
+                "native guest write must enforce the exact authorized filename");
+        assertEquals("safe", Files.readString(allowed));
+        assertEquals("intact", Files.readString(distinct));
+    }
+
+    @Test
     void checkModeArgumentDoesNotBecomeAPermissionGrant() {
         String[] args = {
                 "--ores-permission-check=runtime", "--ores-permission-env-allow=PUBLIC_*"
