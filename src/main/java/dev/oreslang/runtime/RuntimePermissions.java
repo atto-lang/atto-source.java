@@ -322,6 +322,7 @@ public final class RuntimePermissions {
         NetworkScope selected = parseNetworkScope(selectedIpv4, false);
         if (requested == null || selected == null || requested.port() != null
                 || selected.port() != null || !selected.host().matches("[0-9.]+")
+                || selected.host().equals("0.0.0.0")
                 || requested.host().startsWith("[")) return false;
         // Numeric requests must never be rebound to a different resolved IP.
         if (requested.host().matches("[0-9.]+")
