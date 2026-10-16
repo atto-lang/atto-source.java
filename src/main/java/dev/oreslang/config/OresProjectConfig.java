@@ -222,13 +222,19 @@ public final class OresProjectConfig {
     public OresProjectConfig forImportedSource(Path importedSource) throws IOException {
         OresProjectConfig found = discover(importedSource, environment, discoveryBoundary);
         if (found.manifestPath != null) return found;
-        if (discoveryBoundary == null
-                && (manifestPath == null
-                    || MANIFEST_NAME.equals(manifestPath.getFileName().toString()))) {
-            // The original resolver propagated its source roots through the
-            // entire import closure. Keep that behavior for manifest-less and
-            // legacy projects, without overriding an explicit nested manifest.
-            return this;
+        if (discoveryBoundary == null) {
+            if (manifestPath == null
+                    || MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+                // Preserve old transitive bare-import search semantics for
+                // manifest-less and legacy projects.
+                return this;
+            }
+            // An ambient ORES_PATHS source with no own manifest must retain
+            // the consumer's bare search paths, but must NOT acquire its @/
+            // root or pkg: dependency aliases as an ambient capability.
+            return new OresProjectConfig(null, found.projectRoot, null, null,
+                    sourceRoots, importPaths, environmentPaths, Map.of(),
+                    null, environment, null);
         }
         return found;
     }
