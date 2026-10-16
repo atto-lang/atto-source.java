@@ -223,9 +223,12 @@ def collect_source(root, trusted_root):
                                      follow_symlinks=False)
                 except OSError as exc:
                     raise Denied("trusted Git metadata changed") from exc
-                if not (stat.S_ISDIR(marker.st_mode)
-                        or stat.S_ISREG(marker.st_mode)):
-                    raise Denied("trusted Git metadata is not a file or directory")
+                # A regular .git pointer file can redirect the checkout
+                # to Git metadata outside trusted_root. Reject linked-worktree
+                # indirection: exact-tree admission requires an anchored,
+                # ordinary Git metadata directory at the trusted root.
+                if not stat.S_ISDIR(marker.st_mode):
+                    raise Denied("trusted Git metadata must be a real directory")
                 continue
             rel = prefix + name
             try:
