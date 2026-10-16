@@ -110,8 +110,14 @@ find at least one executed, non-skipped, non-failing test case in **each**
 of those six classes before the full build is admitted. Missing reports,
 skipped-only classes and malformed XML fail closed. As this is a single-module
 Maven project, evidence must come from **only** `target/surefire-reports`;
-nested fixture files and symlinked report paths are rejected. This check is
-embedded in the reviewed workflow definition rather than loaded as a script
+nested fixture files and symlinked report paths are rejected. Each required
+fully qualified test class must produce its own `TEST-<classname>.xml`,
+with a matching `testsuite` name, direct `testcase` children whose class
+names match, and a declared test count equal to the actual children.
+Empty, malformed, skipped-only, failed, or oversized (>16 MiB) evidence is
+rejected. A trusted workflow step first clears any pre-existing report
+directory; reports may never be supplied by a candidate's checked-out tree.
+This check is embedded in the reviewed workflow definition rather than loaded as a script
 from the untrusted candidate source checkout. The administrator's isolated runner
 must provide `python3` in addition to Java, GraalVM and Maven.
 
