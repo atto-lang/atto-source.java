@@ -215,6 +215,35 @@ final class PrivateAbstractActorHookTest {
     }
 
     @Test
+    void onStartIsAnUncallableActorRuntimeHook() {
+        IllegalArgumentException direct = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          on_start(): void { return; }
+                          receive(ActorMail<String> mail): void {
+                            self.on_start();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(direct.getMessage().contains("reserved actor lifecycle hook")
+                        || direct.getMessage().contains("runtime-managed"), direct.getMessage());
+
+        IllegalArgumentException reference = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          on_start(): void { return; }
+                          receive(ActorMail<String> mail): void {
+                            val callback = self.on_start;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(reference.getMessage().contains("runtime-managed")
+                        || reference.getMessage().contains("direct-call-only"), reference.getMessage());
+    }
+
+    @Test
     void actorReceiveIsNeverDirectlyCallableWithExplicitSelf() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
