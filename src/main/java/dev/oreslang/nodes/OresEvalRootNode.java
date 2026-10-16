@@ -871,6 +871,12 @@ public final class OresEvalRootNode extends RootNode {
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
                 Object value = args.get(i);
+                // Exact numeric parameters must be tagged at call entry, not
+                // just on function return; otherwise int->Decimal widening
+                // would silently fall back to binary64 inside the callee.
+                if (param.type() != null) {
+                    value = shapeExactNumericType(param.type(), value, label + " argument " + param.name());
+                }
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -8765,13 +8771,16 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("value is not numeric");
         }
         private Object shapeExactNumericBinding(Ast.BindingStmt binding, Object value) {
-            Ast.TypeRef type = binding.declaredType();
-            if (type != null && (type.name().equals("bigint") || type.name().equals("decimal"))
-                    && !type.isUnion() && !type.isComplement()) {
-                // Materialize exact carriers at local initialization, not only
-                // on return. Otherwise `val decimal x = 1; x / 3` would execute
-                // binary64 arithmetic and silently lose decimal precision.
-                return shapeReturnedValue(type, value, "binding " + binding.name());
+            return shapeExactNumericType(
+                    binding.declaredType(), value, "binding " + binding.name());
+        }
+
+        private Object shapeExactNumericType(Ast.TypeRef type, Object value, String label) {
+            if (type != null && !type.isUnion() && !type.isComplement()
+                    && (type.name().equals("bigint") || type.name().equals("decimal"))) {
+                // Applied at local initialization and parameter binding. A
+                // declared Decimal may not execute as an untagged Long/Double.
+                return shapeReturnedValue(type, value, label);
             }
             return value;
         }
