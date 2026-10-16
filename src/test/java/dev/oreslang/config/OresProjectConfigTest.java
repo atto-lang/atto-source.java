@@ -165,11 +165,16 @@ final class OresProjectConfigTest {
 
         assertEquals("package-demo", config.projectName().orElseThrow());
         assertEquals(helper.toRealPath(), config.resolveImport(project.resolve("src/nested/main.ores"),
-                "@/src/shared/util").orElseThrow());
+                "+/src/shared/util").orElseThrow());
         assertThrows(IllegalArgumentException.class,
-                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/../escape"));
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+/../escape"));
         assertThrows(IllegalArgumentException.class,
-                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/"));
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+/"));
+        IllegalArgumentException malformedRoot = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+src/shared/util"));
+        assertTrue(malformedRoot.getMessage().contains("expected +/<path>"));
+        assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/src/shared/util"));
     }
 
     @Test
@@ -372,7 +377,7 @@ final class OresProjectConfigTest {
         OresProjectConfig config = OresProjectConfig.discover(nested.resolve("main.ores"), Map.of());
         assertEquals("root", config.projectName().orElseThrow());
         assertEquals(project.resolve("root.ores").toRealPath(),
-                config.resolveImport(nested.resolve("main.ores"), "@/root").orElseThrow());
+                config.resolveImport(nested.resolve("main.ores"), "+/root").orElseThrow());
     }
 
 
@@ -482,7 +487,7 @@ final class OresProjectConfigTest {
         assertTrue(restricted.sourceRoots().isEmpty());
         assertTrue(restricted.resolveImport(importer, "secret").isEmpty());
         assertEquals(project.resolve("secret.ores").toRealPath(),
-                restricted.resolveImport(importer, "@/secret").orElseThrow());
+                restricted.resolveImport(importer, "+/secret").orElseThrow());
 
         // Omitted roots preserve the legacy/default project-root lookup.
         Files.writeString(manifest, "schema_version = \"1\"\n");
