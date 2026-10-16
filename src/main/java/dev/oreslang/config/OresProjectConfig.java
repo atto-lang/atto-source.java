@@ -40,6 +40,7 @@ public final class OresProjectConfig {
     private final List<Path> environmentPaths;
     private final Map<String, Path> dependencyRoots;
     private final Path mainEntrypoint;
+    private final Map<String, String> environment;
 
     private OresProjectConfig(
             Path manifestPath,
@@ -50,7 +51,8 @@ public final class OresProjectConfig {
             List<Path> importPaths,
             List<Path> environmentPaths,
             Map<String, Path> dependencyRoots,
-            Path mainEntrypoint) {
+            Path mainEntrypoint,
+            Map<String, String> environment) {
         this.manifestPath = manifestPath;
         this.projectRoot = projectRoot;
         this.projectName = projectName;
@@ -60,6 +62,7 @@ public final class OresProjectConfig {
         this.environmentPaths = List.copyOf(environmentPaths);
         this.dependencyRoots = Map.copyOf(dependencyRoots);
         this.mainEntrypoint = mainEntrypoint;
+        this.environment = Map.copyOf(environment);
     }
 
     public static OresProjectConfig discover(Path start, Map<String, String> environment) throws IOException {
@@ -85,7 +88,8 @@ public final class OresProjectConfig {
                 List.of(),
                 parseEnvironmentPaths(environment),
                 Map.of(),
-                null);
+                null,
+                environment);
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
@@ -141,7 +145,8 @@ public final class OresProjectConfig {
                 importPaths,
                 parseEnvironmentPaths(environment),
                 packageManifest ? parseDependencies(toml, projectRoot) : Map.of(),
-                mainEntrypoint);
+                mainEntrypoint,
+                environment);
     }
 
     public Optional<Path> manifestPath() { return Optional.ofNullable(manifestPath); }
@@ -153,6 +158,11 @@ public final class OresProjectConfig {
     public List<Path> environmentPaths() { return environmentPaths; }
     public Map<String, Path> dependencyRoots() { return dependencyRoots; }
     public Optional<Path> mainEntrypoint() { return Optional.ofNullable(mainEntrypoint); }
+
+    /** Resolve an imported package in its own physical project context. */
+    public OresProjectConfig forImportedPackage(Path importedSource) throws IOException {
+        return discover(importedSource, environment);
+    }
 
     /**
      * Ordered import search roots. Project-local paths intentionally win over
