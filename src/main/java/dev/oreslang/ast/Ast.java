@@ -166,6 +166,21 @@ public final class Ast {
         }
         public boolean isTupleType() { return name.equals("$tuple$"); }
 
+        /** Syntax-only optional tuple slot; no executable ABI lowering yet. */
+        public static TypeRef omittableTupleSlot(TypeRef type) {
+            if (type == null || type.isOmittableTupleSlot()) {
+                throw new IllegalArgumentException("invalid optional tuple slot");
+            }
+            return new TypeRef("$omittable_tuple_slot$", List.of(type), false);
+        }
+        public boolean isOmittableTupleSlot() { return name.equals("$omittable_tuple_slot$"); }
+        public TypeRef omittableTupleElement() {
+            if (!isOmittableTupleSlot() || arguments.size() != 1) {
+                throw new IllegalStateException("not an optional tuple slot");
+            }
+            return arguments.getFirst();
+        }
+
         private static TypeRef recordType(java.util.Map<String, TypeRef> members, boolean readOnly) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
             java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
