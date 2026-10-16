@@ -178,9 +178,9 @@ final class SendableActorBoundaryTest {
             IllegalArgumentException rejected = assertThrows(
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
-                            "define actor Worker as\\n"
+                            "define actor Worker as\n"
                                     + " receive(ActorMail<" + nested
-                                    + "> mail): void { return; }\\nend")));
+                                    + "> mail): void { return; }\nend")));
             assertTrue(rejected.getMessage().contains("SharedMutex"),
                     rejected.getMessage());
         }
@@ -198,9 +198,9 @@ final class SendableActorBoundaryTest {
             IllegalArgumentException rejected = assertThrows(
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
-                            "define actor Worker as\\n"
+                            "define actor Worker as\n"
                                     + " receive(ActorMail<" + nested
-                                    + "> mail): void { return; }\\nend")));
+                                    + "> mail): void { return; }\nend")));
             assertTrue(rejected.getMessage().contains("runtime/codec/supervisor capability"),
                     rejected.getMessage());
         }
