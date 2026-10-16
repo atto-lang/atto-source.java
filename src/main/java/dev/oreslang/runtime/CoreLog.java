@@ -54,7 +54,8 @@ public final class CoreLog {
     private record State(Level threshold, Recorder recorder) { }
 
     private static volatile State active;
-    private static Recorder retained;
+    // Volatile: the JVM shutdown hook runs on a separate thread.
+    private static volatile Recorder retained;
     private static boolean shutdownHookInstalled;
 
     private CoreLog() { }
@@ -62,18 +63,27 @@ public final class CoreLog {
     public static synchronized void configure(Level threshold) {
         if (threshold == null) throw new IllegalArgumentException("core log level is required");
         if (threshold == Level.OFF) {
+            // Disable must revoke output as well as recording. This drops the
+            // buffered session so a later re-enable cannot disclose old rows.
             active = null;
+            retained = null;
             return;
         }
         if (retained == null) {
             retained = new Recorder(DEFAULT_CAPACITY);
             if (!shutdownHookInstalled) {
                 Runtime.getRuntime().addShutdownHook(new Thread(
-                        () -> retained.dump(System.err), "ores-core-logging-dump"));
+                        () -> dumpRetained(System.err), "ores-core-logging-dump"));
                 shutdownHookInstalled = true;
             }
         }
         active = new State(threshold, retained);
+    }
+
+    /** Host shutdown path; package-visible for lifecycle regression testing. */
+    static void dumpRetained(PrintStream out) {
+        Recorder recorder = retained;
+        if (recorder != null) recorder.dump(out);
     }
 
     public static Level currentLevel() {
@@ -94,6 +104,7 @@ public final class CoreLog {
         State state = active;
         if (state != null && severity != null && severity != Level.OFF
                 && severity.rank >= state.threshold().rank
+                && !state.recorder().saturated
                 && eventId > 0 && eventId < NAMES.length) {
             state.recorder().record(severity, eventId, value);
         }
