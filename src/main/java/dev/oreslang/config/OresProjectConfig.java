@@ -8,6 +8,7 @@ import org.tomlj.TomlParseResult;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -108,6 +109,12 @@ public final class OresProjectConfig {
         Path absoluteManifest = manifest.toAbsolutePath().normalize();
         if (!Files.isRegularFile(absoluteManifest)) {
             throw new IllegalArgumentException("not an Oreslang project manifest: " + absoluteManifest);
+        }
+        // A manifest symlink can move package-root authority outside the
+        // selected directory. Require the exact manifest file, not a target
+        // reached through an independently controlled symbolic link.
+        if (Files.isSymbolicLink(absoluteManifest)) {
+            throw new IllegalArgumentException("project manifest symlink is not allowed: " + absoluteManifest);
         }
 
         TomlParseResult toml = Toml.parse(absoluteManifest);
@@ -214,6 +221,12 @@ public final class OresProjectConfig {
                     throw new IllegalArgumentException(
                             "project-root import escapes root through symlink: " + importPath);
                 }
+                // A nested package owns its own +/ authority; an importing
+                // parent may not treat it as an ordinary directory. Check
+                // both spelled and physical paths to block in-root symlink
+                // aliases that conceal a nested manifest.
+                requireNoNestedPackage(root, source.get(), importPath);
+                requireNoNestedPackage(realRoot, realTarget, importPath);
                 // Preserve the validated canonical identity throughout import closure loading.
                 // In-root symlink aliases must not create duplicate source identities.
                 return Optional.of(realTarget);
@@ -242,6 +255,19 @@ public final class OresProjectConfig {
             if (resolved.isPresent()) return resolved;
         }
         return Optional.empty();
+    }
+
+    private static void requireNoNestedPackage(Path root, Path source, String specifier) {
+        for (Path dir = source.getParent(); dir != null && !dir.equals(root); dir = dir.getParent()) {
+            if (!dir.startsWith(root)) {
+                throw new IllegalArgumentException("project-root import escapes package: " + specifier);
+            }
+            if (Files.exists(dir.resolve(MANIFEST_NAME), LinkOption.NOFOLLOW_LINKS)
+                    || Files.exists(dir.resolve(LEGACY_MANIFEST_NAME), LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException(
+                        "project-root import crosses nested package boundary: " + specifier);
+            }
+        }
     }
 
     private static Optional<Path> existingSource(Path candidate) {
