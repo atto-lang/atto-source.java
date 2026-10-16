@@ -67,4 +67,57 @@ define module matrix as
     return Ok(result);
   }
 
+  pub fnc identity(int dimension): Result<Array<decimal>, String> {
+    if dimension <= 0 || dimension > 128; do
+      return Err("matrix dimensions must be within 1..128");
+    fi
+    let mut Array<decimal> result = new Array<decimal>();
+    for (let i = 0; i < dimension; i = i + 1) {
+      for (let j = 0; j < dimension; j = j + 1) {
+        if i == j; do
+          result.add(1d);
+        else
+          result.add(0d);
+        fi
+      }
+    }
+    return Ok(result);
+  }
+
+  pub fnc trace(int dimension, Array<decimal> values): Result<decimal, String> {
+    if dimension <= 0 || dimension > 128; do
+      return Err("matrix dimensions must be within 1..128");
+    fi
+    if values.size != dimension * dimension; do
+      return Err("matrix element count does not match dimensions");
+    fi
+    let decimal result = 0d;
+    for (let i = 0; i < dimension; i = i + 1) {
+      result = result + values.get(i * dimension + i);
+    }
+    return Ok(result);
+  }
+
+  // Sum-of-squares accumulates exactly. sqrt rounds once with the caller's
+  // explicit precision context; no binary64 intermediate is introduced.
+  pub fnc frobenius_norm(
+    int rows,
+    int cols,
+    Array<decimal> values,
+    int precision,
+    String rounding
+  ): Result<decimal, String> {
+    if rows <= 0 || cols <= 0 || rows > 128 || cols > 128; do
+      return Err("matrix dimensions must be within 1..128");
+    fi
+    if values.size != rows * cols; do
+      return Err("matrix element count does not match dimensions");
+    fi
+    let decimal squares = 0d;
+    for const value of values do
+      squares = squares + value * value;
+    done
+    return Ok(DecimalOps.sqrt(squares, precision, rounding));
+  }
+
 end
