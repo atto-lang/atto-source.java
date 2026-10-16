@@ -151,6 +151,35 @@ class CoreLogTest {
         }
     }
 
+    @Test void disabledLoggerDoesNotAllocateOnHotPath() {
+        CoreLog.configure(CoreLog.Level.OFF);
+        var rawBean = java.lang.management.ManagementFactory.getThreadMXBean();
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                rawBean instanceof com.sun.management.ThreadMXBean,
+                "per-thread allocation counters unavailable");
+        var bean = (com.sun.management.ThreadMXBean) rawBean;
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                bean.isThreadAllocatedMemorySupported(),
+                "per-thread allocation counters unavailable");
+        if (!bean.isThreadAllocatedMemoryEnabled()) {
+            bean.setThreadAllocatedMemoryEnabled(true);
+        }
+        long tid = Thread.currentThread().threadId();
+        for (int i = 0; i < 100_000; i++) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
+            CoreLog.enabled(CoreLog.Level.WARN);
+        }
+        long before = bean.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < 300_000; i++) {
+            CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
+            CoreLog.enabled(CoreLog.Level.WARN);
+        }
+        long after = bean.getThreadAllocatedBytes(tid);
+        assertTrue(before >= 0 && after >= 0, "thread allocation counters must be readable");
+        assertEquals(0L, after - before,
+                "disabled recording and gating must not allocate per event");
+    }
+
     private static String dumpRetained() {
         var bytes = new ByteArrayOutputStream();
         CoreLog.dumpRetained(new PrintStream(bytes, true, StandardCharsets.UTF_8));
