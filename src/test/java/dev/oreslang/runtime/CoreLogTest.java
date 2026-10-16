@@ -169,15 +169,22 @@ class CoreLogTest {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
             CoreLog.enabled(CoreLog.Level.WARN);
         }
+        // ThreadMXBean reads themselves can incur fixed lazy/JVM bookkeeping
+        // allocations, which must not be confused with per-event allocations.
+        long baselineStart = bean.getThreadAllocatedBytes(tid);
+        long baselineEnd = bean.getThreadAllocatedBytes(tid);
+        long baseline = baselineEnd - baselineStart;
         long before = bean.getThreadAllocatedBytes(tid);
         for (int i = 0; i < 300_000; i++) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
             CoreLog.enabled(CoreLog.Level.WARN);
         }
         long after = bean.getThreadAllocatedBytes(tid);
-        assertTrue(before >= 0 && after >= 0, "thread allocation counters must be readable");
-        assertEquals(0L, after - before,
-                "disabled recording and gating must not allocate per event");
+        assertTrue(baseline >= 0 && before >= 0 && after >= 0,
+                "thread allocation counters must be readable");
+        assertTrue(after - before <= baseline + 512L,
+                "disabled hot path must not allocate per event (measured " + (after - before)
+                        + " bytes across 300000 calls; counter baseline " + baseline + ")");
     }
 
     private static String dumpRetained() {
