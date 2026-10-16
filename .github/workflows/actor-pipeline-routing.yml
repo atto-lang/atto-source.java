@@ -47,6 +47,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Verify exact PR-head checkout identity
         shell: bash
         env:
@@ -55,7 +56,6 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           git rev-parse 'HEAD^{tree}'
-          persist-credentials: false
       - name: Log immutable checkout identity
         run: |
           git rev-parse HEAD
