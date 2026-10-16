@@ -24,8 +24,12 @@ import java.util.function.Supplier;
  * independent admission receipt. Admission never means processing / DONE.
  */
 public final class ActorPipelineMailboxRouter<M> {
-    public record Admission(String target, boolean admitted, RuntimeException failure) {
+    /** The stable edge index is the index in the immutable supervisor plan,
+     * not a position guessed from an unordered mailbox map. */
+    public record Admission(int edgeIndex, String target, boolean admitted,
+                            RuntimeException failure) {
         public Admission {
+            if (edgeIndex < 0) throw new IllegalArgumentException("negative edge index");
             Objects.requireNonNull(target, "target");
             if (admitted == (failure != null)) {
                 throw new IllegalArgumentException(
@@ -36,6 +40,7 @@ public final class ActorPipelineMailboxRouter<M> {
 
     private final ActorRuntime owner;
     private final ActorPipelineRoutePlan graph;
+    private final Map<ActorPipelineRoutePlan.Edge, Integer> edgeIndexes;
     private final Map<ActorRuntime.ActorId, String> identities;
     private final Map<String, ActorRuntime.ActorRef<M>> targets;
     // Each bound graph generation owns an independent round-robin cursor.
@@ -64,6 +69,13 @@ public final class ActorPipelineMailboxRouter<M> {
         this.owner.requirePipelineRegistrationHostAuthority();
         this.graph = Objects.requireNonNull(plan, "plan");
         Objects.requireNonNull(actorBindings, "actorBindings");
+        Map<ActorPipelineRoutePlan.Edge, Integer> indices = new HashMap<>();
+        for (int i = 0; i < plan.edges().size(); ++i) {
+            if (indices.putIfAbsent(plan.edges().get(i), i) != null) {
+                throw new IllegalArgumentException("duplicate planned edge identity");
+            }
+        }
+        this.edgeIndexes = Map.copyOf(indices);
 
         // Reject incomplete or superfluous connections before exposing any
         // mutable routing entrypoint. A sink/transform may be the final edge
@@ -188,9 +200,11 @@ public final class ActorPipelineMailboxRouter<M> {
             for (ActorPipelineRoutePlan.Edge edge : edges) {
                 try {
                     admit(edge, value);
-                    receipts.add(new Admission(edge.target(), true, null));
+                    receipts.add(new Admission(edgeIndexes.get(edge),
+                            edge.target(), true, null));
                 } catch (RuntimeException admissionFailure) {
-                    receipts.add(new Admission(edge.target(), false, admissionFailure));
+                    receipts.add(new Admission(edgeIndexes.get(edge),
+                            edge.target(), false, admissionFailure));
                 }
             }
             return List.copyOf(receipts);
