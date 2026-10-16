@@ -70,7 +70,7 @@ public final class OresContext implements AutoCloseable {
             // termination subscribers and closed listeners do not retain quota.
             nioListeners.removeIf(NativeNioFutureReactor::isTerminated);
             if (nioListeners.size() + nioOpening >= MAX_NIO_LISTENERS_PER_CONTEXT)
-                throw new RejectedExecutionException("NIO listener capacity exhausted");
+                throw new RejectedExecutionException("TCP listener capacity exhausted");
             ++nioOpening;
         }
         NativeNioFutureReactor reactor;
