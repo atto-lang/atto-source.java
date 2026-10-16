@@ -45,7 +45,7 @@ SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 PINNED_DESTINATION_IDS = {
     "chapter-publishing-test/zed-pkg-integration-e2e": 1344442382,
-    # Candidate identity pin, not protected-main source-export authorization.
+    # Candidate identity pin only; protected-main source approval remains separate.
     "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra": 1412142815,
 }
 
@@ -183,6 +183,10 @@ def checked_source_main_protection():
     branch = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main")
     if branch.get("protected") is not True:
         raise Denied("source main branch is not protected")
+    commit_data = branch.get("commit")
+    if not isinstance(commit_data, dict):
+        raise Denied("protected source main lacks an immutable commit identity")
+    protected_sha = valid_sha(commit_data.get("sha"))
     rules = gh_api(f"repos/{SOURCE_REPOSITORY}/branches/main/protection")
     reviews = rules.get("required_pull_request_reviews")
     checks = rules.get("required_status_checks")
@@ -224,16 +228,26 @@ def checked_source_main_protection():
         entry = rules.get(setting)
         if not isinstance(entry, dict) or entry.get("enabled") is not False:
             raise Denied("source main permits unsafe history or deletion changes")
+    return protected_sha
 
 
-def checked_protected_main_policy(local_fingerprint):
-    """Deny approvals present only in an unreviewed local working tree/PR.
+def checked_protected_main_policy(local_fingerprint, pinned_main_sha=None):
+    """Check protected source-main policy at an immutable SHA and live main.
 
-    GitHub's source-repository protected main is independently authoritative;
-    no checkout-controlled ref, environment variable, or destination response
-    is permitted to replace it. This must be rechecked before every write.
+    The immutable read prevents a moving main ref from silently authorizing a
+    different revision. The live read additionally detects changed approvals.
+    Both blobs must byte-match the trusted source checkout.
     """
-    metadata = gh_api(PROTECTED_POLICY_ROUTE)
+    if pinned_main_sha is not None:
+        valid_sha(pinned_main_sha)
+        checked_policy_response(
+            gh_api(PROTECTED_POLICY_ROUTE.replace("?ref=main", "?ref=" + pinned_main_sha)),
+            local_fingerprint)
+    checked_policy_response(gh_api(PROTECTED_POLICY_ROUTE), local_fingerprint)
+
+
+def checked_policy_response(metadata, local_fingerprint):
+    """Fail closed on missing/malformed policy bytes, length, or Git blob SHA."""
     encoded = metadata.get("content")
     length = metadata.get("size")
     if (metadata.get("type") != "file"
@@ -257,6 +271,7 @@ def checked_protected_main_policy(local_fingerprint):
     ).hexdigest()
     if reported_sha != actual_sha:
         raise Denied("protected main policy blob integrity mismatch")
+
 
 
 def collect_source(root, trusted_root, *, omit_checkout_metadata=False):
@@ -560,8 +575,8 @@ def publish(repository, source, branch, trusted_root,
     # Validate the pinned source and independently enforced source-main policy
     # before touching any source bytes or creating Git objects.
     checked_source()
-    checked_source_main_protection()
-    checked_protected_main_policy(approved_policy)
+    approved_main_sha = checked_source_main_protection()
+    checked_protected_main_policy(approved_policy, approved_main_sha)
     checked_repo(repository)
     # Trust the publisher's checkout for code/policy, not the candidate tree.
     # The candidate may be an entirely separate Git checkout: it provides
@@ -587,8 +602,9 @@ def publish(repository, source, branch, trusted_root,
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_source()
-        checked_source_main_protection()
-        checked_protected_main_policy(approved_policy)
+        if checked_source_main_protection() != approved_main_sha:
+            raise Denied("protected source main changed during private CI export")
+        checked_protected_main_policy(approved_policy, approved_main_sha)
         checked_repo(repository)
 
     elements = []
