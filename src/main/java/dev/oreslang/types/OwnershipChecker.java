@@ -1178,8 +1178,11 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
-            Ast.TypeRef elementType = collectionElementType(receiver.type);
-            ValueKind elementKind = elementType.name().equals("$infer$") ? ValueKind.MOVE_ONLY : kindOfType(elementType);
+            Ast.TypeRef elementType = isTypedMapSourceType(receiver.type)
+                    ? typedMapRequiredReadType(receiver.type, indexed.index())
+                    : collectionElementType(receiver.type);
+            ValueKind elementKind = elementType.name().equals("$infer$")
+                    ? ValueKind.MOVE_ONLY : kindOfType(elementType);
             if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
                 throw error("cannot move actor-owned indexed state out of its mailbox turn");
             }
@@ -1462,6 +1465,29 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.MemberExpr member) {
             ValueInfo sumCall = checkBuiltinSumCall(member, call.arguments(), scope);
             if (sumCall != null) return sumCall;
+
+            Ast.TypeRef mapReceiverType = receiverType(member.receiver(), scope);
+            if (isTypedMapSourceType(mapReceiverType)) {
+                String operation = member.member();
+                if (!Set.of("has", "get", "take", "remove").contains(operation)) {
+                    throw error("unknown typed Map operation '" + operation + "'");
+                }
+                if (call.arguments().size() != 1) {
+                    throw error("Map." + operation + " expects exactly one key argument");
+                }
+                checkExpr(call.arguments().getFirst(), scope, false);
+                if (operation.equals("take") || operation.equals("remove")) {
+                    ensureMutableReceiver(
+                            member.receiver(), scope, "Map." + operation);
+                }
+                if (operation.equals("has") || operation.equals("remove")) {
+                    return new ValueInfo(
+                            Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                }
+                Ast.TypeRef result = typedMapLookupResultType(
+                        mapReceiverType, call.arguments().getFirst());
+                return new ValueInfo(result, kindOfType(result), null);
+            }
 
             // Native collection mutations are effects on the receiver, not
             // harmless reads. TypeChecker validates method availability/arity.
@@ -3352,6 +3378,78 @@ public final class OwnershipChecker {
                             Origin.CAPTURE));
         }
         return continuation;
+    }
+
+    private boolean isTypedMapSourceType(Ast.TypeRef type) {
+        if (type == null) return false;
+        Ast.TypeRef concrete = type.isBorrow() ? type.borrowedTarget() : type;
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return true;
+        }
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass == null || klass.parents().size() != 1) return false;
+        Ast.TypeRef parent = klass.parents().getFirst();
+        if (!parent.name().equals("Map") || parent.inferArguments()
+                || parent.arguments().size() != 2) return false;
+        Ast.TypeRef key = parent.arguments().get(0);
+        Ast.TypeRef value = parent.arguments().get(1);
+        return key.arguments().isEmpty() && !key.inferArguments()
+                && (key.name().equals("string") || key.name().equals("String"))
+                && value.arguments().isEmpty() && !value.inferArguments()
+                && value.name().equals("unknown");
+    }
+
+    private Ast.TypeRef typedMapRequiredReadType(
+            Ast.TypeRef receiverType,
+            Ast.Expr keyExpression) {
+        Ast.TypeRef concrete = receiverType.isBorrow()
+                ? receiverType.borrowedTarget() : receiverType;
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return concrete.arguments().get(1);
+        }
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass == null) return Ast.TypeRef.inferred();
+        String literal = stringLiteralKey(keyExpression);
+        if (literal != null) {
+            for (Ast.MapKeyDecl key : klass.mapKeys()) {
+                if (key.name().equals(literal)
+                        && key.declaredType().name().equals("Option")
+                        && key.declaredType().arguments().size() == 1) {
+                    return key.declaredType().arguments().getFirst();
+                }
+            }
+        }
+        return Ast.TypeRef.simple("unknown");
+    }
+
+    private Ast.TypeRef typedMapLookupResultType(
+            Ast.TypeRef receiverType,
+            Ast.Expr keyExpression) {
+        Ast.TypeRef concrete = receiverType.isBorrow()
+                ? receiverType.borrowedTarget() : receiverType;
+        if (concrete.name().equals("Map") && concrete.arguments().size() == 2) {
+            return new Ast.TypeRef(
+                    "Option", List.of(concrete.arguments().get(1)), false);
+        }
+        Ast.ClassDecl klass = findClass(concrete.name());
+        if (klass == null) {
+            return new Ast.TypeRef(
+                    "Option", List.of(Ast.TypeRef.inferred()), false);
+        }
+        String literal = stringLiteralKey(keyExpression);
+        if (literal != null) {
+            for (Ast.MapKeyDecl key : klass.mapKeys()) {
+                if (key.name().equals(literal)) return key.declaredType();
+            }
+        }
+        return new Ast.TypeRef(
+                "Option", List.of(Ast.TypeRef.simple("unknown")), false);
+    }
+
+    private static String stringLiteralKey(Ast.Expr expression) {
+        return expression instanceof Ast.LiteralExpr literal
+                        && literal.value() instanceof String text
+                ? text : null;
     }
 
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
