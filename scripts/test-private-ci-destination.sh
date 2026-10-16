@@ -41,7 +41,7 @@ expect_fail() {
 }
 expect_wrapper_reject() {
   rm -f "$MOCK_EXEC_LOG"
-  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test > "$work/out" 2>&1; then
+  if "$script_dir/run-in-private-ci-destination.sh" "$1" --source-dir "$work/fixture/source" --branch ci/oreslang-test --source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --source-tree dddddddddddddddddddddddddddddddddddddddd > "$work/out" 2>&1; then
     echo 'Unsafe destination executed publishing' >&2; exit 1;
   fi
   test ! -e "$MOCK_EXEC_LOG"
