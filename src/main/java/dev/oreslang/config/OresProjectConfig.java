@@ -41,6 +41,8 @@ public final class OresProjectConfig {
     private final Map<String, Path> dependencyRoots;
     private final Path mainEntrypoint;
     private final Map<String, String> environment;
+    // Physical root of the installed package, if this is a dependency context.
+    private final Path discoveryBoundary;
 
     private OresProjectConfig(
             Path manifestPath,
@@ -52,7 +54,8 @@ public final class OresProjectConfig {
             List<Path> environmentPaths,
             Map<String, Path> dependencyRoots,
             Path mainEntrypoint,
-            Map<String, String> environment) {
+            Map<String, String> environment,
+            Path discoveryBoundary) {
         this.manifestPath = manifestPath;
         this.projectRoot = projectRoot;
         this.projectName = projectName;
@@ -63,22 +66,40 @@ public final class OresProjectConfig {
         this.dependencyRoots = Map.copyOf(dependencyRoots);
         this.mainEntrypoint = mainEntrypoint;
         this.environment = Map.copyOf(environment);
+        this.discoveryBoundary = discoveryBoundary;
     }
 
     public static OresProjectConfig discover(Path start, Map<String, String> environment) throws IOException {
+        return discover(start, environment, null);
+    }
+
+    private static OresProjectConfig discover(
+            Path start, Map<String, String> environment, Path boundary) throws IOException {
         if (start == null) throw new IllegalArgumentException("config discovery start path cannot be null");
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path searchFrom = directoryFor(start);
+        Path physicalBoundary = boundary == null ? null : boundary.toRealPath();
+        // Individual source symlinks may lead outside the installed package.
+        // Such a source still inherits its declared package's root; never
+        // discover manifests in an unrelated physical parent directory.
+        if (physicalBoundary != null && !searchFrom.startsWith(physicalBoundary)) {
+            searchFrom = physicalBoundary;
+        }
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
+            if (physicalBoundary != null && !cursor.startsWith(physicalBoundary)) break;
             // Prefer the package manifest when both are in the same directory.
             Path packageManifest = cursor.resolve(PACKAGE_MANIFEST_NAME);
-            if (Files.isRegularFile(packageManifest)) return load(packageManifest, environment);
+            if (Files.isRegularFile(packageManifest)) {
+                return load(packageManifest, environment).withDiscoveryBoundary(physicalBoundary);
+            }
             Path legacyManifest = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(legacyManifest)) return load(legacyManifest, environment);
+            if (Files.isRegularFile(legacyManifest)) {
+                return load(legacyManifest, environment).withDiscoveryBoundary(physicalBoundary);
+            }
         }
 
-        Path root = searchFrom.toAbsolutePath().normalize();
+        Path root = physicalBoundary == null ? searchFrom.toAbsolutePath().normalize() : physicalBoundary;
         return new OresProjectConfig(
                 null,
                 root,
@@ -89,7 +110,8 @@ public final class OresProjectConfig {
                 parseEnvironmentPaths(environment),
                 Map.of(),
                 null,
-                environment);
+                environment,
+                physicalBoundary);
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
@@ -146,7 +168,8 @@ public final class OresProjectConfig {
                 parseEnvironmentPaths(environment),
                 packageManifest ? parseDependencies(toml, projectRoot) : Map.of(),
                 mainEntrypoint,
-                environment);
+                environment,
+                null);
     }
 
     public Optional<Path> manifestPath() { return Optional.ofNullable(manifestPath); }
@@ -159,19 +182,34 @@ public final class OresProjectConfig {
     public Map<String, Path> dependencyRoots() { return dependencyRoots; }
     public Optional<Path> mainEntrypoint() { return Optional.ofNullable(mainEntrypoint); }
 
-    /**
-     * Import context is based on the imported source, not the entrypoint.
-     * This includes nested packages reached through ./ or bare search roots.
-     * Preserve legacy manifest search behavior when an external source has
-     * no own manifest; new package manifests fail closed at that boundary.
-     */
+    private OresProjectConfig withDiscoveryBoundary(Path boundary) {
+        if (boundary == null) return this;
+        return new OresProjectConfig(manifestPath, projectRoot, projectName, projectVersion,
+                sourceRoots, importPaths, environmentPaths, dependencyRoots, mainEntrypoint,
+                environment, boundary);
+    }
+
+    /** Re-evaluate the nearest manifest without crossing an installed package boundary. */
     public OresProjectConfig forImportedSource(Path importedSource) throws IOException {
-        OresProjectConfig found = discover(importedSource, environment);
+        OresProjectConfig found = discover(importedSource, environment, discoveryBoundary);
         if (found.manifestPath != null) return found;
-        if (manifestPath != null && MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+        if (discoveryBoundary == null && manifestPath != null
+                && MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
+            // Legacy compiler configuration keeps its original ambient fallback.
             return this;
         }
         return found;
+    }
+
+    /** Enter a declared zed dependency, treating its physical mount root as a boundary. */
+    public OresProjectConfig forImportedPackage(Path importedSource, String importPath) throws IOException {
+        String remainder = importPath.substring("pkg:".length());
+        String alias = remainder.substring(0, remainder.indexOf('/'));
+        Path packageRoot = dependencyRoots.get(alias);
+        if (packageRoot == null) {
+            throw new IllegalArgumentException("undeclared package alias '" + alias + "'");
+        }
+        return discover(importedSource, environment, packageRoot);
     }
 
     /**
