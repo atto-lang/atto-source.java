@@ -289,20 +289,30 @@ class CoreLogTest {
         var warm = new CoreLog.Recorder(16_384);
         for (int i = 0; i < 16_000; i++)
             warm.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
-        var recorder = new CoreLog.Recorder(130_000);
+        // The JDK's allocation counter can incur fixed one-time bookkeeping
+        // (hundreds or thousands of bytes), unrelated to log event count.
+        // Compare growth with 3x as many calls instead of demanding an exact
+        // zero-byte reading from a single noisy measurement.
+        var recorder = new CoreLog.Recorder(450_000);
         long tid = Thread.currentThread().threadId();
-        long baselineStart = bean.getThreadAllocatedBytes(tid);
-        long baselineEnd = bean.getThreadAllocatedBytes(tid);
-        long baseline = baselineEnd - baselineStart;
-        long before = bean.getThreadAllocatedBytes(tid);
+        long beforeSmall = bean.getThreadAllocatedBytes(tid);
         for (int i = 0; i < 100_000; i++)
             recorder.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
-        long after = bean.getThreadAllocatedBytes(tid);
-        assertTrue(baseline >= 0 && before >= 0 && after >= 0);
-        assertEquals(100_000, recorder.reserve(), "the enabled recorder must publish real slots");
-        assertTrue(after - before <= baseline + 512L,
-                "numeric enabled hot path must not allocate per event; " +
-                (after - before) + " total measured bytes across 100000 events");
+        long afterSmall = bean.getThreadAllocatedBytes(tid);
+        long beforeLarge = bean.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < 300_000; i++)
+            recorder.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
+        long afterLarge = bean.getThreadAllocatedBytes(tid);
+        assertTrue(beforeSmall >= 0 && afterSmall >= 0
+                && beforeLarge >= 0 && afterLarge >= 0);
+        long smallBytes = afterSmall - beforeSmall;
+        long largeBytes = afterLarge - beforeLarge;
+        assertTrue(largeBytes <= smallBytes + 4096L,
+                "numeric enabled hot path must not allocate proportionally to"
+                + " event count: 100k=" + smallBytes + " bytes, 300k="
+                + largeBytes + " bytes");
+        assertEquals(400_000, recorder.reserve(),
+                "enabled recorder must publish all measured events");
     }
 
     private static String dumpRetained() {
