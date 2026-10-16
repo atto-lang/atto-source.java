@@ -99,6 +99,39 @@ final class ExecutionGraphV1Test {
     }
 
     @Test
+    void duplicateExecutorDispatchHasExactlyOneTerminalPublication() throws Exception {
+        var b = new ExecutionGraphV1.Builder();
+        var plan = b.build(b.cpuAdd(b.cpuI64(20), b.cpuI64(22)));
+        for (int i = 0; i < 128; i++) {
+            var queued = new ArrayDeque<Runnable>();
+            var future = plan.submitCpu(queued::add);
+            var completions = new java.util.concurrent.atomic.AtomicInteger();
+            future.whenCompleteRuntime((value, failure) -> completions.incrementAndGet());
+            assertEquals(1, queued.size());
+            Runnable sameTask = queued.removeFirst();
+            var gate = new java.util.concurrent.CountDownLatch(1);
+            Runnable concurrent = () -> {
+                try {
+                    gate.await();
+                    sameTask.run();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+            };
+            var first = new Thread(concurrent);
+            var second = new Thread(concurrent);
+            first.start();
+            second.start();
+            gate.countDown();
+            first.join();
+            second.join();
+            assertEquals(42L, future.join());
+            assertEquals(1, completions.get());
+        }
+    }
+
+    @Test
     void graphBudgetBoundsUntrustedPlanSize() {
         var b = new ExecutionGraphV1.Builder();
         for (int i = 0; i < 4096; i++) b.cpuUnit();
