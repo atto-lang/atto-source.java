@@ -12,8 +12,6 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -40,9 +38,9 @@ public final class OresContext implements AutoCloseable {
     private final NativeHttp http = new NativeHttp(this);
     public NativeHttp http() { return http; }
 
-    /** Host-only child-process registries associated with each actor execution domain. */
-    private final ConcurrentHashMap<Object, Set<ChildProcOwnedRuntime>> ownedChildProcesses =
-            new ConcurrentHashMap<>();
+    /** Atomically binds host child-process ownership to actor domain retirement. */
+    private final ActorChildProcessRegistry ownedChildProcesses =
+            new ActorChildProcessRegistry();
 
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
@@ -156,34 +154,23 @@ public final class OresContext implements AutoCloseable {
     public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
 
-    /** Register only on the owning actor turn; never let a guest choose a domain. */
+    /** Register only on an owning actor turn; guest code cannot choose a domain. */
     void registerOwnedChildProcesses(ChildProcOwnedRuntime manager) {
         Object domain = ActorRuntime.currentActorExecutionDomain();
         if (domain == null || ActorRuntime.currentActorRuntime() != actors) {
             throw new SecurityException("child process registry requires an actor execution domain");
         }
-        ownedChildProcesses.compute(domain, (key, existing) -> {
-            Set<ChildProcOwnedRuntime> registries =
-                    existing == null ? ConcurrentHashMap.newKeySet() : existing;
-            if (registries.size() >= 1) {
-                throw new IllegalStateException("actor already owns a child process manager");
-            }
-            registries.add(manager);
-            return registries;
-        });
+        ownedChildProcesses.register(domain, manager);
     }
 
     private void retireOwnedChildProcesses(Object domain) {
-        Set<ChildProcOwnedRuntime> registries = ownedChildProcesses.remove(domain);
-        if (registries == null) return;
-        for (ChildProcOwnedRuntime manager : registries) manager.close();
+        ownedChildProcesses.retire(domain);
     }
 
     private void closeAllOwnedChildProcesses() {
-        for (Object domain : Set.copyOf(ownedChildProcesses.keySet())) {
-            retireOwnedChildProcesses(domain);
-        }
+        ownedChildProcesses.close();
     }
+
     public AsyncRuntime asyncRuntime() { return asyncRuntime; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
