@@ -70,6 +70,8 @@ public final class SupervisorFailureControl {
     private final ArrayDeque<Notice> pending = new ArrayDeque<>();
     private final AtomicLong undelivered = new AtomicLong();
     private Consumer<Notice> handler;
+    /** Once claimed by an actor, this CONTROL queue can never change consumers. */
+    private boolean actorPollingClaimed;
     private boolean draining;
     private Throwable handlerFailure;
 
@@ -90,8 +92,9 @@ public final class SupervisorFailureControl {
     /** Install exactly once; a pre-handler failure stays queued until installed. */
     public synchronized void install(Consumer<Notice> handler) {
         Objects.requireNonNull(handler);
-        if (this.handler != null) {
-            throw new IllegalStateException("supervisor failure handler already installed");
+        if (this.handler != null || actorPollingClaimed) {
+            throw new IllegalStateException(
+                    "supervisor CONTROL already has an exclusive consumer");
         }
         if (handlerFailure != null) {
             throw new IllegalStateException("supervisor control lane failed", handlerFailure);
@@ -128,6 +131,9 @@ public final class SupervisorFailureControl {
         if (handlerFailure != null) {
             throw new IllegalStateException("supervisor CONTROL lane failed", handlerFailure);
         }
+        // Claim ownership even when there is no pending notice. Otherwise a
+        // later host policy could silently drain actor-reserved CONTROL mail.
+        actorPollingClaimed = true;
         return Optional.ofNullable(pending.pollFirst());
     }
 
