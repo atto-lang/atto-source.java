@@ -8668,7 +8668,21 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                // Fixed-width signed integers use checked arithmetic.
+                // The LLVM backend currently wraps and must be brought into
+                // this contract before numerical parity can be claimed.
+                return switch (op) {
+                    case '+' -> Math.addExact(x, y);
+                    case '-' -> Math.subtractExact(x, y);
+                    case '*' -> Math.multiplyExact(x, y);
+                    case '%' -> {
+                        if (y == 0) throw new ArithmeticException("integer remainder by zero");
+                        if (x == Long.MIN_VALUE && y == -1)
+                            throw new ArithmeticException("integer remainder overflow");
+                        yield x % y;
+                    }
+                    default -> throw new IllegalArgumentException("bad numeric operator");
+                };
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -8697,7 +8711,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof java.math.BigDecimal d) {
                 return dev.oreslang.math.ExactScalarMath.evaluate(java.math.BigDecimal.ZERO, d, '-');
             }
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)
+                return Math.negateExact(((Number) value).longValue());
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
