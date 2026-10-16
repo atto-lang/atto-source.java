@@ -399,7 +399,11 @@ public final class LinkedProgramRunner {
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
             if (target.isEmpty()) {
-                if (raw.startsWith(".") || raw.startsWith("+") || Path.of(raw).isAbsolute()) {
+                // A leading dot alone is not a relative import:
+                // .hidden/util and ..backup/util retain bare-package lookup.
+                boolean explicitRelative = raw.equals(".") || raw.equals("..")
+                        || raw.startsWith("./") || raw.startsWith("../");
+                if (explicitRelative || raw.startsWith("+") || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
                 }
