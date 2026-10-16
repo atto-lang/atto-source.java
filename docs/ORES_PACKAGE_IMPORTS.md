@@ -37,6 +37,12 @@ import class ArrayList from "java:java.util.ArrayList";
 Source-file resolution supports the exact path and extension inference (`.ores`,
 then `.java`) as before. The first existing match wins.
 
+The direct `IncrementalCompiler.compile(sources)` API does not have
+filesystem/manifest authority. It must reject `+/` and `pkg:` imports
+unless the caller supplies their exact resolved source-ID mappings via
+`compile(sources, importResolutions)`. Unmapped rooted/package imports
+cannot silently turn into unresolved bare imports.
+
 ## Package manifest: .ores.pkg.toml
 
 ```toml
