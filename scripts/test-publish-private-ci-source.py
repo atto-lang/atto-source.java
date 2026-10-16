@@ -170,6 +170,39 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "Git metadata"):
             pub.collect_source(self.root, self.root)
 
+    def test_real_git_commit_and_tree_snapshot_round_trip(self):
+        # Unlike the API-mocked cases, invoke the real Git executable and the
+        # production snapshot checker using a disposable private-free fixture.
+        import subprocess
+        def git(*args):
+            result = subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True, check=True, timeout=10)
+            return result.stdout.strip().decode("ascii")
+        git("init", "-q")
+        git("add", "--", "source/hello.ores")
+        git("-c", "user.name=CI Fixture",
+            "-c", "user.email=ci@example.invalid",
+            "commit", "-qm", "verified")
+        commit = git("rev-parse", "--verify", "HEAD^{commit}")
+        tree = git("rev-parse", "--verify", "HEAD:source")
+        clean = pub.collect_source(self.source, self.root)
+        self.assertEqual(EXACT_VERIFIER(
+            self.source, self.root, clean, commit, tree), tree)
+        with self.assertRaisesRegex(pub.Denied, "checkout commit"):
+            EXACT_VERIFIER(self.source, self.root, clean, B, tree)
+        with self.assertRaisesRegex(pub.Denied, "Git tree differs"):
+            EXACT_VERIFIER(self.source, self.root, clean, commit, C)
+        (self.source / "untracked.ores").write_text("untracked")
+        with self.assertRaisesRegex(pub.Denied, "untracked"):
+            EXACT_VERIFIER(self.source, self.root,
+                           pub.collect_source(self.source, self.root), commit, tree)
+        (self.source / "untracked.ores").unlink()
+        (self.source / "hello.ores").write_text("modified and unreviewed")
+        with self.assertRaisesRegex(pub.Denied, "diverges"):
+            EXACT_VERIFIER(self.source, self.root,
+                           pub.collect_source(self.source, self.root), commit, tree)
+
     def test_wrapper_requires_explicit_git_provenance(self):
         script = MODULE.with_name("run-in-private-ci-destination.sh").read_text()
         self.assertIn("source-commit", script)
