@@ -36,6 +36,7 @@ final class ImportGraph {
             Map<String, Map<String, String>> importResolutions) {
         ImportRules.validate(imported);
         if (ImportRules.isJavaPath(imported.path())) return null;
+        validateRootedImportSyntax(imported.path());
 
         String normalizedUnitId = normalizeUnitId(unitId);
         String resolved = importResolutions
@@ -78,6 +79,36 @@ final class ImportGraph {
                     + "' does not resolve to a supplied Oreslang/mixed source unit");
         }
         return null;
+    }
+
+    /** The host map authorizes a source ID, not malformed import spellings. */
+    private static void validateRootedImportSyntax(String path) {
+        if (path.startsWith("@")) {
+            throw new IllegalArgumentException("retired import prefix: " + path);
+        }
+        if (!path.startsWith("+") && !path.startsWith("pkg:")) return;
+        if (path.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException("rooted/package import requires forward slashes: " + path);
+        }
+        String relative;
+        if (path.startsWith("+")) {
+            if (!path.startsWith("+/")) {
+                throw new IllegalArgumentException("invalid +/ project-root import: " + path);
+            }
+            relative = path.substring(2);
+        } else {
+            String remainder = path.substring(4);
+            int slash = remainder.indexOf('/');
+            if (slash <= 0 || !remainder.substring(0, slash).matches("[A-Za-z][A-Za-z0-9_-]*")) {
+                throw new IllegalArgumentException("invalid pkg:<alias>/<source> import: " + path);
+            }
+            relative = remainder.substring(slash + 1);
+        }
+        for (String segment : relative.split("/", -1)) {
+            if (segment.isEmpty() || segment.equals(".") || segment.equals("..")) {
+                throw new IllegalArgumentException("noncanonical rooted/package import path: " + path);
+            }
+        }
     }
 
     static Map<String, Set<String>> resolveDependencies(
