@@ -3655,6 +3655,21 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Correlated host frames must never enter a PRIVATE/UNTRUSTED isolate.
+     * Reject that binding before the supervisor publishes a graph. */
+    void requireSharedPipelineBinding(ActorRef<?> ref) {
+        requirePipelineRegistrationHostAuthority();
+        Objects.requireNonNull(ref, "pipeline actor");
+        if (!ref.ownedBy(this))
+            throw new ActorInvalidReferenceException(
+                    "pipeline actor belongs to a different runtime");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null || cell.kind != ActorKind.SHARED || cell.stopped.get()
+                || cell.finalized)
+            throw new IllegalArgumentException(
+                    "correlated host routing requires a live SHARED actor binding");
+    }
+
 
 
     private void requireBlockingHostContext(String operation) {
