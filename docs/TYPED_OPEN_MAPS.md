@@ -51,3 +51,7 @@ fnc example(): void {
 - All supported public operations route to the same storage implementation; no iterator-based mutable entry API is exported in this iteration.
 
 Current scope: direct `Map<string, unknown>` inheritance in Java/GraalVM. No general `Map<K,V>` constructor, mutation-view APIs, inherited map subclass behavior, LLVM lowering, JS/WASM lowering, or actor critical-guard enforcement is claimed yet. This feature must not be treated as cross-backend parity until those workstreams and their tests land.
+
+## Audit note — key declarations
+
+`key` declarations are schema metadata, not ordinary class fields. `pub key` and `private key` must not be used as access-control promises unless the compiler/runtime enforces key visibility on string/bracket lookup. The current first-iteration contract should fail closed on such visibility modifiers. Runtime interception hooks (`on_get`, `on_put`, `on_remove`) are framework callbacks and must not be callable as ordinary user methods. Direct `HashMap` subclass support is not claimed by this branch; the implemented parent is `Map<string, unknown>`.
