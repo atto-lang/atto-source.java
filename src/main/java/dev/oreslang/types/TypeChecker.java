@@ -5427,7 +5427,8 @@ public final class TypeChecker {
     }
 
     private boolean structuralPatternMayMatch(Type subject, Record targetShape) {
-        if (subject == Unknown.INSTANCE || subject instanceof Generic) return true;
+        if (subject == Unknown.INSTANCE || subject == OpenValue.INSTANCE
+                || subject instanceof Generic) return true;
         if (subject instanceof Union union) {
             return union.options().stream()
                     .anyMatch(option -> structuralPatternMayMatch(option, targetShape));
@@ -5725,7 +5726,8 @@ public final class TypeChecker {
         // Unknown/generic subjects cannot be exhausted by a particular
         // nominal or structural type pattern. Assignment compatibility with
         // Unknown is deliberately permissive, but coverage must not be.
-        if (subject == Unknown.INSTANCE || subject instanceof Generic) return false;
+        if (subject == Unknown.INSTANCE || subject == OpenValue.INSTANCE
+                || subject instanceof Generic) return false;
         // A union is completely covered only if each runtime alternative is
         // covered. Assignability alone is unsafe here: int can widen to float,
         // but an int runtime value does not satisfy an 'is float' pattern.
@@ -5792,6 +5794,7 @@ public final class TypeChecker {
     private boolean runtimeValueTypeCovered(Type source, Type target, int depth) {
         if (depth >= 32) return false;
         if (source == Unknown.INSTANCE || target == Unknown.INSTANCE
+                || source == OpenValue.INSTANCE || target == OpenValue.INSTANCE
                 || source instanceof Generic || target instanceof Generic) return false;
         if (source instanceof Union union) {
             return union.options().stream().allMatch(option -> runtimeValueTypeCovered(option, target, depth + 1));
@@ -5843,6 +5846,7 @@ public final class TypeChecker {
      */
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
+                || a == OpenValue.INSTANCE || b == OpenValue.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
@@ -6312,7 +6316,7 @@ public final class TypeChecker {
 
         if (value instanceof Primitive || value instanceof StringLiteral
                 || value instanceof ClassNamespace || value instanceof Generic
-                || value == Unknown.INSTANCE
+                || value == Unknown.INSTANCE || value == OpenValue.INSTANCE
                 || valueSemanticAggregate
                 || valueSemanticNamed) {
             throw new IllegalArgumentException(
