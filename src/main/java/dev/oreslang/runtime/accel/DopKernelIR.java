@@ -163,6 +163,7 @@ public final class DopKernelIR {
                 if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("borrowed buffer must be released before close");
                 state.closed = true;
                 state.regionToken.retire();
+                state.bytes = null; // Retired owner must not pin direct memory.
             }
         }
     }
