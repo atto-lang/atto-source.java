@@ -102,6 +102,35 @@ cleanup then runs exactly once as the final guest action while actor-local state
 is still available. Cleanup cannot be async/suspending; if it throws, `done`
 rejects with the cleanup failure.
 
+## Runtime-owned `receive` and private abstract slots (2026-10-16)
+
+The actor's effective hidden base declares a conceptual
+`private abstract receive(ActorMail<T> mail): void;` extension point.
+It is *required to implement* but *not callable by the implementing actor*:
+only the mailbox runtime dispatcher has call authority. The existing
+`receiveActor` Java bridge is the runtime implementation of this trusted
+dispatch, not a publicly inherited Oreslang superclass method. Actor code
+may send messages with `ActorRef.send`, but it cannot call or capture
+`receive`, even through dynamic member lookup.
+
+The receiver spelling is optional in actor instance methods:
+
+```ores
+receive(self, ActorMail<String> mail): void {
+  self.end();
+  return;
+}
+// Equivalent signature: receive(ActorMail<String> mail): void { ... }
+```
+
+The untyped first `self` has the intrinsic `Self` type and never
+contributes to value arity; both spellings occupy `receive/1` and cannot
+coexist as overloads. This does not implicitly capture `self` in lambdas.
+The Java compiler admits general `private abstract` superclass slots while
+requiring invocation from code declared in the originating superclass.
+Native/LLVM general class-method virtual dispatch still needs executable
+parity evidence; documentation is not proof of backend implementation.
+
 ## Message identities and transport
 
 - Source `ActorMail<T>` is now statically modeled with immutable
