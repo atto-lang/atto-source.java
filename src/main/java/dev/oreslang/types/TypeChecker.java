@@ -3387,7 +3387,19 @@ public final class TypeChecker {
             Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
             if (iteratorMember != null) return iteratorMember;
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
-            if (sumMember != null) return sumMember;
+            if (sumMember != null) {
+                // The synthetic callback signatures for combinators are not
+                // first-class polymorphic function values. Reifying them would
+                // expose Unknown result parameters and bypass direct-call
+                // inference, allowing unsound generic widening.
+                if (Set.of("map", "map_err", "and_then", "or_else",
+                           "filter", "ok_or_else").contains(member.member())) {
+                    throw new IllegalArgumentException(
+                            "Option/Result combinators require a direct call; "
+                            + "first-class extraction is not yet type-safe");
+                }
+                return sumMember;
+            }
             if (sumReceiver instanceof Named sumNamed
                     && (sumNamed.name().equals("Option") || sumNamed.name().equals("Result"))) {
                 throw new IllegalArgumentException(
