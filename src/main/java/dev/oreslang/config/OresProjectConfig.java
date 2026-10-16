@@ -28,6 +28,8 @@ import java.util.Optional;
 public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
     public static final String PACKAGE_MANIFEST_NAME = ".ores.pkg.toml";
+    public static final String ENV_ORES_MANIFEST_PATH = "ORES_MANIFEST_PATH";
+    public static final String ENV_ORES_PROJECT_ROOT = "ORES_PROJECT_ROOT";
     public static final String ENV_ORES_PATHS = "ORES_PATHS";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
@@ -71,6 +73,42 @@ public final class OresProjectConfig {
     }
 
     public static OresProjectConfig discover(Path start, Map<String, String> environment) throws IOException {
+        if (start == null) throw new IllegalArgumentException("config discovery start path cannot be null");
+        if (environment == null) throw new IllegalArgumentException("environment cannot be null");
+
+        // Entry-point overrides only. Transitive imports deliberately use the
+        // private discover(..., boundary) overload and independently find their
+        // own nearest package manifest.
+        String manifestText = environment.get(ENV_ORES_MANIFEST_PATH);
+        String rootText = environment.get(ENV_ORES_PROJECT_ROOT);
+        boolean hasManifest = manifestText != null;
+        boolean hasRoot = rootText != null;
+        if (hasManifest || hasRoot) {
+            if (hasManifest && manifestText.isBlank()) {
+                throw new IllegalArgumentException(ENV_ORES_MANIFEST_PATH + " cannot be blank");
+            }
+            if (hasRoot && rootText.isBlank()) {
+                throw new IllegalArgumentException(ENV_ORES_PROJECT_ROOT + " cannot be blank");
+            }
+            Path root = hasRoot ? Path.of(rootText).toAbsolutePath().normalize() : null;
+            Path manifest = hasManifest ? Path.of(manifestText).toAbsolutePath().normalize()
+                    : root.resolve(PACKAGE_MANIFEST_NAME);
+            if (!PACKAGE_MANIFEST_NAME.equals(manifest.getFileName().toString())) {
+                throw new IllegalArgumentException(ENV_ORES_MANIFEST_PATH
+                        + " must select " + PACKAGE_MANIFEST_NAME);
+            }
+            Path manifestRoot = manifest.getParent();
+            if (root != null && !root.equals(manifestRoot)) {
+                throw new IllegalArgumentException(ENV_ORES_PROJECT_ROOT + " and "
+                        + ENV_ORES_MANIFEST_PATH + " identify different package directories");
+            }
+            Path absoluteStart = start.toAbsolutePath().normalize();
+            if (!absoluteStart.startsWith(manifestRoot)) {
+                throw new IllegalArgumentException("entry source is outside explicitly selected package root: "
+                        + absoluteStart);
+            }
+            return load(manifest, environment);
+        }
         return discover(start, environment, null);
     }
 
