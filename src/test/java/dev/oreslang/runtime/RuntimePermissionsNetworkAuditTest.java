@@ -20,6 +20,7 @@ final class RuntimePermissionsNetworkAuditTest {
         assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1:443", "127.0.0.1"));
         assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "127.1"));
         assertFalse(broad.allowsEphemeralNetworkBind("127.0.0.1", "[::1]"));
+        assertFalse(broad.allowsEphemeralNetworkBind("0.0.0.0", "0.0.0.0"));
 
         RuntimePermissions scoped = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "localhost");
