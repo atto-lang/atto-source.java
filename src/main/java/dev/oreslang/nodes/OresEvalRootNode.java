@@ -805,9 +805,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (receiver.klass.actorKind() != Ast.ActorKind.NONE
-                    && method.name().equals("receive")) {
+                    && (method.name().equals("receive") || method.name().equals("on_start"))) {
                 throw new SecurityException(
-                        "actor receive can only be invoked by the mailbox runtime");
+                        "actor lifecycle method '" + method.name()
+                                + "' can only be invoked by the trusted actor runtime");
             }
             return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
         }
@@ -7110,8 +7111,10 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (object.owner.hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
-                    if (object.klass.actorKind() != Ast.ActorKind.NONE && name.equals("receive")) {
-                        throw new SecurityException("actor receive cannot be referenced by user code");
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE
+                            && (name.equals("receive") || name.equals("on_start"))) {
+                        throw new SecurityException(
+                                "actor lifecycle method '" + name + "' cannot be referenced by user code");
                     }
                     if (object.owner.hasPrivateAbstractSlotNamed(
                             object.klass, name, new LinkedHashSet<>())) {
@@ -7928,8 +7931,10 @@ public final class OresEvalRootNode extends RootNode {
         private void requireInstanceMethodCallable(
                 OresObject receiver, Ast.MethodDecl method, Ast.ClassDecl accessClass) {
             if (receiver.klass.actorKind() != Ast.ActorKind.NONE
-                    && method.name().equals("receive")) {
-                throw new SecurityException("actor receive can only be invoked by the mailbox runtime");
+                    && (method.name().equals("receive") || method.name().equals("on_start"))) {
+                throw new SecurityException(
+                        "actor lifecycle method '" + method.name()
+                                + "' can only be invoked by the trusted actor runtime");
             }
             Ast.ClassDecl origin = privateAbstractSlotOwner(
                     receiver.klass,
