@@ -396,4 +396,33 @@ final class OresProjectConfigTest {
                 () -> OresProjectConfig.load(manifest, Map.of()));
     }
 
+
+    @Test
+    void malformedNestedManifestTablesUseStableIllegalArgumentErrors() throws Exception {
+        Path manifest = temp.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME);
+
+        Files.writeString(manifest, """
+                schema_version = "1"
+                source = 42
+                """);
+        IllegalArgumentException source = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(source.getMessage().contains("source.roots"), source.getMessage());
+
+        Files.writeString(manifest, """
+                schema_version = 42
+                """);
+        IllegalArgumentException schema = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(schema.getMessage().contains("schema_version"), schema.getMessage());
+
+        Files.writeString(manifest, """
+                schema_version = "1"
+                entrypoints = ["src/main.ores"]
+                """);
+        IllegalArgumentException entrypoint = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(entrypoint.getMessage().contains("entrypoints.main"), entrypoint.getMessage());
+    }
+
 }
