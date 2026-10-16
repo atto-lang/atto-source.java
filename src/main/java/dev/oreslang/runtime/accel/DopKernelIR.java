@@ -48,7 +48,6 @@ public final class DopKernelIR {
     private static final class State {
         final DataOrientedLayout.Plan layout;
         final ByteBuffer bytes;
-        final HostBuffer.RegionToken regionToken;
         int readLoans;
         boolean writeLoan;
         boolean closed;
@@ -62,7 +61,6 @@ public final class DopKernelIR {
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
-            this.regionToken = new HostBuffer.RegionToken(this);
         }
     }
 
@@ -71,19 +69,6 @@ public final class DopKernelIR {
      * loan exists. Closing invalidates all operations; GC is not the lifetime API.
      */
     public static final class HostBuffer implements AutoCloseable {
-        /** Opaque allocation identity with no exposed raw State reference. */
-        public static final class RegionToken {
-            private final State owner;
-            private RegionToken(State owner) { this.owner = owner; }
-            public long rows() { return owner.layout.rows(); }
-            public int fields() { return owner.layout.fields(); }
-            public boolean isLive() {
-                synchronized (owner) {
-                    return !owner.closed;
-                }
-            }
-        }
-
         private final State state;
         private boolean moved;
 
@@ -93,15 +78,24 @@ public final class DopKernelIR {
 
         private HostBuffer(State state) { this.state = state; }
 
-        /** Atomic capture of identity and geometry under the owner monitor. */
-        public RegionToken regionToken() {
+        /**
+         * Host-only, opaque allocation identity. The backing State is private
+         * and cannot be used to access raw data or fabricate a region root.
+         */
+        public Object regionBackingIdentity() {
             synchronized (state) {
                 active();
-                return state.regionToken;
+                return state;
             }
         }
         public DopRegionSchedule.Root regionRoot() {
             return DopRegionSchedule.Root.fromHostBuffer(this);
+        }
+        public static boolean isBackingLive(Object identity) {
+            if (!(identity instanceof State backing)) return false;
+            synchronized (backing) {
+                return !backing.closed;
+            }
         }
         public DataOrientedLayout.Plan layout() {
             synchronized (state) {
