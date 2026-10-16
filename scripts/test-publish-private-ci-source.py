@@ -89,6 +89,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "repos/trusted/ci/git/ref/heads/main": {"object": {"sha": A}},
             "repos/trusted/ci/git/commits/"+A: {"tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": A},
+            "repos/trusted/ci/git/trees/"+E: {
+                "sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree", "mode": "040000", "sha": D}]},
             "repos/trusted/ci/git/refs": {
                 "ref": "refs/heads/ci/oreslang-test",
                 "object": {"type": "commit", "sha": A}},
@@ -439,6 +442,57 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.assertEqual(
                     sum(1 for method, route, _ in self.route_calls
                         if method == "POST" and route == "repos/trusted/ci/git/refs"), 1)
+
+    def test_destination_root_attestation_rejects_mismatched_tree_metadata(self):
+        valid = {"sha": E, "truncated": False,
+                 "tree": [{"path": pub.PREFIX, "type": "tree",
+                           "mode": "040000", "sha": D}]}
+        invalid = [
+            {},
+            {"sha": C, "truncated": False, "tree": valid["tree"]},
+            {"sha": E, "truncated": True, "tree": valid["tree"]},
+            {"sha": E, "truncated": False, "tree": None},
+            {"sha": E, "truncated": False, "tree": []},
+            {"sha": E, "truncated": False, "tree":
+                [{"path": pub.PREFIX, "type": "blob",
+                  "mode": "100644", "sha": D}]},
+            {"sha": E, "truncated": False, "tree":
+                [{"path": pub.PREFIX, "type": "tree",
+                  "mode": "100644", "sha": D}]},
+            {"sha": E, "truncated": False, "tree":
+                [{"path": pub.PREFIX, "type": "tree",
+                  "mode": "040000", "sha": C}]},
+            {"sha": E, "truncated": False, "tree":
+                [valid["tree"][0], valid["tree"][0]]},
+        ]
+        route = "repos/trusted/ci/git/trees/" + E
+        with patch.object(pub, "gh_api", return_value=valid) as call:
+            pub.verify_destination_root_tree("trusted/ci", E, D)
+            call.assert_called_once_with(route)
+        for response in invalid:
+            with self.subTest(response=response):
+                with patch.object(pub, "gh_api", return_value=response):
+                    with self.assertRaises(pub.Denied):
+                        pub.verify_destination_root_tree("trusted/ci", E, D)
+
+    def test_destination_root_attestation_aborts_before_any_commit_or_ref(self):
+        original = self.fake_api
+        def wrong_root(route, method="GET", payload=None):
+            if route == "repos/trusted/ci/git/trees/" + E and method == "GET":
+                self.route_calls.append((method, route, payload))
+                return {"sha": E, "truncated": False, "tree": [
+                    {"path": pub.PREFIX, "type": "tree",
+                     "mode": "040000", "sha": C}]}
+            return original(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=wrong_root):
+            with self.assertRaisesRegex(pub.Denied, "exact reviewed source subtree"):
+                pub.publish("trusted/ci", self.source, "ci/oreslang-test",
+                            self.root)
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertIn("repos/trusted/ci/git/trees", writes)
+        self.assertNotIn("repos/trusted/ci/git/commits", writes)
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
 
     def test_existing_stale_files_cannot_survive_clean_source_snapshot(self):
         # Assume base_tree contains a stale private-oreslang-source/secret.ores.
