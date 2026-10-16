@@ -99,6 +99,11 @@ The workflow runs the **six-class** focused native-carrier suite:
 `DenoCliDefaultPermissionsTest`, `RuntimePermissionsNetworkAuditTest`,
 `RuntimePermissionsTest`, `RuntimePermissionsExplicitPolicyTest`,
 `IsolatePolicySerializationAuditTest`, and `ScopedPermissionInteropTest`.
+Before focused Maven runs, the **trusted workflow** rejects symlinked
+`target` or Surefire paths and removes any existing `target/surefire-reports`
+output. This prevents stale or candidate-supplied XML reports from being
+accepted as fresh test execution evidence. Other `target` artifacts are not
+removed; a disposable runner and independent source review remain mandatory.
 After the focused Maven invocation, the **trusted workflow** runs a
 Python 3 standard-library verifier over Maven Surefire XML reports. It must
 find at least one executed, non-skipped, non-failing test case in **each**
