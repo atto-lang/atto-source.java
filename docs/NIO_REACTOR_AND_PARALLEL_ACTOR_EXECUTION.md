@@ -3,6 +3,17 @@
 Status: **staged implementation contract**, not a claim of feature parity or production readiness.
 Native LLVM companion: `oreslang-source.llvm/docs/NIO_REACTOR_AND_PARALLEL_ACTOR_EXECUTION.md`.
 
+## Implementation status on this draft branch (October 16)
+
+- `AdaptiveCarrierExecutor` now provides bounded runnable-demand growth and queue backpressure, with a prestarted CONTROL minimum. `OresVM` uses it and exposes `ores.runtime.control.max.parallelism` (default at least 20 or the configured minimum).
+- The Java-only fallback actor dispatcher can use `AdaptiveCarrierExecutor` when `ores.actor.affinity=none`, honoring `ores.actor.dispatch.max.parallelism`. Pinned/soft-affine lanes and native pthread dispatchers **remain fixed-size** pending placement/JNI rework. A carrier pool cap is not an actor's per-actor physical limit.
+- The experimental loopback TCP `NativeNioFutureReactor` from #790 has been forward-ported along with `std/net`, evaluator/typechecker entries, `OresContext` capability/owner checks, and guest/JUnit tests. It still creates a **dedicated reactor for each listener**, capped at four listeners per context. It does not yet consume the shared selector manager.
+- `NioReadinessGroup` is an independent host-only generic selectable-channel substrate, one thread initially and an optional four-thread upper bound. It is not yet used by guest `std/net`, TCP reactor or `OresVM`; one-reaction-per-process remains the **target**, not the shipping behavior.
+- Reactor work quanta are capped (128 commands/readiness events per turn); listener close quiescence is published before guest close Future completion. Arbitrary `OresFuture` subscriber work and buffer conversion on a poller need a stricter no-guest/no-slow-callback audit.
+- `NioOnlyPolicy` introduces `ores.runtime.io.mode=nio-only`. This profile rejects `AsyncNativeIo` legacy offload and `NativeHttp.listen` before work begins; the current default remains `legacy-compat` to keep preexisting FS/HTTP tests running until genuinely nonblocking replacements exist. **Default NIO-only parity is not implemented**; no claim that Java blocking I/O is entirely eliminated.
+- Actor physical credits remain **host-only**; `ActorRuntime.ActorCell` still single-flight and opt-in max=3 source actor execution is not available.
+- New JUnit tests target bounded worker expansion, NIO-only denial, source `std/net`, the readiness group and TCP reactor. The exact-source readiness-group smoke (minimal Future stub) passed locally; the complete JUnit/Graal suite has not run on an executing CI runner.
+
 ## Findings from Java main (2026-10-16)
 
 - `OresVM` prestarts 2–4 CONTROL carriers by default; the root scheduler admits work to CONTROL (or an explicitly supplied root admission executor). These are separate from PRIVATE, SHARED and UNTRUSTED actor dispatchers.
