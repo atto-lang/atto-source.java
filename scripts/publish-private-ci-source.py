@@ -24,6 +24,10 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+# Pin the immutable owner/repository ID: a matching slug alone is insufficient.
+SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+SOURCE_REPO_ID = 1400792274
+SOURCE_BRANCH = "main"
 
 
 class Denied(RuntimeError):
@@ -67,6 +71,27 @@ def checked_repo(repository):
             or result.get("private") is not True):
         raise Denied("destination identity or private visibility changed")
     return result
+
+
+def require_reviewed_origin_protection():
+    """Fail closed unless GitHub enforces protection on the policy origin.
+
+    Approval in an unprotected branch can be self-granted, even if the copied
+    file looks like a reviewed allowlist. Never trust workflow inputs to waive
+    this gate. It also runs before each transfer API write.
+    """
+    metadata = gh_api("repos/" + SOURCE_REPO)
+    if (metadata.get("id") != SOURCE_REPO_ID
+            or metadata.get("full_name") != SOURCE_REPO
+            or metadata.get("private") is not True
+            or metadata.get("visibility") != "private"
+            or metadata.get("default_branch") != SOURCE_BRANCH):
+        raise Denied("source approval repository identity or privacy mismatch")
+    branch = gh_api("repos/" + SOURCE_REPO + "/branches/" + SOURCE_BRANCH)
+    if (branch.get("name") != SOURCE_BRANCH
+            or branch.get("protected") is not True):
+        raise Denied("source approval main branch is not protected")
+    return True
 
 
 def require_preflight(repository, root):
@@ -249,6 +274,9 @@ def collect_source(root, trusted_root):
 def publish(repository, source, branch, trusted_root):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
+    # A local allowlist cannot authorize its own transfer from unprotected main.
+    # Check the independently pinned source and GitHub-enforced protection first.
+    require_reviewed_origin_protection()
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
@@ -268,6 +296,7 @@ def publish(repository, source, branch, trusted_root):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
+        require_reviewed_origin_protection()
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository)
