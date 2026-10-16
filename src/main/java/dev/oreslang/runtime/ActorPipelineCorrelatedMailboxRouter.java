@@ -94,6 +94,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
 
     private ActorPipelineRouteSession.MailFrame current() {
         var frame = owner.currentPipelineRouteFrame();
+        if (frame == null) {
+            throw new SecurityException(
+                    "pipeline operation requires a routed ActorMail envelope");
+        }
         var actorId = ActorRuntime.currentActorId()
                 .orElseThrow(() -> new SecurityException("missing current actor"));
         var actual = identities.get(actorId);
