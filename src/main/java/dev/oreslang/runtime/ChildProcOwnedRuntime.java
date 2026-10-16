@@ -44,6 +44,13 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
     private long nextGeneration = 1;
     private boolean closed;
 
+    /** Quota exhaustion is never an expected pipe-close cancellation. */
+    private static final class OutputQuotaExceededException extends IOException {
+        OutputQuotaExceededException() {
+            super("child process output quota exceeded");
+        }
+    }
+
     private static final class Slot {
         final long generation;
         final CompletableFuture<Child> ready = new CompletableFuture<>();
@@ -253,7 +260,7 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
                 int used = 0;
                 for (int count; (count = in.read(buffer)) != -1;) {
                     if (count > maxOutputBytes - used) {
-                        throw new IOException("child process output quota exceeded");
+                        throw new OutputQuotaExceededException();
                     }
                     out.write(buffer, 0, count);
                     used += count;
@@ -265,9 +272,18 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
                 // An intentional owner termination yields a normal exit result
                 // with partial output; quota overruns and unexpected I/O faults
                 // must still fail the exit future.
-                if (slot.terminationRequested) result.complete(out.toByteArray());
-                else result.completeExceptionally(failure);
-                if (!slot.terminationRequested) destroyTree(process, true);
+                boolean expectedPipeClosure = slot.terminationRequested
+                        && !(failure instanceof OutputQuotaExceededException)
+                        && ("Stream closed".equals(failure.getMessage())
+                            || "Pipe closed".equals(failure.getMessage()));
+                if (expectedPipeClosure) {
+                    result.complete(out.toByteArray());
+                } else {
+                    result.completeExceptionally(failure);
+                    // Never launder quota exhaustion or unexpected I/O faults
+                    // into a successful exit, even during concurrent teardown.
+                    destroyTree(process, true);
+                }
             } catch (RuntimeException failure) {
                 result.completeExceptionally(failure);
                 destroyTree(process, true);
