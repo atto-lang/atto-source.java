@@ -173,6 +173,15 @@ public final class OresProjectConfig {
             throw new IllegalArgumentException(manifestName + " entrypoints.main must be a string");
         }
         Path mainEntrypoint = mainText == null ? null : resolvePath(projectRoot, mainText);
+        // A package manifest's entrypoint must remain within the package
+        // project root. Legacy compiler manifests retain their historical
+        // project.root and absolute-entrypoint behavior.
+        if (packageManifest && mainText != null
+                && (mainText.isBlank() || Path.of(mainText).isAbsolute()
+                    || !mainEntrypoint.startsWith(projectRoot))) {
+            throw new IllegalArgumentException(PACKAGE_MANIFEST_NAME
+                    + " entrypoints.main must be a nonblank project-relative path inside the package root");
+        }
 
         return new OresProjectConfig(
                 absoluteManifest,
