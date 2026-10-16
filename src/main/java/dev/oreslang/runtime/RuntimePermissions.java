@@ -310,6 +310,36 @@ public final class RuntimePermissions {
                 && !matchesAny(Permission.NET, resolved.canonical(), rule.denied());
     }
 
+    /**
+     * A bind to port 0 delegates the choice of port to the OS. It can only
+     * be admitted when the requested host is allowed without a port AND no
+     * denied port or address could be selected by that bind. Port 0 is an
+     * API sentinel, never a valid NET permission scope.
+     */
+    public boolean allowsEphemeralNetworkBind(String requestedHost, String selectedIpv4) {
+        if (!allows(Permission.NET, requestedHost)) return false;
+        NetworkScope requested = parseNetworkScope(requestedHost, false);
+        NetworkScope selected = parseNetworkScope(selectedIpv4, false);
+        if (requested == null || selected == null || requested.port() != null
+                || selected.port() != null || !selected.host().matches("[0-9.]+")
+                || requested.host().startsWith("[")) return false;
+        // Numeric requests must never be rebound to a different resolved IP.
+        if (requested.host().matches("[0-9.]+")
+                && !requested.host().equals(selected.host())) return false;
+
+        Rule rule = rules.get(Permission.NET);
+        if (rule == null || rule.denyAll()
+                || matchesAny(Permission.NET, selected.canonical(), rule.denied())) return false;
+        // A port-specific deny for the numeric destination is also relevant:
+        // the OS might choose exactly that port after our authorization check.
+        for (String denied : rule.denied()) {
+            NetworkScope blocked = parseNetworkScope(denied, true);
+            if (blocked != null && blocked.port() != null
+                    && networkHostMatches(selected, blocked)) return false;
+        }
+        return true;
+    }
+
     public boolean grantsAnything(Permission permission) {
         Rule rule = rules.get(permission);
         return rule != null && !rule.denyAll() && (rule.allowAll() || !rule.allowed().isEmpty());
