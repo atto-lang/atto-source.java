@@ -492,9 +492,18 @@ public final class OresProjectConfig {
         if (!candidate.startsWith(normalizedRoot)) {
             throw new IllegalArgumentException("rooted import escapes its root: " + importPath);
         }
-        // Symlinked source files and package mounts are intentional. Their
-        // canonical physical identity is returned by existingSource().
-        return existingSource(candidate);
+        // Installed dependency mounts may themselves be symlinks, but a +/
+        // or pkg: source may not traverse a symlink OUT of its selected
+        // physical package root. Canonicalize both sides, not just the file.
+        Optional<Path> resolved = existingSource(candidate);
+        if (resolved.isPresent()) {
+            Path physicalRoot = realPath(normalizedRoot);
+            if (!resolved.get().startsWith(physicalRoot)) {
+                throw new IllegalArgumentException(
+                        "rooted import escapes physical package root: " + importPath);
+            }
+        }
+        return resolved;
     }
 
     private static Optional<Path> existingSource(Path candidate) {
