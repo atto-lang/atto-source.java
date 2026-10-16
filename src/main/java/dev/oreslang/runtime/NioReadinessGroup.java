@@ -40,6 +40,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final ArrayList<Reactor> reactors = new ArrayList<>();
     private final IdentityHashMap<SelectableChannel, Watch> ownership = new IdentityHashMap<>();
     private final AtomicInteger pending = new AtomicInteger();
+    // A transient registration burst must not spin up extra selector threads.
+    // Counter is protected by the lifecycle monitor.
+    private int consecutiveCommandPressure;
     private volatile boolean closed;
 
     public NioReadinessGroup() throws IOException {
@@ -85,13 +88,18 @@ public final class NioReadinessGroup implements AutoCloseable {
             Reactor target = leastBacklogged();
             // Reactor scaling is about *runnable registration work*, not the
             // number of pending network reads. The active kernel wait is idle.
-            if (target.commands.size() >= Math.max(8, commandCapacity / 2)
-                    && reactors.size() < maxReactors) {
+            if (target.commands.size() >= Math.max(8, commandCapacity / 2)) {
+                if (consecutiveCommandPressure < 8) consecutiveCommandPressure++;
+            } else {
+                consecutiveCommandPressure = 0;
+            }
+            if (consecutiveCommandPressure >= 8 && reactors.size() < maxReactors) {
                 try {
                     Reactor extra = new Reactor(reactors.size());
                     extra.start();
                     reactors.add(extra);
                     target = extra;
+                    consecutiveCommandPressure = 0;
                 } catch (IOException | RuntimeException ignored) {
                     // Best effort throughput expansion. Existing reactor still
                     // handles the bounded work or rejects it explicitly.
