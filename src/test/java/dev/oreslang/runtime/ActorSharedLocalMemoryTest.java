@@ -79,6 +79,39 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void sharedActorZeroByteDirectBlocksStillConsumeQuotaAndHaveBoundedHandles() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> stale = new AtomicReference<>();
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var local = turn.localMemory().orElseThrow();
+                for (int i = 0; i < 1024; ++i) {
+                    var block = local.allocateActorLocalBytes(0);
+                    assertEquals(0, block.capacity());
+                    if (i == 0) stale.set(block);
+                }
+                assertEquals(1024L, local.usedBytes(),
+                        "zero-byte native blocks must not bypass actor accounting");
+                assertEquals(1024L, runtime.sharedActorLocalMemoryBytes());
+                var error = assertThrows(IllegalStateException.class,
+                        () -> local.allocateActorLocalBytes(0));
+                assertTrue(error.getMessage().contains("block limit exceeded"));
+                assertEquals(1024L, local.usedBytes(),
+                        "rejected handle allocation must not leak quota");
+                checked.countDown();
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("allocate");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertTrue(stale.get().closed(), "actor retirement must invalidate zero-byte handles");
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void sharedActorLocalQuotaCanRejectWithoutAggregateAccountingLeak() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
