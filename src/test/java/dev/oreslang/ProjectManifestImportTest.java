@@ -537,4 +537,80 @@ final class ProjectManifestImportTest {
         assertTrue(failure.getMessage().contains("cannot import itself"));
     }
 
+
+    @Test
+    void nestedPackageHasItsOwnRootThroughRelativeAndBareImports() throws Exception {
+        Path project = temp.resolve("nested-packages");
+        Path src = project.resolve("src");
+        Path nested = project.resolve("packages/leaf");
+        Files.createDirectories(src);
+        Files.createDirectories(nested.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["packages"]
+                """);
+        Files.writeString(nested.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(src.resolve("util.ores"), """
+                pub fnc util(): string { return "WRONG PARENT"; }
+                """);
+        Files.writeString(nested.resolve("src/util.ores"), """
+                pub fnc util(): string { return "nested-root"; }
+                """);
+        Files.writeString(nested.resolve("src/child.ores"), """
+                import fnc util from "@/src/util";
+                pub fnc child(): string { return util(); }
+                """);
+
+        for (String path : List.of("../packages/leaf/src/child", "leaf/src/child")) {
+            Path main = src.resolve(path.startsWith(".") ? "main-relative.ores" : "main-bare.ores");
+            Files.writeString(main, """
+                    import fnc child from "%s";
+                    pub fnc main(): void {
+                      stdio.println(child());
+                      return;
+                    }
+                    """.formatted(path));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            var built = LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                    out, new ByteArrayOutputStream());
+            assertEquals(3, built.units().size());
+            assertTrue(out.toString(StandardCharsets.UTF_8).contains("nested-root"));
+        }
+    }
+
+    @Test
+    void installedPackageWithoutManifestCannotResolveConsumerRootImport() throws Exception {
+        Path project = temp.resolve("no-dep-manifest");
+        Path installed = project.resolve("zed_modules/acme/legacy");
+        Files.createDirectories(installed.resolve("src"));
+        Files.createDirectories(project.resolve("src"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [dependencies]
+                legacy = "acme/legacy"
+                """);
+        Files.writeString(project.resolve("src/secret.ores"), """
+                pub fnc secret(): string { return "consumer-data"; }
+                """);
+        Files.writeString(installed.resolve("src/child.ores"), """
+                import fnc secret from "@/src/secret";
+                pub fnc child(): string { return secret(); }
+                """);
+        Path main = project.resolve("src/main.ores");
+        Files.writeString(main, """
+                import fnc child from "pkg:legacy/src/child";
+                pub fnc main(): void { return; }
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(main));
+        assertTrue(failure.getMessage().contains("require a .ores.pkg.toml"),
+                failure.getMessage());
+    }
+
 }
