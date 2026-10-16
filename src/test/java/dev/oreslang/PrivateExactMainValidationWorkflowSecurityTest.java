@@ -162,6 +162,87 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }
     }
 
+    @Test
+    void approvedCandidateWorkflowCannotTestArbitraryBranch() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String head = between(workflow, "\non:\n", "\npermissions:");
+        assertTrue(head.contains("  workflow_dispatch:\n    inputs:\n      candidate_sha:"));
+        assertFalse(head.contains("pull_request:"));
+        assertFalse(head.contains("pull_request_target:"));
+        assertEquals("\npermissions:\n  contents: read\n",
+                between(workflow, "\npermissions:", "\nconcurrency:"));
+        assertEquals(1, countLines(workflow, "permissions:"));
+        assertEquals(2, java.util.regex.Pattern.compile("(?m)^  [a-z][a-z0-9-]*:$")
+                .matcher(workflow.substring(workflow.indexOf("\njobs:\n")))
+                .results().count());
+
+        String deny = section(workflow, "  deny-unapproved:",
+                "  validate-approved-candidate:");
+        String admit = workflow.substring(workflow.indexOf("  validate-approved-candidate:"));
+        String allowed = jobProperty(admit, "if");
+        String rejected = jobProperty(deny, "if");
+        for (String guard : new String[] {
+                "github.repository", "github.event.repository.id",
+                "github.event.repository.private", "github.ref",
+                "vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER",
+                "vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA",
+                "vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA",
+                "vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE",
+                "inputs.candidate_sha"
+        }) {
+            assertTrue(allowed.contains(guard), "admission missing " + guard);
+            assertTrue(rejected.contains(guard), "rejection missing " + guard);
+        }
+        assertTrue(allowed.contains("github.event.repository.id == 1400792274"));
+        assertTrue(allowed.contains("github.ref == 'refs/heads/main'"));
+        assertTrue(allowed.contains(
+                "vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA == github.sha"));
+        assertTrue(allowed.contains(
+                "vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA == inputs.candidate_sha"));
+        assertEquals("runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]",
+                jobProperty(admit, "runs-on"));
+        assertEquals("runs-on: ubuntu-24.04", jobProperty(deny, "runs-on"));
+        assertFalse(deny.contains("actions/checkout@"));
+        assertTrue(deny.contains("exit 1"));
+        assertTrue(Files.readString(Path.of(".github/CODEOWNERS"))
+                .lines().anyMatch("/.github/workflows/private-exact-candidate-validation.yml @ORESoftware"::equals));
+    }
+
+    @Test
+    void approvedCandidateCheckoutProvesExactSourceBeforeTests() throws Exception {
+        String workflow = Files.readString(
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"));
+        String runner = workflow.substring(
+                workflow.indexOf("  validate-approved-candidate:"));
+        assertTrue(runner.indexOf("Verify approvals before any candidate source checkout")
+                < runner.indexOf("actions/checkout@"));
+        assertTrue(runner.indexOf("actions/checkout@")
+                < runner.indexOf("Verify immutable candidate and clean checkout"));
+        assertTrue(runner.indexOf("Verify immutable candidate and clean checkout")
+                < runner.indexOf("graalvm/setup-graalvm@"));
+        assertTrue(hasExactLine(runner, 10,
+                "test \"$GITHUB_SHA\" = \"$APPROVED_WORKFLOW_SHA\""));
+        assertTrue(hasExactLine(runner, 10,
+                "test \"$REQUESTED_CANDIDATE_SHA\" = \"$APPROVED_CANDIDATE_SHA\""));
+        assertTrue(hasExactLine(runner, 10,
+                "test \"$(git rev-parse --verify HEAD)\" = \"$APPROVED_CANDIDATE_SHA\""));
+        assertTrue(hasExactLine(runner, 10,
+                "test \"$(git rev-parse --verify HEAD^{tree})\" = \"$APPROVED_CANDIDATE_TREE\""));
+        assertTrue(hasExactLine(runner, 10,
+                "test -z \"$(git status --porcelain --untracked-files=all)\""));
+        assertTrue(hasExactLine(runner, 10, "persist-credentials: false"));
+        assertTrue(hasExactLine(runner, 10, "ref: " + "$" + "{{ inputs.candidate_sha }}"));
+        for (String required : new String[] {
+                "DenoCliDefaultPermissionsTest",
+                "RuntimePermissionsNetworkAuditTest", "ScopedPermissionInteropTest",
+                "mvn -B -ntp -Dores.runtime.carriers=native verify",
+                "-Pnative-aot", "-Pnative-hybrid", "-Pnative-isolate"
+        }) {
+            assertTrue(runner.contains(required), "candidate validation phase missing " + required);
+        }
+    }
+
     private static boolean hasExactLine(String body, int spaces, String executable) {
         String expected = " ".repeat(spaces) + executable;
         return body.lines().anyMatch(expected::equals);
