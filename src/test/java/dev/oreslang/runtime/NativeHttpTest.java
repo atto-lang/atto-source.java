@@ -109,6 +109,52 @@ class NativeHttpTest {
                 "a repeated forced close cannot claim another shutdown");
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    void acceptFutureSubscribersNeverRunUnderListenerMonitor() throws Exception {
+        // This exercises the exact production publication gate and Future
+        // notification implementation (not a Boolean lifecycle predicate).
+        // An accept callback can synchronously wait for another thread to
+        // take the listener monitor, so completing under it would deadlock.
+        Object listenerMonitor = new Object();
+        OresFuture<Object> accepted = new OresFuture<>(() -> false, () -> { });
+        Object exchange = new Object();
+        CountDownLatch delivered = new CountDownLatch(1);
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        var heldMonitor = new java.util.concurrent.atomic.AtomicBoolean();
+        var blockedPeer = new java.util.concurrent.atomic.AtomicBoolean();
+        accepted.whenCompleteRuntime((value, failure) -> {
+            callbacks.incrementAndGet();
+            if (Thread.holdsLock(listenerMonitor)) heldMonitor.set(true);
+            CountDownLatch peerAcquired = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> {
+                synchronized (listenerMonitor) { peerAcquired.countDown(); }
+            });
+            try {
+                if (!peerAcquired.await(2, TimeUnit.SECONDS)) blockedPeer.set(true);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                blockedPeer.set(true);
+            } finally {
+                delivered.countDown();
+            }
+            assertSame(exchange, value);
+            assertNull(failure);
+        });
+        synchronized (listenerMonitor) {
+            assertThrows(IllegalStateException.class, () ->
+                    NativeHttp.publishOutsideMonitor(listenerMonitor, accepted, exchange));
+            assertFalse(accepted.isDone(),
+                    "a rejected under-lock publication must not settle the accept");
+        }
+        NativeHttp.publishOutsideMonitor(listenerMonitor, accepted, exchange);
+        assertTrue(delivered.await(5, TimeUnit.SECONDS));
+        assertTrue(accepted.isDone());
+        assertEquals(1, callbacks.get(), "accept callback must run exactly once");
+        assertFalse(heldMonitor.get(), "accept callback executed inside listener monitor");
+        assertFalse(blockedPeer.get(),
+                "accept callback blocked another thread's listener operation");
+    }
+
     @Test void noActorDispatchOrTransferAfterRuntimeOrListenerClose() {
         assertTrue(NativeHttp.mayBeginDispatch(false, false));
         for (boolean runtimeClosed : new boolean[] {false, true}) {
