@@ -482,7 +482,8 @@ def verify_destination_root_tree(repository, root_tree_sha, source_tree_sha):
     valid_sha(root_tree_sha)
     valid_sha(source_tree_sha)
     listing = gh_api(f"repos/{repository}/git/trees/{root_tree_sha}")
-    if (listing.get("sha") != root_tree_sha
+    if (not isinstance(listing, dict)
+            or listing.get("sha") != root_tree_sha
             or listing.get("truncated") is not False
             or not isinstance(listing.get("tree"), list)):
         raise Denied("destination root tree identity or listing is unverified")
