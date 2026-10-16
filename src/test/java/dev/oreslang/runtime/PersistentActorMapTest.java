@@ -161,6 +161,27 @@ final class PersistentActorMapTest {
     }
 
     @Test
+    void persistentRootsCannotBypassActorMessageDepthOrNodeLimits() {
+        PersistentActorMap nested = PersistentActorMap.empty();
+        for (int i = 0; i < 300; i++) {
+            nested = PersistentActorMap.empty().with("next", nested);
+        }
+        PersistentActorMap tooDeep = nested;
+        var depthFailure = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(tooDeep));
+        assertTrue(depthFailure.getMessage().contains("nesting depth"));
+
+        PersistentActorMap wide = PersistentActorMap.empty();
+        for (int i = 0; i < 51_000; i++) {
+            wide = wide.with("key-" + i, i);
+        }
+        PersistentActorMap tooWide = wide;
+        var nodeFailure = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(tooWide));
+        assertTrue(nodeFailure.getMessage().contains("node count"));
+    }
+
+    @Test
     void identicalSharedRootsStillConsumePerMailboxQuotaAndReleaseOnDrain() throws Exception {
         var limited = new IsolatePolicy(IsolatePolicy.developer().capabilities(),
                 16L * 1024 * 1024, 8192, java.time.Duration.ofSeconds(30));
