@@ -93,6 +93,9 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             var batch = receipts.get();
             assertNotNull(batch);
             assertEquals(2, batch.size());
+            assertThrows(UnsupportedOperationException.class,
+                    () -> batch.clear(),
+                    "published fanout receipts must retain immutable branch identity");
             assertTrue(batch.stream().allMatch(
                     ActorPipelineCorrelatedMailboxRouter.Admission::admitted));
             assertEquals(0, batch.get(0).edgeIndex());
