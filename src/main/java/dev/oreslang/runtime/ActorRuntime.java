@@ -3581,6 +3581,32 @@ public final class ActorRuntime implements AutoCloseable {
      * bindings. Never expose an equivalent guest or ActorGroup capability.
      * It also denies force-cancellation hook reentry and closed runtimes.
      */
+    /**
+     * Sealed pipeline routing admission requires a currently executing user
+     * DATA receive, not merely an actor identity from on_start, cleanup,
+     * timer or a deferred callback. Compiler lowering must use this same
+     * scheduler-owned active-mail fence.
+     */
+    void requireCurrentPipelineReceiveTurn() {
+        requireCallerRuntimeAffinity("route a pipeline message");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new SecurityException(
+                    "pipeline routing requires the current actor receive turn");
+        }
+        synchronized (cell.lifecycleLock) {
+            if (cell.activeMail == null) {
+                throw new SecurityException(
+                        "pipeline routing requires an admitted DATA receive");
+            }
+            if (cell.stopped.get() || cell.finalized || cell.endRequested
+                    || cell.forceKillFenced || closed.get()) {
+                throw new IllegalStateException(
+                        "pipeline routing is fenced by actor termination");
+            }
+        }
+    }
+
     void requirePipelineRegistrationHostAuthority() {
         requireSupervisorContext("register actor pipeline routing");
         if (OresScheduler.current() != null) {
