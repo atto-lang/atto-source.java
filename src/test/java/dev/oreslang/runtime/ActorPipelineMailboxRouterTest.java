@@ -114,6 +114,55 @@ final class ActorPipelineMailboxRouterTest {
     }
 
     @Test
+    void actorStartupCannotPublishDataOrAdvanceRoundRobinCursor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorPipelineMailboxRouter<String>> bound =
+                    new AtomicReference<>();
+            AtomicInteger denied = new AtomicInteger();
+            CountDownLatch startup = new CountDownLatch(1);
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicInteger aCount = new AtomicInteger();
+            AtomicInteger bCount = new AtomicInteger();
+            var a = runtime.<String>spawnShared(() -> (message, actor) -> {
+                aCount.incrementAndGet();
+                received.countDown();
+            });
+            var b = runtime.<String>spawnShared(() -> (message, actor) ->
+                    bCount.incrementAndGet());
+            var producer = runtime.<String>spawnShared(() -> {
+                try {
+                    bound.get().forwardRoundRobin("forbidden-startup");
+                } catch (SecurityException rejected) {
+                    denied.incrementAndGet();
+                } finally {
+                    startup.countDown();
+                }
+                return (message, actor) -> bound.get().forwardRoundRobin(message);
+            });
+            bound.set(new ActorPipelineMailboxRouter<>(runtime, graph(),
+                    Map.of("producer", producer, "worker-a", a, "worker-b", b)));
+
+            producer.ready().get(5, TimeUnit.SECONDS);
+            assertTrue(startup.await(5, TimeUnit.SECONDS));
+            assertEquals(1, denied.get(), "startup should lack DATA receive authority");
+            producer.send("valid-mail");
+            producer.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(received.await(5, TimeUnit.SECONDS),
+                    "rejected startup must not advance RR selection");
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, aCount.get());
+            assertEquals(0, bCount.get());
+            producer.stop();
+            a.stop();
+            b.stop();
+            producer.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void stoppedRecipientFailsIndependentlyOfHealthyFanoutBranch() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicReference<List<ActorPipelineMailboxRouter.Admission>> fanout =
