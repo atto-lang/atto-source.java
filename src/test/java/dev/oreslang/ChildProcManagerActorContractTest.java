@@ -24,7 +24,7 @@ final class ChildProcManagerActorContractTest {
                 .declarations().getFirst();
 
         assertEquals("CPM", actor.name());
-        assertEquals(Ast.ActorKind.PRIVATE, actor.actorKind());
+        assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertEquals(1, actor.parents().size());
         assertEquals("ChildProcManager", actor.parents().getFirst().name());
         assertTrue(actor.parents().getFirst().arguments().isEmpty());
@@ -77,7 +77,7 @@ final class ChildProcManagerActorContractTest {
                         define actor CPM extends ChildProcManager as
                         end
                         """)));
-        assertTrue(error.getMessage().contains("not implemented yet"));
+        assertTrue(error.getMessage().contains("not implemented yet"), error.getMessage());
     }
 
     @Test
@@ -106,7 +106,7 @@ final class ChildProcManagerActorContractTest {
                         define actor UserDefinedManager extends ChildProcManager as
                         end
                         """)));
-        assertTrue(error.getMessage().contains("no process-spawning actor"));
+        assertTrue(error.getMessage().contains("no process-spawning actor"), error.getMessage());
     }
 
     @Test
