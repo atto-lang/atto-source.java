@@ -110,6 +110,34 @@ final class RecursiveFutureFlattenTest {
     }
 
     @Test
+    void ownedAsyncSourceIsCancelledButSharedSourceIsNot() {
+        OresFuture<Object> owned = new OresFuture<>();
+        OresFuture<Integer> ownedObserver = OresFutures.flattenOwned(owned);
+        assertTrue(ownedObserver.cancel(false));
+        assertTrue(owned.isCancelled(), "owned async task must be revoked");
+        assertEquals(0, owned.pendingRuntimeWaiterCount());
+
+        OresFuture<Object> shared = new OresFuture<>();
+        OresFuture<Integer> sharedObserver = OresFutures.flatten(shared);
+        assertTrue(sharedObserver.cancel(false));
+        assertFalse(shared.isCancelled(), "shared producer must remain live");
+        assertEquals(0, shared.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void cancellingOwnedOuterAfterItReturnedSharedInnerDoesNotCancelInner() {
+        OresFuture<Object> owned = new OresFuture<>();
+        OresFuture<Integer> sharedInner = new OresFuture<>();
+        OresFuture<Integer> observer = OresFutures.flattenOwned(owned);
+        owned.completeFromRuntime(sharedInner);
+        assertFalse(observer.isDone());
+        assertTrue(observer.cancel(false));
+        assertTrue(observer.isCancelled());
+        assertFalse(sharedInner.isCancelled());
+        assertEquals(0, sharedInner.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void earlyInnerCancellationNeverResurrectsFlattenedResult() {
         OresFuture<Object> outer = new OresFuture<>();
         OresFuture<Integer> inner = new OresFuture<>();
