@@ -71,7 +71,7 @@ final class PrivateExactPublisherValidationWorkflowSecurityTest {
         assertTrue(approval.contains("spec_from_file_location"));
         assertTrue(approval.contains("loadTestsFromModule(module)"));
         assertTrue(approval.contains("suite.countTestCases()"));
-        assertTrue(approval.contains("if count < 57:"));
+        assertTrue(approval.contains("if count < 62:"));
         assertTrue(approval.contains("for round in 1 2 3; do"));
         assertTrue(approval.contains("result.testsRun != count"));
         assertTrue(approval.contains("not result.wasSuccessful()"));
