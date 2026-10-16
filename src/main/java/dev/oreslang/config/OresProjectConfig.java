@@ -98,16 +98,24 @@ public final class OresProjectConfig {
                         + " must select " + PACKAGE_MANIFEST_NAME);
             }
             Path manifestRoot = manifest.getParent();
-            if (root != null && !root.equals(manifestRoot)) {
+            if (root != null && !root.equals(manifestRoot)
+                    && (!Files.isDirectory(root) || !Files.isDirectory(manifestRoot)
+                        || !root.toRealPath().equals(manifestRoot.toRealPath()))) {
                 throw new IllegalArgumentException(ENV_ORES_PROJECT_ROOT + " and "
                         + ENV_ORES_MANIFEST_PATH + " identify different package directories");
             }
+            OresProjectConfig selected = load(manifest, environment);
             Path absoluteStart = start.toAbsolutePath().normalize();
-            if (!absoluteStart.startsWith(manifestRoot)) {
+            // An entry may be reached through a symlink to the selected root,
+            // but it must belong physically to that package. Check existing
+            // paths by identity, not just a lexical startsWith comparison.
+            if (Files.exists(absoluteStart)
+                    ? !absoluteStart.toRealPath().startsWith(manifestRoot.toRealPath())
+                    : !absoluteStart.startsWith(manifestRoot)) {
                 throw new IllegalArgumentException("entry source is outside explicitly selected package root: "
                         + absoluteStart);
             }
-            return load(manifest, environment);
+            return selected;
         }
         return discover(start, environment, null);
     }
@@ -342,6 +350,12 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
+        // Source import syntax is platform-independent: +/ is required even
+        // on Windows. Do not silently normalize +\\ into a rooted import.
+        if (importPath.startsWith("+") && !importPath.startsWith("+/")) {
+            throw new IllegalArgumentException("invalid project-root import '" + importPath
+                    + "': expected +/<path> (for example +/src/lib/store)");
+        }
         String unix = importPath.replace('\\', '/');
         if (unix.startsWith("+/")) {
             if (manifestPath == null || !PACKAGE_MANIFEST_NAME.equals(manifestPath.getFileName().toString())) {
