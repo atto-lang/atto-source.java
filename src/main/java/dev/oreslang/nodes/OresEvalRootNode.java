@@ -4912,7 +4912,7 @@ public final class OresEvalRootNode extends RootNode {
             // postfix ? must remain a return even if an untyped/host-entered
             // path reaches an expression trap boundary. Do not reinterpret it
             // as None or allow the enclosing function to continue.
-            if (isSourceControlSignal(failure)) return false;
+            if (containsSourceControlSignal(failure)) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isTrappable(
                     failure, OresPanic.class);
         }
@@ -4923,6 +4923,34 @@ public final class OresEvalRootNode extends RootNode {
                     || failure instanceof BreakSignal
                     || failure instanceof ContinueSignal
                     || failure instanceof ProcessExitSignal;
+        }
+
+        /**
+         * Runtime-control identity survives CompletionException and cleanup
+         * suppression. Do not allow an ordinary-looking wrapper around a
+         * SourceTask/guest control signal to become a trapped None or a
+         * catchable guest failure. Bound both width and depth, consistent with
+         * TrapFailurePolicy's fail-closed exception graph traversal.
+         */
+        private boolean containsSourceControlSignal(Throwable failure) {
+            ArrayDeque<Throwable> pending = new ArrayDeque<>();
+            IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
+            pending.addLast(failure);
+            while (!pending.isEmpty()) {
+                if (visited.size() >= 64) return true;
+                Throwable current = pending.removeFirst();
+                if (visited.put(current, Boolean.TRUE) != null
+                        || isSourceControlSignal(current)) {
+                    return true;
+                }
+                if (current.getCause() != null) pending.addLast(current.getCause());
+                for (Throwable suppressed : current.getSuppressed()) {
+                    pending.addLast(suppressed);
+                    if (pending.size() + visited.size() > 64) return true;
+                }
+                if (pending.size() + visited.size() > 64) return true;
+            }
+            return false;
         }
 
         // Cleanup may add suppressed diagnostics but must not replace a
@@ -4942,7 +4970,7 @@ public final class OresEvalRootNode extends RootNode {
         private boolean isGuestCatchableFailure(Throwable failure) {
             // The explicit try/catch path also must never consume an internal
             // return/loop/exit signal as a recoverable guest exception.
-            if (isSourceControlSignal(failure)) return false;
+            if (containsSourceControlSignal(failure)) return false;
             return dev.oreslang.runtime.TrapFailurePolicy.isGuestCatchable(
                     failure, OresPanic.class);
         }
