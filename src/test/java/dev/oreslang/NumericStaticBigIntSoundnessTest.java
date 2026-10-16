@@ -58,6 +58,20 @@ final class NumericStaticBigIntSoundnessTest {
     }
 
     @Test
+    void complexOrderingIsRejectedAtCompileTime() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid(complex a, complex b): bool {
+                  return a < b;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc invalid(complex a, int b): bool {
+                  return a >= b;
+                }
+                """)));
+    }
+
+    @Test
     void permitsIntegerWideningAndExactBigIntArithmetic() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc increment(bigint big): bigint {
