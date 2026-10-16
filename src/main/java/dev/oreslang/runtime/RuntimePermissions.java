@@ -543,9 +543,14 @@ public final class RuntimePermissions {
             // A missing scope must never become a root-wide capability.
             if (!safeScope(scope))
                 throw new IllegalArgumentException("invalid allow scope for " + permission);
+            // An ambiguous padded star is not an explicit unrestricted grant.
+            // Validate and normalize before mutating the builder.
+            if ("*".equals(scope.trim()) && !"*".equals(scope))
+                throw new IllegalArgumentException("wildcard scope must be exactly *");
+            String normalized = normalize(permission, scope);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope.trim())) rule.allowAll = true;
-            else rule.allowed.add(normalize(permission, scope));
+            if ("*".equals(normalized)) rule.allowAll = true;
+            else rule.allowed.add(normalized);
             return this;
         }
 
@@ -575,9 +580,13 @@ public final class RuntimePermissions {
             // malformed serialized arguments should fail, not be reinterpreted.
             if (!safeScope(scope))
                 throw new IllegalArgumentException("invalid deny scope for " + permission);
+            // Padded wildcards must not silently change denial semantics.
+            if ("*".equals(scope.trim()) && !"*".equals(scope))
+                throw new IllegalArgumentException("wildcard scope must be exactly *");
+            String normalized = normalize(permission, scope);
             MutableRule rule = rules.computeIfAbsent(permission, ignored -> new MutableRule());
-            if ("*".equals(scope.trim())) rule.denyAll = true;
-            else rule.denied.add(normalize(permission, scope));
+            if ("*".equals(normalized)) rule.denyAll = true;
+            else rule.denied.add(normalized);
             return this;
         }
 
@@ -607,8 +616,16 @@ public final class RuntimePermissions {
                 // grants unrestricted environment access.
                 if (!safeScope(part))
                     throw new IllegalArgumentException("invalid permission scope for " + permission);
-                String value = part.trim();
-                if (value.isEmpty()) {
+                // A space-padded '*' is ambiguous and must never become
+                // an unrestricted grant/deny via trim. For filesystem scopes
+                // spaces are part of pathnames, including within CSV entries.
+                if ("*".equals(part.trim()) && !"*".equals(part))
+                    throw new IllegalArgumentException("wildcard scope must be exactly *");
+                String value = switch (permission) {
+                    case READ, WRITE, FFI, IMPORT -> part;
+                    case NET, ENV, RUN, SYS -> part.trim();
+                };
+                if (value.isBlank()) {
                     throw new IllegalArgumentException(
                             "empty comma-separated scope for " + permission);
                 }
