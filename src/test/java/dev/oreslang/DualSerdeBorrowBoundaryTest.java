@@ -15,7 +15,7 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void serializerAnnotationsCannotSilentlyGrantCrossDomainAuthority() {
         for (String annotation : new String[]{
-                "Serializable", "NetworkCodec", "ActorMessageCodec",
+                "Sendable", "Serializable", "NetworkCodec", "ActorMessageCodec",
                 "SupervisorControlCodec"
         }) {
             IllegalArgumentException failure = assertThrows(
@@ -33,7 +33,7 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void separateGenericCodecInterfacesParseWithReadLoansAndOwnedResults() {
         Ast.Program program = assertDoesNotThrow(() -> Parser.parse("""
-                define interface NetworkCodec<T> as
+                define interface NetworkCodec<T, F> as
                   fnc encode_network(borrow T value) => Result<List<int>, EncodeError>;
                   fnc decode_network(borrow List<int> bytes) => Result<T, DecodeError>;
                 end
@@ -59,12 +59,14 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void neitherCodecIsAnActorDataCapabilityEvenThroughNesting() {
         for (String type : new String[]{
-                "NetworkCodec<int>",
+                "Sendable<int>",
+                "Serializable<int>",
+                "NetworkCodec<int, JsonWire>",
                 "ActorMessageCodec<int>",
                 "Pointer<int>",
                 "Stream<int>",
                 "Observable<int>",
-                "Option<NetworkCodec<int>>",
+                "Option<NetworkCodec<int, JsonWire>>",
                 "Result<ActorMessageCodec<int>, String>",
                 "Array<Pointer<int>>",
                 "List<Observable<int>>"
@@ -82,15 +84,19 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void moduleQualifiedCodecTypeCannotBypassActorDataPolicy() {
         for (String type : new String[]{
-                "CodecBox.NetworkCodec<int>",
+                "CodecBox.Sendable<int>",
+                "CodecBox.Serializable<int>",
+                "CodecBox.NetworkCodec<int, JsonWire>",
                 "CodecBox.ActorMessageCodec<int>",
-                "Option<CodecBox.NetworkCodec<int>>",
+                "Option<CodecBox.NetworkCodec<int, JsonWire>>",
                 "Result<CodecBox.ActorMessageCodec<int>, String>"
         }) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
                             define module CodecBox as
-                              pub define interface NetworkCodec<T> as end
+                              pub define interface Sendable<T> as end
+                              pub define interface Serializable<T> as end
+                              pub define interface NetworkCodec<T, F> as end
                               pub define interface ActorMessageCodec<T> as end
                             end
                             actor fnc bad(%s value): void { return; }
@@ -135,15 +141,19 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void moduleQualifiedCodecCannotBeReceivedAsSupervisorActorData() {
         for (String type : new String[]{
-                "CodecBox.NetworkCodec<int>",
+                "CodecBox.Sendable<int>",
+                "CodecBox.Serializable<int>",
+                "CodecBox.NetworkCodec<int, JsonWire>",
                 "CodecBox.ActorMessageCodec<int>",
-                "Option<CodecBox.NetworkCodec<int>>"
+                "Option<CodecBox.NetworkCodec<int, JsonWire>>"
         }) {
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
                             define module CodecBox as
-                              pub define interface NetworkCodec<T> as end
+                              pub define interface Sendable<T> as end
+                              pub define interface Serializable<T> as end
+                              pub define interface NetworkCodec<T, F> as end
                               pub define interface ActorMessageCodec<T> as end
                             end
                             define actor Worker as
@@ -186,9 +196,9 @@ final class DualSerdeBorrowBoundaryTest {
     @Test
     void supervisorToActorMailboxDeclCannotCarryCodecOrPointer() {
         for (String type : new String[]{
-                "NetworkCodec<int>", "ActorMessageCodec<int>",
+                "NetworkCodec<int, JsonWire>", "ActorMessageCodec<int>",
                 "Pointer<int>", "Option<Pointer<int>>",
-                "Array<NetworkCodec<int>>"
+                "Array<NetworkCodec<int, JsonWire>>"
         }) {
             assertThrows(IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse("""
