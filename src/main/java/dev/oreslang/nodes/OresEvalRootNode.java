@@ -4198,7 +4198,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 Ast.MethodDecl method =
-                        object.owner.preboundMethod(
+                        preboundMethod(
                                 call, object, member.member(), args.size());
                 if (method != null) {
                     object.owner.requireClassMemberVisible(
@@ -5512,7 +5512,7 @@ public final class OresEvalRootNode extends RootNode {
                                 List.of());
                     }
 
-                    Ast.MethodDecl method = object.owner.preboundMethod(
+                    Ast.MethodDecl method = preboundMethod(
                             call, object, methodCall.member(), args.size());
                     if (method != null) {
                         object.owner.requireClassMemberVisible(
@@ -7607,11 +7607,20 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.MethodDecl preboundMethod(
                 Ast.CallExpr call, OresObject receiver, String name, int arity) {
             CallableSelector selector = CallableSelector.instance(name, arity);
-            Ast.MethodDecl dynamic = findMethod(
-                    receiver.klass, selector, new LinkedHashSet<>());
+            // The call expression belongs to this caller's compiler image.
+            // The runtime object's method table belongs to receiver.owner.
+            // Looking up the binding on the receiver's evaluator loses it
+            // when the call crosses a linked code-image boundary.
             Ast.MethodCallBinding binding = program.boundMethodCalls().get(call);
-            // Preserve imported code images' original dispatch semantics.
-            if (binding == null || receiver.owner != this) return dynamic;
+            Ast.MethodDecl dynamic = receiver.owner.findMethod(
+                    receiver.klass, selector, new LinkedHashSet<>());
+            if (binding == null) return dynamic;
+            // Cross-image method bindings require a verified immutable type
+            // identity bridge. Never downgrade a bound call to arity lookup.
+            if (receiver.owner != this) {
+                throw new IllegalStateException(
+                        "compiler-bound method call cannot cross code images without a linked type identity");
+            }
             Ast.ClassDecl staticReceiver = binding.staticReceiver();
             Ast.MethodDecl declared = binding.declaredMethod();
             if (receiver.klass.actorKind() != Ast.ActorKind.NONE
