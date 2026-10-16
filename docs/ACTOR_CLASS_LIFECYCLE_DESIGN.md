@@ -118,7 +118,8 @@ dispatch, not a publicly inherited Oreslang superclass method. Actor code
 may send messages with `ActorRef.send`, but it cannot call or capture
 `receive`, even through dynamic member lookup.
 
-The receiver spelling is optional in actor instance methods:
+The receiver spelling is optional in **all** instance methods, not only actors.
+Actor lifecycle hooks use exactly the same receiver normalization: 
 
 ```ores
 receive(self, ActorMail<String> mail): void {
