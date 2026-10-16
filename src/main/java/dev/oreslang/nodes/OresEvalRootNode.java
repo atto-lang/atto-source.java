@@ -4154,6 +4154,7 @@ public final class OresEvalRootNode extends RootNode {
                 Env env) {
             Ast.MemberExpr member =
                     (Ast.MemberExpr) call.callee();
+            requireBoundInstanceReceiver(call, receiver);
 
             if (receiver instanceof OresObject object) {
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -5469,6 +5470,7 @@ public final class OresEvalRootNode extends RootNode {
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
+                requireBoundInstanceReceiver(call, receiver);
 
                 if (receiver instanceof OresObject object) {
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
@@ -7596,6 +7598,18 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return null;
+        }
+
+        private void requireBoundInstanceReceiver(
+                Ast.CallExpr call, Object receiver) {
+            // The compiler selected an instance method on an ordinary class.
+            // Never silently reinterpret that declaration as a static
+            // namespace, callable field, foreign host value, or actor.
+            if (program.boundMethodCalls().containsKey(call)
+                    && !(receiver instanceof OresObject)) {
+                throw new IllegalStateException(
+                        "compiler-bound instance call received a non-object receiver");
+            }
         }
 
         /**
