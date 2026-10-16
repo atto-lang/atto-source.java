@@ -14,7 +14,21 @@ public final class Types {
     }
 
     public record Named(String name, List<Type> arguments) implements Type {
-        public Named { arguments = List.copyOf(arguments); }
+        public Named {
+            arguments = List.copyOf(arguments);
+            if ("Future".equals(name) && arguments.size() == 1) {
+                // Canonicalize every nominal Future construction, including
+                // generic substitutions and inferred function result types.
+                // Option/Result/List boundaries must remain structurally intact.
+                Type eventual = arguments.getFirst();
+                while (eventual instanceof Named nested
+                        && nested.name().equals("Future")
+                        && nested.arguments().size() == 1) {
+                    eventual = nested.arguments().getFirst();
+                }
+                arguments = List.of(eventual);
+            }
+        }
     }
 
     /**
