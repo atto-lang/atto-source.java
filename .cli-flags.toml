@@ -13,3 +13,16 @@ aliases = ["core-debug"]
 type = "bool"
 default = "false"
 help = "Record bounded core-only numeric diagnostic events; dump JSONL to stderr on exit."
+
+# Select an explicit entry-package manifest; implemented by OresProjectConfig.
+[flags.manifest-path]
+env = "ORES_MANIFEST_PATH"
+aliases = ["manifest-path"]
+type = "string"
+help = "Explicit .ores.pkg.toml for the Oreslang entry package."
+
+[flags.project-root]
+env = "ORES_PROJECT_ROOT"
+aliases = ["project-root"]
+type = "string"
+help = "Directory containing the entry package's .ores.pkg.toml."
