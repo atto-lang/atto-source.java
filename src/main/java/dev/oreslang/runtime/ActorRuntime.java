@@ -5999,6 +5999,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        // A constructor-sealed, deeply immutable HAMT can retain identity for
+        // SHARED delivery after graph/capability/quota admission has completed.
+        // PRIVATE and UNTRUSTED still use isolateCopy and allocate fresh maps.
+        if (value instanceof PersistentActorMap) return value;
         if (value instanceof Shared<?> shared) {
             shared.value();
             return shared;
