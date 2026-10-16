@@ -283,6 +283,32 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void objectMonitorWaitAndNotifyCannotBypassActorScheduler() throws Exception {
+        // Explicitly allowlisting java.lang.Object previously exported its
+        // public declared wait/notify/notifyAll methods via HostAccess,
+        // including indefinite wait() outside the cooperative actor lane.
+        for (String method : new String[]{"wait", "notify", "notifyAll"}) {
+            boolean exported = java.util.Arrays.stream(Object.class.getDeclaredMethods())
+                    .anyMatch(candidate -> candidate.getName().equals(method)
+                            && java.lang.reflect.Modifier.isPublic(candidate.getModifiers()));
+            assertTrue(exported, "JDK Object monitor method must be public: " + method);
+        }
+
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.THREAD_CREATE);
+        for (String className : new String[]{"java.lang.Object", "java.lang.Object$UnsafeNested"}) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(className)),
+                    "unmanaged Object monitor authority admitted: " + className);
+            assertTrue(denied.getMessage().contains("class-level interop"));
+        }
+        assertDoesNotThrow(() -> policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.util.ArrayList")));
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
