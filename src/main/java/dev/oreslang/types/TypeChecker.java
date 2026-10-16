@@ -3843,6 +3843,8 @@ public final class TypeChecker {
             defineImplicitArguments(lambdaEnv, parameters);
             Ast.ClassDecl previousClassOwner = currentClassOwner;
             Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+            Env previousTypeScope = currentTypeScope;
+            currentTypeScope = lambdaEnv;
             Map<Env.Binding, Set<String>> outerInitialization = env.initializationSnapshot();
             if (nonLexical) currentClassOwner = null;
             // A lambda checked within a constructor runs on invocation, not
@@ -3864,6 +3866,7 @@ public final class TypeChecker {
                 env.restoreInitialization(outerInitialization);
                 currentClassOwner = previousClassOwner;
                 currentConstructorOwner = previousConstructorOwner;
+                currentTypeScope = previousTypeScope;
             }
             return new Function(parameters, result);
         }
@@ -4554,6 +4557,8 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, List.of(declared));
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        Env previousTypeScope = currentTypeScope;
+        currentTypeScope = lambdaEnv;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -4567,6 +4572,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentTypeScope = previousTypeScope;
         }
     }
 
@@ -4601,6 +4607,8 @@ public final class TypeChecker {
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
+        Env previousTypeScope = currentTypeScope;
+        currentTypeScope = lambdaEnv;
         if (nonLexical) currentClassOwner = null;
         currentConstructorOwner = null;
         try {
@@ -4618,6 +4626,7 @@ public final class TypeChecker {
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
+            currentTypeScope = previousTypeScope;
         }
         if (lambda.blockBody() != null
                 && expected.result() != Primitive.VOID
