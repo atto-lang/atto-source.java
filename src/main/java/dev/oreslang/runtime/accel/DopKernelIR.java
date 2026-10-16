@@ -48,6 +48,7 @@ public final class DopKernelIR {
         final DataOrientedLayout.Plan layout;
         final ByteBuffer bytes;
         int readLoans;
+        boolean writeLoan;
         boolean closed;
         State(DataOrientedLayout.Plan layout) {
             // getFloat/putFloat operate on four bytes regardless of the POD
@@ -87,7 +88,7 @@ public final class DopKernelIR {
         public HostBuffer take() {
             synchronized (state) {
                 active();
-                if (state.readLoans != 0) throw new IllegalStateException("cannot move borrowed buffer");
+                if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("cannot move borrowed buffer");
                 moved = true;
                 return new HostBuffer(state);
             }
@@ -95,6 +96,7 @@ public final class DopKernelIR {
         public ReadLoan borrowRead() {
             synchronized (state) {
                 active();
+                if (state.writeLoan) throw new IllegalStateException("buffer exclusively borrowed");
                 if (state.readLoans == Integer.MAX_VALUE) {
                     throw new IllegalStateException("read loan count exhausted");
                 }
@@ -102,23 +104,34 @@ public final class DopKernelIR {
                 return new ReadLoan(state);
             }
         }
+        public WriteLoan borrowWrite() {
+            synchronized (state) {
+                active();
+                if (state.readLoans != 0 || state.writeLoan) {
+                    throw new IllegalStateException("cannot exclusively borrow buffer");
+                }
+                state.writeLoan = true;
+                return new WriteLoan(state);
+            }
+        }
         public float read(long row, int field) {
             synchronized (state) {
                 active();
+                if (state.writeLoan) throw new IllegalStateException("buffer exclusively borrowed");
                 return state.bytes.getFloat(Math.toIntExact(state.layout.byteOffset(row, field)));
             }
         }
         public void write(long row, int field, float value) {
             synchronized (state) {
                 active();
-                if (state.readLoans != 0) throw new IllegalStateException("cannot write borrowed buffer");
+                if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("cannot write borrowed buffer");
                 state.bytes.putFloat(Math.toIntExact(state.layout.byteOffset(row, field)), value);
             }
         }
         @Override public void close() {
             synchronized (state) {
                 if (moved) return; // The successor owns the same storage.
-                if (state.readLoans != 0) throw new IllegalStateException("borrowed buffer must be released before close");
+                if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("borrowed buffer must be released before close");
                 state.closed = true;
             }
         }
@@ -143,6 +156,28 @@ public final class DopKernelIR {
         }
     }
 
+    /** Holds the entire destination region until the CPU kernel exits. */
+    public static final class WriteLoan implements AutoCloseable {
+        private final State state;
+        private boolean released;
+        private WriteLoan(State state) { this.state = state; }
+        public void write(long row, int field, float value) {
+            synchronized (state) {
+                if (released || state.closed || !state.writeLoan) {
+                    throw new IllegalStateException("stale write loan");
+                }
+                state.bytes.putFloat(Math.toIntExact(state.layout.byteOffset(row, field)), value);
+            }
+        }
+        @Override public void close() {
+            synchronized (state) {
+                if (released) throw new IllegalStateException("write loan already released");
+                released = true;
+                state.writeLoan = false;
+            }
+        }
+    }
+
     /** Typed CPU lowering: input is read-only and output is fresh, never aliased. */
     public static void executeCpu(Kernel kernel, HostBuffer input, HostBuffer output) {
         Objects.requireNonNull(kernel);
@@ -152,7 +187,7 @@ public final class DopKernelIR {
         if (!kernel.layout().equals(input.layout()) || !kernel.layout().equals(output.layout())) {
             throw new IllegalArgumentException("kernel layout differs from buffer shape");
         }
-        try (ReadLoan read = input.borrowRead()) {
+        try (ReadLoan read = input.borrowRead(); WriteLoan destination = output.borrowWrite()) {
             for (long row = 0; row < kernel.layout().rows(); ++row) {
                 for (int field = 0; field < kernel.layout().fields(); ++field) {
                     float v = read.read(row, field);
@@ -161,7 +196,7 @@ public final class DopKernelIR {
                         case BIAS -> v + kernel.bias();
                         case SCALE_BIAS -> (v * kernel.scale()) + kernel.bias();
                     };
-                    output.write(row, field, transformed);
+                    destination.write(row, field, transformed);
                 }
             }
         }
