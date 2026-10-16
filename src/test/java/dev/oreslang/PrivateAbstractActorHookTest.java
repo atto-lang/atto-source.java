@@ -131,6 +131,35 @@ final class PrivateAbstractActorHookTest {
     }
 
     @Test
+    void actorExplicitSelfReceivesOnlyThroughMailboxRuntime() throws Exception {
+        String source = """
+                define actor Worker as
+                  receive(self, ActorMail<String> mail): void {
+                    self.send(mail.value);
+                    self.end();
+                    return;
+                  }
+                end
+                pub async routine main(): void {
+                  val worker = spawn Worker();
+                  await worker.get_ready();
+                  worker.send("delivered");
+                  val output = (await worker.outputs.next()).value.unwrap();
+                  stdio.stdout.write(output.value);
+                  await worker.get_done();
+                  return;
+                }
+                """;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "actor-explicit-self.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("delivered", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void actorReceiveIsNeverDirectlyCallableWithExplicitSelf() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
