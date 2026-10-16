@@ -121,8 +121,13 @@ This check is embedded in the reviewed workflow definition rather than loaded as
 from the untrusted candidate source checkout. The administrator's isolated runner
 must provide `python3` in addition to Java, GraalVM and Maven.
 
-It then runs full Java 25 `verify` and native AOT/hybrid/strict-isolate
-guest smoke tests. Capture actual workflow job steps, exit
+It then runs full Java 25 `verify`. Each native AOT, hybrid, and
+strict-isolate stage separately runs `mvn -Pnative-... -DskipTests clean package`
+before executing its smoke test. This prevents a stale binary or shared
+library left by another profile (or provided in the candidate checkout) from
+being mistaken for the tested output. These clean builds are more expensive
+than incremental builds but are necessary for trustworthy exact-source evidence.
+Capture actual workflow job steps, exit
 codes, SHA/tree prints and complete test results; **a queued, skipped or
 zero-step job is never passing evidence**.
 
