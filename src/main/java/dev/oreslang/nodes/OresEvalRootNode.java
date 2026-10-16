@@ -8333,11 +8333,17 @@ public final class OresEvalRootNode extends RootNode {
             String name = target.name();
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
-                    || name.equals("u32") || name.equals("u64") || name.equals("uint")
-                    || name.equals("bigint")) return value instanceof Byte || value instanceof Short
-                            || value instanceof Integer || value instanceof Long;
-            if (name.equals("float") || name.equals("f32") || name.equals("f64")
-                    || name.equals("decimal")) return value instanceof Float || value instanceof Double;
+                    || name.equals("u32") || name.equals("u64") || name.equals("uint"))
+                return value instanceof Byte || value instanceof Short
+                        || value instanceof Integer || value instanceof Long;
+            // INT can widen to BigInt, but existing BigInteger values must
+            // also satisfy their own runtime type predicate.
+            if (name.equals("bigint")) return value instanceof java.math.BigInteger
+                    || value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long;
+            if (name.equals("decimal")) return value instanceof java.math.BigDecimal;
+            if (name.equals("float") || name.equals("f32") || name.equals("f64"))
+                return value instanceof Float || value instanceof Double;
             if (name.equals("bool") || name.equals("Bool")) return value instanceof Boolean;
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
@@ -8828,11 +8834,26 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(value instanceof String)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
-            if (java.util.Set.of("i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint").contains(declared.name())) {
+            if (java.util.Set.of("i8","i16","i32","i64","u8","u16","u32","u64","int","uint").contains(declared.name())) {
                 if (!(value instanceof Number number) || !isIntegral(number)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
-            if (java.util.Set.of("f32","f64","float","decimal").contains(declared.name())) {
+            if (declared.name().equals("bigint")) {
+                if (value instanceof java.math.BigInteger) return value;
+                if (value instanceof Number number && isIntegral(number)) {
+                    return java.math.BigInteger.valueOf(number.longValue());
+                }
+                throw returnTypeMismatch(callable, declared, value);
+            }
+            if (declared.name().equals("decimal")) {
+                if (value instanceof java.math.BigDecimal) return value;
+                if (value instanceof Number number && isIntegral(number)) {
+                    return java.math.BigDecimal.valueOf(number.longValue());
+                }
+                // A binary64/32 value cannot silently masquerade as exact decimal.
+                throw returnTypeMismatch(callable, declared, value);
+            }
+            if (java.util.Set.of("f32","f64","float").contains(declared.name())) {
                 if (!(value instanceof Number)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
