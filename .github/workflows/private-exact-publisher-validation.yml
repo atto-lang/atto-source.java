@@ -1,0 +1,107 @@
+name: Private exact-tree publisher regression validation
+
+# Trusted code on protected private main controls the isolated test runner.
+# No pull_request or push trigger and no cross-organization source transfer.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Independently reviewed exact private source candidate commit"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-exact-publisher-validation
+  cancel-in-progress: false
+
+jobs:
+  deny-unapproved:
+    if: ${{ github.repository != 'ores-truffle-oreslang/oreslang-source.java' || github.event.repository.id != 1400792274 || github.event.repository.private != true || github.ref != 'refs/heads/main' || github.ref_protected != true || vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER != 'true' || vars.ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA == '' || vars.ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA != github.sha || vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA == '' || vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA != inputs.candidate_sha || vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_TREE == '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject unapproved private publisher test admission
+        run: |
+          echo "::error::Publisher validation denied: protect main and approve exact workflow, candidate commit, tree and ephemeral runner"
+          exit 1
+
+  validate-reviewed-publisher:
+    if: ${{ github.repository == 'ores-truffle-oreslang/oreslang-source.java' && github.event.repository.id == 1400792274 && github.event.repository.private == true && github.ref == 'refs/heads/main' && github.ref_protected == true && vars.ORESLANG_PRIVATE_EPHEMERAL_RUNNER == 'true' && vars.ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA != '' && vars.ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA == github.sha && vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA != '' && vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA == inputs.candidate_sha && vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_TREE != '' }}
+    runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
+    timeout-minutes: 30
+    env:
+      APPROVED_WORKFLOW_SHA: ${{ vars.ORESLANG_PRIVATE_PUBLISHER_WORKFLOW_SHA }}
+      APPROVED_CANDIDATE_SHA: ${{ vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_SHA }}
+      APPROVED_CANDIDATE_TREE: ${{ vars.ORESLANG_PRIVATE_PUBLISHER_APPROVED_TREE }}
+      REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Reject unreviewed workflow or candidate before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ores-truffle-oreslang/oreslang-source.java'
+          test "$GITHUB_REPOSITORY_ID" = '1400792274'
+          test "$GITHUB_REF" = 'refs/heads/main'
+          test "$GITHUB_REF_PROTECTED" = 'true'
+          test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
+          test "$REQUESTED_CANDIDATE_SHA" = "$APPROVED_CANDIDATE_SHA"
+          [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_CANDIDATE_TREE" =~ ^[a-f0-9]{40}$ ]]
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          clean: true
+      - name: Prove exact candidate commit and source Git tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse --verify HEAD)" = "$APPROVED_CANDIDATE_SHA"
+          test "$(git rev-parse --verify HEAD^{tree})" = "$APPROVED_CANDIDATE_TREE"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          echo "TRUSTED_WORKFLOW_SHA=$APPROVED_WORKFLOW_SHA"
+          echo "TESTED_PUBLISHER_COMMIT=$APPROVED_CANDIDATE_SHA"
+          echo "TESTED_PUBLISHER_TREE=$APPROVED_CANDIDATE_TREE"
+      - name: Syntax-check all private publisher scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
+          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+      - name: Execute destination-policy fail-closed Bash suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-private-ci-destination.sh
+      - name: Execute every publisher unittest three separate times
+        shell: bash
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "EXACT_PUBLISHER_REGRESSION_ROUND=$round"
+            python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("scripts/test-publish-private-ci-source.py")
+          spec = importlib.util.spec_from_file_location("private_ci_publisher_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Private publisher unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 57:
+              raise SystemExit(f"Publisher suite unexpectedly shrank to {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.testsRun != count or not result.wasSuccessful():
+              raise SystemExit("Publisher regression suite failed or did not execute completely")
+          print(f"VERIFIED_PUBLISHER_TESTS={result.testsRun}")
+          PY
+          done
