@@ -155,6 +155,48 @@ class NativeHttpTest {
                 "accept callback blocked another thread's listener operation");
     }
 
+    @org.junit.jupiter.api.RepeatedTest(25)
+    void pendingAcceptFailsAfterListenerMonitorIsReleased() throws Exception {
+        Object listenerMonitor = new Object();
+        OresFuture<Object> pending = new OresFuture<>(() -> false, () -> { });
+        var failure = new IllegalStateException("HTTP listener sealed");
+        var observedFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var observedHeldLock = new java.util.concurrent.atomic.AtomicBoolean();
+        var peerBlocked = new java.util.concurrent.atomic.AtomicBoolean();
+        CountDownLatch callbackExited = new CountDownLatch(1);
+        pending.whenCompleteRuntime((ignored, rejected) -> {
+            observedFailure.set(rejected);
+            if (Thread.holdsLock(listenerMonitor)) observedHeldLock.set(true);
+            CountDownLatch peerEntered = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> {
+                synchronized (listenerMonitor) { peerEntered.countDown(); }
+            });
+            try {
+                if (!peerEntered.await(2, TimeUnit.SECONDS)) peerBlocked.set(true);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                peerBlocked.set(true);
+            } finally {
+                callbackExited.countDown();
+            }
+        });
+        synchronized (listenerMonitor) {
+            assertThrows(IllegalStateException.class, () ->
+                    NativeHttp.failOutsideMonitor(listenerMonitor, pending, failure));
+            assertFalse(pending.isDone(), "under-lock rejection must not fail an accept");
+        }
+        NativeHttp.failOutsideMonitor(listenerMonitor, pending, failure);
+        assertTrue(callbackExited.await(5, TimeUnit.SECONDS));
+        var thrown = assertThrows(java.util.concurrent.ExecutionException.class,
+                () -> pending.get(5, TimeUnit.SECONDS));
+        assertSame(failure, thrown.getCause());
+        assertSame(failure, observedFailure.get());
+        assertFalse(observedHeldLock.get(),
+                "shutdown accept failure callback ran while listener was locked");
+        assertFalse(peerBlocked.get(),
+                "shutdown accept failure callback blocked competing listener admission");
+    }
+
     @Test void noActorDispatchOrTransferAfterRuntimeOrListenerClose() {
         assertTrue(NativeHttp.mayBeginDispatch(false, false));
         for (boolean runtimeClosed : new boolean[] {false, true}) {
