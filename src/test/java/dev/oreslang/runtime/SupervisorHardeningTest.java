@@ -51,7 +51,9 @@ final class SupervisorHardeningTest {
                             SupervisorProcess.Directive.RESTART);
                 },
                 r -> calls.incrementAndGet())) {
-            process.accept(notice(supervisor, group));
+            assertThrows(IllegalStateException.class,
+                    () -> process.accept(notice(supervisor, group)),
+                    "synchronous CONTROL scheduling failure must reject admission");
             assertEquals(0, calls.get());
             assertFalse(process.healthy());
             assertTrue(process.failure().orElse("").contains("inline"));
