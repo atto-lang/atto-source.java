@@ -92,7 +92,7 @@ jobs:
           rm -rf -- target/surefire-reports
           test ! -e target/surefire-reports
       - name: Focused permissions and scoped host interop regressions
-        run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' test
+        run: mvn -B -ntp -Dores.runtime.carriers=native '-Dtest=DenoCliDefaultPermissionsTest,RuntimePermissionsNetworkAuditTest,RuntimePermissionsTest,RuntimePermissionsExplicitPolicyTest,IsolatePolicySerializationAuditTest,ScopedPermissionInteropTest' clean test
       - name: Prove all six security JUnit classes executed
         shell: bash
         run: |
