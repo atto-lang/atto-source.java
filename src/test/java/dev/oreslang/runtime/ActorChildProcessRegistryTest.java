@@ -10,7 +10,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.*;
 
 /** Tests context-owned actor domain retirement without Truffle API stubs. */
@@ -80,12 +79,10 @@ final class ActorChildProcessRegistryTest {
                  ChildProcOwnedRuntime registry = manager();
                  ExecutorService threads = Executors.newFixedThreadPool(2)) {
                 CountDownLatch starting = new CountDownLatch(1);
-                AtomicBoolean accepted = new AtomicBoolean(false);
                 var register = threads.submit(() -> {
                     try {
                         starting.await();
                         table.register(new Object(), registry);
-                        accepted.set(true);
                     } catch (IllegalStateException expectedShutdown) {
                         // Close won the race and rejected registration.
                     } catch (InterruptedException interrupted) {
@@ -106,7 +103,7 @@ final class ActorChildProcessRegistryTest {
                 shutdown.get(3, TimeUnit.SECONDS);
                 assertClosed(registry);
                 assertThrows(IllegalStateException.class,
-                        () -> table.register(new Object(), manager()));
+                        () -> table.register(new Object(), registry));
             }
         }
     }
