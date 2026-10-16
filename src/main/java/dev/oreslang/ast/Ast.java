@@ -328,13 +328,30 @@ public final class Ast {
             List<TypeRef> interfaces,
             List<FieldDecl> fields,
             ConstructorDecl constructor,
-            List<MethodDecl> methods) implements Decl {
+            List<MethodDecl> methods,
+            List<MapKeyDecl> mapKeys) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            mapKeys = List.copyOf(mapKeys);
+        }
+
+        public ClassDecl(
+                String name,
+                Visibility visibility,
+                boolean isAbstract,
+                ActorKind actorKind,
+                List<String> genericParameters,
+                List<TypeRef> parents,
+                List<TypeRef> interfaces,
+                List<FieldDecl> fields,
+                ConstructorDecl constructor,
+                List<MethodDecl> methods) {
+            this(name, visibility, isAbstract, actorKind, genericParameters,
+                    parents, interfaces, fields, constructor, methods, List.of());
         }
 
         /** Compatibility constructor for pre-constructor AST producers. */
@@ -357,6 +374,18 @@ public final class Ast {
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, Visibility.PRIVATE, isAbstract, ActorKind.NONE, genericParameters,
                     List.of(), List.of(), fields, null, methods);
+        }
+    }
+
+    /** Typed open-map schema metadata; never a physical object field. */
+    public record MapKeyDecl(String name, TypeRef declaredType) {
+        public MapKeyDecl {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("map key schema name cannot be blank");
+            }
+            if (declaredType == null) {
+                throw new IllegalArgumentException("map key schema requires a declared type");
+            }
         }
     }
 
