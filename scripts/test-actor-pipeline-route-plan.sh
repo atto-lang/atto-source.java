@@ -13,5 +13,8 @@ temp="$(mktemp -d)"
 trap 'rm -rf "$temp"' EXIT HUP INT TERM
 javac --release 21 -Xlint:all -Werror -d "$temp" \
   src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java \
-  src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanStandaloneSmoke.java
+  src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java \
+  src/test/java/dev/oreslang/runtime/ActorPipelineRoutePlanStandaloneSmoke.java \
+  src/test/java/dev/oreslang/runtime/ActorPipelineRouteSessionSmoke.java
 java -cp "$temp" dev.oreslang.runtime.ActorPipelineRoutePlanStandaloneSmoke
+java -cp "$temp" dev.oreslang.runtime.ActorPipelineRouteSessionSmoke
