@@ -90,16 +90,6 @@ public final class DopKernelIR {
 
         private HostBuffer(State state) { this.state = state; }
 
-        /**
-         * Host-only, opaque allocation identity. The backing State is private
-         * and cannot be used to access raw data or fabricate a region root.
-         */
-        public Object regionBackingIdentity() {
-            synchronized (state) {
-                active();
-                return state.regionToken;
-            }
-        }
         public RegionToken regionToken() {
             synchronized (state) {
                 active();
