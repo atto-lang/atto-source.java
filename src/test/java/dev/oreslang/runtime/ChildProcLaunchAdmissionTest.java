@@ -91,7 +91,7 @@ final class ChildProcLaunchAdmissionTest {
             try {
                 Files.createSymbolicLink(link, Path.of(javaExecutable()));
             } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
-                org.junit.jupiter.api.Assumptions.abort("symbolic links not supported: " + unsupported);
+                org.junit.jupiter.api.Assumptions.assumeTrue(false, "symbolic links not supported: " + unsupported);
             }
             Set<String> forbidden = Set.of(Path.of(javaExecutable()).toRealPath().toString());
             assertThrows(SecurityException.class, () ->
@@ -112,7 +112,7 @@ final class ChildProcLaunchAdmissionTest {
     @Test
     void rejectsNulAndOversizedArguments() {
         var nul = new ChildProcLaunchAdmission.Spec(
-                javaExecutable(), List.of("before\u0000after"), cwd(), Map.of());
+                javaExecutable(), List.of("before" + (char) 0 + "after"), cwd(), Map.of());
         assertThrows(IllegalArgumentException.class, () ->
                 ChildProcLaunchAdmission.admit(nul, allow()));
         var oversized = new ChildProcLaunchAdmission.Spec(
