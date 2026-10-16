@@ -183,6 +183,9 @@ public final class OresProjectConfig {
         }
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
+        if (importPath.startsWith("+") && importPath.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException("project-root imports require forward slashes: " + importPath);
+        }
         String unix = importPath.replace('\\', '/');
         if (unix.startsWith("+")) {
             if (!unix.startsWith("+/")) {
