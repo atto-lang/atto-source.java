@@ -352,4 +352,27 @@ final class OresProjectConfigTest {
                 () -> OresProjectConfig.discover(project.resolve("main.ores"), Map.of()));
     }
 
+
+    @Test
+    void parentPackageRootWinsOverNestedLegacyCompilerManifest() throws Exception {
+        Path project = temp.resolve("package-legacy-nesting");
+        Path nested = project.resolve("src/nested");
+        Files.createDirectories(nested);
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [package]
+                name = "root"
+                """);
+        Files.writeString(nested.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "legacy-nested"
+                """);
+        Files.writeString(project.resolve("root.ores"), "pub fnc root(): int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(nested.resolve("main.ores"), Map.of());
+        assertEquals("root", config.projectName().orElseThrow());
+        assertEquals(project.resolve("root.ores").toRealPath(),
+                config.resolveImport(nested.resolve("main.ores"), "@/root").orElseThrow());
+    }
+
 }
