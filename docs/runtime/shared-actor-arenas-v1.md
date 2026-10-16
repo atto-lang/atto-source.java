@@ -21,7 +21,7 @@ Status: runtime compatibility implementation in this draft (2026-10-16). **Not**
 - `ActorContext.localMemory()` gives each actor its own actor-local allocation authority. The legacy `privateMemory()` continues to be visible only to PRIVATE/UNTRUSTED, so it does not become a shared-memory shortcut.
 - `ActorMemorySlice.allocateActorLocalBytes()` is an owner-validated direct-byte-buffer compatibility path with per-actor quotas, shared aggregate charging for SHARED, private aggregate charging for PRIVATE/UNTRUSTED, and stop-time invalidation. It is **not** a deterministic FFM arena: direct-buffer native backing still depends on JVM collection for physical release.
 - Shared mailbox/output admission includes actor-local used bytes in its per-actor policy budget. Actor-local reservation now also acquires the owning SHARED actor's lifecycle monitor **before** its slice monitor, matching mailbox/output lock order, to close a concurrent admission oversubscription race.
-- `ActorSharedLocalMemoryTest` exercises owned direct bytes, foreign-carrier and sibling-SHARED access denial, accounting, retirement and quota failure. CI execution is pending.
+- `ActorSharedLocalMemoryTest` exercises owned direct bytes, foreign-carrier and sibling-SHARED access denial, accounting-domain separation, retirement, quota failure, and concurrent mailbox admission while a large local reservation is live. CI execution is pending.
 
 ## Required integration
 
