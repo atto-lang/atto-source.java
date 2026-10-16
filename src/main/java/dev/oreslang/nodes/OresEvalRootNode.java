@@ -1345,7 +1345,10 @@ public final class OresEvalRootNode extends RootNode {
                                     "Future.compose/flatMap callback must return Future<T>");
                         }
                         pc = 2;
-                        return OresScheduler.await(nested);
+                        // flatMap/compose adopts the full nested completion
+                        // chain. Runtime callbacks only settle futures; the
+                        // guest continuation still resumes via its scheduler.
+                        return OresScheduler.await(OresFutures.flatten(nested));
                     }
 
                     if (pc == 2) {
