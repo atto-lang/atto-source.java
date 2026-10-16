@@ -171,6 +171,43 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void inRootSymlinkSharesTheCanonicalSourceIdentity() throws Exception {
+        Path root = makeProject("same-identity");
+        Path original = root.resolve("lib/message.ores");
+        Path alias = root.resolve("lib/alias.ores");
+        try {
+            Files.createSymbolicLink(alias, original);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + unsupported);
+        }
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(original.toRealPath(), config.resolveImport(importer, "+/lib/alias").orElseThrow());
+        assertEquals(config.resolveImport(importer, "+/lib/message"),
+                config.resolveImport(importer, "+/lib/alias"));
+    }
+
+    @Test
+    void directorySymlinkCannotEscapeProjectRoot() throws Exception {
+        Path root = makeProject("directory-escape");
+        Path external = temp.resolve("external");
+        Files.createDirectories(external);
+        Files.writeString(external.resolve("message.ores"), """
+                pub fnc message(): string { return "bad"; }
+                """);
+        try {
+            Files.createSymbolicLink(root.resolve("lib/external"), external);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + unsupported);
+        }
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "+/lib/external/message"));
+        assertTrue(error.getMessage().contains("symlink"), error.getMessage());
+    }
+
+    @Test
     void symlinkCannotEscapeProjectRoot() throws Exception {
         Path root = makeProject("symlink");
         Path outside = temp.resolve("outside.ores");
