@@ -6721,16 +6721,25 @@ public final class TypeChecker {
     private Ast.ClassDecl privateAbstractSlotOwner(
             Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> visited) {
         if (!visited.add(klass)) return null;
+        // The original superclass retains invocation authority when an intermediate
+        // abstract subclass redeclares the inherited slot.
+        Ast.ClassDecl origin = null;
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.ClassDecl candidate = privateAbstractSlotOwner(parent, name, arity, visited);
+            if (candidate == null) continue;
+            if (origin != null && origin != candidate) {
+                throw new IllegalArgumentException(
+                        "ambiguous private abstract slot authority in " + klass.name());
+            }
+            origin = candidate;
+        }
+        if (origin != null) return origin;
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.isAbstract()
                     && method.visibility() == Ast.Visibility.PRIVATE
                     && method.matchesArity(name, arity)) return klass;
-        }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent == null) continue;
-            Ast.ClassDecl owner = privateAbstractSlotOwner(parent, name, arity, visited);
-            if (owner != null) return owner;
         }
         return null;
     }
