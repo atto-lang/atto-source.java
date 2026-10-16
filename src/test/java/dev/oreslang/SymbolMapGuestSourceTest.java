@@ -228,6 +228,36 @@ final class SymbolMapGuestSourceTest {
         }
     }
 
+    @Test void typedMapsCannotBeStoredInUntrackedContainersOrGlobalState() {
+        String[] invalid = {
+            """
+            pub fnc bad(): void {
+              val m = new Map<String, int>();
+              val xs = [m];
+              return;
+            }
+            """,
+            """
+            define class Holder as
+              val Map<String, int> map;
+            end
+            """,
+            """
+            val Map<String, int> global = new Map<String, int>();
+            """,
+            """
+            pub fnc bad(): void {
+              val Channel<Map<String, int>> ch = Channel.new<Map<String, int>>(1);
+              return;
+            }
+            """
+        };
+        for (String source : invalid) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+    }
+
     @Test void typedMapWritesRemainDistinctFromFixedTupleSlotWritesAfterMainMerge() {
         String accepted = """
                 pub fnc main(): void {
