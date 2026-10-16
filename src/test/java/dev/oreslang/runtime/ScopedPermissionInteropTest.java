@@ -129,7 +129,11 @@ final class ScopedPermissionInteropTest {
                 "java.util.stream.IntStream",
                 "java.util.stream.LongStream",
                 "java.util.stream.DoubleStream",
-                "java.util.stream.StreamSupport"
+                "java.util.stream.StreamSupport",
+                "java.util.concurrent.Executors",
+                "java.util.concurrent.CompletableFuture",
+                "java.util.concurrent.ForkJoinPool",
+                "java.util.concurrent.ScheduledThreadPoolExecutor"
         }) {
             SecurityException denied = assertThrows(SecurityException.class,
                     () -> policy.restrictedContextBuilder(
