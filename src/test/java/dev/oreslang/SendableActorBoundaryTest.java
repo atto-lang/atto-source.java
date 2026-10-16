@@ -170,4 +170,40 @@ final class SendableActorBoundaryTest {
                         """)));
         assertTrue(result.getMessage().contains("Result"), result.getMessage());
     }
+    @Test
+    void sharedMutexIsNeverSendableEvenToSharedActors() {
+        for (String nested : java.util.List.of(
+                "SharedMutex<int>", "Option<SharedMutex<int>>",
+                "Result<String, SharedMutex<int>>")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "define actor Worker as\\n"
+                                    + " receive(ActorMail<" + nested
+                                    + "> mail): void { return; }\\nend")));
+            assertTrue(rejected.getMessage().contains("SharedMutex"),
+                    rejected.getMessage());
+        }
+    }
+
+    @Test
+    void codecAndSupervisorCapabilitiesCannotHideInActorData() {
+        for (String nested : java.util.List.of(
+                "NetworkCodec<String>",
+                "ActorMessageCodec<int>",
+                "Option<SupervisorId>",
+                "Result<int, ActorGroupId>",
+                "Option<SupervisorProcess>",
+                "Option<ActorGroupContext>")) {
+            IllegalArgumentException rejected = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(
+                            "define actor Worker as\\n"
+                                    + " receive(ActorMail<" + nested
+                                    + "> mail): void { return; }\\nend")));
+            assertTrue(rejected.getMessage().contains("runtime/codec/supervisor capability"),
+                    rejected.getMessage());
+        }
+    }
+
 }
