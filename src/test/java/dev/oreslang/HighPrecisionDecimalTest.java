@@ -196,6 +196,14 @@ final class HighPrecisionDecimalTest {
                       let mut Array<decimal> single = new Array<decimal>();
                       single.add(4d);
                       stdio.stdout.write(matrix.frobenius_norm(1, 1, single, 50, "HALF_EVEN").expect("norm failed"));
+                      stdio.stdout.write("|");
+                      stdio.stdout.write(matrix.frobenius_norm(1, 1, single, 0, "HALF_EVEN").is_err());
+                      stdio.stdout.write("|");
+                      let mut Array<decimal> large = new Array<decimal>();
+                      for (let i = 0; i < 2500; i = i + 1) {
+                        large.add(1d);
+                      }
+                      stdio.stdout.write(matrix.multiply(50, 50, 50, large, large).is_err());
                       return;
                     }
                     """);
@@ -206,7 +214,7 @@ final class HighPrecisionDecimalTest {
                     out, err);
             assertTrue(run.units().containsKey("@std/decimal.ores"));
             assertTrue(run.units().containsKey("@std/matrix.ores"));
-            assertEquals("0.7|1.0|1.5|2.2|5.4|true|0.14285714285714285714285714285714285714285714|2|2|0.5|1|4", out.toString(StandardCharsets.UTF_8),
+            assertEquals("0.7|1.0|1.5|2.2|5.4|true|0.14285714285714285714285714285714285714285714|2|2|0.5|1|4|true|true", out.toString(StandardCharsets.UTF_8),
                     () -> "guest stderr: " + err.toString(StandardCharsets.UTF_8));
         } finally {
             Files.deleteIfExists(entry);
