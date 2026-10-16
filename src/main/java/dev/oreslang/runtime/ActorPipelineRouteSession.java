@@ -91,6 +91,11 @@ final class ActorPipelineRouteSession {
     public synchronized int outstanding() { return active.size(); }
     public synchronized boolean closed() { return closed; }
 
+    /** VM-only validation for host-reported immutable correlation metadata. */
+    synchronized void requireLive(MailFrame frame) {
+        requireActive(frame);
+    }
+
     /** Called ONLY after supervisor authenticates the entering source actor. */
     synchronized MailFrame ingress(String source) {
         graph.requireIngressRoot(source); // ingress must begin at a graph root
