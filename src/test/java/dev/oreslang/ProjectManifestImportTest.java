@@ -613,4 +613,32 @@ final class ProjectManifestImportTest {
                 failure.getMessage());
     }
 
+
+    @Test
+    void manifestlessTransitiveBareImportsRetainOriginalSearchRoot() throws Exception {
+        Path app = temp.resolve("legacy-transitive");
+        Files.createDirectories(app.resolve("components"));
+        Files.createDirectories(app.resolve("shared"));
+        Files.writeString(app.resolve("shared/answer.ores"), """
+                pub fnc answer(): string { return "legacy-still-works"; }
+                """);
+        Files.writeString(app.resolve("components/first.ores"), """
+                import fnc answer from "shared/answer";
+                pub fnc first(): string { return answer(); }
+                """);
+        Path main = app.resolve("main.ores");
+        Files.writeString(main, """
+                import fnc first from "components/first";
+                pub fnc main(): void {
+                  stdio.println(first());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var built = LinkedProgramRunner.run(main, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(), out, new ByteArrayOutputStream());
+        assertEquals(3, built.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("legacy-still-works"));
+    }
+
 }
