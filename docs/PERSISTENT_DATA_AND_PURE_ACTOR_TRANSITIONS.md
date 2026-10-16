@@ -97,8 +97,9 @@ this illustration.
 
 ### Pure actor reducer invariants
 
-1. **Exactly one reducer entrypoint per message contract**, statically
-   resolved and exhaustive for admitted message variants. No ambiguous
+1. **Exactly one message-reducer entrypoint per pure actor**, statically
+   resolved and exhaustive across all admitted message variants. An optional
+   separate typed CONTROL reducer handles supervisor/child terminal events. No ambiguous
    overloads, dynamic reflection, or guessed handler dispatch. Supervision
    CONTROL messages use a separate typed input/priority path but are
    still processed under the parent's single-flight lane.
