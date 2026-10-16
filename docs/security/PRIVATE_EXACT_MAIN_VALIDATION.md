@@ -11,13 +11,20 @@ and is not permission to bypass issue #991 or security review of PR #992.
 
 ## Administrator setup
 
-1. Independently review and merge the workflow. Register a **single-use,
+1. Before enabling either private runner, protect the trusted `main` branch
+   using branch protection or a ruleset that **requires independent code-owner
+   reviews**, blocks direct unreviewed pushes, and prevents bypass by workflow
+   maintainers. Both workflows now require GitHub's `github.ref_protected`
+   and the runner's `GITHUB_REF_PROTECTED=true`. A private repository
+   with an unprotected `main` must fail closed even if the exact SHA, tree
+   and runner variables appear correct.
+2. Independently review and merge the workflow. Register a **single-use,
    ephemeral, repository-scoped** self-hosted Linux x64 runner named/labelled
    `oreslang-private-ephemeral`. Do not use a shared organization runner or
    run unreviewed PR code on it. Provision JDK 25/GraalVM-compatible Linux,
    Maven and enough disk/RAM for three sequential native builds. Provision
    without printing registration tokens or retaining build artifacts/secrets.
-2. Resolve the exact reviewed `main` commit and its tree from an authenticated
+3. Resolve the exact reviewed `main` commit and its tree from an authenticated
    trusted checkout:
    `git rev-parse HEAD` and `git rev-parse HEAD^{tree}`.
    The reviewed workflow now requires the original numeric GitHub repository
@@ -28,18 +35,18 @@ and is not permission to bypass issue #991 or security review of PR #992.
    `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA=<40-character main commit>`,
    `ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE=<40-character Git tree>`.
    Do not put tokens or secrets into these variables.
-3. In the original private repository's Actions tab, dispatch
+4. In the original private repository's Actions tab, dispatch
    **Private exact-main Java/Native validation**, selecting `main` only.
    Unapproved SHA/ref/visibility/runner variable combinations fail closed.
    A source-mainline advance invalidates the approval until the commit/tree
    values are deliberately updated. The workflow checkout checks immutable
    40-hex commit/tree values, the GitHub-provided repository ID, the checked-out
    commit and tree, and a clean worktree *before* invoking the toolchain.
-4. Confirm that focused JUnit, full JDK 25 Maven verify, ten stress replays,
+5. Confirm that focused JUnit, full JDK 25 Maven verify, ten stress replays,
    native AOT, native hybrid, and strict-isolate guest execution all ran.
    Do not claim success from a skipped job or a GitHub Actions job with
    `steps=null`. Preserve workflow/job links and the exact commit/tree.
-5. Retire the ephemeral runner and clear the approval SHA/tree and enable
+6. Retire the ephemeral runner and clear the approval SHA/tree and enable
    variable after the validation session. Check for lingering workspaces,
    artifacts, caches and source copies; perform the host's secure teardown.
 
@@ -84,7 +91,7 @@ candidate branch diff and explicitly set repository variables (not secrets):
 
 On trusted main, dispatch **Private exact-candidate Java/Native validation**
 with `candidate_sha` matching the approved candidate SHA. The workflow
-rejects other repositories, repository IDs, visibility, refs, workflow commits
+rejects other repositories, repository IDs, visibility, unprotected refs, workflow commits
 or candidate SHAs *before checking out any candidate code*. Its pinned
 read-only checkout then requires the selected commit, Git tree, and clean
 worktree to match the approvals before GraalVM setup or Maven/guest execution.
