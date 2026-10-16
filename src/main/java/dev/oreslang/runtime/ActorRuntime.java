@@ -5157,7 +5157,20 @@ public final class ActorRuntime implements AutoCloseable {
                 else release.run();
             }
         }
-        cell.schedule();
+        try {
+            cell.schedule();
+        } catch (RejectedExecutionException postPublicationFailure) {
+            if (pipelineFrame == null || !mailboxSlotTransferred) {
+                // Preserve ordinary ActorRuntime.send failure behavior.
+                throw postPublicationFailure;
+            }
+            // The routed DATA envelope was ALREADY published before
+            // dispatch failed. ActorCell.schedule() seals/stops the actor
+            // on rejection, and mailbox cleanup retires its VM-owned
+            // correlation frame. Reporting a failed *admission* here would
+            // let a supervisor retry and duplicate an already accepted
+            // branch. Admission does not promise eventual processing.
+        }
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
         }
