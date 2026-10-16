@@ -93,7 +93,7 @@ public final class ActorPipelineRouteSession {
 
     /** Called ONLY after supervisor authenticates the entering source actor. */
     public synchronized MailFrame ingress(String source) {
-        graph.forwardAll(source); // source must actually own an outgoing port
+        graph.requireIngressRoot(source); // ingress must begin at a graph root
         ensureOpen();
         reserve(1);
         if (nextFlowId == Long.MAX_VALUE) throw new IllegalStateException("flow IDs exhausted");
