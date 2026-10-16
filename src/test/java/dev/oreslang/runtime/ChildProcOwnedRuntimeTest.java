@@ -149,4 +149,31 @@ final class ChildProcOwnedRuntimeTest {
             workers.shutdownNow();
         }
     }
+    @Test
+    void terminateAsyncSignalStopsChildWithoutBlockingActor() throws Exception {
+        try (ExecutorService workers = Executors.newFixedThreadPool(2);
+             ChildProcOwnedRuntime manager = manager(workers, 2, 1024)) {
+            var child = manager.spawnAsync(spec(executable("/usr/bin/sleep"), "30"))
+                    .get(10, TimeUnit.SECONDS);
+            long before = System.nanoTime();
+            assertTrue(child.terminate());
+            assertTrue(System.nanoTime() - before < TimeUnit.SECONDS.toNanos(3));
+            child.waitAsync().get(10, TimeUnit.SECONDS);
+            assertFalse(child.kill(), "completed generation must not be signalled");
+        }
+    }
+
+    @Test
+    void completedExitBuffersCannotBeMutatedThroughAccessors() throws Exception {
+        try (ExecutorService workers = Executors.newFixedThreadPool(2);
+             ChildProcOwnedRuntime manager = manager(workers, 2, 1024)) {
+            var child = manager.spawnAsync(spec(executable("/usr/bin/printf"), "immutable"))
+                    .get(10, TimeUnit.SECONDS);
+            var exit = child.waitAsync().get(10, TimeUnit.SECONDS);
+            byte[] copy = exit.stdout();
+            copy[0] = (byte) 'X';
+            assertEquals("immutable", new String(exit.stdout(), StandardCharsets.UTF_8));
+        }
+    }
+
 }
