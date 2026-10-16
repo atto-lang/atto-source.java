@@ -93,8 +93,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/git/trees":
             # A fresh file tree and its parent root tree must be distinct.
             return {"sha": E if "base_tree" in payload else D}
+        if route == "repos/trusted/ci/git/trees/" + B:
+            return {"sha": B, "truncated": False, "tree": [
+                {"path": ".github", "mode": "040000", "type": "tree", "sha": C},
+                {"path": pub.PREFIX, "mode": "040000", "type": "tree", "sha": A}]}
         if route == "repos/trusted/ci/git/trees/" + E:
             return {"sha": E, "truncated": False, "tree": [
+                {"path": ".github", "mode": "040000", "type": "tree", "sha": C},
                 {"path": pub.PREFIX, "mode": "040000",
                  "type": "tree", "sha": D}]}
         if route == "repos/trusted/ci/git/commits/" + F:
@@ -384,6 +389,58 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.assertFalse(any(r in (
                     "repos/trusted/ci/git/commits", "repos/trusted/ci/git/refs")
                     for method, r, _ in self.route_calls if method == "POST"))
+
+    def test_destination_cannot_rewrite_unrelated_ci_workflows(self):
+        original = self.fake_api
+        for changed in [
+            # A malicious or stale root tree silently rewrites CI workflows.
+            [{"path": ".github", "mode": "040000", "type": "tree", "sha": A}],
+            # GitHub returns the new subtree but omits existing workflows.
+            [],
+            # Even a new root-level file is outside the authorized operation.
+            [{"path": ".github", "mode": "040000", "type": "tree", "sha": C},
+             {"path": "README.md", "mode": "100644", "type": "blob", "sha": A}],
+        ]:
+            with self.subTest(changed=changed):
+                self.route_calls.clear()
+                replacement = {"sha": E, "truncated": False, "tree": changed + [
+                    {"path": pub.PREFIX, "mode": "040000",
+                     "type": "tree", "sha": D}]}
+                def mutate(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/trees/" + E:
+                        return replacement
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=mutate):
+                    with self.assertRaisesRegex(pub.Denied, "unrelated CI files"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A, D)
+                self.assertFalse(any(
+                    method == "POST" and route == "repos/trusted/ci/git/commits"
+                    for method, route, _ in self.route_calls))
+
+    def test_destination_base_tree_readback_rejects_malformed_entries(self):
+        original = self.fake_api
+        for corrupted in [
+            {"sha": B, "truncated": True, "tree": []},
+            {"sha": B, "truncated": False, "tree": [
+                {"path": ".github", "mode": "040000", "type": "tree", "sha": C},
+                {"path": ".github", "mode": "040000", "type": "tree", "sha": C}]},
+            {"sha": B, "truncated": False, "tree": [
+                {"path": "../escape", "mode": "100644", "type": "blob", "sha": C}]},
+        ]:
+            with self.subTest(corrupted=corrupted):
+                self.route_calls.clear()
+                def mutate(route, method="GET", payload=None):
+                    if route == "repos/trusted/ci/git/trees/" + B:
+                        return corrupted
+                    return original(route, method, payload)
+                with patch.object(pub, "gh_api", side_effect=mutate):
+                    with self.assertRaisesRegex(pub.Denied, "destination root"):
+                        pub.publish("trusted/ci", self.source,
+                                    "ci/oreslang-test", self.root, A, D)
+                self.assertFalse(any(
+                    method == "POST" and route == "repos/trusted/ci/git/commits"
+                    for method, route, _ in self.route_calls))
 
     def test_destination_commit_readback_rejects_mismatch_before_ref(self):
         original = self.fake_api
