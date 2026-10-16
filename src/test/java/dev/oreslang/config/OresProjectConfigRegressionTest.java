@@ -134,4 +134,22 @@ final class OresProjectConfigRegressionTest {
                         Map.of(OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString())));
         assertTrue(rejected.getMessage().contains("outside explicitly selected package root"));
     }
+
+    @Test
+    void rootedImportsRejectParentComponentsEvenWhenNormalizedInsideRoot() throws Exception {
+        Path project = temp.resolve("rooted-component-policy");
+        Files.createDirectories(project.resolve("src/lib"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME),
+                "schema_version = \"1\"\n");
+        Path source = Files.writeString(project.resolve("src/lib/helper.ores"),
+                "pub fnc helper(): int { return 1; }");
+        OresProjectConfig config = OresProjectConfig.discover(source, Map.of());
+        assertEquals(source.toRealPath(),
+                config.resolveImport(source, "+/src/lib/helper").orElseThrow());
+        for (String invalid : List.of("+/src/../src/lib/helper",
+                "+/../src/lib/helper", "pkg:unused/src/../helper")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> config.resolveImport(source, invalid), invalid);
+        }
+    }
 }
