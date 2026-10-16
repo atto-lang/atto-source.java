@@ -799,6 +799,36 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     }
 
     @Test
+    void trustedPrivateValidationWorkflowsMustShareOneConcurrencyGroup() throws Exception {
+        String[] paths = {
+                ".github/workflows/private-exact-main-validation.yml",
+                ".github/workflows/private-exact-candidate-validation.yml",
+                ".github/workflows/private-exact-publisher-validation.yml"
+        };
+        final String approved = "\nconcurrency:\n"
+                + "  group: private-oreslang-isolated-validation\n"
+                + "  cancel-in-progress: false\n";
+        for (String path : paths) {
+            String workflow = Files.readString(Path.of(path));
+            assertEquals(1, workflow.split("\\nconcurrency:\\n", -1).length - 1,
+                    "multiple or missing concurrency blocks: " + path);
+            assertEquals(1, workflow.split("\\n  group: ", -1).length - 1,
+                    "multiple or missing workflow concurrency groups: " + path);
+            assertTrue(workflow.contains(approved),
+                    "all private runner workflows must serialize together: " + path);
+            String separated = workflow.replace(
+                    "  group: private-oreslang-isolated-validation",
+                    "  group: " + path);
+            assertFalse(separated.contains(approved),
+                    "isolated concurrency queue changes must not pass review");
+            String cancel = workflow.replace("  cancel-in-progress: false",
+                    "  cancel-in-progress: true");
+            assertFalse(cancel.contains(approved),
+                    "a new dispatch must not interrupt an active security validation");
+        }
+    }
+
+    @Test
     void sourceRepositoryIdPinCannotBeDroppedFromAdmissionExpressions() throws Exception {
         String workflow = Files.readString(WORKFLOW);
         String deny = section(workflow, "  deny-unapproved:", "  validate-exact-main:");
