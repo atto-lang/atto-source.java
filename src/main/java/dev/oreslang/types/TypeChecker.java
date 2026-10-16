@@ -5970,10 +5970,17 @@ public final class TypeChecker {
             return;
         }
         if (ref.isBorrow() || ref.isTupleType() || ref.isRecordType() || ref.isStringLiteral()
-                || ref.name().equals("$infer$") || ref.name().equals("self")
+                || ref.name().equals("$infer$") || ref.name().equals("unknown")
+                || ref.name().equals("self")
                 || ref.name().equals("Fnc") || ref.name().equals("Function")) {
             throw new IllegalArgumentException(
                     operator + " requires a nominal/runtime-reifiable type; use 'matches' for structural patterns");
+        }
+        Ast.ClassDecl runtimeClass = findClass(ref.name());
+        if (runtimeClass != null && isTypedOpenMapClass(runtimeClass)) {
+            throw new IllegalArgumentException(
+                    operator + " cannot test typed open Map schema class '" + ref.name()
+                            + "' until its nominal schema identity is reified at runtime");
         }
         if (ref.inferArguments() || !ref.arguments().isEmpty()) {
             throw new IllegalArgumentException(
