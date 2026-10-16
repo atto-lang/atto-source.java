@@ -46,7 +46,7 @@ public final class NativeHttp implements AutoCloseable {
             // Bind only the numeric address selected by the same strict
             // resolved-IP policy as outbound sockets. Hostname-based
             // InetSocketAddress constructors can re-resolve after admission.
-            InetSocketAddress pinned = NativeIo.resolveAuthorizedAddress(
+            InetSocketAddress pinned = NativeIo.resolveAuthorizedListenerAddress(
                     context.runtimePermissions(), host, port);
             context.requireCapability(IsolatePolicy.Capability.NETWORK, "http.listen");
             Server server = new Server(HttpServer.create(pinned, capacity),
