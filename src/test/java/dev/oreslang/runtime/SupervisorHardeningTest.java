@@ -216,9 +216,22 @@ final class SupervisorHardeningTest {
         assertFalse(value.diagnostic().contains("\r"));
         assertTrue(value.diagnostic().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1024);
         assertTrue(control.poll().isEmpty(), "CONTROL must be delivered exactly once");
-        control.install(ignored -> { });
-        assertThrows(IllegalStateException.class, control::poll,
-                "host-installed handler and actor polling must never split one CONTROL queue");
+        assertThrows(IllegalStateException.class,
+                () -> control.install(ignored -> { }),
+                "host handlers cannot steal a CONTROL queue already claimed by the actor");
+
+        SupervisorFailureControl emptyClaim = new SupervisorFailureControl(
+                id, group, ignored -> { }, 2);
+        assertTrue(emptyClaim.poll().isEmpty(),
+                "even an empty actor poll claims exclusive CONTROL ownership");
+        assertThrows(IllegalStateException.class,
+                () -> emptyClaim.install(ignored -> { }));
+
+        SupervisorFailureControl hostClaim = new SupervisorFailureControl(
+                id, group, ignored -> { }, 2);
+        hostClaim.install(ignored -> { });
+        assertThrows(IllegalStateException.class, hostClaim::poll,
+                "actor polling cannot consume host-owned CONTROL");
     }
 
 }
