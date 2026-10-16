@@ -60,6 +60,7 @@ final class ActorPipelineAdmissionBridge {
         Objects.requireNonNull(session);
         Objects.requireNonNull(message);
         Objects.requireNonNull(mailbox);
+        return session.withAdmissionBarrier(source, () -> {
         List<ActorPipelineRouteSession.MailFrame> children =
                 session.forwardAll(source);
         List<Receipt> outcomes = new ArrayList<>(children.size());
@@ -85,5 +86,6 @@ final class ActorPipelineAdmissionBridge {
             }
             throw failure;
         }
+        });
     }
 }
