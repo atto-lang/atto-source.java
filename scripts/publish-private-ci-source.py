@@ -160,6 +160,41 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
 
+def require_protected_origin_policy(local_digest):
+    """Authenticate local policy bytes against the current protected main.
+
+    Merely requiring branch protection is insufficient: an unreviewed checkout
+    could still carry a locally fabricated destination allowlist. Bind the
+    local policy to the source repository's protected-main GitHub contents.
+    """
+    if not isinstance(local_digest, bytes) or len(local_digest) != 32:
+        raise Denied("source approval fingerprint is invalid")
+    require_reviewed_origin_protection()
+    remote = gh_api("repos/" + SOURCE_REPO +
+                    "/contents/.github/private-ci-approved-repositories.txt?ref=" +
+                    SOURCE_BRANCH)
+    if (remote.get("type") != "file" or remote.get("encoding") != "base64"
+            or not isinstance(remote.get("content"), str)
+            or not isinstance(remote.get("size"), int)
+            or remote["size"] > 16 * 1024):
+        raise Denied("protected-main approval file metadata is invalid")
+    try:
+        encoded = remote["content"].replace("\\n", "").replace("\\r", "")
+        data = base64.b64decode(encoded, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise Denied("protected-main approval file is not valid base64") from exc
+    if len(data) != remote["size"]:
+        raise Denied("protected-main approval content size mismatch")
+    expected_blob = hashlib.sha1(
+        b"blob " + str(len(data)).encode("ascii") + bytes([0]) + data
+    ).hexdigest()
+    if remote.get("sha") != expected_blob:
+        raise Denied("protected-main approval Git blob identity mismatch")
+    if hashlib.sha256(data).digest() != local_digest:
+        raise Denied("local destination approval differs from protected main")
+    return True
+
+
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
 
@@ -280,6 +315,7 @@ def publish(repository, source, branch, trusted_root):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    require_protected_origin_policy(approved_policy)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -296,7 +332,7 @@ def publish(repository, source, branch, trusted_root):
     base_commit = gh_api(f"repos/{repository}/git/commits/{base_sha}")
     base_tree = valid_sha(base_commit.get("tree", {}).get("sha"))
     def authorize_write():
-        require_reviewed_origin_protection()
+        require_protected_origin_policy(approved_policy)
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
         checked_repo(repository)
