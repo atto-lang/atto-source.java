@@ -25,7 +25,7 @@ fi
 printf '%s\t%s\t%s\t%s\t%s\t%s%s\n' \
   "${MOCK_ID:-123456789}" "${MOCK_NAME:-trusted/ci}" \
   "${MOCK_VISIBILITY:-private}" "${MOCK_PRIVATE_FLAG:-true}" \
-  "${MOCK_ARCHIVED:-false}" "${MOCK_DISABLED:-false}" "${MOCK_EXTRA_LINE:-}"
+  "${MOCK_ARCHIVED-false}" "${MOCK_DISABLED-false}" "${MOCK_EXTRA_LINE:-}"
 MOCK
 mkdir -p "$work/fixture/source"
 printf 'pub fnc main(): int { return 42; }\n' > "$work/fixture/source/main.ores"
@@ -58,6 +58,11 @@ done
 unset MOCK_ID
 for field in MOCK_ARCHIVED MOCK_DISABLED; do
   export "$field"=true
+  expect_fail trusted/ci
+  expect_wrapper_reject trusted/ci
+  unset "$field"
+  # An explicitly empty API field must not silently receive a safe mock default.
+  export "$field"=''
   expect_fail trusted/ci
   expect_wrapper_reject trusted/ci
   unset "$field"
