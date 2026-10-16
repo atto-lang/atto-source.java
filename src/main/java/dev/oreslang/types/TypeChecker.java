@@ -4524,6 +4524,18 @@ public final class TypeChecker {
                     captured.bindings.putIfAbsent(entry.getKey(), entry.getValue());
                 }
             }
+            // Inferred aliases are type-only bindings, but a permitted alias
+            // must remain visible across a deferred lexical boundary.
+            for (Map.Entry<String, Type> entry : frame.inferredTypes.entrySet()) {
+                if (lambda.permitsOuterBinding(entry.getKey())) {
+                    captured.inferredTypes.putIfAbsent(entry.getKey(), entry.getValue());
+                }
+            }
+            for (String name : frame.reservedInferredNames) {
+                if (lambda.permitsOuterBinding(name)) {
+                    captured.reservedInferredNames.add(name);
+                }
+            }
         }
         return captured;
     }
