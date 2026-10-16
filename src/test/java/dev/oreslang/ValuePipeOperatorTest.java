@@ -244,6 +244,38 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void preservesErrorAndSuccessDomainsAcrossInferredResultCallbacks() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc annotate(String s): String { return s + "!"; }
+                fnc double(int n): int { return n * 2; }
+                fnc correct(Result<int,String> input): Result<int,String> {
+                  val Result<int,String> first = input
+                      |> Result.and_then(|n| -> Ok(n + 1))
+                      |> Result.map_err(annotate);
+                  return first
+                      |> Result.or_else(|e| -> Err(e + "!"))
+                      |> Result.map(double);
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc wrong(int n): int { return n + 1; }
+                fnc bad(Result<int,String> input): Result<int,int> {
+                  return input
+                      |> Result.and_then(|n| -> Ok(n + 1))
+                      |> Result.map_err(wrong);
+                }
+                """)), "and_then must preserve String error type, not Unknown");
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc wrong(String s): String { return s + "!"; }
+                fnc bad(Result<int,String> input): Result<String,String> {
+                  return input
+                      |> Result.or_else(|e| -> Err(e + "!"))
+                      |> Result.map(wrong);
+                }
+                """)), "or_else must preserve int success type, not Unknown");
+    }
+
+    @Test
     void executesOptionAndResultCombinators() throws Exception {
         String program = """
                 fnc double(int n): int { return n * 2; }
