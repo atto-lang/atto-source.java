@@ -256,6 +256,8 @@ public final class NioReadinessGroup implements AutoCloseable {
                 stopping.set(true);
                 Throwable reason = terminal == null ? new IOException("NIO reactor stopped") : terminal;
                 for (Watch registered : admitted.keySet()) retire(registered, null, reason);
+                commands.clear();
+                cancellations.clear();
                 try { selector.close(); } catch (IOException ignored) { }
                 stopped.countDown();
             }
