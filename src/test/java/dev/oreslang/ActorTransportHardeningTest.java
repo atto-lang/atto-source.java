@@ -139,6 +139,65 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void changingListCannotSmuggleCapabilitiesIntoFrozenData() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Object>spawnShared(() -> (message, context) -> { });
+            // Initial graph validation and capability scan see only DATA.
+            // The copying traversal sees a forbidden actor capability.
+            List<Object> changing = new AbstractList<>() {
+                private int reads;
+                @Override public int size() { return 1; }
+                @Override public Object get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    return ++reads <= 2 ? "safe" : ref;
+                }
+            };
+            IllegalArgumentException rejection = assertThrows(
+                    IllegalArgumentException.class, () -> ActorRuntime.freeze(changing));
+            assertTrue(rejection.getMessage().contains("data values only"),
+                    rejection.getMessage());
+            ref.stop();
+        }
+    }
+
+    @Test
+    void changingSenderGraphCannotSmuggleForeignRefIntoSharedMailbox() throws Exception {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreign = right.<Object>spawnShared(() -> (message, context) -> { });
+            java.util.concurrent.atomic.AtomicReference<List<?>> received =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            var receiver = left.<List<?>>spawnShared(() ->
+                    (message, context) -> received.set(message));
+
+            // send() checks a caller-owned container multiple times. Supply
+            // ordinary DATA for all six pre-copy reads, then a cross-runtime
+            // ActorRef when it builds the immutable envelope payload.
+            List<Object> changing = new AbstractList<>() {
+                private int reads;
+                @Override public int size() { return 1; }
+                @Override public Object get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    return ++reads <= 6 ? "safe" : foreign;
+                }
+            };
+            IllegalArgumentException rejection = assertThrows(
+                    IllegalArgumentException.class, () -> receiver.send(changing));
+            assertTrue(rejection.getMessage().contains("different ActorRuntime"),
+                    rejection.getMessage());
+            assertNull(received.get(), "rejected DATA must never reach the receiver");
+            receiver.send(List.of("accepted"));
+            receiver.drain().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(List.of("accepted"), received.get(),
+                    "failed admission must release the mailbox slot");
+            receiver.stop();
+            receiver.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            foreign.stop();
+            foreign.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void actorStartupFailureDoesNotLeaveUsableRefOrActorQuota() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             java.util.concurrent.CountDownLatch attempted = new java.util.concurrent.CountDownLatch(1);
