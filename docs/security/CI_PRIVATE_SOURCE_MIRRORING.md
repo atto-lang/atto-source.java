@@ -100,8 +100,9 @@ unrelated root entry remains identical**, including `.github` CI workflow
 content. The only permitted root-level difference is replacement of exactly
 one `private-oreslang-source` subtree with the reviewed source tree SHA.
 It then reads back the destination commit and requires the same root tree
-and exactly the expected destination base parent. After creating the isolated
-ref, it reads that ref back and verifies the expected immutable commit.
+and exactly the expected destination base parent. On isolated branch creation it requires the POST receipt to name the exact
+branch **and** confirm a commit object at the expected immutable SHA. It then
+reads the created ref back independently and verifies the same commit.
 These checks are distinct from trusting the GitHub POST receipts.
 Existing branches, including `main`, are never updated.
 
