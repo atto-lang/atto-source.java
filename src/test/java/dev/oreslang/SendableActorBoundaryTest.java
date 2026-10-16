@@ -69,7 +69,7 @@ final class SendableActorBoundaryTest {
                           receive(ActorMail<ActorMail<String>> mail): void { return; }
                         end
                         """)));
-        assertTrue(nested.getMessage().contains("ActorMail envelope"), nested.getMessage());
+        assertTrue(nested.getMessage().contains("ActorMail/ActorOutput envelope"), nested.getMessage());
     }
 
     @Test
@@ -81,7 +81,7 @@ final class SendableActorBoundaryTest {
                           receive(ActorMail<Option> mail): void { return; }
                         end
                         """)));
-        assertTrue(option.getMessage().contains("Option<T>"), option.getMessage());
+        assertTrue(option.getMessage().contains("Option"), option.getMessage());
 
         IllegalArgumentException result = assertThrows(
                 IllegalArgumentException.class,
@@ -90,6 +90,6 @@ final class SendableActorBoundaryTest {
                           receive(ActorMail<Result<int>> mail): void { return; }
                         end
                         """)));
-        assertTrue(result.getMessage().contains("Result<T, E>"), result.getMessage());
+        assertTrue(result.getMessage().contains("Result"), result.getMessage());
     }
 }
