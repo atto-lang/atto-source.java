@@ -99,4 +99,34 @@ final class MessagePackActorContractTest {
         assertEquals(List.of("safe", 5L), decoded.value());
     }
 
+    @Test
+    void nestedEnumDescriptorUsesCanonicalGrammarAndNativeLimit() {
+        // NestedEnum implements Shape but not Sequence. A separate actor
+        // descriptor walker previously cast it to Sequence, failing even for
+        // a valid closed nested message type.
+        MessagePackCollectionCodec.NestedEnum nested =
+                new MessagePackCollectionCodec.NestedEnum("Inner",
+                        List.of(
+                                new MessagePackCollectionCodec.EnumCaseShape("Ping", 1, null),
+                                new MessagePackCollectionCodec.EnumCaseShape("Payload", 2, string())));
+        int actual = MessagePackCollectionCodec.shapeDescriptorByteLength(nested);
+        assertTrue(actual > 0 && actual < MessagePackActorContract.MAX_DESCRIPTOR_BYTES);
+        assertDoesNotThrow(() -> new MessagePackActorContract("demo.Nested.v1",
+                new MessagePackActorContract.Alternative(1, nested)));
+
+        java.util.ArrayList<MessagePackCollectionCodec.EnumCaseShape> cases =
+                new java.util.ArrayList<>();
+        for (int i = 1; i <= 90; i++) {
+            cases.add(new MessagePackCollectionCodec.EnumCaseShape(
+                    "Case_" + i + "_" + "X".repeat(70), i, null));
+        }
+        var huge = new MessagePackCollectionCodec.NestedEnum("Large", cases);
+        assertTrue(MessagePackCollectionCodec.shapeDescriptorByteLength(huge)
+                > MessagePackActorContract.MAX_DESCRIPTOR_BYTES);
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> new MessagePackActorContract("demo.Large.v1",
+                        new MessagePackActorContract.Alternative(1, huge)));
+        assertTrue(rejected.getMessage().contains("native limit"), rejected.getMessage());
+    }
+
 }
