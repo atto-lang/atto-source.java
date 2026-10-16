@@ -192,5 +192,25 @@ final class OresProjectConfigRegressionTest {
         IllegalArgumentException dangling = assertThrows(IllegalArgumentException.class,
                 () -> OresProjectConfig.load(manifest, Map.of()));
         assertTrue(dangling.getMessage().contains("dangling symbolic link"));
+
+        Path outsideDirectory = temp.resolve("outside-dir");
+        Files.createDirectories(outsideDirectory);
+        Files.createSymbolicLink(project.resolve("src/generated"), outsideDirectory);
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [entrypoints]
+                main = "src/generated/future.ores"
+                """);
+        IllegalArgumentException escapedAncestor = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.load(manifest, Map.of()));
+        assertTrue(escapedAncestor.getMessage().contains("resolves outside the package root"));
+
+        Files.writeString(manifest, """
+                schema_version = "1"
+                [entrypoints]
+                main = "src/future/generated.ores"
+                """);
+        assertEquals(project.resolve("src/future/generated.ores"),
+                OresProjectConfig.load(manifest, Map.of()).mainEntrypoint().orElseThrow());
     }
 }
