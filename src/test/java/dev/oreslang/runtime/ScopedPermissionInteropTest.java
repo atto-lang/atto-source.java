@@ -114,12 +114,38 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void keystoresAndGlobalSecurityConfigurationCannotBypassScopedAuthority() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.FILESYSTEM_READ,
+                IsolatePolicy.Capability.FILESYSTEM_WRITE);
+        // Even with scoped file grants, these public JDK classes expose
+        // direct file reads, global security-provider changes, and JAAS
+        // login configuration outside Ores-owned authorization boundaries.
+        for (String className : new String[]{
+                "java.security.KeyStore",
+                "java.security.KeyStore$Builder",
+                "java.security.Security",
+                "javax.security.auth.login.Configuration",
+                "javax.security.auth.login.LoginContext",
+                "javax.security.auth.login.AppConfigurationEntry"
+        }) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(className)),
+                    "global security or keystore authority admitted: " + className);
+            assertTrue(denied.getMessage().contains("direct Java host I/O"),
+                    "class must fail before HostAccess construction: " + className);
+        }
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
 
         assertDoesNotThrow(() -> policy.restrictedContextBuilder(
                 ExecutionProfile.serverJit(),
-                Set.of("java.util.ArrayList")));
+                Set.of("java.util.ArrayList", "java.security.MessageDigest")));
     }
 }
