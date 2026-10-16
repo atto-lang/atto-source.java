@@ -75,6 +75,20 @@ public final class MessagePackWireV2Harness {
     Arrays.fill(owned,(byte)0);receiver.set(1,"receiver");
     if(!receiver.equals(List.of("before","receiver"))||!sender.equals(List.of("after","stable")))throw new AssertionError("ownership isolation broken");
     mutationAudit();
+    // A mutable list with a changing size cannot cause a wire header/body
+    // mismatch: the encoder uses one admitted logical element count.
+    List<Object> changing = new AbstractList<>() {
+      int observations;
+      @Override public int size() { return ++observations == 1 ? 1 : 2; }
+      @Override public Object get(int index) { return index == 0 ? "first" : "unadmitted"; }
+    };
+    byte[] canonical = MessagePackWireV2.encode("demo.ChangingSize.v1",
+        Shape.list(Shape.string()), changing);
+    if (!MessagePackWireV2.decode("demo.ChangingSize.v1",
+            Shape.list(Shape.string()), canonical).equals(List.of("first")))
+      throw new AssertionError("mutable size altered canonical actor DATA frame");
+    cases++;
+
     // A caller-supplied descriptor list must not be copied or traversed
     // before its declared size is checked. This is a resource-safety gate,
     // not proof of runtime mailbox admission or compiler codec lowering.
