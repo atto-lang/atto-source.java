@@ -41,13 +41,20 @@ public final class PortableCodecRegistry {
         public Scalar { Objects.requireNonNull(kind); }
     }
 
+    /**
+     * Portable fixed sequences must be representable by the bounded wire
+     * profile. Declaring a million elements cannot become a valid actor DATA
+     * codec when the portable decoder permits at most 100,000 elements.
+     */
+    private static final int MAX_PORTABLE_SEQUENCE_ELEMENTS = 100_000;
+
     /** A variable-length sequence uses exactLength=-1; fixed forms use >=0. */
     public record Sequence(SequenceKind kind, Shape element, int exactLength) implements Shape {
         public Sequence {
             Objects.requireNonNull(kind);
             Objects.requireNonNull(element);
             if ((kind == SequenceKind.LIST && exactLength != -1)
-                    || (kind != SequenceKind.LIST && (exactLength < 0 || exactLength > 1_000_000))) {
+                    || (kind != SequenceKind.LIST && (exactLength < 0 || exactLength > MAX_PORTABLE_SEQUENCE_ELEMENTS))) {
                 throw new IllegalArgumentException("invalid fixed/variable sequence length");
             }
         }
