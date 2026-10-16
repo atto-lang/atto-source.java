@@ -6,6 +6,10 @@ import dev.oreslang.parser.Token;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -38,6 +42,41 @@ final class ExecutionDomainAdmissionTest {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class, () -> Parser.parse(source), source);
             assertTrue(error.getMessage().contains("execution domain"), error::getMessage);
+            assertTrue(error.getMessage().contains("no implicit CPU fallback"),
+                    error::getMessage);
+        }
+    }
+
+    @Test
+    void sharedTenCaseCpuGpuNbCorpusFailsClosed() throws IOException {
+        // The JSON is shared byte-for-byte with the other four source repos.
+        // Keep this explicit input registry readable without a new JSON library.
+        var cases = Map.ofEntries(
+                Map.entry("cpu-value", "cpu { 42 }"),
+                Map.entry("gpu-value", "gpu { 42 }"),
+                Map.entry("nb-cpu-future", "nb cpu { 42 }"),
+                Map.entry("nb-gpu-future", "nb gpu { 42 }"),
+                Map.entry("cpu-gpu-nested", "cpu { gpu { 42 } }"),
+                Map.entry("gpu-cpu-nested", "gpu { cpu { 42 } }"),
+                Map.entry("gpu-cpu-gpu-nested", "gpu { cpu { gpu { 42 } } }"),
+                Map.entry("nb-mixed-nested", "nb cpu { nb gpu { 42 } }"),
+                Map.entry("empty-gpu-value", "gpu {}"),
+                Map.entry("empty-nb-gpu-value", "nb gpu {}")
+        );
+        String manifest = Files.readString(
+                Path.of("contracts/v1/cpu-gpu-nb-unsupported-v1.json"));
+        assertEquals(10, manifest.lines()
+                .filter(line -> line.stripLeading().startsWith("\"")).count(),
+                "shared negative registry may not silently omit cases");
+        for (var item : cases.entrySet()) {
+            String source = "pub fnc main():int{return " + item.getValue() + ";}";
+            assertTrue(manifest.contains("\"" + item.getKey() + "\": \"" + source + "\""),
+                    "shared negative source drift: " + item.getKey());
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class, () -> Parser.parse(source),
+                    item.getKey());
+            assertTrue(error.getMessage().contains("execution domain"),
+                    error::getMessage);
             assertTrue(error.getMessage().contains("no implicit CPU fallback"),
                     error::getMessage);
         }
