@@ -1094,17 +1094,49 @@ public final class Ast {
         public boolean explicitStruct() { return kind == ObjectKind.EXPLICIT_STRUCT; }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
+    /** Scoped lambda captures: DEFAULT excludes implicit self, ALLOW is a whitelist,
+     * DENY is a blacklist. Bare nlex is the existing zero-capture boundary. */
+    public enum LambdaCapturePolicy { DEFAULT, ALLOW, DENY }
+
+    public record LambdaExpr(
+            List<Param> parameters,
+            Expr expressionBody,
+            List<Stmt> blockBody,
+            boolean nonLexical,
+            LambdaCapturePolicy capturePolicy,
+            List<String> captureNames) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            captureNames = List.copyOf(captureNames);
+            java.util.Objects.requireNonNull(capturePolicy, "lambda capture policy");
             if ((expressionBody == null) == (blockBody == null)) {
                 throw new IllegalArgumentException(
                         "lambda requires exactly one expression body or block body");
             }
+            if (nonLexical && capturePolicy != LambdaCapturePolicy.DEFAULT) {
+                throw new IllegalArgumentException("bare nlex cannot carry a selective capture policy");
+            }
+            if (capturePolicy == LambdaCapturePolicy.DEFAULT && !captureNames.isEmpty()) {
+                throw new IllegalArgumentException("default lambda cannot declare a capture list");
+            }
+            if (new java.util.HashSet<>(captureNames).size() != captureNames.size()) {
+                throw new IllegalArgumentException("duplicate lambda capture binding");
+            }
+        }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) {
+            this(parameters, expressionBody, blockBody, nonLexical, LambdaCapturePolicy.DEFAULT, List.of());
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
             this(parameters, expressionBody, blockBody, false);
+        }
+        public boolean permitsOuterBinding(String name) {
+            if (nonLexical) return false;
+            return switch (capturePolicy) {
+                case DEFAULT -> !name.equals("self");
+                case ALLOW -> captureNames.contains(name);
+                case DENY -> !name.equals("self") && !captureNames.contains(name);
+            };
         }
     }
 }
