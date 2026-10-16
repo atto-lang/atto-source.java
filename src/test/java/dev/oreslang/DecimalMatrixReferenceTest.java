@@ -137,6 +137,38 @@ final class DecimalMatrixReferenceTest {
     }
 
     @Test
+    void expensiveDecimalDigitWorkFailsBeforeAllocatingOutput() {
+        String[] leftCells = new String[20 * 21];
+        String[] rightCells = new String[21 * 20];
+        java.util.Arrays.fill(leftCells, "9".repeat(1000));
+        java.util.Arrays.fill(rightCells, "9".repeat(1000));
+        DecimalMatrix left = DecimalMatrix.fromStrings(20, 21, leftCells);
+        DecimalMatrix right = DecimalMatrix.fromStrings(21, 20, rightCells);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> DecimalMatrix.multiply(left, right, MathContext.UNLIMITED));
+        assertTrue(failure.getMessage().contains("digit-work budget"));
+
+        DecimalMatrix destination = DecimalMatrix.fromStrings(20, 20,
+                java.util.Collections.nCopies(400, "7").toArray(new String[0]));
+        assertThrows(IllegalArgumentException.class,
+                () -> DecimalMatrix.multiplyInto(destination, left, right, MathContext.UNLIMITED));
+        equalDecimal("7", destination.get(0, 0));
+        equalDecimal("7", destination.get(19, 19));
+    }
+
+    @Test
+    void accumulatorAlignmentCanBeRejectedWithoutPartialDestinationWrites() {
+        DecimalMatrix left = DecimalMatrix.fromStrings(1, 2,
+                "1e15000", "1e-15000");
+        DecimalMatrix right = DecimalMatrix.fromStrings(2, 1, "1", "1");
+        DecimalMatrix destination = DecimalMatrix.fromStrings(1, 1, "17");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> DecimalMatrix.multiplyInto(destination, left, right, MathContext.UNLIMITED));
+        assertTrue(failure.getMessage().contains("accumulator alignment budget"));
+        equalDecimal("17", destination.get(0, 0));
+    }
+
+    @Test
     void rejectMismatchesAliasesAndUnboundedAllocations() {
         DecimalMatrix left = DecimalMatrix.fromStrings(1, 2, "1", "2");
         DecimalMatrix wrong = DecimalMatrix.fromStrings(1, 2, "3", "4");
