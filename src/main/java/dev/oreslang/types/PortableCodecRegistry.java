@@ -219,6 +219,14 @@ public final class PortableCodecRegistry {
                 if (format == Format.PROTOBUF && sequence.kind != SequenceKind.LIST) {
                     throw new IllegalArgumentException("fixed sequences require a Protobuf mapping profile");
                 }
+                // Protobuf repeated fields cannot directly contain repeated
+                // fields. A nested list needs a separately generated wrapper
+                // message with a pinned field number and schema; flattening
+                // it here would silently change the declared value shape.
+                if (format == Format.PROTOBUF && sequence.element instanceof Sequence) {
+                    throw new IllegalArgumentException(
+                            "nested Protobuf repeated fields require a verified wrapper schema");
+                }
                 out.append("Q(").append(sequence.kind).append(',')
                         .append(sequence.exactLength).append(',');
                 walk(sequence.element, format, visiting, nodes, depth + 1, out);
