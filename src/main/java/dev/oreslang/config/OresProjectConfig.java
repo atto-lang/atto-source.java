@@ -376,11 +376,13 @@ public final class OresProjectConfig {
         if (importedSource == null) {
             throw new IllegalArgumentException("imported source path cannot be null");
         }
-        String normalizedImport = importPath == null ? null : importPath.replace('\\', '/');
-        if (normalizedImport == null || !normalizedImport.startsWith("pkg:")) {
+        if (importPath == null || !importPath.startsWith("pkg:")) {
             throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
         }
-        String remainder = normalizedImport.substring("pkg:".length());
+        if (importPath.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException("package import requires forward-slash separators: " + importPath);
+        }
+        String remainder = importPath.substring("pkg:".length());
         int slash = remainder.indexOf('/');
         if (slash <= 0 || slash == remainder.length() - 1) {
             throw new IllegalArgumentException("expected pkg:<alias>/<source> import: " + importPath);
@@ -390,7 +392,19 @@ public final class OresProjectConfig {
         if (packageRoot == null) {
             throw new IllegalArgumentException("undeclared package alias '" + alias + "'");
         }
-        return discover(importedSource, environment, packageRoot);
+        // This public transition must enforce the same resolution and
+        // namespace boundary as resolveImport(). Otherwise callers could
+        // associate an unrelated file with a dependency's capabilities.
+        validateInstalledPackage(packageRoot);
+        Path resolved = rootedSource(packageRoot, remainder.substring(slash + 1), importPath)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "package import does not resolve to a source: " + importPath));
+        Path actual = importedSource.toRealPath();
+        if (!resolved.equals(actual)) {
+            throw new IllegalArgumentException(
+                    "imported source does not match package import: " + importPath);
+        }
+        return discover(resolved, environment, packageRoot);
     }
 
     /**
