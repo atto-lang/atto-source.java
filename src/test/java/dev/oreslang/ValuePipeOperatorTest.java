@@ -132,6 +132,51 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void executesInputBeforeStageArgumentsAndCallsOnlyActiveVariant() throws Exception {
+        String program = """
+                fnc input(): int {
+                  stdio.println("L");
+                  return 2;
+                }
+                fnc argument(): int {
+                  stdio.println("R");
+                  return 3;
+                }
+                fnc plus(int first, int second): int { return first + second; }
+                fnc notify(int n): int {
+                  stdio.println("HIT");
+                  return n * 2;
+                }
+                fnc format_error(String s): String {
+                  stdio.println("E");
+                  return s + "!";
+                }
+                pub fnc main(): void {
+                  stdio.println(input() |> plus(argument()));
+                  stdio.println(None |> Option.map(notify));
+                  stdio.println(Some(4) |> Option.map(notify));
+                  stdio.println(Err("bad") |> Result.map(notify));
+                  stdio.println(Ok(2) |> Result.map(notify));
+                  stdio.println(Ok(4) |> Result.map_err(format_error));
+                  stdio.println(Err("bad") |> Result.map_err(format_error));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-order.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of(
+                "L", "R", "5", "None", "HIT", "Some(8)",
+                "Err(bad)", "HIT", "Ok(4)", "Ok(4)", "E", "Err(bad!)"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
     void executesOptionAndResultCombinators() throws Exception {
         String program = """
                 fnc double(int n): int { return n * 2; }
