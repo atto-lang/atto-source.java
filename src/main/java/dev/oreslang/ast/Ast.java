@@ -19,6 +19,13 @@ public final class Ast {
                 throw new IllegalArgumentException("instance method binding cannot target static fnc");
             }
         }
+
+        /** The *current* executable slot identity is fixed at type-check time.
+         * Future enum-specific slots require an ABI upgrade rather than
+         * reinterpreting argument types in the evaluator. */
+        public CallableSelector slot() {
+            return CallableSelector.of(declaredMethod);
+        }
     }
 
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
@@ -57,6 +64,11 @@ public final class Ast {
                             || !methods.contains(binding.declaredMethod())) {
                         throw new IllegalArgumentException(
                                 "compiler-bound method call references a foreign declaration");
+                    }
+                    if (!(entry.getKey().callee() instanceof MemberExpr member)
+                            || !member.member().equals(binding.slot().name())) {
+                        throw new IllegalArgumentException(
+                                "compiler-bound method call site does not match its selected slot");
                     }
                     if (binding.staticReceiver().actorKind() != ActorKind.NONE) {
                         throw new IllegalArgumentException(
