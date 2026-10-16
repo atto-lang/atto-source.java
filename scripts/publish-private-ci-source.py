@@ -208,10 +208,25 @@ def collect_source(root, trusted_root):
             raise Denied("source directory cannot be listed safely") from exc
         names.sort()
         for name in names:
-            if (name in (".", "..", ".git")
+            if (name in (".", "..")
                     or any(ord(ch) < 32 or ord(ch) == 127 for ch in name)
                     or "\\" in name):
                 raise Denied("source path contains unsupported name")
+            if name == ".git":
+                # Exactly the trusted repository root may contain Git's own
+                # metadata. Never export it, follow a symlink to it, or ignore
+                # another directory's nested .git entry.
+                if prefix or source != trusted:
+                    raise Denied("nested or untrusted Git metadata is forbidden")
+                try:
+                    marker = os.stat(name, dir_fd=directory_fd,
+                                     follow_symlinks=False)
+                except OSError as exc:
+                    raise Denied("trusted Git metadata changed") from exc
+                if not (stat.S_ISDIR(marker.st_mode)
+                        or stat.S_ISREG(marker.st_mode)):
+                    raise Denied("trusted Git metadata is not a file or directory")
+                continue
             rel = prefix + name
             try:
                 metadata = os.stat(name, dir_fd=directory_fd,
