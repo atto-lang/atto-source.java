@@ -95,4 +95,40 @@ final class IsolatePolicySerializationAuditTest {
                         RuntimePermissions.denyAll(),
                         PermissionCheckMode.RUNTIME)));
     }
+    @Test
+    void duplicateExecutionMetadataIsRejected() {
+        for (String[] args : new String[][]{
+                {"--ores-execution-mode=JIT", "--ores-execution-mode=AOT"},
+                {"--ores-platform=SERVER", "--ores-platform=SERVER"}
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> IsolatePolicy.executionProfileFromApplicationArguments(args));
+        }
+    }
+
+    @Test
+    void duplicateOrEmptyPermissionCheckModeIsRejected() {
+        for (String[] args : new String[][]{
+                {"--ores-permission-check=compile", "--ores-permission-check=runtime"},
+                {"--ores-permission-check=runtime", "--ores-permission-check=runtime"},
+                {"--ores-permission-check="},
+                {"--ores-permission-check=unknown"}
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> PermissionCheckMode.fromApplicationArguments(args));
+        }
+    }
+
+    @Test
+    void validSinglePermissionCheckModeAndLegacyDefaultArePreserved() {
+        assertEquals(PermissionCheckMode.COMPILE,
+                PermissionCheckMode.fromApplicationArguments(new String[0]));
+        assertEquals(PermissionCheckMode.COMPILE,
+                PermissionCheckMode.fromApplicationArguments(
+                        new String[]{"--ores-permission-check=compile"}));
+        assertEquals(PermissionCheckMode.RUNTIME,
+                PermissionCheckMode.fromApplicationArguments(
+                        new String[]{"--ores-permission-check=runtime"}));
+    }
+
 }
