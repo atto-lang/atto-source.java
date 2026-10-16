@@ -122,6 +122,31 @@ final class OresKeyedMapLookupOptionTest {
     }
 
     @Test
+    void keyAwareValidatorRunsBeforeMutationAndBatchCommit() {
+        OresKeyedMap<String, Object> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.ANY,
+                (key, value) -> {
+                    if (key.equals("count") && !(value instanceof Long)) {
+                        throw new IllegalArgumentException("count must be int");
+                    }
+                });
+        map.put("count", 1L);
+        map.put("extra", "open");
+        assertThrows(IllegalArgumentException.class,
+                () -> map.put("count", "wrong"));
+        assertEquals(1L, map.getRequired("count"));
+
+        java.util.LinkedHashMap<String, Object> batch =
+                new java.util.LinkedHashMap<>();
+        batch.put("safe", Boolean.TRUE);
+        batch.put("count", "wrong");
+        assertThrows(IllegalArgumentException.class, () -> map.putAll(batch));
+        assertFalse(map.containsKey("safe"),
+                "entry validation failure must keep putAll transactional");
+        assertEquals(1L, map.getRequired("count"));
+    }
+
+    @Test
     void lookupRecordRejectsImpossibleStates() {
         assertThrows(IllegalArgumentException.class,
                 () -> new OresKeyedMap.Lookup<>(true, null));
