@@ -273,6 +273,38 @@ class CoreLogTest {
         }
     }
 
+    @Test void enabledNumericRecorderHasNoPerEventHeapAllocation() {
+        var raw = java.lang.management.ManagementFactory.getThreadMXBean();
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                raw instanceof com.sun.management.ThreadMXBean,
+                "per-thread allocation counters unavailable");
+        var bean = (com.sun.management.ThreadMXBean) raw;
+        org.junit.jupiter.api.Assumptions.assumeTrue(bean.isThreadAllocatedMemorySupported());
+        if (!bean.isThreadAllocatedMemoryEnabled())
+            bean.setThreadAllocatedMemoryEnabled(true);
+
+        // Warm all recorder classes, publication and timestamp paths before
+        // measuring. The recorder's bounded arrays are preallocated outside
+        // the measured section.
+        var warm = new CoreLog.Recorder(16_384);
+        for (int i = 0; i < 16_000; i++)
+            warm.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
+        var recorder = new CoreLog.Recorder(130_000);
+        long tid = Thread.currentThread().threadId();
+        long baselineStart = bean.getThreadAllocatedBytes(tid);
+        long baselineEnd = bean.getThreadAllocatedBytes(tid);
+        long baseline = baselineEnd - baselineStart;
+        long before = bean.getThreadAllocatedBytes(tid);
+        for (int i = 0; i < 100_000; i++)
+            recorder.record(CoreLog.Level.ERROR, CoreLog.ASYNC_IO_FAILED, i);
+        long after = bean.getThreadAllocatedBytes(tid);
+        assertTrue(baseline >= 0 && before >= 0 && after >= 0);
+        assertEquals(100_000, recorder.reserve(), "the enabled recorder must publish real slots");
+        assertTrue(after - before <= baseline + 512L,
+                "numeric enabled hot path must not allocate per event; " +
+                (after - before) + " total measured bytes across 100000 events");
+    }
+
     private static String dumpRetained() {
         var bytes = new ByteArrayOutputStream();
         CoreLog.dumpRetained(new PrintStream(bytes, true, StandardCharsets.UTF_8));
