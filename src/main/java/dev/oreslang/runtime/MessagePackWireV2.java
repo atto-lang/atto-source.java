@@ -74,6 +74,27 @@ public final class MessagePackWireV2 {
         catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
     private static byte[] utf8(String s) {
+        // Check exact UTF-8 byte length before the encoder allocates. A
+        // rejected oversized network value must not allocate a larger
+        // temporary buffer first; malformed surrogate pairs fail closed.
+        require(s.length() <= MAX_BYTES, "string byte budget");
+        int bytes = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch < 0x80) ++bytes;
+            else if (ch < 0x800) bytes += 2;
+            else if (Character.isHighSurrogate(ch)) {
+                require(i + 1 < s.length()
+                        && Character.isLowSurrogate(s.charAt(i + 1)),
+                        "invalid Unicode scalar");
+                ++i;
+                bytes += 4;
+            } else {
+                require(!Character.isLowSurrogate(ch), "invalid Unicode scalar");
+                bytes += 3;
+            }
+            require(bytes <= MAX_BYTES, "string byte budget");
+        }
         try {
             ByteBuffer buf = StandardCharsets.UTF_8.newEncoder()
                     .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
