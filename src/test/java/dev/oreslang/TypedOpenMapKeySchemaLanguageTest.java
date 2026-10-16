@@ -128,6 +128,69 @@ final class TypedOpenMapKeySchemaLanguageTest {
     }
 
     @Test
+    void closedGenericMapPreservesNestedOptionLookupType() {
+        TypeChecker.check(Parser.parse("""
+                fnc valid(): void {
+                  val m = new Map<string, Option<bool>>();
+                  val Option<Option<bool>> missing = m.get("pending");
+                  m["pending"] = None;
+                  val Option<Option<bool>> storedNone = m.get("pending");
+                  m["pending"] = Some(false);
+                  val Option<Option<bool>> moved = m.take("pending");
+                  return;
+                }
+                """));
+
+        TypeChecker.check(Parser.parse("""
+                fnc valid(): void {
+                  val m = new Map<Symbol, Result<int, String>>();
+                  val Option<Result<int, String>> result = m.get(Symbol.process("job"));
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc invalid(): void {
+                          val m = new Map<string, Array<int>>();
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void closedGenericMapRuntimeDistinguishesMissingStoredNoneAndStoredSome() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  val m = new Map<string, Option<bool>>();
+                  stdio.stdout.write(m.get("pending").is_none());
+                  m["pending"] = None;
+                  stdio.stdout.write(m.get("pending").is_some());
+                  stdio.stdout.write(m.get("pending").unwrap().is_none());
+                  m["pending"] = Some(false);
+                  val moved = m.take("pending");
+                  stdio.stdout.write(moved.is_some());
+                  stdio.stdout.write(moved.unwrap().unwrap());
+                  stdio.stdout.write(m.has("pending"));
+                  return;
+                }
+                """;
+        TypeChecker.check(Parser.parse(source));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source src = Source.newBuilder(
+                OresLanguage.ID, source, "closed-map-nested-option.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(src);
+        }
+        assertEquals("truetruetruetruefalsefalse",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void consumingLookupRequiresMutableMapAuthority() {
         for (String operation : new String[] {"take", "remove"}) {
             String source = SCHEMA + """
