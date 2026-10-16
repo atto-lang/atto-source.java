@@ -379,6 +379,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    /** Scoped to one synchronous spawnWorker call, never inherited by a continuation. */
+    private final ThreadLocal<ActorGroup> explicitSpawnGroup = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -2030,6 +2032,17 @@ public final class ActorRuntime implements AutoCloseable {
             return supervisorControl.queued();
         }
 
+        /** Actor-only, non-reentrant delivery of authenticated child terminal CONTROL. */
+        public Optional<SupervisorFailureControl.Notice> pollSupervisorNotice() {
+            requireCallerRuntimeAffinity("poll actor-owned supervisor CONTROL");
+            ActorId caller = currentActorId().orElseThrow(() ->
+                    new SecurityException("supervisor CONTROL polling requires an actor turn"));
+            if (!Objects.equals(creator, caller) || closed()) {
+                throw new SecurityException("only the live creator actor may poll supervisor CONTROL");
+            }
+            return supervisorControl.poll();
+        }
+
         public Optional<ActorId> creatorId() {
             requireObserver("inspect ActorGroup creator");
             return Optional.ofNullable(creator);
@@ -2115,7 +2128,16 @@ public final class ActorRuntime implements AutoCloseable {
                 BehaviorFactory<M> behaviorFactory) {
             requireManager("spawn an ActorGroup worker");
             requireOpen();
-            ActorRef<M> worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+            if (explicitSpawnGroup.get() != null) {
+                throw new IllegalStateException("nested explicit supervisor group spawn");
+            }
+            ActorRef<M> worker;
+            explicitSpawnGroup.set(this);
+            try {
+                worker = ActorRuntime.this.spawn(kind, policy, behaviorFactory);
+            } finally {
+                explicitSpawnGroup.remove();
+            }
             try {
                 return manageWorker(worker);
             } catch (RuntimeException | Error failure) {
@@ -3864,29 +3886,38 @@ public final class ActorRuntime implements AutoCloseable {
                         // supervisor or a new group. Event-bus membership
                         // remains opt-in and is never inherited here.
                         ActorGroupId inheritedId = parent.managedByGroup.get();
-                        ActorGroup inherited = inheritedId == null
-                                ? null : actorGroups.get(inheritedId);
-                        if (inheritedId != null && inherited == null) {
+                        ActorGroup explicitGroup = explicitSpawnGroup.get();
+                        if (explicitGroup != null
+                                && !parent.ref.id().equals(explicitGroup.creator)) {
+                            throw new SecurityException(
+                                    "an actor cannot spawn into another actor's supervisor group");
+                        }
+                        ActorGroup targetGroup = explicitGroup != null
+                                ? explicitGroup
+                                : inheritedId == null ? null : actorGroups.get(inheritedId);
+                        ActorGroupId targetId = explicitGroup != null
+                                ? explicitGroup.id : inheritedId;
+                        if (inheritedId != null && actorGroups.get(inheritedId) == null) {
                             throw new IllegalStateException(
                                     "parent's lifecycle ActorGroup no longer exists");
                         }
-                        if (inherited != null) {
+                        if (targetGroup != null) {
                             // Publish ownership, lineage and actor identity
                             // atomically against group close/worker transfer.
-                            synchronized (inherited.authorityLock) {
-                                inherited.requireOpen();
-                                if (!inheritedId.equals(parent.managedByGroup.get())) {
+                            synchronized (targetGroup.authorityLock) {
+                                targetGroup.requireOpen();
+                                if (!Objects.equals(inheritedId, parent.managedByGroup.get())) {
                                     throw new IllegalStateException(
                                             "parent's lifecycle ActorGroup changed during spawn");
                                 }
-                                if (inherited.managedWorkers.size() >= inherited.memberLimit) {
+                                if (targetGroup.managedWorkers.size() >= targetGroup.memberLimit) {
                                     throw new IllegalStateException(
                                             "ActorGroup managed worker limit exceeded: maximum "
-                                                    + inherited.memberLimit);
+                                                    + targetGroup.memberLimit);
                                 }
-                                cell.managedByGroup.set(inheritedId);
-                                cell.supervision.set(inherited.supervisorControl);
-                                inherited.managedWorkers.put(id, ref);
+                                cell.managedByGroup.set(targetId);
+                                cell.supervision.set(targetGroup.supervisorControl);
+                                targetGroup.managedWorkers.put(id, ref);
                                 parent.children.add(cell);
                                 linkedToParent = true;
                                 actors.put(id, cell);
