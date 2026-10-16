@@ -1,0 +1,144 @@
+package dev.oreslang;
+
+import dev.oreslang.config.OresProjectConfig;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+final class ProjectRootImportTest {
+    @TempDir Path temp;
+
+    private Path makeProject(String name) throws Exception {
+        Path root = temp.resolve(name);
+        Files.createDirectories(root.resolve("lib"));
+        Files.createDirectories(root.resolve("src/routes/rest/foo/bar/baz"));
+        Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "project-root-test"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(root.resolve("lib/message.ores"), """
+                pub fnc message(): string { return "root-resolved"; }
+                """);
+        return root;
+    }
+
+    @Test
+    void deeplyNestedImportResolvesAgainstManifestNotImporterOrCwd() throws Exception {
+        Path root = makeProject("nested");
+        Path entry = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Files.writeString(entry, """
+                import fnc message from "+/lib/message";
+                pub fnc main(): void {
+                  stdio.println(message());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(
+                entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(),
+                Set.of(), Map.of(), stdout, new ByteArrayOutputStream());
+        assertEquals(2, result.units().size());
+        assertTrue(stdout.toString(StandardCharsets.UTF_8).contains("root-resolved"));
+    }
+
+    @Test
+    void explicitRootOverrideChoosesOnlyTheOverriddenProject() throws Exception {
+        Path first = makeProject("first");
+        Path second = makeProject("second");
+        Path importer = first.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path secondTarget = second.resolve("lib/message.ores");
+
+        OresProjectConfig local = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(first.resolve("lib/message.ores"), local.resolveImport(importer, "+/lib/message").orElseThrow());
+        OresProjectConfig overridden = OresProjectConfig.discover(
+                importer, Map.of(OresProjectConfig.ENV_PROJECT_ROOT, second.toString()));
+        assertEquals(secondTarget, overridden.resolveImport(importer, "+/lib/message").orElseThrow());
+    }
+
+    @Test
+    void missingExplicitImportFailsInsteadOfFallingBackToVendorPaths() throws Exception {
+        Path root = makeProject("missing");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Files.writeString(importer, """
+                import fnc missing from "+/lib/missing";
+                pub fnc main(): void { return; }
+                """);
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(importer));
+        assertTrue(failure.getMessage().contains("does not resolve to a file"), failure.getMessage());
+    }
+
+    @Test
+    void invalidRootPathsCannotTraverseOrUseAmbiguousPrefix() throws Exception {
+        Path root = makeProject("safety");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        for (String name : new String[] {"+/../outside", "+/lib/../message", "+/", "+lib/message", "+/lib//message"}) {
+            assertThrows(IllegalArgumentException.class, () -> config.resolveImport(importer, name), name);
+        }
+    }
+
+    @Test
+    void rootImportRequiresManifestAndRootOverrideMustContainManifest() throws Exception {
+        Path importer = temp.resolve("standalone/main.ores");
+        Files.createDirectories(importer.getParent());
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException missing = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "+/lib/message"));
+        assertTrue(missing.getMessage().contains(OresProjectConfig.MANIFEST_NAME));
+        assertThrows(IllegalArgumentException.class, () -> OresProjectConfig.discover(
+                importer, Map.of(OresProjectConfig.ENV_PROJECT_ROOT, importer.getParent().toString())));
+    }
+
+    @Test
+    void modernManifestWinsAtSameDirectoryAndLegacyRemainsSupported() throws Exception {
+        Path root = makeProject("dual");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Files.writeString(root.resolve(OresProjectConfig.LEGACY_MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                name = "legacy"
+                """);
+        OresProjectConfig modern = OresProjectConfig.discover(importer, Map.of());
+        assertEquals("project-root-test", modern.projectName().orElseThrow());
+        Files.delete(root.resolve(OresProjectConfig.MANIFEST_NAME));
+        OresProjectConfig legacy = OresProjectConfig.discover(importer, Map.of());
+        assertEquals("legacy", legacy.projectName().orElseThrow());
+        assertEquals(root.resolve("lib/message.ores"),
+                legacy.resolveImport(importer, "+/lib/message").orElseThrow());
+    }
+
+    @Test
+    void symlinkCannotEscapeProjectRoot() throws Exception {
+        Path root = makeProject("symlink");
+        Path outside = temp.resolve("outside.ores");
+        Files.writeString(outside, "pub fnc message(): string { return \"outside\"; }");
+        Path link = root.resolve("lib/escape.ores");
+        try {
+            Files.createSymbolicLink(link, outside);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.abort("symlink creation unavailable: " + unsupported);
+        }
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "+/lib/escape"));
+        assertTrue(error.getMessage().contains("symlink"), error.getMessage());
+    }
+}
