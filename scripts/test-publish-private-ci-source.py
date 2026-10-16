@@ -37,6 +37,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.origin_patch = patch.object(pub, "require_reviewed_origin_protection")
         self.origin_patch.start()
         self.addCleanup(self.origin_patch.stop)
+        self.origin_policy = pub.require_protected_origin_policy
+        self.policy_patch = patch.object(pub, "require_protected_origin_policy")
+        self.policy_patch.start()
+        self.addCleanup(self.policy_patch.stop)
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -120,10 +124,45 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
     def test_origin_loses_protection_before_first_upload(self):
         # The origin check runs once before preflight and again for each write.
-        with patch.object(pub, "require_reviewed_origin_protection",
+        with patch.object(pub, "require_protected_origin_policy",
                           side_effect=[True, pub.Denied("lost protection")]):
             with self.assertRaisesRegex(pub.Denied, "lost protection"):
                 self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_only_protected_main_file_can_authorize_local_policy(self):
+        data = b"trusted/ci\\n"
+        digest = hashlib.sha256(data).digest()
+        blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii")
+                            + bytes([0]) + data).hexdigest()
+        good = {"type":"file", "encoding":"base64", "size":len(data),
+                "content":base64.b64encode(data).decode("ascii") + "\\n",
+                "sha":blob}
+        with patch.object(pub, "gh_api", return_value=good):
+            self.assertTrue(self.origin_policy(digest))
+        # A locally forged allowlist cannot claim the approval on main.
+        with patch.object(pub, "gh_api", return_value=good):
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                self.origin_policy(hashlib.sha256(b"other/ci\\n").digest())
+        for mutation in (
+            dict(good, sha="0"*40),
+            dict(good, encoding="utf-8"),
+            dict(good, type="symlink"),
+            dict(good, size=len(data)+1),
+            dict(good, content="@@!invalid base64"),
+        ):
+            with self.subTest(remote=mutation):
+                with patch.object(pub, "gh_api", return_value=mutation):
+                    with self.assertRaises(pub.Denied):
+                        self.origin_policy(digest)
+
+    def test_unapproved_checkout_policy_fails_before_reading_source(self):
+        with patch.object(pub, "require_protected_origin_policy",
+                          side_effect=pub.Denied("unreviewed checkout policy")):
+            with patch.object(pub, "collect_source") as snapshot:
+                with self.assertRaisesRegex(pub.Denied, "unreviewed checkout"):
+                    self.publish()
+                snapshot.assert_not_called()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
