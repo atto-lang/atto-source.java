@@ -9,22 +9,24 @@ claiming cross-backend support.
 ```ores
 import fnc local from "./neighbor";
 import fnc common from "common/util";            // search roots
-import fnc shared from "@/src/shared/util";      // project root
+import fnc shared from "+/src/shared/util";      // project root
 import fnc answer from "pkg:math/src/answer";     // manifest dependency
 import class ArrayList from "java:java.util.ArrayList";
 ```
 
-- `@/` is the one-character **project-root marker**. It refers to the
+- `+/` is the canonical **project-root marker**. It refers to the
   directory containing the nearest `.ores.pkg.toml`, not the process cwd.
-  `@/` never falls through to ambient search roots. Missing `.ores.pkg.toml`,
+  `+/` never falls through to ambient search roots. Missing `.ores.pkg.toml`,
   missing files, and attempts to escape via `..` are errors.
+- `+lib/foo` (without `/` after `+`) is invalid; use `+/lib/foo`.
+  Legacy experimental `@/` syntax is rejected, not silently reinterpreted.
 - `pkg:<alias>/<path>` is a manifest-declared dependency alias, resolved
   under the corresponding zed-pkg installation. The compiler does **not**
   download packages, resolve semver, or run installers.
 - Bare imports check project `source.roots`, `source.import_paths`,
   `ORES_PATHS`, then legacy `ORESLANG_PATH`, in that order. An omitted
   `source.roots` defaults to `["."]`; an explicitly empty `roots = []`
-  disables that implicit project-root lookup without disabling `@/` imports.
+  disables that implicit project-root lookup without disabling `+/` imports.
 - `./` and `../` keep their existing importer-relative meaning. A bare
   name starting with a dot (for example `.hidden/util` or `..backup/util`)
   is **not** implicitly importer-relative: it uses the ordered bare search
@@ -86,10 +88,10 @@ The compiler follows symlinks and canonicalizes existing source files with
 different paths to the same file. At a `pkg:` boundary, manifest discovery stops
 at the installed package's canonical physical root; it cannot accidentally
 pick up the consumer's project manifest. A dependency with no `.ores.pkg.toml`
-cannot import `@/` from its consumer. Nested package manifests reached through
+cannot import `+/` from its consumer. Nested package manifests reached through
 relative or bare imports are discovered as distinct source roots. If two different
 package contexts refer to the **same physical file**, the linker rejects the
-ambiguity rather than silently compiling the file with whichever `@/` or
+ambiguity rather than silently compiling the file with whichever `+/` or
 `pkg:` namespace was visited first. Symlink traversal can still resolve
 files outside the project root. These rules are **import discovery**, not
 filesystem confinement or a defense against a hostile concurrent filesystem
