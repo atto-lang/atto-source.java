@@ -139,6 +139,64 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void changingListSizeCannotForceEagerGigabyteAllocation() {
+        List<Object> hostile = new AbstractList<>() {
+            private int sizeReads;
+            @Override public int size() {
+                // Graph validation sees a single element; snapshot allocation
+                // sees a maliciously inflated capacity.
+                return ++sizeReads == 1 ? 1 : Integer.MAX_VALUE;
+            }
+            @Override public Object get(int index) {
+                if (index != 0) throw new IndexOutOfBoundsException(index);
+                return "safe";
+            }
+            @Override public java.util.Iterator<Object> iterator() {
+                return List.<Object>of("safe").iterator();
+            }
+        };
+        IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(hostile));
+        assertTrue(rejected.getMessage().contains("maximum node count"),
+                rejected.getMessage());
+    }
+
+    @Test
+    void changingListSizeCannotForcePrivateMailboxAllocation() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.atomic.AtomicInteger observed =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            var receiver = runtime.<List<?>>spawnPrivate(() ->
+                    (message, context) -> observed.incrementAndGet());
+            List<Object> hostile = new AbstractList<>() {
+                private int sizeReads;
+                @Override public int size() {
+                    // Validate and both preflight estimates see a small list;
+                    // isolateCopy() gets an oversized allocation request.
+                    return ++sizeReads <= 3 ? 1 : Integer.MAX_VALUE;
+                }
+                @Override public Object get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    return "safe";
+                }
+                @Override public java.util.Iterator<Object> iterator() {
+                    return List.<Object>of("safe").iterator();
+                }
+            };
+            IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
+                    () -> receiver.send(hostile));
+            assertTrue(rejected.getMessage().contains("maximum node count"),
+                    rejected.getMessage());
+            assertEquals(0, observed.get(), "oversized DATA must not be admitted");
+            receiver.send(List.of("recovered"));
+            receiver.drain().get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(1, observed.get(), "failed copy must release mailbox capacity");
+            receiver.stop();
+            receiver.getDone().get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void changingListCannotSmuggleCapabilitiesIntoFrozenData() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<Object>spawnShared(() -> (message, context) -> { });
