@@ -769,6 +769,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                         case 7 -> { /* missing target */ }
                         case 8 -> {
                             Files.createDirectory(temp.resolve("real-target"));
+                            Files.write(temp.resolve("real-target/oresvm.so"),
+                                    new byte[] {1});
                             Files.createSymbolicLink(target, Path.of("real-target"));
                         }
                         case 9 -> Files.write(target, new byte[] {1});
