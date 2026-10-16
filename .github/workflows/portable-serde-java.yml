@@ -42,7 +42,7 @@ jobs:
       - name: Compile real Java actor and portable codec JUnit regressions
         run: >
           mvn -B -ntp -Dores.runtime.carriers=native
-          -Dtest=ActorTransportHardeningTest,UntrustedActorTest,PortableCodecRegistryTest,PortableCodecBudgetHardeningTest,DualSerdeBorrowBoundaryTest
+          -Dtest=ActorTransportHardeningTest,UntrustedActorTest,PortableCodecRegistryTest,PortableCodecBudgetHardeningTest,DualSerdeBorrowBoundaryTest,SourceActorDataRoundTripTest,ActorDataSnapshotIsolationTest,ActorDataCapabilityContractTest,ActorDataCodecAdmissionTest
           test
   full-runtime:
     needs: standalone-and-focused
