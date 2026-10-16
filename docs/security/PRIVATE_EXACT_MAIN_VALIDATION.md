@@ -159,8 +159,14 @@ The full Java 25 `verify` stage uses `mvn ... -DskipTests=false
 -Dmaven.test.skip=false clean verify` to discard focused-only reports and
 rebuild from scratch. A separate trusted Surefire verifier then requires
 successful testcases in all six focused classes **again**, as well as at
-least one successful class outside that focused subset. Missing, symlinked,
-oversized, mismatched-class, or malformed report evidence fails closed.
+least one successful class outside that focused subset. **Every** full-suite
+JUnit report must have consistent positive testcase counts, aggregate
+`failures=0`, `errors=0`, and `skipped=0`, and no failed, skipped,
+flaky, or rerun-failure testcase markers. A single failed or disabled test
+blocks the evidence gate; make any intentional skip exceptions an explicit,
+independently reviewed policy change rather than silently accepting them.
+Missing, symlinked, oversized, mismatched-class, or malformed report
+evidence also fails closed.
 This is a proof of fresh **broader test execution**, not a guarantee that
 every test in the source tree was discovered or that a malicious candidate
 cannot alter its build/test configuration. A qualified security reviewer must
