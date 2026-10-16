@@ -147,6 +147,19 @@ final class OresKeyedMapLookupOptionTest {
     }
 
     @Test
+    void typedMapsFailClosedAtActorTransportBoundary() {
+        OresKeyedMap<String, Integer> map =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        map.put("answer", 42);
+
+        IllegalArgumentException denied = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(map));
+        assertTrue(denied.getMessage().contains("typed Map"),
+                denied.getMessage());
+    }
+
+    @Test
     void lookupRecordRejectsImpossibleStates() {
         assertThrows(IllegalArgumentException.class,
                 () -> new OresKeyedMap.Lookup<>(true, null));
