@@ -131,6 +131,61 @@ final class PrivateAbstractActorHookTest {
     }
 
     @Test
+    void intermediateClassCannotWidenPrivateAbstractInvocationAuthority() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework as
+                          private abstract deliver(int value): int;
+                        end
+                        define abstract class Intermediate extends Framework as
+                          private deliver(int value): int { return value; }
+                        end
+                        define class PublicWorker extends Intermediate as
+                          pub deliver(int value): int { return value; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("cannot be made public"), failure.getMessage());
+    }
+
+    @Test
+    void implicitIteratorCannotCallInheritedPrivateAbstractOverride() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework as
+                          private abstract [Symbol.iterator](): Array<int>;
+                        end
+                        define class Worker extends Framework as
+                          private [Symbol.iterator](): Array<int> {
+                            return arr[1, 2];
+                          }
+                          pub bypass(): void {
+                            for const item of self do
+                              stdio.stdout.write(item);
+                            done
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("private abstract method"), failure.getMessage());
+    }
+
+    @Test
+    void actorReceiveMemberValueIsNotExportable() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          receive(ActorMail<String> mail): void {
+                            val handler = self.receive;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("runtime-managed")
+                        || failure.getMessage().contains("direct-call-only"),
+                failure.getMessage());
+    }
+
+    @Test
     void actorExplicitSelfReceivesOnlyThroughMailboxRuntime() throws Exception {
         String source = """
                 define actor Worker as
