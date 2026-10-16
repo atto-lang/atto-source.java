@@ -179,7 +179,6 @@ class GuestAdmissionHarnessTests(unittest.TestCase):
                     mod.load_cases()
 
 
-
     def test_strict_manifest_rejects_duplicate_and_unknown_keys(self):
         original = self.contract.read_text(encoding="utf-8")
         for mutant in (
