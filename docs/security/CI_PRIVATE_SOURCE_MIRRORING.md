@@ -46,6 +46,14 @@ subtree must equal the same reviewed complete-tree SHA. Only checkout-root `.git
 metadata may be omitted; nested Git metadata or source symlinks are rejected.
 `GIT_*` environment overrides, Git replacement objects, and caller-provided global/system Git configuration cannot redirect this provenance check.
 
+The candidate's checkout root must contain a real `.git` directory, not a
+symlink or a linked-worktree `.git` pointer file. The provenance gate refuses
+Git discovery from a parent repository when the checkout's Git metadata is
+missing. The publisher also checks the expected commit/tree against GitHub's
+authenticated original private-source commit object before any destination
+write.
+
+
 **Required independent gate:** the publisher now denies any transfer unless
 GitHub reports source `main` as protected and permits inspection of its branch
 protection rules. It requires code-owner review, stale-review dismissal, at
@@ -95,6 +103,12 @@ in the destination's default tree. This removes stale files from previous
 snapshots while preserving unrelated destination workflows and files.
 Finally, it creates a commit and a **new** `ci/oreslang-*` ref. Existing
 branches, including `main`, are never updated.
+The ref-creation acknowledgement must name the exact new branch, commit
+object type and expected commit SHA. Before reporting success, the publisher
+rechecks protected-main approval, source and destination identities, and
+independently reads back the new ref to verify the same commit. This is not
+an atomic privacy guarantee; partial uploads or a disputed ref after a
+failure still require retention and incident review.
 
 The publisher bounds the export to 1,024 files / 40 MiB total / 10 MiB
 per file. The reviewed publisher's code and approval policy remain in its own
