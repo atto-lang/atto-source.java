@@ -29,7 +29,9 @@ final class SupervisorFailureRetentionTest {
         lane.publish(notice(supervisor, group));
         lane.publish(notice(supervisor, group));
         assertEquals(2, lane.queued());
-        lane.install(n -> fail("inline executor must never dispatch trusted CONTROL"));
+        assertThrows(IllegalStateException.class,
+                () -> lane.install(n -> fail("inline executor must never dispatch trusted CONTROL")),
+                "failed CONTROL scheduling must reject handler installation");
         assertTrue(lane.failure().isPresent());
         assertEquals(2, lane.undelivered());
         assertEquals(0, lane.queued(),
