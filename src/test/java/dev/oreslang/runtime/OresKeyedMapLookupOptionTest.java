@@ -147,6 +147,28 @@ final class OresKeyedMapLookupOptionTest {
     }
 
     @Test
+    void entryValidatorCannotReenterDestinationMutation() {
+        java.util.concurrent.atomic.AtomicReference<OresKeyedMap<String, Object>> ref =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        OresKeyedMap<String, Object> map = OresKeyedMap.stringKeys(
+                OresKeyedMap.ValueDomain.ANY,
+                (key, value) -> {
+                    if (key.equals("blocked")) ref.get().clear();
+                });
+        ref.set(map);
+        map.put("kept", 1L);
+
+        IllegalStateException denied = assertThrows(
+                IllegalStateException.class,
+                () -> map.put("blocked", 2L));
+        assertTrue(denied.getMessage().contains("cannot mutate"),
+                denied.getMessage());
+        assertEquals(1L, map.getRequired("kept"));
+        assertFalse(map.containsKey("blocked"));
+        assertEquals(1, map.size());
+    }
+
+    @Test
     void typedMapsFailClosedAtActorTransportBoundary() {
         OresKeyedMap<String, Integer> map =
                 OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
