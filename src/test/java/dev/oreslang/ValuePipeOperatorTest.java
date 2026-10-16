@@ -201,6 +201,49 @@ final class ValuePipeOperatorTest {
     }
 
     @Test
+    void infersInlineSumLambdaInputsWithoutLosingCallbackReturnTypes() throws Exception {
+        String program = """
+                fnc expect_string(Option<String> value): void { return; }
+                pub fnc main(): void {
+                  stdio.println(Some(3) |> Option.map(|n| -> n * 2) |> Option.unwrap_or(0));
+                  stdio.println(Err("bad") |> Result.map_err(|e| -> e + "!"));
+                  stdio.println(None |> Option.ok_or_else(|| -> "missing"));
+                  stdio.println(Some(3) |> Option.filter(|n| -> n > 0) |> Option.unwrap_or(0));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        var output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pipe-lambda.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(output).build()) {
+            context.eval(source);
+        }
+        assertEquals(java.util.List.of("6", "Err(bad!)", "Err(missing)", "3"),
+                output.toString(StandardCharsets.UTF_8).lines().toList());
+    }
+
+    @Test
+    void rejectsBadInferredInlineSumLambdaResults() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Option<int> input): Option<String> {
+                  return input |> Option.map(|n| -> n + 1);
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Option<int> input): Option<int> {
+                  return input |> Option.filter(|n| -> n + 1);
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Option<int> input): Option<int> {
+                  return input |> Option.map(|n| -> { return n + 1; });
+                }
+                """)));
+    }
+
+    @Test
     void executesOptionAndResultCombinators() throws Exception {
         String program = """
                 fnc double(int n): int { return n * 2; }
