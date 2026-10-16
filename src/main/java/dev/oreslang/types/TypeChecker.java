@@ -2712,10 +2712,38 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                Type originalReceiver = typeOf(member.receiver(), env, generics, self);
+                Type receiver = deref(originalReceiver);
                 if (isTypedMapType(receiver)) {
-                    throw new IllegalArgumentException(
-                            "typed Map dot-method access is sealed in this slice; use map[key] until get/take lowering lands");
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "typed Map operations do not accept call-site type arguments");
+                    }
+                    String operation = member.member();
+                    if (!Set.of("has", "get", "take", "remove").contains(operation)) {
+                        throw new IllegalArgumentException(
+                                "unknown typed Map operation '" + operation
+                                        + "'; use map[key], has/get/take/remove");
+                    }
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "Map." + operation + " expects exactly one key argument");
+                    }
+                    Type key = typeOf(call.arguments().getFirst(), env, generics, self);
+                    requireAssignable(key, typedMapKeyType(receiver), "Map." + operation + " key");
+                    if (operation.equals("take") || operation.equals("remove")) {
+                        requireMutableTypedMapReceiver(
+                                member.receiver(), originalReceiver, env, operation);
+                    }
+                    if (operation.equals("has") || operation.equals("remove")) {
+                        return Primitive.BOOL;
+                    }
+                    Ast.ClassDecl openMap = typedOpenMapClass(receiver);
+                    Type value = openMap == null
+                            ? typedMapBaseValueType(receiver)
+                            : typedOpenMapValueForKey(
+                                    openMap, key, generics, self);
+                    return new Named("Option", List.of(value));
                 }
                 Type receiverValueType = receiver;
                 receiver = receiverDispatchType(receiver);
@@ -8401,6 +8429,27 @@ public final class TypeChecker {
             if (qualifiedClassName(candidate).equals(qualified)) return candidate;
         }
         throw new IllegalStateException("typed open Map class metadata is unavailable for " + qualified);
+    }
+
+    private void requireMutableTypedMapReceiver(
+            Ast.Expr receiverExpression,
+            Type originalReceiver,
+            Env env,
+            String operation) {
+        if (originalReceiver instanceof Borrow borrowed && !borrowed.mutable()) {
+            throw new IllegalArgumentException(
+                    "cannot mutate typed Map through a read-only borrow");
+        }
+        if (!(receiverExpression instanceof Ast.NameExpr owner)) {
+            throw new IllegalArgumentException(
+                    "Map." + operation
+                            + " requires a directly owned mutable binding");
+        }
+        Env.Binding ownerSlot = env.lookup(owner.name());
+        if (ownerSlot == null || !ownerSlot.mutableReferent()) {
+            throw new IllegalArgumentException(
+                    "Map." + operation + " requires let mut or val binding");
+        }
     }
 
     private Type typedMapKeyType(Type type) {
