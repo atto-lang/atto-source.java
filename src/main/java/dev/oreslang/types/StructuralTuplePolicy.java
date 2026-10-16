@@ -33,6 +33,11 @@ public final class StructuralTuplePolicy {
      * intentionally stricter than ordinary tuple assignability.
      */
     private static boolean certifiedSlotType(Type type) {
+        return certifiedSlotType(type, 0);
+    }
+
+    private static boolean certifiedSlotType(Type type, int depth) {
+        if (depth > MAX_ARITY) return false;
         if (type == null || type == Types.Unknown.INSTANCE
                 || type instanceof Types.Borrow
                 || type instanceof Types.Generic
@@ -47,16 +52,16 @@ public final class StructuralTuplePolicy {
             if (!named.name().equals("Option") || named.arguments().size() != 1) {
                 return false;
             }
-            return certifiedSlotType(named.arguments().getFirst());
+            return certifiedSlotType(named.arguments().getFirst(), depth + 1);
         }
         if (type instanceof Types.Tuple tuple) {
             if (tuple.elements().size() > MAX_ARITY) return false;
-            for (Type element : tuple.elements()) if (!certifiedSlotType(element)) return false;
+            for (Type element : tuple.elements()) if (!certifiedSlotType(element, depth + 1)) return false;
             return true;
         }
         if (type instanceof Types.Union union) {
             for (Type alternative : union.options()) {
-                if (!certifiedSlotType(alternative)) return false;
+                if (!certifiedSlotType(alternative, depth + 1)) return false;
             }
             return true;
         }
