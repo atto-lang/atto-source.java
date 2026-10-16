@@ -105,9 +105,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         def exact(route, method="GET", payload=None):
             self.assertEqual(method, "GET")
             if route == source_root + "/git/commits/" + A:
-                return {"tree": {"sha": D}}
+                return {"sha": A, "tree": {"sha": D}}
             if route == source_root + "/git/trees/" + D:
-                return {"truncated": False, "tree": [
+                return {"sha": D, "truncated": False, "tree": [
                     {"path": "source", "type": "tree",
                      "mode": "040000", "sha": E}]}
             raise AssertionError("unexpected original-repository route: " + route)
@@ -140,6 +140,27 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     with self.assertRaisesRegex(pub.Denied, expected_message):
                         UPSTREAM_VERIFIER(A, D, "")
 
+    def test_upstream_github_commit_or_tree_identity_mismatch_is_rejected(self):
+        source_root = "repos/" + pub.SOURCE_REPOSITORY
+        def mismatched_commit(route, method="GET", payload=None):
+            if route == source_root + "/git/commits/" + A:
+                return {"sha": B, "tree": {"sha": D}}
+            raise AssertionError(route)
+        with patch.object(pub, "gh_api", side_effect=mismatched_commit):
+            with self.assertRaisesRegex(pub.Denied, "commit identity"):
+                UPSTREAM_VERIFIER(A, D, "")
+        def mismatched_tree(route, method="GET", payload=None):
+            if route == source_root + "/git/commits/" + A:
+                return {"sha": A, "tree": {"sha": D}}
+            if route == source_root + "/git/trees/" + D:
+                return {"sha": C, "truncated": False, "tree": [
+                    {"path": "source", "type": "tree",
+                     "mode": "040000", "sha": E}]}
+            raise AssertionError(route)
+        with patch.object(pub, "gh_api", side_effect=mismatched_tree):
+            with self.assertRaisesRegex(pub.Denied, "tree identity"):
+                UPSTREAM_VERIFIER(A, E, "source")
+
     def test_upstream_github_tree_rejects_truncation_and_forged_metadata(self):
         source_root = "repos/" + pub.SOURCE_REPOSITORY
         for data, message in [
@@ -154,9 +175,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         ]:
             def metadata(route, method="GET", payload=None):
                 if route == source_root + "/git/commits/" + A:
-                    return {"tree": {"sha": D}}
+                    return {"sha": A, "tree": {"sha": D}}
                 if route == source_root + "/git/trees/" + D:
-                    return data
+                    return {"sha": D, **data}
                 raise AssertionError(route)
             with self.subTest(data=data):
                 with patch.object(pub, "gh_api", side_effect=metadata):
