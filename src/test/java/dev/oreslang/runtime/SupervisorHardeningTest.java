@@ -153,8 +153,8 @@ final class SupervisorHardeningTest {
                     "actor-owned group creates an independent supervisor identity");
             assertEquals(1, parentGroup.workerCount());
             assertEquals(1, owned.workerCount());
-            assertEquals(0, owned.memberCount(),
-                    "lifecycle ownership must not implicitly join event-bus membership");
+            assertEquals(1, owned.memberCount(),
+                    "only creator joins its own group; managed descendants do not join implicitly");
 
             ActorRuntime.ActorRef<String> child = childRef.get();
             child.send("spawn");
@@ -206,14 +206,14 @@ final class SupervisorHardeningTest {
         var group = ActorRuntime.ActorGroupId.create();
         SupervisorFailureControl control = new SupervisorFailureControl(
                 id, group, runnable -> new Thread(runnable).start(), 2);
-        String malicious = "failure\\nforged\\r" + "🚀".repeat(600);
+        String malicious = "failure\nforged\r" + "🚀".repeat(600);
         control.publish(new SupervisorFailureControl.Notice(
                 id, group, ActorRuntime.ActorId.create(), Optional.empty(),
                 SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Type",
                 malicious));
         var value = control.poll().orElseThrow();
-        assertFalse(value.diagnostic().contains("\\n"));
-        assertFalse(value.diagnostic().contains("\\r"));
+        assertFalse(value.diagnostic().contains("\n"));
+        assertFalse(value.diagnostic().contains("\r"));
         assertTrue(value.diagnostic().getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= 1024);
         assertTrue(control.poll().isEmpty(), "CONTROL must be delivered exactly once");
         control.install(ignored -> { });
