@@ -30,6 +30,8 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify Java/native MessagePack v2 golden vectors
+        run: bash scripts/test-messagepack-wire-v2-standalone.sh
       - name: Verify compiler/runtime tests
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
       - name: Run examples
