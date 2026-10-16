@@ -26,6 +26,7 @@ import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
+import dev.oreslang.types.OwnershipChecker;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -9017,14 +9018,26 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshotForLambda(Ast.LambdaExpr lambda) {
-            // Flatten the visible lexical bindings without retaining a chain
-            // of parent environments (which would retain a forbidden self).
-            // Preserve Slot identity for mutable capture semantics.
+            // Keep only free variables actually read by the lambda (including
+            // transitive nested closures), not unrelated values in the method
+            // frame. In particular a closure must not retain implicit self.
+            Set<String> visible = new LinkedHashSet<>();
+            for (Env frame = this; frame != null; frame = frame.parent) {
+                visible.addAll(frame.slots.keySet());
+            }
+            for (String name : lambda.captureNames()) {
+                if (!visible.contains(name)) {
+                    throw new IllegalArgumentException(
+                            "unknown outer binding '" + name + "' in lambda capture list");
+                }
+            }
+            Set<String> referenced =
+                    OwnershipChecker.referencedOuterBindings(lambda, visible);
             Env captured = new Env(null, false, accessClass, null,
                     lexicalModule, lexicalContainerClass);
             for (Env frame = this; frame != null; frame = frame.parent) {
                 for (Map.Entry<String, Slot> entry : frame.slots.entrySet()) {
-                    if (lambda.permitsOuterBinding(entry.getKey())) {
+                    if (referenced.contains(entry.getKey())) {
                         captured.slots.putIfAbsent(entry.getKey(), entry.getValue());
                     }
                 }
