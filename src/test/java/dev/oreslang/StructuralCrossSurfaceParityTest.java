@@ -66,11 +66,13 @@ final class StructuralCrossSurfaceParityTest {
     void canonicalStructuralMatchAllowsSpecificArmBeforeBroadArm() {
         var typed = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
-                  define class Value as
+                  define class Base as
+                  end
+                  define class Value extends Base as
                     pub val int value = 1;
                     pub val int extra = 2;
                   end
-                  fnc choose(Value item): int {
+                  fnc choose(Base item): int {
                     match item over
                       on structural { value: int, extra: int } narrow -> {
                         return narrow.value;
