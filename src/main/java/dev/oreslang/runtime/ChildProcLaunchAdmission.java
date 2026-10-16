@@ -114,7 +114,7 @@ final class ChildProcLaunchAdmission {
 
     private static String checked(String value, String label) {
         Objects.requireNonNull(value, label);
-        if (value.indexOf('\\0') >= 0) {
+        if (value.indexOf('\0') >= 0) {
             throw new IllegalArgumentException(label + " contains NUL");
         }
         return value;
