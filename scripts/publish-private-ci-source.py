@@ -388,6 +388,8 @@ def verify_upstream_commit_tree(commit, expected_tree, relative_directory):
     if not isinstance(source_tree_ref, dict):
         raise Denied("original source commit has no verifiable Git tree")
     root_tree = valid_sha(source_tree_ref.get("sha"))
+    if commit_data.get("sha") != commit:
+        raise Denied("original source GitHub commit identity differs from approved SHA")
     current = root_tree
     if relative_directory:
         for name in relative_directory.split("/"):
@@ -397,6 +399,8 @@ def verify_upstream_commit_tree(commit, expected_tree, relative_directory):
             entries = listing.get("tree")
             if listing.get("truncated") is not False or not isinstance(entries, list):
                 raise Denied("original source tree listing unavailable or truncated")
+            if listing.get("sha") != current:
+                raise Denied("original source GitHub tree identity differs from requested SHA")
             candidates = [x for x in entries if isinstance(x, dict)
                           and x.get("path") == name]
             if len(candidates) != 1 or candidates[0].get("type") != "tree":
