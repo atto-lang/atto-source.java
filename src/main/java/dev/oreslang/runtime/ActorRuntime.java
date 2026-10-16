@@ -6040,7 +6040,7 @@ public final class ActorRuntime implements AutoCloseable {
                 requireGraphNodeCapacity(nodes[0], count);
                 List<Object> frozen = new ArrayList<>(count);
                 for (Object item : list) frozen.add(freeze(item, visiting, depth + 1, nodes));
-                return List.copyOf(frozen);
+                return Collections.unmodifiableList(frozen);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
@@ -6061,7 +6061,7 @@ public final class ActorRuntime implements AutoCloseable {
                 for (int i = 0; i < length; i++) {
                     frozen.add(freeze(Array.get(value, i), visiting, depth + 1, nodes));
                 }
-                return List.copyOf(frozen);
+                return Collections.unmodifiableList(frozen);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
