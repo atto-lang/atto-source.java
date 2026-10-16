@@ -202,19 +202,33 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         // occurs after successful sends have become externally visible.
         var completed = Collections.unmodifiableList(result);
         var children = session.forwardAll(frame);
+        // Pre-materialize EVERY successful branch receipt before the first
+        // mailbox send. An OOM on branch N cannot otherwise invalidate a
+        // previously-admitted branch's caller-visible receipt batch.
+        List<Admission> prepared;
+        try {
+            var all = new ArrayList<Admission>(children.size());
+            for (int i = 0; i < children.size(); i++) {
+                var child = children.get(i);
+                all.add(new Admission(edges.get(out.get(i)), child.receiver(),
+                        child.flowId(), child.routeId(), true, null));
+            }
+            prepared = all;
+        } catch (RuntimeException | Error preflight) {
+            for (var unpublished : children)
+                ActorPipelineRouteSession.retireDelivered(unpublished);
+            throw preflight;
+        }
         int next = 0;
         try {
             for (; next < children.size(); next++) {
                 var child = children.get(next);
                 var edge = out.get(next);
-                // Construct the accepted receipt BEFORE DATA publication:
-                // no metadata allocation may turn a successful mailbox write
-                // into an apparently failed admission.
-                var accepted = new Admission(edges.get(edge), child.receiver(),
-                        child.flowId(), child.routeId(), true, null);
                 try {
                     owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child);
-                    result.add(accepted);
+                    // No allocation: ArrayList was pre-sized and the success
+                    // receipt was created before any branch publication.
+                    result.add(prepared.get(next));
                 } catch (RuntimeException failure) {
                     ActorPipelineRouteSession.retireDelivered(child);
                     result.add(new Admission(edges.get(edge), child.receiver(),
