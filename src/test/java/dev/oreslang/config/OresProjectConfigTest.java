@@ -173,6 +173,9 @@ final class OresProjectConfigTest {
         IllegalArgumentException malformedRoot = assertThrows(IllegalArgumentException.class,
                 () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+src/shared/util"));
         assertTrue(malformedRoot.getMessage().contains("expected +/<path>"));
+        IllegalArgumentException backslashRoot = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(project.resolve("src/nested/main.ores"), "+\\\\src/shared/util"));
+        assertTrue(backslashRoot.getMessage().contains("expected +/<path>"));
         assertThrows(IllegalArgumentException.class,
                 () -> config.resolveImport(project.resolve("src/nested/main.ores"), "@/src/shared/util"));
     }
@@ -560,6 +563,16 @@ final class OresProjectConfigTest {
         OresProjectConfig child = config.forImportedSource(nestedSource);
         assertEquals(nested.toAbsolutePath().normalize(), child.projectRoot());
         assertEquals("inner", child.projectName().orElseThrow());
+        Path symlinkRoot = temp.resolve("selected-root-link");
+        try {
+            Files.createSymbolicLink(symlinkRoot, project);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "filesystem symlinks unavailable");
+        }
+        OresProjectConfig throughLink = OresProjectConfig.discover(symlinkRoot.resolve("src/main.ores"),
+                Map.of(OresProjectConfig.ENV_ORES_PROJECT_ROOT, symlinkRoot.toString(),
+                        OresProjectConfig.ENV_ORES_MANIFEST_PATH, manifest.toString()));
+        assertEquals(project.toAbsolutePath().normalize(), throughLink.projectRoot());
     }
 
     @Test
