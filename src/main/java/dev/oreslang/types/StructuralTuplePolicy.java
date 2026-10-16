@@ -152,7 +152,13 @@ public final class StructuralTuplePolicy {
         }
     }
 
-    public record Selection(String id, boolean pack) { }
+    public record Selection(String id, boolean pack) {
+        public Selection {
+            if (id == null || id.isBlank()) {
+                throw new IllegalArgumentException("tuple overload selection needs a bound callable ID");
+            }
+        }
+    }
 
     /**
      * Resolve a single explicitly spread *statically typed finite tuple*.
