@@ -502,21 +502,45 @@ def require_source_tree_match(source, trusted_root, files):
 
 
 
-def verify_published_root_tree(repository, root_sha, source_tree_sha):
-    """Read back the exact source subtree in the destination root tree."""
-    valid_sha(root_sha)
-    valid_sha(source_tree_sha)
-    actual = gh_api(f"repos/{repository}/git/trees/{root_sha}")
-    entries = actual.get("tree")
-    if (actual.get("sha") != root_sha or actual.get("truncated") is not False
-            or not isinstance(entries, list)):
+def checked_destination_root_entries(repository, tree_sha):
+    """Read a non-truncated root Git tree and reject ambiguous entries."""
+    valid_sha(tree_sha)
+    actual = gh_api(f"repos/{repository}/git/trees/{tree_sha}")
+    raw = actual.get("tree")
+    if (actual.get("sha") != tree_sha or actual.get("truncated") is not False
+            or not isinstance(raw, list)):
         raise Denied("destination root Git tree could not be verified")
-    matches = [item for item in entries
-               if isinstance(item, dict) and item.get("path") == PREFIX]
-    if (len(matches) != 1 or matches[0].get("mode") != "040000"
-            or matches[0].get("type") != "tree"
-            or matches[0].get("sha") != source_tree_sha):
+    entries = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise Denied("destination root Git tree contains malformed entries")
+        name, mode, kind, digest = (
+            item.get("path"), item.get("mode"), item.get("type"), item.get("sha"))
+        if (not isinstance(name, str) or not name
+                or "/" in name or "\\x00" in name or name in (".", "..")
+                or not isinstance(mode, str) or not isinstance(kind, str)
+                or name in entries):
+            raise Denied("destination root Git tree contains ambiguous entries")
+        valid_sha(digest)
+        entries[name] = (mode, kind, digest)
+    return entries
+
+
+def verify_published_root_tree(repository, root_sha, source_tree_sha, base_tree_sha):
+    """The only authorized root-tree change is replacement of PREFIX.
+
+    The destination's CI workflows and other existing root entries must stay
+    byte-for-byte identical to its previously authenticated base tree.
+    """
+    valid_sha(source_tree_sha)
+    previous = checked_destination_root_entries(repository, base_tree_sha)
+    published = checked_destination_root_entries(repository, root_sha)
+    source = published.pop(PREFIX, None)
+    previous.pop(PREFIX, None)
+    if source != ("040000", "tree", source_tree_sha):
         raise Denied("destination root does not contain exact reviewed source subtree")
+    if published != previous:
+        raise Denied("destination root changes unrelated CI files or workflows")
 
 
 def verify_published_commit(repository, commit_sha, root_sha, parent_sha):
@@ -626,7 +650,7 @@ def publish(repository, source, branch, trusted_root,
     new_tree_sha = valid_sha(new_tree.get("sha"))
     # Re-fetch the root tree: a valid SHA returned from POST is insufficient.
     checked_repo(repository)
-    verify_published_root_tree(repository, new_tree_sha, isolated_sha)
+    verify_published_root_tree(repository, new_tree_sha, isolated_sha, base_tree)
     authorize_write()
     commit = gh_api(f"repos/{repository}/git/commits", method="POST", payload={
         "message": ("ci: source snapshot from approved private Oreslang checkout\n\n"
