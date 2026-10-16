@@ -75,6 +75,63 @@ final class DopHostBufferOwnerRaceTest {
     }
 
     @Test
+    void concurrentReadLoanAndCloseRejectsRetirementUnderBorrow() throws Exception {
+        for (int trial = 0; trial < 128; trial++) {
+            var owner = new DopKernelIR.HostBuffer(shape());
+            var token = owner.regionToken();
+            var ready = new CountDownLatch(2);
+            var start = new CountDownLatch(1);
+            var admitted = new AtomicReference<DopKernelIR.ReadLoan>();
+            var error = new AtomicReference<Throwable>();
+            var borrower = new Thread(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("read timed out");
+                    }
+                    admitted.set(owner.borrowRead());
+                } catch (IllegalStateException expected) {
+                    // close won
+                } catch (Throwable unexpected) {
+                    error.compareAndSet(null, unexpected);
+                }
+            });
+            var closer = new Thread(() -> {
+                ready.countDown();
+                try {
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("close timed out");
+                    }
+                    owner.close();
+                } catch (IllegalStateException expected) {
+                    // active read loan won
+                } catch (Throwable unexpected) {
+                    error.compareAndSet(null, unexpected);
+                }
+            });
+            borrower.start();
+            closer.start();
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+            borrower.join(5000);
+            closer.join(5000);
+            assertFalse(borrower.isAlive(), "reader thread stuck");
+            assertFalse(closer.isAlive(), "close thread stuck");
+            assertNull(error.get(), "unexpected read/close failure");
+            var read = admitted.get();
+            if (read != null) {
+                assertTrue(token.isLive(), "closed beneath a read loan");
+                assertEquals(0f, read.read(0, 0));
+                assertThrows(IllegalStateException.class, owner::close);
+                read.close();
+                owner.close();
+            }
+            assertFalse(token.isLive());
+            assertThrows(IllegalStateException.class, owner::borrowRead);
+        }
+    }
+
+    @Test
     void concurrentWriteLoanAndCloseNeverExposeRetiredStorage() throws Exception {
         for (int trial = 0; trial < 128; trial++) {
             var owner = new DopKernelIR.HostBuffer(shape());
