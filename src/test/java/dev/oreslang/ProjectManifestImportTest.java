@@ -777,4 +777,41 @@ final class ProjectManifestImportTest {
                 rejected.getMessage());
     }
 
+
+    @Test
+    void dotPrefixedBareImportsAndExplicitRelativeImportsLinkInDifferentNamespaces() throws Exception {
+        Path project = temp.resolve("dot-prefixed-linking");
+        Path src = project.resolve("src");
+        Path nested = src.resolve("nested");
+        Files.createDirectories(src.resolve(".hidden"));
+        Files.createDirectories(nested.resolve(".hidden"));
+        Files.writeString(project.resolve(OresProjectConfig.PACKAGE_MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["src"]
+                """);
+        Files.writeString(src.resolve(".hidden/global.ores"), """
+                pub fnc global_hidden(): string { return "bare-root"; }
+                """);
+        Files.writeString(nested.resolve(".hidden/local.ores"), """
+                pub fnc local_hidden(): string { return "relative-sibling"; }
+                """);
+        Path entry = nested.resolve("main.ores");
+        Files.writeString(entry, """
+                import fnc global_hidden from ".hidden/global";
+                import fnc local_hidden from "./.hidden/local";
+                pub fnc main(): void {
+                  stdio.println(global_hidden() + ":" + local_hidden());
+                  return;
+                }
+                """);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        var result = LinkedProgramRunner.run(entry, IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(), Set.of(), Map.of(),
+                out, new ByteArrayOutputStream());
+        assertEquals(3, result.units().size());
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("bare-root:relative-sibling"),
+                out.toString(StandardCharsets.UTF_8));
+    }
+
 }
