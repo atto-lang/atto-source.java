@@ -129,7 +129,15 @@ final class ChildProcOwnedRuntime implements AutoCloseable {
                 return ActorChildProcAdmission.admit(context, spec);
             }
         };
-        return new ChildProcOwnedRuntime(actorAdmission, ioExecutor, maxChildren, maxOutputBytes);
+        ChildProcOwnedRuntime manager =
+                new ChildProcOwnedRuntime(actorAdmission, ioExecutor, maxChildren, maxOutputBytes);
+        try {
+            context.registerOwnedChildProcesses(manager);
+            return manager;
+        } catch (RuntimeException failure) {
+            manager.close();
+            throw failure;
+        }
     }
 
     private void requireOwner() {
