@@ -37,7 +37,10 @@ public final class NativeHttp implements AutoCloseable {
         if (host == null || host.isBlank() || port < 0 || port > 65535
                 || capacity < 1 || capacity > 65536 || bodyLimit < 1 || bodyLimit > 64 * 1024 * 1024
                 || deadlineMillis < 1) throw new IllegalArgumentException("invalid HTTP listener limits");
-        context.requirePermission(RuntimePermissions.Permission.NET, host.toLowerCase(Locale.ROOT) + ":" + port, "http.listen");
+        // Port 0 asks the OS for an available port. Authorize the host across
+        // all ports instead of passing an invalid :0 network permission scope.
+        String requestedEndpoint = host.toLowerCase(Locale.ROOT) + (port == 0 ? "" : ":" + port);
+        context.requirePermission(RuntimePermissions.Permission.NET, requestedEndpoint, "http.listen");
         configureTransportDefaults();
         try {
             // Bind only the numeric address selected by the same strict
