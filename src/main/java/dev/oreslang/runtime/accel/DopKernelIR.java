@@ -48,6 +48,7 @@ public final class DopKernelIR {
     private static final class State {
         final DataOrientedLayout.Plan layout;
         final ByteBuffer bytes;
+        final HostBuffer.RegionToken regionToken;
         int readLoans;
         boolean writeLoan;
         boolean closed;
@@ -61,6 +62,7 @@ public final class DopKernelIR {
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
+            this.regionToken = new HostBuffer.RegionToken(this);
         }
     }
 
@@ -91,24 +93,15 @@ public final class DopKernelIR {
 
         private HostBuffer(State state) { this.state = state; }
 
-        /**
-         * Host-only, opaque allocation identity. The backing State is private
-         * and cannot be used to access raw data or fabricate a region root.
-         */
-        public Object regionBackingIdentity() {
+        /** Atomic capture of identity and geometry under the owner monitor. */
+        public RegionToken regionToken() {
             synchronized (state) {
                 active();
-                return state;
+                return state.regionToken;
             }
         }
         public DopRegionSchedule.Root regionRoot() {
             return DopRegionSchedule.Root.fromHostBuffer(this);
-        }
-        public static boolean isBackingLive(Object identity) {
-            if (!(identity instanceof State backing)) return false;
-            synchronized (backing) {
-                return !backing.closed;
-            }
         }
         public DataOrientedLayout.Plan layout() {
             synchronized (state) {
