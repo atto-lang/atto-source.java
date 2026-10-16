@@ -228,4 +228,54 @@ final class PrivateAbstractActorHookTest {
         assertTrue(failure.getMessage().contains("reserved actor lifecycle hook")
                         || failure.getMessage().contains("runtime-managed"), failure.getMessage());
     }
+
+    @Test
+    void intermediateAbstractRedeclarationCannotStealOriginalCallAuthority() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define abstract class Framework as
+                          private abstract receive(int value): int;
+                          pub deliver(int value): int { return self.receive(value); }
+                        end
+                        define abstract class Intermediate extends Framework as
+                          private abstract receive(int value): int;
+                          pub illegalCall(int value): int { return self.receive(value); }
+                        end
+                        define class Worker extends Intermediate as
+                          private receive(int value): int { return value; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("private abstract method"), failure.getMessage());
+        assertTrue(failure.getMessage().contains("Framework.receive"), failure.getMessage());
+    }
+
+    @Test
+    void originalSuperclassCanDispatchAcrossAbstractRedeclaration() throws Exception {
+        String source = """
+                define abstract class Framework as
+                  private abstract receive(int value): int;
+                  pub deliver(int value): int { return self.receive(value); }
+                end
+                define abstract class Intermediate extends Framework as
+                  private abstract receive(int value): int;
+                end
+                define class Worker extends Intermediate as
+                  private receive(int value): int { return value + 7; }
+                end
+                pub routine main(): void {
+                  val worker = new Worker();
+                  stdio.stdout.write(worker.deliver(5));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(source)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (Context context = IsolatePolicy.developer()
+                .restrictedContextBuilder(ExecutionProfile.serverJit()).out(output).build()) {
+            context.eval(Source.newBuilder(OresLanguage.ID, source, "private-abstract-multilevel.ores")
+                    .mimeType(OresLanguage.MIME_TYPE).build());
+        }
+        assertEquals("12", output.toString(StandardCharsets.UTF_8));
+    }
+
 }
