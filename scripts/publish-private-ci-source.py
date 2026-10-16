@@ -290,7 +290,12 @@ def collect_source(root, trusted_root):
 
 
 def git_snapshot_output(root, *arguments):
-    """Read immutable Git metadata with no shell and no Git env overrides."""
+    """Read immutable Git metadata only through the trusted checkout root."""
+    marker = root / ".git"
+    # Without a real in-root Git directory, git -C silently discovers parent
+    # repositories or follows worktree pointer files outside the checkout.
+    if marker.is_symlink() or not marker.is_dir():
+        raise Denied("trusted source root needs an anchored Git metadata directory")
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("GIT_")}
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
