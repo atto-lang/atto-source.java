@@ -46,7 +46,17 @@ public final class ActorPhysicalTurnCredits implements AutoCloseable {
             return null;
         if (!state.compareAndSet(previous, previous + 1))
             return null;
-        return new Permit();
+        // Claiming a credit precedes allocating its host permit. If that
+        // allocation fails (for example under memory pressure), restore the
+        // credit before propagating the failure; otherwise the actor can be
+        // left permanently saturated with no permit capable of releasing it.
+        Permit acquired = null;
+        try {
+            acquired = new Permit();
+            return acquired;
+        } finally {
+            if (acquired == null) state.getAndDecrement();
+        }
     }
 
     /** Stop new admissions; already-issued permits must still be retired. */
