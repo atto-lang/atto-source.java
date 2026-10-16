@@ -44,6 +44,35 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
 
     public static void main(String[] args) throws InterruptedException {
         ActorPipelineRoutePlan plan = makePlan();
+        // The same 3-consumer selector fixtures are also used by .net,
+        // .wasm and .forge; this is a host-only selector conformance test.
+        var three = new ActorPipelineRoutePlan(
+                List.of(
+                    new ActorPipelineRoutePlan.Stage("source", "Producer",
+                            ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                    new ActorPipelineRoutePlan.Stage("worker-a", "Worker",
+                            ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""),
+                    new ActorPipelineRoutePlan.Stage("worker-b", "Worker",
+                            ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""),
+                    new ActorPipelineRoutePlan.Stage("worker-c", "Worker",
+                            ActorPipelineRoutePlan.Role.WRITABLE, "Event", "")),
+                List.of(
+                    new ActorPipelineRoutePlan.Edge("source", "worker-a", "Event"),
+                    new ActorPipelineRoutePlan.Edge("source", "worker-b", "Event"),
+                    new ActorPipelineRoutePlan.Edge("source", "worker-c", "Event")));
+        String[] fixtureKeys = {"customer-7", "alpha", "beta", "🌍", ""};
+        String[] fixtureTargets = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c"};
+        for (int i = 0; i < fixtureKeys.length; i++) {
+            check(three.forwardByKey("source", fixtureKeys[i]).target().equals(fixtureTargets[i]),
+                    "five-backend canonical FNV-1a64 vector mismatch");
+        }
+        for (int i = 0; i < 999; i++) {
+            String expected = new String[]{"worker-a", "worker-b", "worker-c"}[i % 3];
+            check(three.forwardRoundRobin("source").target().equals(expected),
+                    "five-backend three-consumer round robin mismatch");
+        }
+        check(three.forwardAll("source").size() == 3,
+                "five-backend three-consumer fanout changed");
         check(plan.forwardAll("producer-1").size() == 2, "fan-out omitted a consumer");
         check(plan.forwardAll("producer-1") == plan.forwardAll("producer-1"),
                 "fan-out results must retain stable immutable edge order");
@@ -184,6 +213,6 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                 "concurrent round-robin lost selections");
 
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
-                + " cases=23 concurrent_selections=" + (writers * sendsEach));
+                + " cases=24 concurrent_selections=" + (writers * sendsEach));
     }
 }
