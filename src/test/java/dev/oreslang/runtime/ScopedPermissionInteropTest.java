@@ -208,6 +208,54 @@ final class ScopedPermissionInteropTest {
     }
 
     @Test
+    void hostThreadLocalStateCannotEscapeActorHeapIsolation() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP,
+                IsolatePolicy.Capability.THREAD_CREATE);
+        // These APIs attach guest-controlled values to pooled JVM threads or
+        // shared class-indexed caches instead of Oreslang actor-owned state.
+        for (String className : new String[]{
+                "java.lang.ThreadLocal",
+                "java.lang.InheritableThreadLocal",
+                "java.lang.ClassValue"
+        }) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> policy.restrictedContextBuilder(
+                            ExecutionProfile.serverJit(), Set.of(className)),
+                    "host thread/class-local state admitted: " + className);
+            assertTrue(denied.getMessage().contains("class-level interop"));
+        }
+    }
+
+    @Test
+    void globalLocaleAndTimeZoneSettersAreNotExposedByHostAccess() throws Exception {
+        // Do not blanket-ban Locale/TimeZone: formatting and local conversions
+        // are useful. Only their JVM-global setters must remain invisible to
+        // the Graal host member allowlist, including both Locale overloads.
+        assertTrue(IsolatePolicy.isUnscopedGlobalMutator(
+                java.util.Locale.class,
+                java.util.Locale.class.getMethod("setDefault", java.util.Locale.class)));
+        assertTrue(IsolatePolicy.isUnscopedGlobalMutator(
+                java.util.Locale.class,
+                java.util.Locale.class.getMethod("setDefault",
+                        java.util.Locale.Category.class, java.util.Locale.class)));
+        assertTrue(IsolatePolicy.isUnscopedGlobalMutator(
+                java.util.TimeZone.class,
+                java.util.TimeZone.class.getMethod("setDefault", java.util.TimeZone.class)));
+        assertFalse(IsolatePolicy.isUnscopedGlobalMutator(
+                java.util.Locale.class,
+                java.util.Locale.class.getMethod("forLanguageTag", String.class)));
+        assertFalse(IsolatePolicy.isUnscopedGlobalMutator(
+                java.util.TimeZone.class,
+                java.util.TimeZone.class.getMethod("getTimeZone", String.class)));
+
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
+                IsolatePolicy.Capability.JAVA_INTEROP);
+        assertDoesNotThrow(() -> policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.util.Locale", "java.util.TimeZone")));
+    }
+
+    @Test
     void ordinaryNonIoHostClassCanStillUseExplicitInteropAllowlist() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(
                 IsolatePolicy.Capability.JAVA_INTEROP);
