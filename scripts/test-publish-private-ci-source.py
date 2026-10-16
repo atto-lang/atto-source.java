@@ -458,6 +458,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual({name: int(repo_id) for name, repo_id in listed},
                          pub.PINNED_DESTINATION_IDS)
 
+    def test_proposed_private_carrier_pin_is_not_transfer_approval(self):
+        candidate = "ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-infra"
+        self.assertEqual(1412142815, pub.PINNED_DESTINATION_IDS[candidate])
+        # Even a pinned private carrier must be denied when the trusted
+        # publisher's reviewed policy is still empty. No GitHub calls or
+        # source-bearing POST are permitted.
+        self.approval.write_text("# No approved destination on protected main\\n")
+        self.route_calls.clear()
+        with patch.object(pub, "gh_api", side_effect=self.fake_api):
+            with self.assertRaisesRegex(pub.Denied, "approval was revoked or absent"):
+                pub.publish(candidate, self.source, "ci/oreslang-test",
+                            self.root, A, D)
+        self.assertEqual([], self.route_calls)
+
     def test_same_slug_but_different_destination_id_aborts_before_upload(self):
         self.destination_ids = [987654321]
         with self.assertRaisesRegex(pub.Denied, "numeric identity"):
