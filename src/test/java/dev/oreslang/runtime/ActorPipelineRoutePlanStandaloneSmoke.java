@@ -237,8 +237,9 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                     List.of("worker-a", "worker-b", "worker-c").get(i % 3)),
                     "canonical RR sequence differs from other backends");
         }
-        String[] keys = {"customer-7", "alpha", "beta", "🌍", ""};
-        String[] destinations = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c"};
+        String[] keys = {"customer-7", "alpha", "beta", "🌍", "",
+                String.valueOf((char) 0)};
+        String[] destinations = {"worker-a", "worker-a", "worker-c", "worker-a", "worker-c", "worker-a"};
         for (int i = 0; i < keys.length; i++) {
             check(three.forwardByKey("producer-1", keys[i]).target()
                     .equals(destinations[i]),
