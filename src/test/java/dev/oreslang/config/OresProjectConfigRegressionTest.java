@@ -69,6 +69,9 @@ final class OresProjectConfigRegressionTest {
         OresProjectConfig windowsSeparators = consumer.forImportedPackage(source, "pkg:tools\\src\\a");
         assertEquals(dependency.toRealPath(), windowsSeparators.projectRoot().toRealPath());
         assertEquals(source.toRealPath(),
-                imported.resolveImport(source, "@/src/a").orElseThrow());
+                imported.resolveImport(source, "+/src/a").orElseThrow());
+        IllegalArgumentException retiredMarker = assertThrows(IllegalArgumentException.class,
+                () -> imported.resolveImport(source, "@/src/a"));
+        assertTrue(retiredMarker.getMessage().contains("invalid import prefix"));
     }
 }
