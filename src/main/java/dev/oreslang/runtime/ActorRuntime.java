@@ -896,7 +896,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public synchronized void close() {
+        public void close() {
+            // Public slice handles never carry CONTROL authority: another
+            // actor or host thread must not be able to retire the owner.
+            requireCurrentOwner();
+            retireFromRuntime();
+        }
+
+        // Runtime finalization is an internal CONTROL path and may run
+        // outside an actor turn. Never expose this authority on ActorContext.
+        private synchronized void retireFromRuntime() {
             // Publish revocation before scrubbing. Retain work after an
             // exceptional native/accounting release so shutdown is retryable.
             sliceClosed.set(true);
@@ -7146,7 +7155,7 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.close();
+            if (memorySlice != null) memorySlice.retireFromRuntime();
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
