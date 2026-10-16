@@ -76,13 +76,26 @@ public final class ActorPipelineRoutePlan {
     public ActorPipelineRoutePlan(List<Stage> stages, List<Edge> edges) {
         Objects.requireNonNull(stages);
         Objects.requireNonNull(edges);
-        if (stages.size() < 2 || stages.size() > MAX_STAGES
-                || edges.isEmpty() || edges.size() > MAX_EDGES) {
+        // A caller-owned List may report a bounded size while its iterator
+        // yields indefinitely, throws, or changes values between checks.
+        // Capture only the validated number of indexed slots, exactly once,
+        // before graph validation. No subsequent operation sees caller lists.
+        int stageCount = stages.size();
+        int edgeCount = edges.size();
+        // Repeat the budget check on the captured sizes, not on a live List.
+        if (stageCount < 2 || stageCount > MAX_STAGES
+                || edgeCount < 1 || edgeCount > MAX_EDGES) {
             throw new IllegalArgumentException("pipeline graph stage/edge budget invalid");
         }
+        List<Stage> stageSnapshot = new ArrayList<>(stageCount);
+        List<Edge> edgeSnapshot = new ArrayList<>(edgeCount);
+        for (int i = 0; i < stageCount; i++)
+            stageSnapshot.add(Objects.requireNonNull(stages.get(i), "pipeline stage"));
+        for (int i = 0; i < edgeCount; i++)
+            edgeSnapshot.add(Objects.requireNonNull(edges.get(i), "pipeline edge"));
 
         Map<String, Stage> byId = new HashMap<>();
-        for (Stage stage : stages) {
+        for (Stage stage : stageSnapshot) {
             if (!validComponent(stage.instanceId(), false)
                     || !validComponent(stage.actorType(), false)
                     || !validComponent(stage.inbound(), true)
@@ -105,11 +118,11 @@ public final class ActorPipelineRoutePlan {
         Map<String, Integer> incoming = new HashMap<>();
         Map<String, Integer> indegree = new HashMap<>();
         Set<EndpointPair> pairs = new HashSet<>();
-        for (Stage stage : stages) {
+        for (Stage stage : stageSnapshot) {
             incoming.put(stage.instanceId(), 0);
             indegree.put(stage.instanceId(), 0);
         }
-        for (Edge edge : edges) {
+        for (Edge edge : edgeSnapshot) {
             if (!validComponent(edge.source(), false)
                     || !validComponent(edge.target(), false)
                     || !validComponent(edge.payloadType(), false)) {
@@ -134,7 +147,7 @@ public final class ActorPipelineRoutePlan {
             incoming.merge(edge.target(), 1, Integer::sum);
             indegree.merge(edge.target(), 1, Integer::sum);
         }
-        for (Stage stage : stages) {
+        for (Stage stage : stageSnapshot) {
             int reads = incoming.get(stage.instanceId());
             int writes = routes.getOrDefault(stage.instanceId(), List.of()).size();
             if (reads == 0 && writes == 0
@@ -146,7 +159,7 @@ public final class ActorPipelineRoutePlan {
         }
 
         ArrayDeque<String> ready = new ArrayDeque<>();
-        for (Stage stage : stages) {
+        for (Stage stage : stageSnapshot) {
             if (indegree.get(stage.instanceId()) == 0) ready.add(stage.instanceId());
         }
         int visited = 0;
@@ -158,12 +171,12 @@ public final class ActorPipelineRoutePlan {
                 if (remaining == 0) ready.addLast(edge.target());
             }
         }
-        if (visited != stages.size()) {
+        if (visited != stageCount) {
             throw new IllegalArgumentException("pipeline graph contains a cycle");
         }
 
         Set<String> eligibleRoots = new HashSet<>();
-        for (Stage stage : stages) {
+        for (Stage stage : stageSnapshot) {
             if (incoming.get(stage.instanceId()) == 0
                     && (stage.role() == Role.READABLE || stage.role() == Role.DUPLEX)
                     && routes.containsKey(stage.instanceId())) {
@@ -181,7 +194,7 @@ public final class ActorPipelineRoutePlan {
         // Create every selector cursor during trusted DAG validation, not
         // on a guest turn's first round-robin attempt.
         for (String source : immutable.keySet()) cursors.put(source, 0);
-        this.edges = List.copyOf(edges);
+        this.edges = List.copyOf(edgeSnapshot);
     }
 
     public List<Edge> edges() { return edges; }
