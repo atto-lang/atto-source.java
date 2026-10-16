@@ -18,13 +18,15 @@ import java.util.Optional;
 /**
  * Project-level Oreslang compiler configuration.
  *
- * <p>The nearest .oreslangc.cfg.toml found by walking upward from the source
+ * <p>The nearest .ores.pkg.toml (or legacy .oreslangc.cfg.toml) found by walking upward from the source
  * file (or current working directory) owns the project. Manifest paths are
  * resolved relative to [project].root. Ambient ORESLANG_PATH entries are
  * process-relative and are searched after project-local roots.</p>
  */
 public final class OresProjectConfig {
-    public static final String MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String MANIFEST_NAME = ".ores.pkg.toml";
+    public static final String LEGACY_MANIFEST_NAME = ".oreslangc.cfg.toml";
+    public static final String ENV_PROJECT_ROOT = "ORES_PROJECT_ROOT";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -61,9 +63,23 @@ public final class OresProjectConfig {
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
 
         Path searchFrom = directoryFor(start);
+        String override = environment.get(ENV_PROJECT_ROOT);
+        if (override != null && !override.isBlank()) {
+            Path explicitRoot = Path.of(override).toAbsolutePath().normalize();
+            if (!Files.isDirectory(explicitRoot)) {
+                throw new IllegalArgumentException("project root is not a directory: " + explicitRoot);
+            }
+            Path manifest = manifestInDirectory(explicitRoot);
+            if (manifest == null) {
+                throw new IllegalArgumentException("project root lacks " + MANIFEST_NAME
+                        + " or " + LEGACY_MANIFEST_NAME + ": " + explicitRoot);
+            }
+            return load(manifest, environment);
+        }
+
         for (Path cursor = searchFrom; cursor != null; cursor = cursor.getParent()) {
-            Path candidate = cursor.resolve(MANIFEST_NAME);
-            if (Files.isRegularFile(candidate)) return load(candidate, environment);
+            Path manifest = manifestInDirectory(cursor);
+            if (manifest != null) return load(manifest, environment);
         }
 
         Path root = searchFrom.toAbsolutePath().normalize();
@@ -76,6 +92,13 @@ public final class OresProjectConfig {
                 List.of(),
                 parseEnvironmentPaths(environment),
                 null);
+    }
+
+    private static Path manifestInDirectory(Path directory) {
+        Path modern = directory.resolve(MANIFEST_NAME);
+        if (Files.isRegularFile(modern)) return modern;
+        Path legacy = directory.resolve(LEGACY_MANIFEST_NAME);
+        return Files.isRegularFile(legacy) ? legacy : null;
     }
 
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
@@ -161,6 +184,30 @@ public final class OresProjectConfig {
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
         String unix = importPath.replace('\\', '/');
+        if (unix.startsWith("+")) {
+            if (!unix.startsWith("+/")) {
+                throw new IllegalArgumentException("project-local imports must start with '+/': " + importPath);
+            }
+            if (manifestPath == null) {
+                throw new IllegalArgumentException("project-root import requires " + MANIFEST_NAME
+                        + " (or " + LEGACY_MANIFEST_NAME + "): " + importPath);
+            }
+            String local = unix.substring(2);
+            if (local.isEmpty() || java.util.Arrays.stream(local.split("/", -1))
+                    .anyMatch(part -> part.isEmpty() || part.equals(".") || part.equals(".."))) {
+                throw new IllegalArgumentException("invalid project-root import path: " + importPath);
+            }
+            Path root = projectRoot.toAbsolutePath().normalize();
+            Path candidate = root.resolve(local).normalize();
+            if (!candidate.startsWith(root)) {
+                throw new IllegalArgumentException("project-root import escapes root: " + importPath);
+            }
+            Optional<Path> source = existingSource(candidate);
+            if (source.isPresent() && !source.get().toRealPath().startsWith(root.toRealPath())) {
+                throw new IllegalArgumentException("project-root import escapes root through symlink: " + importPath);
+            }
+            return source;
+        }
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
