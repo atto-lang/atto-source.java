@@ -177,6 +177,62 @@ attempts in 40 rounds to check the post-close barrier.
 JNI, or compiled LLVM execution. The real JUnit `ActorPipelineMailboxRouterTest`
 remains a separate mandatory gate before enabling source routing.
 
+## Actual correlated Java mailbox proof — 2026-10-16
+
+`ActorPipelineCorrelatedMailboxRouter<M>` joins the existing
+`ActorPipelineRouteSession` to the real `ActorRuntime` mailbox admission
+path. It is a **package-private trusted SHARED-actor bridge**, not an Oreslang
+guest intrinsic. Supervisor-selected ingress roots create VM-owned route
+frames; subsequent forwarding reads the current actor's authenticated
+receive frame, validates its physical actor identity and graph instance,
+and delegates payload validation, freeze, ownership checks and bounded
+mailbox admission to the existing runtime.
+
+The frame is attached to the **internal `MessageEnvelope`**, **not to the
+`ActorInboxMail<M>.value()` guest data**. Per-envelope frame identity
+contains immutable graph generation, flow ID, distinct route ID, complete
+verified forward actor-instance path, and reverse hop cursor. It is never
+deserialized from a user message or selected from a caller-supplied name.
+Incoming ordinary messages have no frame and cannot acquire routing
+authority. Registry creation and ingress require supervisor context;
+each binding must be a live SHARED actor in the owning runtime.
+
+`forward`, `forward_all`, `forward_round_robin`, `forward_to` and
+`forward_by_key` create independently accounted child frames and publish
+the ordinary typed Java host payload over actual mailboxes. Partial
+`forward_all` failures retire their failed child while preserving receipts
+for already admitted recipients. A fatal publication error also retires
+unattempted children. Frame cleanup happens after normal receive, source
+receive continuation completion, discarded queue messages, and STOP
+teardown. No post-retirement use of a stale frame is allowed.
+
+**Reverse DATA is now executable in this host bridge:** a sink calls
+`backward(payload)` and the runtime delivers one hop to the immediate
+verified predecessor from its immutable route path. That predecessor may
+call `backward(payload)` again, walking the sealed path to the source.
+Fan-in branches cannot guess a global "previous worker" or forge an
+upstream destination. Each reverse hop consumes its previous route frame
+and gets a unique new route ID while retaining the flow ID. A host
+`currentCorrelation()` gives read-only metadata for the authenticated
+current turn.
+
+The executable Java JUnit fixture
+`ActorPipelineCorrelatedMailboxRouterTest` exercises a four-instance
+source → two workers → sink fan-out/fan-in and **two reverse acknowledgments
+through their original workers to the source**, without embedding route
+metadata in user payloads. The standalone strict-JDK21 ledger smoke also
+checks per-branch reverse paths, one-shot return, replay rejection, the
+origin barrier, and tight frame credit recovery. These fixtures are
+**committed but not yet verified by an executing exact-tree Maven runner**.
+
+Limitations: this uses the Java host's one generic payload type `M`
+across both directions; the real guest compiler must check *separate
+forward and backward nominal types* and Sendable/ownership rules. Guest
+`self.reply` to origin is not enabled, and distributed/remote routing,
+PRIVATE/UNTRUSTED actor isolation-safe handles, native/LLVM reverse
+mailboxes, and .net/.wasm/.forge parity remain pending. A host return
+**hop** does not prove source-level `self.backward` or `self.reply`.
+
 ## Still required before guest-language release
 
 1. Compile source-declared actor graphs with runtime-assigned instance IDs.
