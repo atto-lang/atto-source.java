@@ -133,6 +133,47 @@ Standalone JDK 21 tests exercise rejected live changes, successful quiescent
 changes, cancelled stale-frame replay, non-increasing generation denial, and
 10,000 successive two-consumer fan-outs at the tight three-frame limit.
 
+## Trusted SHARED actor routing and retirement hardening
+
+The real-mailbox Java host adapter is **SHARED-turn-only** until
+scheduler-owned, isolation-safe routing can be compiled for PRIVATE and
+UNTRUSTED actors. A captured host adapter is not an authority to leak its
+mutable selector into a private actor heap. Every route validates the
+scheduler's active DATA receive, actual current actor identity, runtime
+affinity and source connection; startup, terminal cleanup, arbitrary host
+calls and untrusted/private actor turns are rejected before admission.
+
+Each `ActorPipelineMailboxRouter` binding has its **own** deterministic
+round-robin cursor. A new binding does not inherit cursor state from a
+previous topology generation even if the supervisor reuses an immutable
+`ActorPipelineRoutePlan`.
+
+`ActorPipelineMailboxRouter.close()` is supervisor-only. The fair
+reader/writer retirement gate protects each entire mailbox admission or
+fan-out attempt and establishes the linearization barrier: no new routed
+mailbox admission can succeed **after** close returns. Actors use
+`tryLock` instead of blocking their carrier while host graph retirement
+is queued. Close does NOT silently revoke already accepted actor mail,
+cancel accepted processing, or falsely complete `get_done()`.
+
+A new Maven-free CI gate:
+
+```sh
+sh scripts/test-actor-pipeline-router-host-gate.sh
+```
+
+compiles the actual production Java adapter with JDK 21
+`--release 21 -Xlint:all -Werror` against narrow test doubles, exercising
+source impersonation denial, PRIVATE/UNTRUSTED rejection, per-target partial
+results, per-binding RR reset, stale router denial and supervisor-only
+retirement. Its 8-carrier synthetic contention harness makes 384,000 route
+attempts in 40 rounds to check the post-close barrier.
+
+**Evidence boundary:** These test doubles do not model true
+`ActorRuntime` single-flight execution, Guest `ActorMail<T>`, GraalVM,
+JNI, or compiled LLVM execution. The real JUnit `ActorPipelineMailboxRouterTest`
+remains a separate mandatory gate before enabling source routing.
+
 ## Still required before guest-language release
 
 1. Compile source-declared actor graphs with runtime-assigned instance IDs.
