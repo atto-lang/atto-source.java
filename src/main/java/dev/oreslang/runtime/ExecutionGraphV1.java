@@ -223,6 +223,12 @@ public final class ExecutionGraphV1 {
 
         /** Synchronous CPU-only execution; never invoke from an actor carrier. */
         public T executeCpu() {
+            // This synchronous host evaluator must never pin an actor carrier.
+            // Guest actor entrypoints use their own suspend/resume lowering.
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalStateException(
+                        "CPU graph executeCpu cannot run on an actor carrier; submit to a trusted worker");
+            }
             admitCpu();
             return evaluate(new AtomicBoolean());
         }
@@ -248,6 +254,13 @@ public final class ExecutionGraphV1 {
                 executor.execute(() -> {
                     if (result.isDone()) return;
                     try {
+                        // A direct/inline Executor handed to an actor is not
+                        // asynchronous. Refuse it rather than accidentally
+                        // running CPU-bound work inside a mailbox turn.
+                        if (ActorRuntime.inActorExecution()) {
+                            throw new IllegalStateException(
+                                    "CPU graph worker cannot execute on an actor carrier");
+                        }
                         T value = evaluate(cancelled);
                         if (!result.isDone()) result.completeFromRuntime(value);
                     } catch (CancellationException ex) {
