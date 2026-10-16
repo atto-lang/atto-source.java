@@ -7629,6 +7629,10 @@ public final class OresEvalRootNode extends RootNode {
             // Looking up the binding on the receiver's evaluator loses it
             // when the call crosses a linked code-image boundary.
             Ast.MethodCallBinding binding = program.boundMethodCalls().get(call);
+            if (binding != null && !selector.equals(binding.slot())) {
+                throw new IllegalStateException(
+                        "compiler-bound method slot differs from the call site");
+            }
             Ast.MethodDecl dynamic = receiver.owner.findMethod(
                     receiver.klass, selector, new LinkedHashSet<>());
             if (binding == null) return dynamic;
