@@ -171,6 +171,60 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void nestedPackageCannotInheritParentRootAuthority() throws Exception {
+        Path root = makeProject("nested-boundary");
+        Path child = root.resolve("lib/child");
+        Files.createDirectories(child);
+        Files.writeString(child.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [project]
+                root = "."
+                """);
+        Files.writeString(child.resolve("secret.ores"), """
+                pub fnc secret(): int { return 42; }
+                """);
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        IllegalArgumentException boundary = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "+/lib/child/secret"));
+        assertTrue(boundary.getMessage().contains("nested package"), boundary.getMessage());
+
+        // Even a symlink alias into an otherwise in-root nested package must
+        // not bypass the package identity boundary.
+        Path alias = root.resolve("lib/alias.ores");
+        try {
+            Files.createSymbolicLink(alias, child.resolve("secret.ores"));
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + unsupported);
+        }
+        IllegalArgumentException aliased = assertThrows(IllegalArgumentException.class,
+                () -> config.resolveImport(importer, "+/lib/alias"));
+        assertTrue(aliased.getMessage().contains("nested package"), aliased.getMessage());
+    }
+
+    @Test
+    void projectManifestSymlinkCannotMoveRootAuthority() throws Exception {
+        Path root = makeProject("symlink-manifest");
+        Path outside = temp.resolve("outside-package.toml");
+        Files.writeString(outside, """
+                schema_version = "1"
+                [project]
+                root = "."
+                """);
+        Path manifest = root.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.delete(manifest);
+        try {
+            Files.createSymbolicLink(manifest, outside);
+        } catch (UnsupportedOperationException | java.io.IOException | SecurityException unsupported) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "symlinks unavailable: " + unsupported);
+        }
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(failure.getMessage().contains("symlink"), failure.getMessage());
+    }
+
+    @Test
     void inRootSymlinkSharesTheCanonicalSourceIdentity() throws Exception {
         Path root = makeProject("same-identity");
         Path original = root.resolve("lib/message.ores");
