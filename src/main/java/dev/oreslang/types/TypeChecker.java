@@ -5934,6 +5934,15 @@ public final class TypeChecker {
             Type element = named.arguments().getFirst();
             return switch (member) {
                 case "is_some", "is_none" -> new Function(List.of(), Primitive.BOOL);
+                case "flatten" -> {
+                    Type leaf = element;
+                    while (leaf instanceof Named inner
+                            && inner.name().equals("Option")
+                            && inner.arguments().size() == 1) {
+                        leaf = inner.arguments().getFirst();
+                    }
+                    yield new Function(List.of(), new Named("Option", List.of(leaf)));
+                }
                 case "unwrap" -> new Function(List.of(), element);
                 case "unwrap_safe" -> new Function(
                         List.of(),
