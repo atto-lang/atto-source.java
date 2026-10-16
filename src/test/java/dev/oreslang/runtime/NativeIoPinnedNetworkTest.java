@@ -108,6 +108,11 @@ final class NativeIoPinnedNetworkTest {
         assertThrows(SecurityException.class, () ->
                 NativeIo.resolveAuthorizedListenerAddress(deniedAddress, "127.0.0.1", 0));
 
+        RuntimePermissions broad = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "*");
+        assertThrows(SecurityException.class, () ->
+                NativeIo.resolveAuthorizedListenerAddress(broad, "0.0.0.0", 0));
+
         // Fixed-port listeners still use exact destination checks.
         InetSocketAddress fixed = NativeIo.resolveAuthorizedListenerAddress(
                 onePortOnly, "127.0.0.1", 8080);
