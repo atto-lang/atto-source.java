@@ -6,10 +6,34 @@ import java.util.HashSet;
 public final class Ast {
     private Ast() { }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    /**
+     * A type-checked call bound to an existing (name, arity) instance slot.
+     * Nominal enum same-arity method dispatch is still not executable.
+     */
+    public record MethodCallBinding(ClassDecl staticReceiver, MethodDecl declaredMethod) {
+        public MethodCallBinding {
+            java.util.Objects.requireNonNull(staticReceiver, "static receiver");
+            java.util.Objects.requireNonNull(declaredMethod, "method declaration");
+            if (declaredMethod.isStatic()) {
+                throw new IllegalArgumentException(
+                        "static function cannot enter instance method call binding");
+            }
+        }
+    }
+
+    public record Program(
+            String namespace, List<ImportDecl> imports, List<ModuleDecl> modules,
+            java.util.Map<CallExpr, MethodCallBinding> boundMethodCalls) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
+            // CallExpr records compare structurally. Binding keys must use
+            // object identity even for byte-for-byte identical source calls.
+            boundMethodCalls = java.util.Collections.unmodifiableMap(
+                    new java.util.IdentityHashMap<>(boundMethodCalls));
+        }
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, imports, modules, java.util.Map.of());
         }
         public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
