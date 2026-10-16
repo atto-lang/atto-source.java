@@ -48,7 +48,8 @@ public final class OresVM implements AutoCloseable {
         // Mailmen never depend on actor-carrier startup. Extra carriers are
         // created only when independent runnable CONTROL turns contend.
         int maximumControlParallelism = Integer.getInteger(
-                "ores.runtime.control.max.parallelism", 20);
+                "ores.runtime.control.max.parallelism",
+                Math.max(20, controlParallelism));
         this.controlExecutor = new AdaptiveCarrierExecutor(
                 controlParallelism, maximumControlParallelism,
                 DEFAULT_QUEUE_CAPACITY, factory);
