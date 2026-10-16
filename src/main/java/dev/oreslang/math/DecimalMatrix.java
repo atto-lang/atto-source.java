@@ -84,6 +84,7 @@ public final class DecimalMatrix {
         validateContext(Objects.requireNonNull(context, "context"));
         checkMultiplyShapesAndWork(left.rows, left.columns, right.rows, right.columns,
                 left.rows, right.columns);
+        checkDigitWorkAdmission(left, right);
         DecimalMatrix result = zeros(left.rows, right.columns);
         multiplyInto(result, left, right, context);
         return result;
@@ -107,6 +108,7 @@ public final class DecimalMatrix {
         if (output == left || output == right) {
             throw new IllegalArgumentException("output must not alias inputs");
         }
+        checkDigitWorkAdmission(left, right);
         // Stage results until every destination cell passes resource checks.
         // Failure must not publish a partially updated caller-owned matrix.
         BigDecimal[] staged = new BigDecimal[output.cells.length];
@@ -158,6 +160,23 @@ public final class DecimalMatrix {
         }
         if ((long) leftRows * inner * rightColumns > MAX_SCALAR_MULTIPLIES) {
             throw new IllegalArgumentException("matrix arithmetic budget exceeded");
+        }
+    }
+
+    private static void checkDigitWorkAdmission(DecimalMatrix left, DecimalMatrix right) {
+        // Worst-case complexity based on maximum input limb widths. This is a
+        // conservative rejection gate, deliberately evaluated *before* output
+        // allocation or the first BigDecimal multiplication.
+        long leftDigits = 0, rightDigits = 0;
+        for (BigDecimal value : left.cells) {
+            leftDigits = Math.max(leftDigits, value.precision());
+        }
+        for (BigDecimal value : right.cells) {
+            rightDigits = Math.max(rightDigits, value.precision());
+        }
+        long operations = (long) left.rows * left.columns * right.columns;
+        if (operations * (leftDigits + rightDigits) > MAX_DIGIT_WORK) {
+            throw new IllegalArgumentException("matrix decimal digit-work budget exceeded");
         }
     }
 
