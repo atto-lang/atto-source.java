@@ -33,11 +33,16 @@ public final class OresPointer {
                 || checked instanceof ActorRuntime.ActorHandle<?>
                 || checked instanceof ActorRuntime.ActorGroup
                 || checked instanceof ActorRuntime.ActorGroupJoinCapability
+                || checked instanceof ActorRuntime.ActorControlHandle
+                || checked instanceof ActorRuntime.ContinuationTarget
+                || checked instanceof ActorEventBus
+                || checked instanceof ActorEventBus.Subscription<?>
                 || checked instanceof ActorRuntime.Shared<?>
                 || checked instanceof ActorRuntime.SyncCell<?>
                 || checked instanceof ChannelRuntime.Channel<?>
                 || checked instanceof ChannelRuntime.SelectCase
                 || checked instanceof ChannelRuntime.SelectSet
+                || checked instanceof ChannelRuntime.SelectPlan
                 || checked instanceof OresMutex.Lock<?>
                 || checked instanceof OresMutex.Guard<?>
                 || checked instanceof java.util.concurrent.Future<?>
