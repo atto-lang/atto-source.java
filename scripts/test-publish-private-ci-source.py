@@ -2248,6 +2248,12 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "invalid GitHub API JSON"):
             pub.strict_github_api_json('{"id":' + '9' * 5000 + '}')
 
+    def test_api_json_rejects_nonfinite_exponents(self):
+        for number in ("1e9999999", "-1e999999", "1e" + "9" * 400):
+            with self.subTest(number=number[:30]):
+                with self.assertRaises(pub.Denied):
+                    pub.strict_github_api_json('{"value":' + number + '}')
+
     def test_api_json_rejects_excessive_nesting_without_crashing(self):
         with self.assertRaisesRegex(pub.Denied, "invalid GitHub API JSON"):
             pub.strict_github_api_json('{"data":' + '[' * 10000 +
