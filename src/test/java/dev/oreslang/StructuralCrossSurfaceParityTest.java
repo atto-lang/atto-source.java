@@ -92,4 +92,50 @@ final class StructuralCrossSurfaceParityTest {
                 """)));
         assertDoesNotThrow(() -> OwnershipChecker.check(typed));
     }
+
+    @Test
+    void guestExecutesOrderedGuardAndMissingShapeFallback() throws Exception {
+        String sourceText = """
+                define module app
+                  define class Base as end
+                  define class Candidate extends Base as
+                    pub val int value = 7;
+                    pub val int extra = 8;
+                  end
+                  define class Plain extends Base as end
+
+                  fnc classify(Base item): int {
+                    const ready = false;
+                    match item over
+                      on structural { value: int, extra: int } narrow when ready -> {
+                        return 10;
+                      }
+                      on structural { value: int } broad -> { return 20; }
+                      on _ -> { return 30; }
+                    end
+                  }
+
+                  pub fnc main(): void {
+                    stdio.println(classify(new Candidate()));
+                    stdio.println(classify(new Plain()));
+                    return;
+                  }
+                end
+                """;
+        var typed = TypeChecker.check(Parser.parse(sourceText));
+        OwnershipChecker.check(typed);
+        var out = new java.io.ByteArrayOutputStream();
+        var source = org.graalvm.polyglot.Source.newBuilder(OresLanguage.ID,
+                sourceText, "structural-ordered-runtime.ores")
+                .mimeType(OresLanguage.MIME_TYPE).build();
+        try (var context = org.graalvm.polyglot.Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).out(out).build()) {
+            context.eval(source);
+        }
+        assertEquals("20\n30\n",
+                out.toString(java.nio.charset.StandardCharsets.UTF_8)
+                        .replace("\r\n", "\n"),
+                "only real guest dispatch proves first-success guards and fallback");
+    }
+
 }
