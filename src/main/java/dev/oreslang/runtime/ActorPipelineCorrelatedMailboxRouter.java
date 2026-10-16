@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -196,6 +197,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         // must never strand a live, undeliverable correlation child.
         var out = graph.forwardAll(frame.receiver());
         var result = new ArrayList<Admission>(out.size());
+        // Allocate the read-only wrapper before any live correlation frame
+        // or mailbox DATA publication. No final List.copyOf allocation
+        // occurs after successful sends have become externally visible.
+        var completed = Collections.unmodifiableList(result);
         var children = session.forwardAll(frame);
         int next = 0;
         try {
@@ -216,7 +221,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
                             child.flowId(), child.routeId(), false, failure));
                 }
             }
-            return List.copyOf(result);
+            return completed;
         } catch (RuntimeException | Error failure) {
             // Previously published branches retain their independent frames.
             // The current and later frames have not been published if the
