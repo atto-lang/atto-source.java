@@ -497,7 +497,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
 
         def simulated_git(args, **kwargs):
             captured.append((args, kwargs))
-            response = str(self.source.resolve()) + "\\n" + A + "\\n" + tree + "\\n"
+            response = str(self.source.resolve()) + "\n" + A + "\n" + tree + "\n"
             return subprocess.CompletedProcess(args, 0, stdout=response, stderr="")
 
         with patch.dict("os.environ", {
