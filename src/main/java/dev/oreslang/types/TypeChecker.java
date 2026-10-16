@@ -6934,6 +6934,14 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
+        if (concrete instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
+            // A positional width view requires runtime index masking,
+            // absent-tail Option projection and borrow/escape proofs; neither
+            // a nominal interface lookup nor exact Tuple equality can supply it.
+            throw new IllegalArgumentException(
+                    "structural tuple width view is not yet executable; "
+                            + "requires readonly projection and checked call ABI lowering");
+        }
         if (concrete instanceof Record) {
             // Inline structural shapes are already the canonical read-only
             // structural contract. They do not need a nominal class/interface
