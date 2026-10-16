@@ -82,6 +82,26 @@ reservation, STOP, generation transition and 2,000 concurrent branch
 selections. Maven also invokes the fixture from
 `ActorPipelineRouteSessionTest`.
 
+## Explicit clean and aborting generation barriers
+
+A clean `advanceGeneration(successor)` **rejects** while any active
+`MailFrame` remains. This is mandatory to avoid silently erasing in-flight
+messages during graph reconfiguration. A rejected attempt must not mutate
+the current epoch or its round-robin cursor.
+
+Only the trusted runtime/supervisor may call
+`abortAndAdvanceGeneration(successor)`. This explicitly invalidates every
+outstanding frame, resets route selection, and returns the number of retired
+frames. It **does not** itself drain/cancel queued transport mail, settle
+pending writer receipts, or stop user actor continuations; those physical
+scheduler barriers must be completed before publishing the successor graph.
+Neither method is a guest-callable `self.*` method. The Java session and
+constructor are package-restricted while source-language lowering is absent.
+
+Standalone JDK 21 tests exercise rejected live changes, successful quiescent
+changes, cancelled stale-frame replay, non-increasing generation denial, and
+10,000 successive two-consumer fan-outs at the tight three-frame limit.
+
 ## Still required before guest-language release
 
 1. Compile source-declared actor graphs with runtime-assigned instance IDs.
