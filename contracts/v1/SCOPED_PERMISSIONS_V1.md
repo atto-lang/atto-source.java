@@ -7,13 +7,51 @@
 1. Standalone CLI execution starts with no ambient `read`, `write`, `net`, `env`, `run`, `sys`, `ffi`, or `import` grants. Trusted embedders may carry explicit compatibility authority, **never** silently inherited by an ordinary CLI.
 2. Host-provided **coarse capability** is an immutable ceiling. Scoped grants can only attenuate it; deny wins over allow, including wildcard grants.
 3. Rules are checked at the **actual host I/O boundary**, not merely at parsing, syntax validation, module loading, or compile-time permission-check mode. Static and deferred checking must agree on runtime denial.
-4. `net` requires a canonical and validated host/port. Normalize DNS case/trailing final dot and numeric ports; compare IPv6 address identities; reject ambiguous IPv4 aliases, malformed ports, credentials, implicit URL syntax, and unbracketed IPv6. Portless target cannot evade a same-host port-specific deny. Network hostname authorization alone does **not** authorize an unexpected DNS-resolved IP; resolved-address/connect-time checks remain required.
+4. `net` requires a canonical and validated host/port. Normalize DNS case/trailing final dot and numeric ports; compare IPv6 address identities; reject ambiguous IPv4 aliases, malformed ports, credentials, implicit URL syntax, and unbracketed IPv6. Portless target cannot evade a same-host port-specific deny. Direct programmatic network allow/deny scopes reject surrounding whitespace rather than silently changing the authorized endpoint; CLI comma-separated list delimiters may be trimmed explicitly before validating each scope. Network hostname authorization alone does **not** authorize an unexpected DNS-resolved IP; resolved-address/connect-time checks remain required.
 5. File scopes must preserve actual filename whitespace, segment boundaries, and path identity. Normalizing an ancestor is not a substitute for defending against symlink changes at the file-open boundary. Every platform must use its own safe handle/path strategy.
 6. `env`, `run`, and `sys` token identity is literal, not whitespace-trimmed or case-folded by default. `run` grants do not imply shell, subprocess, or FFI escape hatches.
 7. Serialized guest policy must carry an unambiguous explicit-deny/default marker, preserve empty sets, reject duplicates/truncation, and never widen the coarse capability set. Treat malformed/unrecognized policy arguments as invalid.
 8. Guest-facing host escape hatches require distinct audited authority: Java reflection/class access, .NET reflection/PInvoke, LLVM/native FFI and child-process syscalls, WASM/WASI imports, Forge native code paths. In experimental scalar backends, **deny unsupported capability requests**, never report them as executed allows.
 9. The standalone CLI must use the project's approved `flags-2-env` flag parsing contract where integrated; no independent ad hoc parser should be considered permission parity.
 10. An unsupported implementation slice MUST fail closed; it cannot report `allow` based on a mock evaluator or a contract-only test.
+
+## Network port canonicality
+
+All backends that parse scoped network endpoints MUST reject malformed or
+unrepresentable numeric port spellings before arithmetic: use **1–5 ASCII
+decimal digits** representing an integer from **1 through 65535**. In
+particular, `4294967739` (2^32 + 443) MUST NOT wrap around and authorize
+port 443; a valid spelling such as `0443` may canonicalize to port 443.
+Apply this check to both permission rules and requested/selected endpoints,
+including bracketed IPv6 syntax. Trusted socket adapters must independently
+enforce port bounds before constructing an OS socket address. A backend
+without scoped network guest I/O (currently WASM) must continue to deny
+unsupported network authority; host-only tests are not runtime parity proof.
+
+## Selected TCP peer identity
+
+An unspecified IPv4 address (`0.0.0.0`) is a **bind** sentinel, not a safe
+outbound peer identity. All trusted host socket adapters MUST reject it as the
+requested numeric destination or DNS-selected numeric address, even under an
+explicit wildcard `net` grant. On some Linux systems an outbound connect to
+`0.0.0.0` can reach `127.0.0.1`, circumventing a loopback-specific deny if
+policy checking assumes the unspecified address is the actual peer. Check
+this condition before socket creation; preserve valid canonical IPv4 peers.
+Unsupported guest socket surfaces (notably WASM's current zero-import slice)
+continue to deny network access rather than claim host-I/O parity.
+
+## Dynamic HTTP listener ports
+
+Java `http.listen(host, 0, ...)` requests an OS-assigned port. Port 0 is an API
+sentinel, not a valid `net` permission-scope port. Before binding, the runtime
+requires a port-independent grant for the requested host and checks the
+resolved numeric IPv4 address. While port selection and DNS aliases cannot be
+proved disjoint from every denied endpoint, **any configured NET denial**
+prevents a port-zero listener, even if the denial appears unrelated.
+The all-interfaces address `0.0.0.0` is not one selected IP and is rejected
+for dynamic ports. A fixed-port-only grant does not authorize a dynamic-port listener.
+
+Unsupported listener address families remain denied until implemented.
 
 ## Canonical test-vector integrity
 
@@ -62,7 +100,6 @@ malformed or nonimmutable source commit/tree arguments (lowercase 40-hex
 Git identifiers only). These **shape checks are not proof of real execution**:
 an independent runner, source-tree identity, production adapter and genuine
 guest/host tests are still required.
-
 
 Run:
 ```sh
