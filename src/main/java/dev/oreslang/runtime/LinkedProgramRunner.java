@@ -417,7 +417,12 @@ public final class LinkedProgramRunner {
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
             if (target.isEmpty()) {
-                if (raw.startsWith(".") || raw.startsWith("@") || raw.startsWith("pkg:")
+                // Only ./ and ../ designate mandatory relative filesystem
+                // imports; dot-prefixed bare names may be resolved by the
+                // package fallback instead of failing early.
+                boolean explicitRelative = raw.equals(".") || raw.equals("..")
+                        || raw.startsWith("./") || raw.startsWith("../");
+                if (explicitRelative || raw.startsWith("@") || raw.startsWith("pkg:")
                         || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
                             "filesystem import '" + imported.path() + "' from '" + id + "' does not resolve to a file");
