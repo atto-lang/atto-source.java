@@ -130,5 +130,9 @@ final class ActorStateModeContractsTest {
                 pure(messageReducer(Set.of(), Set.of()),
                     new Handler("Counter.onControl", HandlerRole.CONTROL_REDUCER,
                             Set.of(Effect.IO), Set.of(), false, false, false, true)));
+        rejects("PURE_ACTOR_HAS_MULTIPLE_CONTROL_REDUCERS",
+                pure(messageReducer(Set.of(), Set.of()), control,
+                    new Handler("Counter.onControl2", HandlerRole.CONTROL_REDUCER,
+                            Set.of(), Set.of(), false, false, false, true)));
     }
 }
