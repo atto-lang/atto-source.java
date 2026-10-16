@@ -184,6 +184,6 @@ public final class ActorPipelineRoutePlanStandaloneSmoke {
                 "concurrent round-robin lost selections");
 
         System.out.println("ORES_ACTOR_PIPELINE_ROUTING_HOST_OK"
-                + " cases=20 concurrent_selections=" + (writers * sendsEach));
+                + " cases=23 concurrent_selections=" + (writers * sendsEach));
     }
 }
