@@ -173,9 +173,11 @@ public final class NominalInheritedMethodSlots {
      * are deliberately not accepted as evidence. */
     private static String primitiveIdentity(Types.Type argument) {
         if (argument instanceof Types.Primitive primitive) {
+            // Numeric widths are erased by Types.Primitive: INT may be
+            // i8/u64/bigint and FLOAT may be f32/f64. Neither is proof of
+            // an exact overload parameter identity. Preserve fail-closed
+            // admission until the resolved type IR retains source widths.
             return switch (primitive) {
-                case INT -> "int";
-                case FLOAT -> "f64";
                 case BOOL -> "bool";
                 case STRING -> "string";
                 default -> null;
@@ -184,11 +186,11 @@ public final class NominalInheritedMethodSlots {
         if (argument instanceof Types.Named named
                 && named.arguments().isEmpty()) {
             return switch (named.name()) {
-                case "String" -> "string";
-                case "boolean" -> "bool";
-                case "bool", "int", "string", "uint",
-                        "i8", "u8", "i16", "u16", "i32", "u32",
-                        "i64", "u64", "f64" -> named.name();
+                case "String", "string" -> "string";
+                case "boolean", "bool" -> "bool";
+                // A caller-supplied Named("f64") is not compiler provenance;
+                // the TypeChecker normalizes width-bearing scalars to INT
+                // or FLOAT. Do not allow a forged Named numeric identity.
                 default -> null;
             };
         }
