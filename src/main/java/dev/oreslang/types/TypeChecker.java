@@ -1105,14 +1105,15 @@ public final class TypeChecker {
             validateTypedOpenMapClass(klass, classGenerics, self);
             return;
         }
-        if (!klass.mapKeys().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "key declarations require a direct Map<string, unknown> subclass");
-        }
-        if (klass.parents().stream().anyMatch(parent -> parent.name().equals("HashMap"))) {
+        if (klass.parents().stream().anyMatch(parent -> parent.name().equals("HashMap"))
+                && !klass.mapKeys().isEmpty()) {
             throw new IllegalArgumentException(
                     "HashMap subclass key schemas require the concrete HashMap runtime; "
                             + "the current typed-map foundation implements Map only");
+        }
+        if (!klass.mapKeys().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "key declarations require a direct Map<string, unknown> subclass");
         }
 
         Set<String> parentNames = new HashSet<>();
