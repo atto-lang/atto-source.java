@@ -2768,6 +2768,12 @@ public final class TypeChecker {
                         && selfName.name().equals("self");
                 if (actorSelf && PIPELINE_ACTOR_INTRINSICS.contains(member.member())) {
                     String intrinsic = member.member();
+                    if (currentActorKind != Ast.ActorKind.SHARED) {
+                        throw new IllegalArgumentException(
+                                "self." + intrinsic
+                                        + " requires a SHARED actor; PRIVATE/UNTRUSTED actors "
+                                        + "cannot receive correlated pipeline route frames");
+                    }
                     if (intrinsic.equals("forward_all") || intrinsic.equals("reply")) {
                         throw new IllegalArgumentException(
                                 "self." + intrinsic
