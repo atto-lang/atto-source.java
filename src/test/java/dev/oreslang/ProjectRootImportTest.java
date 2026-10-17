@@ -233,6 +233,34 @@ final class ProjectRootImportTest {
     }
 
     @Test
+    void modernManifestRequiresLfOrCrLfAndRejectsHiddenCrRoot() throws Exception {
+        Path project = makeProject("manifest-line-endings");
+        Path importer = project.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path manifest = project.resolve(OresProjectConfig.MANIFEST_NAME);
+        Files.createDirectories(project.resolve("app"));
+
+        Files.writeString(manifest,
+                "schema_version = \"1\" # comment\r[project]\rroot = \"app\"\n");
+        IllegalArgumentException hidden = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(hidden.getMessage().contains("bare carriage return"),
+                hidden.getMessage());
+
+        Files.writeString(manifest, "schema_version = \"1\"\r");
+        IllegalArgumentException eof = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresProjectConfig.discover(importer, Map.of()));
+        assertTrue(eof.getMessage().contains("bare carriage return"),
+                eof.getMessage());
+
+        Files.writeString(manifest,
+                "schema_version = \"1\"\r\n[project]\r\nroot = \"app\"\r\n");
+        assertEquals(project.resolve("app"),
+                OresProjectConfig.discover(importer, Map.of()).projectRoot());
+    }
+
+    @Test
     void projectRootFieldControlsPlusImportAnchor() throws Exception {
         Path packageDirectory = temp.resolve("manifest-with-explicit-root");
         Path logicalRoot = packageDirectory.resolve("app");
