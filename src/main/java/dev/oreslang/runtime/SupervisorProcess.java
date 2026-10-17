@@ -193,7 +193,7 @@ public final class SupervisorProcess implements AutoCloseable {
         }
         try {
             // Exactly one decision request, on an admitted runtime turn.
-            decisionSink.accept(new Resolution(notice, decision));
+            decisionSink.accept(new Resolution(current.notice, decision));
         } catch (Throwable sinkFailure) {
             synchronized (this) { failLocked(sinkFailure); }
             return;
