@@ -81,6 +81,9 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    // Type-only imports still occupy names. No lexical import may be
+    // mistaken for a privileged runtime type-test intrinsic.
+    private final Set<String> allImportBindings = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private Ast.ClassDecl currentClassOwner;
@@ -209,6 +212,7 @@ public final class TypeChecker {
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             for (String name : ImportRules.exposedBindings(imported)) {
+                allImportBindings.add(name);
                 if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
@@ -5127,7 +5131,7 @@ public final class TypeChecker {
                 && findClass("Integer") == null
                 && findTypeAlias("Integer") == null
                 && !hasFunctionFamily("Integer")
-                && !importedValues.contains("Integer");
+                && !allImportBindings.contains("Integer");
     }
 
     private boolean isBuiltinDoublePredicate(Ast.CallExpr call, Env env) {
@@ -5140,7 +5144,7 @@ public final class TypeChecker {
                 && findClass("Double") == null
                 && findTypeAlias("Double") == null
                 && !hasFunctionFamily("Double")
-                && !importedValues.contains("Double");
+                && !allImportBindings.contains("Double");
     }
 
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
