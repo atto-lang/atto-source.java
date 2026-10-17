@@ -215,6 +215,22 @@ final class NestedTernaryInheritanceTest {
     }
 
     @Test
+    void importedTypeNameDoesNotCountAsBuiltinGuard() {
+        reject("""
+                import type Other as Double from "types.ores";
+                pub fnc bad(any v): float {
+                    return Double.is_double(v) ? v : 0.0;
+                }
+                """);
+        reject("""
+                import type Other as Integer from "types.ores";
+                pub fnc bad(any v): int {
+                    return Integer.is_int(v) ? v : 0;
+                }
+                """);
+    }
+
+    @Test
     void noMissingTopLevelElseOrInvalidInheritancePosition() {
         reject("pub fnc bad(): int { return true ? 1; }");
         reject("pub fnc bad(): int { return true ? 1 : (false ? 2); }");
