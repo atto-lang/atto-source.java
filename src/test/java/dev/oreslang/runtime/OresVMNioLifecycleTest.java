@@ -95,7 +95,7 @@ final class OresVMNioLifecycleTest {
         }
     }
 
-    @Test void boundVmNotificationsReuseActorCarriersWithoutControlOrNioWorkers()
+    @Test void boundVmNotificationsUseActorCarriersAndRetireColdBootstrapHelper()
             throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var actors = new ActorRuntime(IsolatePolicy.developer(),
@@ -122,8 +122,13 @@ final class OresVMNioLifecycleTest {
             assertTrue(completedOnActorCarrier.await(3, TimeUnit.SECONDS),
                     "host-only notification must execute on actor-owned runtime carriers");
             assertEquals(0, vm.controlCarrierCount());
-            assertEquals(0, vm.nioReadiness().completionCarrierCount());
             assertTrue(actors.startedActorCarrierCount() >= 1);
+            long helperDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (vm.nioReadiness().completionCarrierCount() != 0
+                    && System.nanoTime() < helperDeadline)
+                Thread.sleep(1);
+            assertEquals(0, vm.nioReadiness().completionCarrierCount(),
+                    "one-shot cold-executor bootstrap helper must retire after handoff");
 
             // This ordering is mandatory in OresContext.close(): the actor
             // domain must remain alive until all NIO notifications drain.
