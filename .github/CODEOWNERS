@@ -4,7 +4,9 @@
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-approved-source-snapshots.txt @ORESoftware
+/.github/private-ci-required-checks.json @ORESoftware
 /.github/workflows/private-ci-mirror-preflight.yml @ORESoftware
+/.github/workflows/private-ci-policy.yml @ORESoftware
 /.github/workflows/private-exact-candidate-validation.yml @ORESoftware
 /.github/workflows/private-exact-main-validation.yml @ORESoftware
 /.github/workflows/private-exact-publisher-validation.yml @ORESoftware
