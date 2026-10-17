@@ -4,4 +4,4 @@
 # exact-head review-pinned external-admission policy.
 # Format: <40-hex source commit> <40-hex source root tree> <numeric destination repo ID>
 # Destination approval alone never authorizes an arbitrary snapshot.
-f2fe101f2675e8d54f5e2ca1631a944d78b03066 636007cbc681cf14bd87e6ed541efd61aacde970 1357615104
+ee6ca0d447e1fb65ffbc33a3c20c9155636fe0e7 5d3ce2a86a1381990be2198f118beeaafdf17c5f 1357615104
