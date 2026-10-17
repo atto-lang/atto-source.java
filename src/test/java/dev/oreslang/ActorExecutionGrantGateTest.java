@@ -153,6 +153,116 @@ final class ActorExecutionGrantGateTest {
     }
 
     @Test
+    void nestedCrossActorExecutionOnSameCarrierIsRejected() {
+        var a = new ActorExecutionGrantGate(1, 3);
+        var b = new ActorExecutionGrantGate(2, 3);
+        var aGrant = a.tryAcquire();
+        try {
+            assertThrows(IllegalStateException.class, b::tryAcquire);
+            assertEquals(1, a.activeSlots());
+            assertEquals(0, b.activeSlots());
+        } finally {
+            aGrant.close();
+        }
+        var bGrant = b.tryAcquire();
+        assertNotNull(bGrant);
+        bGrant.close();
+    }
+
+    @Test
+    void boundedWaitReturnsOnDrainAndCannotCompleteOnTimeoutOrUnsealedGate() throws Exception {
+        var gate = new ActorExecutionGrantGate(101, 1);
+        assertThrows(IllegalStateException.class,
+                () -> gate.awaitPhysicalDrain(0, TimeUnit.NANOSECONDS));
+        var ready = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        var owner = new Thread(() -> {
+            try (var grant = gate.tryAcquire()) {
+                ready.countDown();
+                if (!release.await(3, TimeUnit.SECONDS)) throw new AssertionError("timeout");
+            } catch (Throwable t) {
+                failure.set(t);
+                ready.countDown();
+            }
+        });
+        owner.start();
+        try {
+            assertTrue(ready.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            gate.seal();
+            assertFalse(gate.awaitPhysicalDrain(0, TimeUnit.NANOSECONDS));
+            assertFalse(gate.awaitPhysicalDrain(1, TimeUnit.MILLISECONDS));
+            assertFalse(gate.tryRetirePhysicalGate());
+            assertNull(gate.tryAcquire());
+        } finally {
+            release.countDown();
+            owner.join(3000);
+        }
+        assertFalse(owner.isAlive());
+        assertNull(failure.get());
+        assertTrue(gate.awaitPhysicalDrain(1, TimeUnit.SECONDS));
+        assertTrue(gate.tryRetirePhysicalGate());
+        assertThrows(IllegalArgumentException.class,
+                () -> gate.awaitPhysicalDrain(-1, TimeUnit.SECONDS));
+        assertThrows(NullPointerException.class,
+                () -> gate.awaitPhysicalDrain(1, null));
+    }
+
+    @Test
+    void holderCannotWaitForItsOwnPhysicalGrantToDrain() {
+        var gate = new ActorExecutionGrantGate(11, 1);
+        var grant = gate.tryAcquire();
+        gate.seal();
+        assertThrows(IllegalStateException.class,
+                () -> gate.awaitPhysicalDrain(1, TimeUnit.MILLISECONDS));
+        grant.close();
+        assertDoesNotThrow(() -> assertTrue(gate.awaitPhysicalDrain(0, TimeUnit.NANOSECONDS)));
+    }
+
+    @Test
+    void virtualThreadCannotMasqueradeAsAPlatformCarrier() throws Exception {
+        var gate = new ActorExecutionGrantGate(101, 1);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        var virtual = Thread.ofVirtual().start(() -> {
+            try { gate.tryAcquire(); }
+            catch (Throwable e) { error.set(e); }
+        });
+        virtual.join(3000);
+        assertFalse(virtual.isAlive());
+        assertInstanceOf(IllegalStateException.class, error.get());
+        assertEquals(0, gate.activeSlots());
+    }
+
+    @Test
+    void interruptedDrainingWaitMustNotRetireOrReopenAdmission() throws Exception {
+        var gate = new ActorExecutionGrantGate(7, 1);
+        var grant = gate.tryAcquire();
+        gate.seal();
+        var entered = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        var waiter = new Thread(() -> {
+            try {
+                entered.countDown();
+                gate.awaitPhysicalDrain(30, TimeUnit.SECONDS);
+                failure.set(new AssertionError("wait unexpectedly completed"));
+            } catch (InterruptedException expected) {
+                Thread.currentThread().interrupt();
+            } catch (Throwable unexpected) { failure.set(unexpected); }
+        });
+        waiter.start();
+        assertTrue(entered.await(3, TimeUnit.SECONDS));
+        waiter.interrupt();
+        waiter.join(3000);
+        assertFalse(waiter.isAlive());
+        assertNull(failure.get());
+        assertEquals(1, gate.activeSlots());
+        assertFalse(gate.tryRetirePhysicalGate());
+        grant.close();
+        assertTrue(gate.awaitPhysicalDrain(1, TimeUnit.SECONDS));
+    }
+
+    @Test
     void rejectsInvalidCapacityAndIncarnation() {
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(0, 1));
         assertThrows(IllegalArgumentException.class, () -> new ActorExecutionGrantGate(-1, 1));
