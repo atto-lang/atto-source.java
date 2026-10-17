@@ -135,6 +135,71 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void compilerFacingBridgeCoversRoundRobinNamedAndKeyedSelectorsAndFencesOverlap()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new CountDownLatch(4);
+            var aValues = Collections.synchronizedList(new ArrayList<String>());
+            var bValues = Collections.synchronizedList(new ArrayList<String>());
+            var a = runtime.<String>spawnShared(() -> (value, actor) -> {
+                aValues.add(value);
+                delivered.countDown();
+            });
+            var b = runtime.<String>spawnShared(() -> (value, actor) -> {
+                bValues.add(value);
+                delivered.countDown();
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (!value.equals("begin")) throw new AssertionError("source unexpected payload");
+                runtime.routeCurrentPipelineForwardRoundRobin("rr-a");
+                runtime.routeCurrentPipelineForwardRoundRobin("rr-b");
+                runtime.routeCurrentPipelineForwardTo("worker-b", "named-b");
+                runtime.routeCurrentPipelineForwardByKey("customer-7", "keyed");
+            });
+            var plan = new ActorPipelineRoutePlan(
+                    List.of(
+                            new ActorPipelineRoutePlan.Stage("source", "Producer",
+                                    ActorPipelineRoutePlan.Role.READABLE, "", "Event"),
+                            new ActorPipelineRoutePlan.Stage("worker-a", "Worker",
+                                    ActorPipelineRoutePlan.Role.WRITABLE, "Event", ""),
+                            new ActorPipelineRoutePlan.Stage("worker-b", "Worker",
+                                    ActorPipelineRoutePlan.Role.WRITABLE, "Event", "")),
+                    List.of(
+                            new ActorPipelineRoutePlan.Edge("source", "worker-a", "Event"),
+                            new ActorPipelineRoutePlan.Edge("source", "worker-b", "Event")));
+            var bindings = Map.of("source", source, "worker-a", a, "worker-b", b);
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, plan, bindings, 31, 12);
+            assertThrows(IllegalStateException.class,
+                    () -> new ActorPipelineCorrelatedMailboxRouter<>(
+                            runtime, plan, bindings, 32, 12),
+                    "one actor cannot belong to overlapping live route generations");
+
+            router.ingress("source", "begin");
+            assertTrue(delivered.await(8, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            a.drain().get(5, TimeUnit.SECONDS);
+            b.drain().get(5, TimeUnit.SECONDS);
+            assertTrue(aValues.contains("rr-a"), "first RR turn must select worker-a");
+            assertTrue(bValues.contains("rr-b"), "second RR turn must select worker-b");
+            assertTrue(bValues.contains("named-b"), "named route must select worker-b");
+            assertEquals(4, aValues.size() + bValues.size());
+            assertEquals(0, router.outstanding());
+
+            router.close();
+            var successor = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, plan, bindings, 32, 12);
+            successor.close();
+            source.stop();
+            a.stop();
+            b.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            a.getDone().get(5, TimeUnit.SECONDS);
+            b.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void partialMailboxRejectionRetainsEarlierAdmissionAndOriginalFailure()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
