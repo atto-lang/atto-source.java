@@ -344,6 +344,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Cause-free lifecycle failure exposed by ready/done/output observation.
+     * Raw host exceptions remain available only through ActorRef.failure().
+     */
+    public static final class ActorFailureSnapshotException extends RuntimeException {
+        private final ActorFailureNotice notice;
+
+        private ActorFailureSnapshotException(ActorFailureNotice notice) {
+            super("actor " + notice.actor() + "#" + notice.generation()
+                    + " terminated: " + notice.failureKind()
+                    + " [" + notice.diagnosticType() + "]",
+                    null, false, false);
+            this.notice = Objects.requireNonNull(notice, "notice");
+        }
+
+        public ActorFailureNotice notice() {
+            return notice;
+        }
+    }
+
     private static String boundedDiagnosticType(Throwable failure) {
         String raw = failure.getClass().getName();
         StringBuilder out = new StringBuilder(Math.min(raw.length(), 128));
@@ -2313,6 +2333,9 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return ref.kind(); }
         public boolean isAlive() { return ref.isAlive(); }
         public Optional<Throwable> failure() { return ref.failure(); }
+        public Optional<ActorFailureNotice> terminalFailureNotice() {
+            return ref.terminalFailureNotice();
+        }
 
         public boolean awaitTermination(long timeout, TimeUnit unit)
                 throws InterruptedException {
@@ -2358,6 +2381,9 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return ref.kind(); }
         public boolean isAlive() { return ref.isAlive(); }
         public Optional<Throwable> failure() { return ref.failure(); }
+        public Optional<ActorFailureNotice> terminalFailureNotice() {
+            return ref.terminalFailureNotice();
+        }
 
         public Optional<ActorId> parentId() {
             ActorCell<?> cell = actors.get(ref.id());
@@ -5167,7 +5193,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
-        return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
+        // Never attach the actor's raw terminal Throwable to an exception that
+        // may cross into another actor/scheduler. Trusted hosts can inspect
+        // ActorRef.failure() explicitly.
+        return new ActorTerminatedException(ref.id(), ref.kind(), null);
     }
 
     /** Non-cancellable observer over all mail accepted before this call.
@@ -7289,7 +7318,6 @@ public final class ActorRuntime implements AutoCloseable {
             staticSelectCursors.clear();
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
-            outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
             if (terminalOutput != null && ref.terminalFailureNotice.get() == null) {
                 ref.terminalFailureNotice.compareAndSet(
@@ -7305,6 +7333,11 @@ public final class ActorRuntime implements AutoCloseable {
                                 nextSupervisorControlSequence(),
                                 boundedDiagnosticType(terminalOutput)));
             }
+            Throwable observerFailure = ref.terminalFailureNotice.get() == null
+                    ? null
+                    : new ActorFailureSnapshotException(
+                            ref.terminalFailureNotice.get());
+            outputStream.close(observerFailure);
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -7328,16 +7361,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
             Throwable terminal = ref.terminationCause.get();
             if (!ref.readyFuture.isDone()) {
-                // Preserve the initializer failure as the direct cause of
-                // readiness rejection. Only a graceful stop-before-ready has
-                // no underlying failure and needs a synthesized marker.
                 ref.readyFuture.failFromRuntime(
                         terminal == null
                                 ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
+                                : observerFailure);
             }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
+            if (terminal == null) {
+                ref.doneFuture.completeFromRuntime(null);
+            } else {
+                ref.doneFuture.failFromRuntime(observerFailure);
+            }
             finalizedFuture.completeFromRuntime(null);
             lifecycleLock.notifyAll();
         }
