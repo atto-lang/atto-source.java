@@ -273,7 +273,7 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException(
                     "pipeline reconfiguration requires a quiescent message barrier");
         }
-        roundRobin.clear();
+        roundRobin.replaceAll((source, cursor) -> 0);
         generation = successor;
     }
 
@@ -285,7 +285,7 @@ final class ActorPipelineRouteSession {
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
-        roundRobin.clear();
+        roundRobin.replaceAll((source, cursor) -> 0);
         generation = successor;
         return cancelled;
     }
