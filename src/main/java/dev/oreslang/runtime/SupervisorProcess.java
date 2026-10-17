@@ -177,6 +177,7 @@ public final class SupervisorProcess implements AutoCloseable {
             Pending current,
             Directive decision,
             Throwable error) {
+        synchronized (decisionFence) {
         synchronized (this) {
             if (state != State.RUNNING) return;
             // The lease is never released while a callback is unfinished.
