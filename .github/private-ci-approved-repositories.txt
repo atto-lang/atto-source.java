@@ -1,7 +1,8 @@
 # Private CI destinations explicitly approved for source transfers.
 # No repositories are approved by default.
 # Changes must be reviewed by maintainers and security owners on a protected branch.
-# Format: one exact owner/repo per uncommented line, no whitespace or wildcards.
+# Format: one exact owner/repo, one space, then reviewed immutable numeric GitHub repo ID.
+# Approval requires protected source main, codeowner review, and ID checks in the publisher.
 
 # Proposed private CI carrier; effective only after protected-branch review/merge.
-sagitta-stack/sagitta-infra
+sagitta-stack/sagitta-infra 1357615104
