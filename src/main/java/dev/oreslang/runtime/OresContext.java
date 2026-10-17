@@ -216,7 +216,9 @@ public final class OresContext implements AutoCloseable {
             // domain. A full queue stages bounded records and retries after
             // actor turns; no dedicated per-VM NIO completion threads start.
             actors.bindNioCompletionCapacityHook(vm.nioReadiness()::retryStagedNotifications);
-            vm.nioReadiness().bindVmCompletionExecutor(actors::executeHostIoCompletion);
+            vm.nioReadiness().bindVmCompletionExecutor(
+                    actors::executeHostIoCompletion,
+                    actors::prepareHostIoCompletionCapacity);
             async = new AsyncRuntime(this::executeAsyncTurn);
             gc = new RuntimeGarbageCollector();
             actors.setActorExitHook(gc::retireActorDomain);
