@@ -78,15 +78,15 @@ final class ActorEventBusTeardownLockTest {
             var callbackRan = new CountDownLatch(1);
             var underDefinition = new AtomicBoolean();
             var underDelivery = new AtomicBoolean();
-            var deliveryLock = new AtomicReference<Object>();
+            var deliveryLockRef = new AtomicReference<Object>();
 
             var actor = runtime.<String>spawnShared(() -> (message, context) -> {
                 capability.join();
                 var subscription = bus.<Integer>subscribe("group-close-locks");
-                deliveryLock.set(deliveryLock(subscription));
+                deliveryLockRef.set(deliveryLock(subscription));
                 subscription.readAsync().whenCompleteRuntime((ignored, terminal) -> {
                     underDefinition.set(Thread.holdsLock(definitionLock));
-                    underDelivery.set(Thread.holdsLock(deliveryLock.get()));
+                    underDelivery.set(Thread.holdsLock(deliveryLockRef.get()));
                     callbackRan.countDown();
                 });
                 subscribed.countDown();
