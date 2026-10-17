@@ -7459,6 +7459,30 @@ public final class ActorRuntime implements AutoCloseable {
         private void publishFinalization(FinalizationPlan plan) {
             if (plan == null) return;
 
+            ActorCell<?> caller = currentActor.get();
+            if (caller != null && caller != this) {
+                // Structured cancellation may make an idle child immediately
+                // finalizable while its parent is still executing. Never run
+                // the child's output/DONE observers on the parent's actor
+                // carrier: publish on the child's ordinary bounded dispatcher.
+                Runnable publication = () -> publishFinalizationNow(plan);
+                try {
+                    ExecutorService dispatcher = dispatcherFor(kind);
+                    if (dispatcher instanceof ActorAffinityDispatcher lanes)
+                        lanes.executeOnLane(dispatchLane, publication);
+                    else
+                        dispatcher.execute(publication);
+                    return;
+                } catch (RejectedExecutionException unavailable) {
+                    // Runtime shutdown may have retired dispatch admission.
+                    // Correct teardown beats observer isolation in this last-
+                    // resort path; publication is still outside lifecycleLock.
+                }
+            }
+            publishFinalizationNow(plan);
+        }
+
+        private void publishFinalizationNow(FinalizationPlan plan) {
             // This phase intentionally owns NO actor lifecycle monitor.
             // OresFuture/channel callbacks, ActorGroup cleanup, parent
             // bookkeeping and host collector hooks may all re-enter runtime
