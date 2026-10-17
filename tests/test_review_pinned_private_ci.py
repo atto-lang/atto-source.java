@@ -235,7 +235,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         def mutate(fx):
             fx["incident_comments"] = self.write("incident-unbound.json", [{
                 "id": 99, "body": MOD.RESUME_MARKER + " generic",
-                "user": {"login": "ORESoftware"},
+                "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID},
             }])
         self.assertDenied(mutate)
 
@@ -250,7 +250,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
                 ),
-                "user": {"login": "ORESoftware"},
+                "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID},
             }])
         self.assertDenied(mutate)
 
