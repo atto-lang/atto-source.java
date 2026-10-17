@@ -94,6 +94,21 @@ final class NativeIoSymlinkBoundaryTest {
     }
 
     @Test
+    void newlyCreatedGuestFilesAndAtomicReplacementsAreOwnerOnly() throws Exception {
+        assumeTrue(Files.getFileStore(directory).supportsFileAttributeView("posix"));
+        var privatePermissions = java.nio.file.attribute.PosixFilePermissions.fromString("rw-------");
+        Path created = directory.resolve("private-created");
+        NativeIo.writeUtf8NoFollow(created, "secret", false);
+        assertEquals(privatePermissions, Files.getPosixFilePermissions(created));
+
+        Path replaced = directory.resolve("private-atomic");
+        NativeIo.secureAtomicWrite(replaced, "sensitive");
+        assertEquals(privatePermissions, Files.getPosixFilePermissions(replaced));
+        NativeIo.secureAtomicWrite(replaced, "updated");
+        assertEquals(privatePermissions, Files.getPosixFilePermissions(replaced));
+    }
+
+    @Test
     void atomicReplaceListingMetadataAndRemovalUseOpenedParent() throws Exception {
         Path target = directory.resolve("atomic-content");
         NativeIo.secureAtomicWrite(target, "first");
