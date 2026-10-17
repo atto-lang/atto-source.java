@@ -784,6 +784,60 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void runtimeTestsRejectErasedGenericAliasesAndUnknownNominals() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type IntList = List<int>;
+
+                        pub fnc bad(any value): bool {
+                          return value is type IntList;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type IntOption = Option<int>;
+
+                        pub fnc bad(any value): IntOption {
+                          return value as IntOption;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): bool {
+                          return value is type MissingRuntimeType;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): MissingRuntimeType {
+                          return value as MissingRuntimeType;
+                        }
+                        """)));
+    }
+
+    @Test
+    void runtimeTestsAllowAliasToActuallyReifiableScalar() throws Exception {
+        String output = run("""
+                type Count = int;
+
+                fnc isCount(any value): bool {
+                  return value is type Count;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(isCount(4));
+                  stdio.stdout.write(isCount("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("truefalse", output);
+    }
+
+    @Test
     void opaqueTypesAreNotRuntimeTypeOrCastTargets() {
         assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
