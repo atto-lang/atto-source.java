@@ -222,4 +222,26 @@ final class ActorSupervisorRestartCircuitTest {
         assertFalse(c.restartPending(1));
         assertEquals(0, c.snapshot(1).acceptedReplacementRestarts());
     }
+    @Test
+    void signedNanoTimeOriginAndNaturalWrapRemainMonotonic() {
+        var negative = new ActorSupervisorRestartCircuit(
+                config(1, 4, 1_000, 0, 0, 0));
+        negative.admitGeneration(0, 1, -100);
+        var fromNegativeOrigin = negative.onExit(
+                0, 1, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ONE, -50);
+        assertEquals(DecisionKind.RESTART, fromNegativeOrigin.kind());
+        assertEquals(0, negative.snapshot(-50).clockRegressions());
+
+        var crossing = new ActorSupervisorRestartCircuit(
+                config(1, 4, 1_000, 0, 0, 0));
+        crossing.admitGeneration(0, 1, Long.MAX_VALUE - 5);
+        var afterWrap = crossing.onExit(
+                0, 1, RestartPolicy.PERMANENT, ExitClass.ABNORMAL,
+                Strategy.ONE_FOR_ONE, Long.MIN_VALUE + 4);
+        assertEquals(DecisionKind.RESTART, afterWrap.kind());
+        assertEquals(1, afterWrap.chargedRestarts());
+        assertEquals(0, crossing.snapshot(Long.MIN_VALUE + 4).clockRegressions());
+    }
+
 }
