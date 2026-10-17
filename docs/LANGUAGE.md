@@ -718,8 +718,16 @@ pub fnc normalize(any value): int {
 
 The compiler recognizes the built-in `Integer.is_int` by provenance, not by
 ordinary method-name matching. A user module, function, class, import, or local
-binding named `Integer` cannot forge the narrowing fact. Mutable bindings are
-not narrowed because reassignment can invalidate the proof.
+binding named `Integer` cannot forge the narrowing fact. Mutable/rebindable
+bindings are not narrowed because reassignment can invalidate the proof.
+
+Positive condition refinements are edge-scoped. In `guard && rhs`, bindings
+and narrowed stable locals proved by `guard` are available while checking and
+evaluating `rhs`; the proof does not escape the boolean expression by itself.
+The true branch of `condition ? yes : no` and of `if` receives the same
+successful-edge refinements. The false edge, `guard || rhs`, and `!guard`
+receive no positive refinement until a separate negative-refinement lattice is
+defined.
 
 `Integer.is_int` tests the compiler's current reifiable integer scalar domain
 (`Primitive.INT`), not the exact source spelling that produced the value.
