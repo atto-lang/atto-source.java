@@ -2087,10 +2087,12 @@ public final class ActorRuntime implements AutoCloseable {
                         || stoppingWorkers.contains(worker.id())) {
                     throw new IllegalStateException("cannot manage a stopped, stopping or unknown worker");
                 }
-                if (!managedWorkers.containsKey(worker.id()) && managedWorkers.size() >= memberLimit) {
+                boolean newControlReservation = !managedWorkers.containsKey(worker.id());
+                if (newControlReservation && managedWorkers.size() >= memberLimit) {
                     throw new IllegalStateException(
                             "ActorGroup managed worker limit exceeded: maximum " + memberLimit);
                 }
+                if (newControlReservation) supervisorControl.reserve(worker.id());
                 // A worker has exactly one structured ActorGroup owner.
                 // Other cooperation groups may still admit it as a member,
                 // but no second manager may acquire independent stop rights.
