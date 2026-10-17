@@ -20,7 +20,7 @@ NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # An approved destination must include its stable numeric GitHub repository ID.
 # This closes name reuse between security review and the first transfer.
 POLICY_ENTRY = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*) ([1-9][0-9]{0,19})$")
-BRANCH = re.compile(r"^ci/oreslang-[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$")
+BRANCH = re.compile(r"^ci/oreslang-[a-f0-9]{40}$")
 SHA = re.compile(r"^[a-f0-9]{40}$")
 MAX_FILES = 1024
 MAX_BYTES = 40 * 1024 * 1024
@@ -882,6 +882,11 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         raise Denied("invalid destination or isolated CI branch name")
     valid_sha(expected_source_tree)
     valid_sha(expected_source_commit)
+    # A carrier branch name is an immutable, independently checkable source
+    # tree identity. A generic or foreign SHA suffix is not provenance.
+    # Fail *before* policy requests, source reads, or destination Git writes.
+    if branch != "ci/oreslang-" + expected_source_tree:
+        raise Denied("isolated CI branch must match pinned source Git tree SHA")
     # This function previously ran the checkout-local Bash preflight BEFORE
     # authenticating the checkout. A modified PR checkout could execute an
     # attacker-controlled guard even though source export would later deny.
