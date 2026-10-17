@@ -309,7 +309,7 @@ final class RuntimePointerTest {
                 "place-aware move-out");
         reject("fnc bad(Array<Pointer<Box>> values): void { return; }",
                 "place-aware move-out");
-        reject("fnc bad(Tuple[Pointer<Box> p]): void { return; }",
+        reject("fnc bad(Tuple[Pointer<Box>]): void { return; }",
                 "place-aware move-out");
         // Without this gate, repeated holder.ptr projections could create two
         // compiler-owned aliases to one OresPointer and defer the failure to the
