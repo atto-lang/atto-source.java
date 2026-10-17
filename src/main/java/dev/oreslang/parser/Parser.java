@@ -1363,6 +1363,20 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            // Variadic source parameters are spelled 'rest ...T'. The rest
+            // binder receives an immutable List<T>, and only the final
+            // parameter may be rest. Its declaration contributes zero or
+            // more caller-visible argument slots, not an extra call argument.
+            if (check(IDENT) && checkNext(ELLIPSIS)) {
+                String name = advance().lexeme();
+                advance(); // ELLIPSIS
+                Ast.TypeRef elementType = parseTypeRef();
+                if (!check(terminator)) {
+                    throw error(peek(), "rest ...Type must be the final parameter");
+                }
+                params.add(new Ast.Param(elementType, name, false, false, true));
+                break;
+            }
             boolean structural = matchContextualKeyword("structural");
 
             // Canonical type-first structural spelling: structural Foo y
