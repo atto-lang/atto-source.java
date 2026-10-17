@@ -3806,6 +3806,17 @@ public final class OwnershipChecker {
 
         private void close() {
             if (closed) return;
+            for (VarState state : locals.values()) {
+                if (state.type != null
+                        && state.type.name().equals("TrapResult")
+                        && state.type.arguments().size() == 1
+                        && !state.moved) {
+                    throw new IllegalArgumentException(
+                            "Oreslang ownership error: trap result binding '"
+                                    + state.debugName
+                                    + "' must be destructured or explicitly transferred");
+                }
+            }
             closed = true;
             for (VarState state : locals.values()) {
                 if (state.borrowSource != null && state.borrowLease) {
