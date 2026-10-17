@@ -159,17 +159,22 @@ class MirrorGateTest(unittest.TestCase):
             "NO_PROXY": "api.github.com",
             "SSL_CERT_FILE": "/tmp/attacker-ca.pem",
             "SSL_CERT_DIR": "/tmp/attacker-certs",
+            "SSLKEYLOGFILE": "/tmp/leak-tls-keys.log",
             "REQUESTS_CA_BUNDLE": "/tmp/attacker-ca.pem",
             "CURL_CA_BUNDLE": "/tmp/attacker-ca.pem",
         }
         with patch.dict("os.environ", hostile, clear=False), \
-                patch.object(admission.ssl, "create_default_context",
-                             return_value=fake_context) as create_context, \
+                patch.object(admission.ssl, "SSLContext",
+                             return_value=fake_context) as context_ctor, \
                 patch.object(admission.urllib.request, "build_opener",
                              return_value=fake_opener) as build:
             self.assertIs(admission.hardened_https_open(), sentinel_open)
-        create_context.assert_called_once_with(cafile=admission.SYSTEM_CA_BUNDLE)
+        context_ctor.assert_called_once_with(admission.ssl.PROTOCOL_TLS_CLIENT)
         self.assertEqual(fake_context.minimum_version, admission.ssl.TLSVersion.TLSv1_2)
+        self.assertTrue(fake_context.check_hostname)
+        self.assertEqual(fake_context.verify_mode, admission.ssl.CERT_REQUIRED)
+        fake_context.load_verify_locations.assert_called_once_with(
+            cafile=admission.SYSTEM_CA_BUNDLE)
         handlers = build.call_args.args
         self.assertEqual(len(handlers), 3)
         self.assertIsInstance(handlers[0], urllib.request.ProxyHandler)
