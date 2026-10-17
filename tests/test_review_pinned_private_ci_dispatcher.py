@@ -208,7 +208,7 @@ class DispatcherWriterTest(unittest.TestCase):
             mock.patch.object(MOD.PUB,"prepare_source_tree_batches",
                               return_value=[[("hello.txt",b"hello\n",
                                              "100644","hello\n")]]),
-            mock.patch.object(MOD.PUB,"require_private_ci_api_budget"),
+            mock.patch.object(MOD,"require_dispatcher_api_budget"),
             mock.patch.object(MOD.PUB,"gh_api",side_effect=fake_api),
         ]
         return value,calls,counters,patches
@@ -325,6 +325,30 @@ class IncidentClosureTest(unittest.TestCase):
                                return_value=self.issue(closed_at="yesterday")):
             with self.assertRaises(MOD.Denied):
                 MOD.require_incident_closed()
+
+
+
+class DispatcherBudgetTest(unittest.TestCase):
+    def test_nonfinite_json_is_denied(self):
+        with self.assertRaises(MOD.Denied):
+            MOD.strict_json('{"x":NaN}',dict)
+
+    def test_insufficient_dispatcher_budget_denied(self):
+        response={"resources":{"core":{"remaining":1039}}}
+        with mock.patch.object(MOD.PUB,"gh_api",return_value=response):
+            with self.assertRaises(MOD.Denied):
+                MOD.require_dispatcher_api_budget(1,20)
+
+    def test_sufficient_dispatcher_budget_allowed(self):
+        response={"resources":{"core":{"remaining":1040}}}
+        with mock.patch.object(MOD.PUB,"gh_api",return_value=response):
+            MOD.require_dispatcher_api_budget(1,20)
+
+    def test_invalid_dispatcher_write_count_denied(self):
+        with mock.patch.object(MOD.PUB,"gh_api") as api:
+            with self.assertRaises(MOD.Denied):
+                MOD.require_dispatcher_api_budget(1,0)
+            api.assert_not_called()
 
 
 if __name__=="__main__":
