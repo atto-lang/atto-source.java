@@ -1705,6 +1705,17 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // Constructor delegation is a special statement, not an ordinary
+        // callable. Semantic validation restricts it to the first top-level
+        // statement of an ordinary-class constructor.
+        if (isContextualIdentifier("constructor") && checkNext(LPAREN)) {
+            advance();
+            consume(LPAREN, "expected '(' after constructor delegation");
+            List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
+            consume(RPAREN, "expected ')' after constructor delegation arguments");
+            consumeStatementTerminator("constructor delegation should end with ';'");
+            return new Ast.ConstructorDelegateStmt(args);
+        }
         // Keep these distinct from ordinary calls/identifiers. Exception
         // effect checking, typed recovery and actor CONTROL delivery have
         // not yet been lowered in the Java/Graal production compiler.
