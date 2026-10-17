@@ -240,4 +240,58 @@ final class ConstructorValAdditionalFlowTest {
         }
     }
 
+    @Test void rejectsPartialSelfEscapesWithoutAnyBlankValFields() {
+        String[] classes = {
+            """
+            define class C as
+              constructor() {
+                val hidden = [self];
+              }
+            end
+            """,
+            """
+            define class C as
+              val int x = 7;
+              constructor() {
+                val hidden = [self];
+              }
+            end
+            """,
+            """
+            define class C as
+              let int x = 7;
+              constructor() {
+                val hidden = [self];
+              }
+            end
+            """
+        };
+        for (String source : classes) {
+            var model = Parser.parse(source);
+            var klass = (dev.oreslang.ast.Ast.ClassDecl) model.modules()
+                    .getFirst().declarations().getFirst();
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> dev.oreslang.types.ConstructorValInitialization.check(klass));
+            assertTrue(failure.getMessage().contains("partially initialized self"),
+                    failure.getMessage());
+        }
+    }
+
+    @Test void directSelfFieldAccessRemainsAllowedWhenNoBlankValExists() {
+        var program = Parser.parse("""
+            define class C as
+              let int x = 7;
+              constructor() {
+                self.x = 9;
+              }
+            end
+            """);
+        var klass = (dev.oreslang.ast.Ast.ClassDecl) program.modules()
+                .getFirst().declarations().getFirst();
+        assertDoesNotThrow(() ->
+                dev.oreslang.types.ConstructorValInitialization.check(klass));
+    }
+
+
 }
