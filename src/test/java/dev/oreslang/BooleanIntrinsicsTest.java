@@ -137,7 +137,7 @@ final class BooleanIntrinsicsTest {
                 assertTrue(failure.getMessage().contains("exactly two"), failure.getMessage());
             }
         }
-        assertEquals("true\\ntrue\\n", run("""
+        assertEquals("true\ntrue\n", run("""
                 pub fnc main(): void {
                   stdio.println(Xor(true, false));
                   stdio.println(BooleanOps.Xor([true, false, false]));
