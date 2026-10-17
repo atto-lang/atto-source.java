@@ -16,6 +16,8 @@
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
+/scripts/ci_private_mirror_preflight.py @ORESoftware
+/tests/test_ci_private_mirror_preflight.py @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
