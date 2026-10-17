@@ -88,16 +88,66 @@ final class ActorSupervisorControlV2Test {
                             () -> (String message, ActorRuntime.ActorContext<String> context) -> { }),
                     "root CONTROL backpressure must prevent failure loss");
 
-            var event = runtime.pollRootSupervisionControl().orElseThrow();
-            assertEquals(failed.id(), event.actor());
-            assertEquals(failed.generation(), event.generation());
-            assertEquals(ActorRuntime.ActorFailureKind.FAILURE, event.failureKind());
+            // Polling does NOT release admission pressure. An unsettled lease
+            // retains the reserved generation and close() retries by default.
+            try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                var event = lease.notice();
+                assertEquals(failed.id(), event.actor());
+                assertEquals(failed.generation(), event.generation());
+                assertEquals(ActorRuntime.ActorFailureKind.FAILURE, event.failureKind());
+                assertThrows(IllegalStateException.class,
+                        runtime::pollRootSupervisionControl,
+                        "only one root CONTROL delivery may be in flight");
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> runtime.spawnShared(
+                                () -> (String message, ActorRuntime.ActorContext<String> context) -> { }),
+                        "poll without ack must retain root backpressure");
+                // Intentionally do not ack: close() must retry losslessly.
+            }
+
+            assertEquals(1, runtime.rootSupervisionStats().retried());
+            try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                assertEquals(failed.id(), lease.notice().actor());
+                lease.ack();
+            }
             assertTrue(runtime.pollRootSupervisionControl().isEmpty());
 
             var next = runtime.<String>spawnShared(
                     () -> (message, context) -> { });
             next.stop();
             assertTrue(next.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void rootLeaseExplicitRetryPreservesNoticeIdentityAndSequence() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 2)) {
+            var failed = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("boom");
+                    });
+            failed.send("fail");
+            assertThrows(ExecutionException.class,
+                    () -> failed.done().get(5, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorFailureNotice first;
+            try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                first = lease.notice();
+                lease.retry();
+            }
+            try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                assertEquals(first, lease.notice(),
+                        "retry must redeliver the exact immutable notice");
+                assertEquals(first.sequence(), lease.notice().sequence());
+                lease.ack();
+            }
+
+            var stats = runtime.rootSupervisionStats();
+            assertEquals(1, stats.published());
+            assertEquals(1, stats.retried());
+            assertEquals(1, stats.acknowledged());
+            assertEquals(0, stats.pending());
+            assertEquals(0, stats.reserved());
         }
     }
 
@@ -211,8 +261,12 @@ final class ActorSupervisorControlV2Test {
                     () -> parent.done().get(5, TimeUnit.SECONDS));
 
             List<ActorRuntime.ActorFailureNotice> root = new ArrayList<>();
-            root.add(runtime.pollRootSupervisionControl().orElseThrow());
-            root.add(runtime.pollRootSupervisionControl().orElseThrow());
+            for (int i = 0; i < 2; ++i) {
+                try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                    root.add(lease.notice());
+                    lease.ack();
+                }
+            }
             assertTrue(root.stream().anyMatch(n -> n.actor().equals(childRef.get().id())));
             assertTrue(root.stream().anyMatch(n -> n.actor().equals(parent.id())));
             assertTrue(root.stream().noneMatch(
