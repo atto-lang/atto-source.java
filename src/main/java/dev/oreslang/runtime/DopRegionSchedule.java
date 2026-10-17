@@ -13,6 +13,15 @@ public final class DopRegionSchedule {
 
     public enum Mode { READ, WRITE, DISCARD, REDUCE, ATOMIC }
 
+    /** Reject embedded C0 controls and DEL in diagnostic/operation labels. */
+    private static boolean hasAsciiControl(String label) {
+        for (int i = 0; i < label.length(); ++i) {
+            char value = label.charAt(i);
+            if (value < 0x20 || value == 0x7f) return true;
+        }
+        return false;
+    }
+
     public static final class Root {
         private final long rows;
         private final int fields;
@@ -37,7 +46,8 @@ public final class DopRegionSchedule {
                 throw new IllegalArgumentException("DOP field or row slice out of bounds");
             }
             if ((mode == Mode.REDUCE && (reduction == null || reduction.isBlank()
-                    || !reduction.equals(reduction.trim())))
+                    || !reduction.equals(reduction.trim())
+                    || hasAsciiControl(reduction)))
                     || (mode != Mode.REDUCE && reduction != null)) {
                 throw new IllegalArgumentException("reduction requires exactly one named operator");
             }
@@ -57,7 +67,8 @@ public final class DopRegionSchedule {
 
     public record Task(String name, List<Access> accesses) {
         public Task {
-            if (name == null || name.isBlank() || !name.equals(name.trim()))
+            if (name == null || name.isBlank() || !name.equals(name.trim())
+                    || hasAsciiControl(name))
                 throw new IllegalArgumentException("invalid DOP task name");
             accesses = List.copyOf(Objects.requireNonNull(accesses, "accesses"));
         }
