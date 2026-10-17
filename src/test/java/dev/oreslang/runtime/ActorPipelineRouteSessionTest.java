@@ -157,6 +157,8 @@ final class ActorPipelineRouteSessionTest {
                     failure.get(), () -> "actual reverse rejection proof failed: " + failure.get());
             org.junit.jupiter.api.Assertions.assertTrue(
                     sink.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertEquals(0, router.outstanding(),
+                    "failed reply frame must retire when the receive turn returns");
             router.close();
         }
     }
