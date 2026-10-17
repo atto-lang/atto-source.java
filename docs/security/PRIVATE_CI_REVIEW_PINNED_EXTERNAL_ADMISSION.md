@@ -13,8 +13,7 @@ A private-source payload may be created only when an external trusted
 dispatcher proves all of the following from live GitHub API responses:
 
 1. publisher policy PR `oreslang-source.java#1123` is open and has exactly one
-   `APPROVED` review by `@ORESoftware` whose `commit_id` equals the PR's
-   exact current head SHA;
+   `APPROVED` review by the explicitly configured independent reviewer whose\n   login and numeric GitHub user ID match policy and whose `commit_id` equals\n   the PR's exact current head SHA;
 2. Sagitta destination approval PR `#1092` satisfies the same exact-head
    review rule;
 3. exact source snapshot approval PR `#1173` satisfies the same exact-head
@@ -22,8 +21,7 @@ dispatcher proves all of the following from live GitHub API responses:
    `source-commit source-tree destination-repository-id` tuple;
 4. Sagitta carrier policy PR `sagitta-infra#7` satisfies the same exact-head
    review rule;
-5. incident `oreslang-platform-conformance#22` contains exactly one
-   `PRIVATE_CI_RESUME_APPROVED` comment authored by `@ORESoftware`;
+5. incident `oreslang-platform-conformance#22` contains exactly one\n   `PRIVATE_CI_RESUME_APPROVED` comment authored by that same configured\n   independent reviewer;
 6. the approved source commit exists in repository ID `1400792274` and its
    root Git tree equals the approved source tree;
 7. destination repository ID `1357615104` is still exactly
