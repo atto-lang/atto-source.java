@@ -45,8 +45,11 @@ A routed mailbox publication carries two VM-only metadata values together:
 1. the immutable `ActorPipelineRouteSession.MailFrame`; and
 2. the matching `PipelineTurnAuthority`.
 
-Neither value is part of `ActorMail<T>`. The recipient claims the pair only
-when the real mailbox envelope begins its DATA turn. Normal completion,
+Neither value is part of `ActorMail<T>`. Mailbox publication first requires
+the authority to attest that the frame is live in that exact route session; a
+frame from one router cannot be paired with another router's authority. The
+recipient claims the pair only when the real mailbox envelope begins its DATA
+turn. Normal completion,
 suspended receive completion, failed continuation re-entry, STOP/drain and
 discarded queued mail revoke or retire the metadata.
 
