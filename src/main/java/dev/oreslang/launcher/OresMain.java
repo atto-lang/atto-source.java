@@ -252,7 +252,7 @@ public final class OresMain {
                     lambdaInvoke,
                     event,
                     ExecutionProfile.parse(mode, platform),
-                    System.getenv());
+                    Map.of());
             if (!result.stdout().isEmpty()) System.err.print(result.stdout());
             if (!result.stderr().isEmpty()) System.err.print(result.stderr());
             System.out.print(result.response());
