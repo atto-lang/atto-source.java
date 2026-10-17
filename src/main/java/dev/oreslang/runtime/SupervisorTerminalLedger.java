@@ -271,6 +271,14 @@ public final class SupervisorTerminalLedger {
         freeSlot(reservation.slot);
     }
 
+    /**
+     * Release supervision credit for a still-live actor being transferred out
+     * of this supervisor. The caller must serialize this with finalization.
+     */
+    public synchronized void releaseLive(Reservation reservation) {
+        releaseUnstarted(reservation);
+    }
+
     public synchronized Stats stats() {
         return new Stats(
                 slots.length,
