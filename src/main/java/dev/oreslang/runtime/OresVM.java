@@ -21,8 +21,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * root continuations without lazily creating runtime infrastructure.</p>
  */
 public final class OresVM implements AutoCloseable {
-    private static final int DEFAULT_CONTROL_PARALLELISM =
-            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
+    // Two prestarted CONTROL carriers + one NIO selector: three VM host
+    // threads before runnable actor demand or JVM implementation threads.
+    private static final int DEFAULT_CONTROL_PARALLELISM = 2;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
     /** A host I/O mapping callback is not necessarily an OresScheduler turn.
      * Mark its owning CONTROL worker separately so external-host teardown
@@ -63,8 +64,8 @@ public final class OresVM implements AutoCloseable {
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
-        if (controlParallelism <= 0) {
-            throw new IllegalArgumentException("control parallelism must be positive");
+        if (controlParallelism < 2 || controlParallelism > 20) {
+            throw new IllegalArgumentException("CONTROL initial carriers must be in 2..20");
         }
 
         AtomicInteger carrierId = new AtomicInteger();
@@ -81,8 +82,9 @@ public final class OresVM implements AutoCloseable {
         // Mailmen never depend on actor-carrier startup. Extra carriers are
         // created only when independent runnable CONTROL turns contend.
         int maximumControlParallelism = Integer.getInteger(
-                "ores.runtime.control.max.parallelism",
-                Math.max(20, controlParallelism));
+                "ores.runtime.control.max.parallelism", 20);
+        if (maximumControlParallelism < controlParallelism || maximumControlParallelism > 20)
+            throw new IllegalArgumentException("CONTROL maximum carriers must be in 2..20 and >= minimum");
         this.controlExecutor = new AdaptiveCarrierExecutor(
                 controlParallelism, maximumControlParallelism,
                 DEFAULT_QUEUE_CAPACITY, factory);
