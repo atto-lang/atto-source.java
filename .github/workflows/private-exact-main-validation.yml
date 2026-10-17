@@ -56,6 +56,13 @@ jobs:
           test -n "${RUNNER_TEMP:-}"
           test -d "$RUNNER_TEMP"
           test ! -L "$RUNNER_TEMP"
+          test -n "${GITHUB_ENV:-}"
+          test -f "$GITHUB_ENV"
+          test ! -L "$GITHUB_ENV"
+          case "$GITHUB_ENV" in
+            "$RUNNER_TEMP"/*) ;;
+            *) echo "::error::GITHUB_ENV is outside RUNNER_TEMP" >&2; exit 1 ;;
+          esac
           cleanroom=$(/usr/bin/mktemp -d "$RUNNER_TEMP/oreslang-cleanroom.XXXXXXXXXX")
           [[ "$cleanroom" != *[[:space:]]* ]]
           test -d "$cleanroom"
@@ -74,9 +81,11 @@ jobs:
             printf 'GIT_DIR=\nGIT_WORK_TREE=\nGIT_INDEX_FILE=\n'
             printf 'GIT_OBJECT_DIRECTORY=\nGIT_ALTERNATE_OBJECT_DIRECTORIES=\nGIT_COMMON_DIR=\n'
             printf 'GIT_SSH=\nGIT_SSH_COMMAND=\nGIT_ASKPASS=\nSSH_ASKPASS=\n'
-            printf 'BASH_ENV=\nENV=\nPYTHONPATH=\nPYTHONHOME=\n'
+            printf 'GIT_SSL_CAINFO=\nGIT_SSL_NO_VERIFY=\nGIT_PROXY_COMMAND=\n'
+            printf 'BASH_ENV=\nENV=\nCDPATH=\nGLOBIGNORE=\nPYTHONPATH=\nPYTHONHOME=\n'
+            printf 'JAVA_HOME=\nJDK_HOME=\nGRAALVM_HOME=\n'
             printf 'JAVA_TOOL_OPTIONS=\nJDK_JAVA_OPTIONS=\n_JAVA_OPTIONS=\nCLASSPATH=\n'
-            printf 'MAVEN_ARGS=\n'
+            printf 'M2_HOME=\nMAVEN_HOME=\nMAVEN_ARGS=\n'
             printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\n' "$cleanroom/m2-repository"
             printf 'HTTP_PROXY=\nHTTPS_PROXY=\nALL_PROXY=\nNO_PROXY=\n'
             printf 'http_proxy=\nhttps_proxy=\nall_proxy=\nno_proxy=\n'

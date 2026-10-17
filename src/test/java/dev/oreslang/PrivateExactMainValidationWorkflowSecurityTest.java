@@ -1095,6 +1095,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
             assertTrue(isolation.contains("          set -euo pipefail\n"));
             for (String required : new String[] {
                     "test ! -L \"$RUNNER_TEMP\"",
+                    "test -f \"$GITHUB_ENV\"",
+                    "test ! -L \"$GITHUB_ENV\"",
+                    "\"$RUNNER_TEMP\"/*) ;;",
                     "cleanroom=$(/usr/bin/mktemp -d \"$RUNNER_TEMP/oreslang-cleanroom.XXXXXXXXXX\")",
                     "printf 'HOME=%s\\n' \"$cleanroom/home\"",
                     "printf 'XDG_CONFIG_HOME=%s\\n' \"$cleanroom/xdg\"",
@@ -1103,9 +1106,11 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "printf 'GIT_CONFIG_GLOBAL=%s\\n' \"$cleanroom/home/.gitconfig\"",
                     "printf 'GIT_CONFIG_COUNT=0\\n'",
                     "GIT_OBJECT_DIRECTORY=\\nGIT_ALTERNATE_OBJECT_DIRECTORIES=\\nGIT_COMMON_DIR=\\n",
-                    "BASH_ENV=\\nENV=\\nPYTHONPATH=\\nPYTHONHOME=\\n",
+                    "GIT_SSL_CAINFO=\\nGIT_SSL_NO_VERIFY=\\nGIT_PROXY_COMMAND=\\n",
+                    "BASH_ENV=\\nENV=\\nCDPATH=\\nGLOBIGNORE=\\nPYTHONPATH=\\nPYTHONHOME=\\n",
+                    "JAVA_HOME=\\nJDK_HOME=\\nGRAALVM_HOME=\\n",
                     "JAVA_TOOL_OPTIONS=\\nJDK_JAVA_OPTIONS=\\n_JAVA_OPTIONS=\\nCLASSPATH=\\n",
-                    "printf 'MAVEN_ARGS=\\n'",
+                    "M2_HOME=\\nMAVEN_HOME=\\nMAVEN_ARGS=\\n",
                     "printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\\n' \"$cleanroom/m2-repository\"",
                     "HTTP_PROXY=\\nHTTPS_PROXY=\\nALL_PROXY=\\nNO_PROXY=\\n",
                     "SSL_CERT_FILE=\\nSSL_CERT_DIR=\\nCURL_CA_BUNDLE=\\nREQUESTS_CA_BUNDLE=\\nNODE_EXTRA_CA_CERTS=\\n",
