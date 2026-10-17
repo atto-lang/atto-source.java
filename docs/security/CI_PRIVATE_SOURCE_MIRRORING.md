@@ -37,7 +37,19 @@ byte-for-byte identical to **one immutable protected-main commit SHA**, and
 reject if branch protection is not active or `main` moves during verification.
 The exporter rechecks protected-source authority immediately before the
 isolated destination branch is created and rejects any approval-commit drift,
-even if individual policy files were unchanged. This is in addition to the
+even if individual policy files were unchanged.
+
+A GitHub `protected=true` branch is **not sufficient**: the exporter also
+requires readable, enforceable branch-protection details, at least one
+nonstale mandatory code-owner approval, administrative enforcement, strict
+nonempty required CI checks, and disabled force pushes/deletions. Explicit
+pull-request review bypass allowances are rejected. These settings are checked
+before reading private test inputs and again after validating protected-main
+policy blobs; inability to read the protection API is a hard denial, not a
+fallback to the summary `protected` flag. Existing required check names must
+still be backed by separately verified runner-executed work (not zero-step
+GitHub job failures). Branch-protection verification alone does not certify
+that a chosen required workflow actually compiles the language. This is in addition to the
 separate required independent review;
 a developer cannot approve the destination by editing their PR checkout.
 

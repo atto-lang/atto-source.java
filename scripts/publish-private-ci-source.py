@@ -151,6 +151,51 @@ def checked_policy_fingerprint(root, repository):
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest(), approved_id
 
+def require_enforced_main_protection():
+    """Deny export unless GitHub enforces review and real required CI on main.
+
+    A protected=true branch can be protected from force pushes alone; that is
+    not equivalent to independently reviewed, code-owner-approved policy.
+    The dedicated branch-protection endpoint must succeed; when an API token
+    cannot inspect enforcement, private exports remain disabled.
+    """
+    protection = gh_api("repos/" + SOURCE_REPO + "/branches/main/protection")
+    if not isinstance(protection, dict):
+        raise Denied("source main branch protection details unavailable")
+    reviews = protection.get("required_pull_request_reviews")
+    checks = protection.get("required_status_checks")
+    admins = protection.get("enforce_admins")
+    if (not isinstance(reviews, dict) or not isinstance(checks, dict)
+            or not isinstance(admins, dict)):
+        raise Denied("source main requires enforced reviews, admins and CI")
+    required = reviews.get("required_approving_review_count")
+    if (reviews.get("require_code_owner_reviews") is not True
+            or reviews.get("dismiss_stale_reviews") is not True
+            or type(required) is not int or required < 1
+            or admins.get("enabled") is not True):
+        raise Denied("source main lacks mandatory independent code-owner review")
+    for bypass in ("users", "teams", "apps"):
+        allowances = reviews.get("bypass_pull_request_allowances") or {}
+        if not isinstance(allowances, dict) or allowances.get(bypass):
+            raise Denied("source main admits pull-request review bypass")
+    contexts = checks.get("contexts")
+    named = checks.get("checks")
+    if (checks.get("strict") is not True
+            or not isinstance(contexts, list)
+            or not isinstance(named, list)
+            or not (contexts or named)
+            or any(not isinstance(name, str) or not name.strip()
+                   for name in contexts)
+            or any(not isinstance(item, dict)
+                   or not isinstance(item.get("context"), str)
+                   or not item["context"].strip() for item in named)):
+        raise Denied("source main requires strict, nonempty CI status checks")
+    for feature in ("allow_force_pushes", "allow_deletions"):
+        state = protection.get(feature)
+        if not isinstance(state, dict) or state.get("enabled") is not False:
+            raise Denied("source main allows destructive protection bypass")
+
+
 def reviewed_source_main(root, repository):
     """Require the source's LIVE protected-main policy and publisher bytes.
 
@@ -165,6 +210,7 @@ def reviewed_source_main(root, repository):
     branch = gh_api("repos/" + SOURCE_REPO + "/branches/main")
     if branch.get("protected") is not True:
         raise Denied("source main is not protected; no private export authorized")
+    require_enforced_main_protection()
     pinned_main_sha = valid_sha(branch.get("commit", {}).get("sha"))
     for rel in (".github/private-ci-approved-repositories.txt",
                 "scripts/publish-private-ci-source.py",
@@ -192,6 +238,7 @@ def reviewed_source_main(root, repository):
     if (branch_again.get("protected") is not True
             or branch_again.get("commit", {}).get("sha") != pinned_main_sha):
         raise Denied("protected source main changed during policy verification")
+    require_enforced_main_protection()
     checked_policy_fingerprint(root, repository)
     return pinned_main_sha
 

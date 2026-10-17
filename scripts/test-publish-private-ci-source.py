@@ -2,6 +2,7 @@
 """Offline adversarial tests for the private destination-bound publisher."""
 import importlib.util
 import base64
+import copy
 import hashlib
 from pathlib import Path
 import tempfile
@@ -536,6 +537,23 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
         self.tree = pub.checked_git_tree(self.entries)
         self.commit = "a" * 40
         self.routes = []
+        self.protection = {
+            "required_pull_request_reviews": {
+                "required_approving_review_count": 1,
+                "require_code_owner_reviews": True,
+                "dismiss_stale_reviews": True,
+                "bypass_pull_request_allowances": {
+                    "users": [], "teams": [], "apps": []
+                }
+            },
+            "required_status_checks": {
+                "strict": True, "contexts": ["required-native-compiler"],
+                "checks": []
+            },
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False}
+        }
 
     def remote(self, route, method="GET", payload=None):
         self.routes.append((method, route))
@@ -544,6 +562,8 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
                     "private": True}
         if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
             return {"protected": True, "commit": {"sha": self.commit}}
+        if route == "repos/" + pub.SOURCE_REPO + "/branches/main/protection":
+            return self.protection
         if route.startswith("repos/" + pub.SOURCE_REPO + "/contents/"):
             path = route.split("/contents/", 1)[1].split("?ref=", 1)[0]
             data = (self.root / path).read_bytes()
@@ -600,6 +620,72 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "source commit Git tree"):
                 pub.require_pinned_snapshot(
                     "ci/oreslang-" + self.tree, self.commit, self.entries)
+
+    def test_deny_insufficient_main_branch_protection(self):
+        """Protecting against force-push alone is insufficient to export source."""
+        negative = [
+            ("missing policy", None, None),
+            ("missing approval reviewers", ("required_pull_request_reviews",), None),
+            ("single review is not required", ("required_pull_request_reviews",
+                                             "required_approving_review_count"), 0),
+            ("code owner review disabled", ("required_pull_request_reviews",
+                                           "require_code_owner_reviews"), False),
+            ("stale reviews accepted", ("required_pull_request_reviews",
+                                       "dismiss_stale_reviews"), False),
+            ("admin bypass enabled", ("enforce_admins", "enabled"), False),
+            ("strict CI disabled", ("required_status_checks", "strict"), False),
+            ("empty CI status checks", ("required_status_checks", "contexts"), []),
+            ("blank CI status name", ("required_status_checks", "contexts"), [" "]),
+            ("invalid check job", ("required_status_checks", "checks"),
+             [{"context": ""}]),
+            ("force push enabled", ("allow_force_pushes", "enabled"), True),
+            ("branch deletion enabled", ("allow_deletions", "enabled"), True),
+            ("unreviewed bypass user", ("required_pull_request_reviews",
+                                       "bypass_pull_request_allowances", "users"),
+             [{"login": "bypass"}]),
+        ]
+        for label, path, value in negative:
+            with self.subTest(case=label):
+                proof = copy.deepcopy(self.protection)
+                if path is None:
+                    proof = None
+                else:
+                    parent = proof
+                    for item in path[:-1]:
+                        parent = parent[item]
+                    parent[path[-1]] = value
+                    if label == "empty CI status checks":
+                        proof["required_status_checks"]["checks"] = []
+                with patch.object(pub, "gh_api", return_value=proof) as api:
+                    with self.assertRaises(pub.Denied):
+                        pub.require_enforced_main_protection()
+                    api.assert_called_once_with(
+                        "repos/" + pub.SOURCE_REPO + "/branches/main/protection")
+
+    def test_enforced_protection_checked_before_policy_contents(self):
+        """Insufficient rules must deny before fetching any protected files."""
+        self.protection["required_pull_request_reviews"][
+            "require_code_owner_reviews"] = False
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            with self.assertRaisesRegex(pub.Denied, "code-owner"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+        self.assertFalse(any("/contents/" in route
+                             for method, route in self.routes))
+        self.assertFalse(any(method == "POST" for method, _ in self.routes))
+
+    def test_enforced_protection_rechecked_after_policy_files(self):
+        """Changing required CI/review config mid-check invalidates approval."""
+        inspections = [0]
+        def change_protection(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_REPO + "/branches/main/protection":
+                inspections[0] += 1
+                if inspections[0] == 2:
+                    self.protection["required_status_checks"]["contexts"] = []
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=change_protection):
+            with self.assertRaisesRegex(pub.Denied, "status checks"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+        self.assertEqual(inspections[0], 2)
 
     def test_protected_source_policy_matches_reviewed_main(self):
         with patch.object(pub, "gh_api", side_effect=self.remote):
