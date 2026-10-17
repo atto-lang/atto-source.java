@@ -125,6 +125,86 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
         }
     }
 
+    private static ActorRuntime.PipelineTurnAuthority testAuthority(
+            ActorPipelineRouteSession session) {
+        return new ActorRuntime.PipelineTurnAuthority() {
+            @Override public boolean authenticates(
+                    ActorPipelineRouteSession.MailFrame frame) {
+                return session.ownsLive(frame);
+            }
+            @Override public void routeForward(Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeForwardRoundRobin(Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeForwardTo(String target, Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeForwardByKey(String key, Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeBackward(Object value) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public void routeReply(Object value) {
+                throw new UnsupportedOperationException();
+            }
+        };
+    }
+
+    @Test
+    void finalMailboxRejectsWrongActorAndUnboundSessionBeforeQueueing()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var delivered = new CountDownLatch(1);
+            var seen = new AtomicInteger();
+            var source = runtime.<String>spawnShared(() -> (value, ctx) -> {
+                assertEquals("allowed", value);
+                seen.incrementAndGet();
+                delivered.countDown();
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, ctx) -> {
+                throw new AssertionError("wrong-target DATA executed");
+            });
+            var sink = runtime.<String>spawnShared(() -> (value, ctx) -> { });
+            var graph = linearGraph();
+            var bound = new ActorPipelineRouteSession(
+                    graph, 79, 4,
+                    Map.of("source", source.id(),
+                           "worker", worker.id(),
+                           "sink", sink.id()));
+            var root = bound.ingress("source");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(
+                            worker, "wrong", root, testAuthority(bound)));
+            assertEquals(1, bound.outstanding(),
+                    "unauthorized target must not consume correlation frame");
+
+            var unbound = new ActorPipelineRouteSession(graph, 79, 4);
+            var unattached = unbound.ingress("source");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(
+                            source, "wrong", unattached, testAuthority(unbound)),
+                    "selector-only sessions cannot publish real mailbox DATA");
+            assertEquals(1, unbound.outstanding());
+
+            runtime.sendWithPipelineFrame(
+                    source, "allowed", root, testAuthority(bound));
+            assertTrue(delivered.await(5, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, seen.get());
+            assertEquals(0, bound.outstanding());
+            unbound.complete(unattached);
+            source.stop();
+            worker.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
     @Test
     void mailboxRejectsMismatchedFrameAuthorityPairBeforePublication() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
