@@ -3576,12 +3576,14 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "Channel<void> cannot carry a value; use an explicit signal/unit type");
         }
-        // Ordinary Channel<T> is an execution-domain-local capability, not a
-        // mailbox. Owned function values and objects containing callables may
-        // move through local channels. Actor message types are checked by
-        // validateActorCallableBoundaryType/isSharedSafe instead and remain
-        // strictly non-callable. Borrows cannot inhabit buffered channels
-        // until channel-bound lifetimes are expressible and checked.
+        // Channel payloads are data, not executable capabilities. A closure
+        // can hide execution-domain-local authority, so reject callable state
+        // recursively even for local channels. Keep the newer borrow check too.
+        if (containsChannelCallable(element, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " payload types are data-only; "
+                            + "Fnc/function values and values containing callable state stay in their owning execution domain");
+        }
         if (containsChannelBorrow(element, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
                     where + " cannot transport borrowed payloads, including nested fields: "
