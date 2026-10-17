@@ -453,7 +453,19 @@ public final class NioReadinessGroup implements AutoCloseable {
         if (ownedCompletionExecutor == null)
             return OresFuture.failed(new IllegalStateException(
                     "TCP write requires dedicated NIO completion workers"));
-        if (bytes.length == 0) return OresFuture.completed(0);
+        // Even no-op writes must observe channel closure and the active
+        // socket lease. Otherwise they silently succeed during another I/O
+        // operation or after the manager has stopped.
+        if (bytes.length == 0) {
+            synchronized (lifecycle) {
+                if (closed || !channel.isOpen())
+                    return OresFuture.failed(new IOException("NIO TCP channel closed"));
+                if (readLeases.containsKey(channel) || writeLeases.containsKey(channel))
+                    return OresFuture.failed(new IllegalStateException(
+                            "channel already has an outstanding TCP I/O operation"));
+                return OresFuture.completed(0);
+            }
+        }
         byte[] snapshot = Arrays.copyOf(bytes, bytes.length);
         ByteBuffer buffer = ByteBuffer.wrap(snapshot);
         AtomicReference<OresFuture<Integer>> pendingWatch = new AtomicReference<>();
