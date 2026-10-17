@@ -56,10 +56,11 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         for (int offset = 0; offset < count; ++offset) {
             int index = (start + offset) % count;
             ExecutorService lane = lanes.get(index);
-            if (lane instanceof NativeCarrierExecutor nativeLane
-                    && nativeLane.getStartedCarrierCount() > 0
-                    || lane instanceof java.util.concurrent.ThreadPoolExecutor pool
-                    && pool.getPoolSize() > 0) {
+            boolean nativeReady = lane instanceof NativeCarrierExecutor nativeLane
+                    && nativeLane.getStartedCarrierCount() > 0;
+            boolean javaReady = lane instanceof java.util.concurrent.ThreadPoolExecutor pool
+                    && pool.getPoolSize() > 0;
+            if (nativeReady || javaReady) {
                 executeOnLane(index, notification);
                 return;
             }
