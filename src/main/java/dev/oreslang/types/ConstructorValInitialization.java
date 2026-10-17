@@ -38,36 +38,45 @@ public final class ConstructorValInitialization {
             }
         }
 
+        java.util.Set<Integer> checked = new java.util.HashSet<>();
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            checkConstructor(klass, constructor, required);
+            checkConstructor(klass, constructor, required, checked);
         }
     }
 
     /**
-     * Delegating frames share the same initializing object. The terminal
-     * constructor proves the blank-val obligations; on successful return to
-     * a delegating frame its tail begins with all required fields initialized.
-     * ConstructorDelegation.validate has already rejected cycles.
+     * Iteratively analyze each delegation chain terminal-first. Memoizing
+     * completed arities avoids quadratic reanalysis and recursive Java stack
+     * growth for classes with many constructor overloads. The chain is known
+     * acyclic and well-formed from ConstructorDelegation.validate.
      */
-    private static ConstructorFlowState checkConstructor(
+    private static void checkConstructor(
             Ast.ClassDecl klass,
             Ast.ConstructorDecl constructor,
-            Set<String> required) {
-        Ast.ConstructorDelegateStmt delegation = ConstructorDelegation.first(constructor);
-        ConstructorFlowState entry = ConstructorFlowState.blank(required);
-        if (delegation != null) {
-            Ast.ConstructorDecl target =
-                    klass.constructorForArity(delegation.effectiveArity());
-            checkConstructor(klass, target, required);
-            // Successful target completion (including an explicit bare return)
-            // established exactly-once initialization. An abnormal completion
-            // cannot reach this delegator's tail.
-            for (String field : required) entry = entry.write(field);
+            Set<String> required,
+            Set<Integer> checked) {
+        List<Ast.ConstructorDecl> chain = new ArrayList<>();
+        Ast.ConstructorDecl current = constructor;
+        while (!checked.contains(current.arity())) {
+            chain.add(current);
+            Ast.ConstructorDelegateStmt delegation = ConstructorDelegation.first(current);
+            if (delegation == null) break;
+            current = klass.constructorForArity(delegation.effectiveArity());
         }
-        ConstructorFlowState normalExit = block(
-                ConstructorDelegation.tail(constructor), entry, required, klass.name());
-        if (normalExit != null) requireComplete(normalExit, required, klass.name());
-        return normalExit;
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            Ast.ConstructorDecl frame = chain.get(i);
+            ConstructorFlowState entry = ConstructorFlowState.blank(required);
+            if (ConstructorDelegation.isDelegating(frame)) {
+                // Successful target completion (including bare return) proves
+                // each blank val exactly once; abnormal completion cannot reach
+                // this frame. Its tail may not write a blank val again.
+                for (String field : required) entry = entry.write(field);
+            }
+            ConstructorFlowState normalExit = block(
+                    ConstructorDelegation.tail(frame), entry, required, klass.name());
+            if (normalExit != null) requireComplete(normalExit, required, klass.name());
+            checked.add(frame.arity());
+        }
     }
 
     /** A null state has no normal continuation (every path returned). */
