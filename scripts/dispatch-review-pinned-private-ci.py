@@ -361,7 +361,10 @@ def git_output(root, *args):
 
 
 def verify_local_checkout(root, receipt):
-    root = Path(root).resolve(strict=True)
+    candidate = Path(root)
+    if candidate.is_symlink():
+        raise Denied("source checkout path cannot be a symlink")
+    root = candidate.resolve(strict=True)
     if git_output(root, "rev-parse", "--show-toplevel") != str(root):
         raise Denied("source directory must be the checkout root")
     if git_output(root, "rev-parse", "--verify", "HEAD") != receipt["source_commit_sha"]:
@@ -406,6 +409,15 @@ def write_payload(files, receipt, authorize=full_authorize):
     if base.get("sha") != receipt["carrier_base_sha"]:
         raise Denied("carrier base commit identity mismatch")
     base_tree = pub.nested_sha(base, "tree")
+    base_root = pub.gh_api(f"repos/{CARRIER_REPO}/git/trees/{base_tree}")
+    base_items = base_root.get("tree")
+    if (base_root.get("sha") != base_tree
+            or base_root.get("truncated") is not False
+            or type(base_items) is not list):
+        raise Denied("reviewed carrier base tree readback unavailable")
+    if any(type(item) is dict and item.get("path") in (PREFIX, PROVENANCE_PATH)
+           for item in base_items):
+        raise Denied("reviewed carrier parent already contains payload paths")
 
     batches = pub.prepare_source_tree_batches(files)
     binary_writes = sum(text is None for batch in batches for _, _, _, text in batch)
