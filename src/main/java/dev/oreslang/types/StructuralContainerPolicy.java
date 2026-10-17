@@ -73,11 +73,28 @@ public final class StructuralContainerPolicy {
         return new Shape(Kind.MAP, key, value, -1, readOnly);
     }
 
+    /** Strings used as stable map-key literals must be valid Unicode scalars.
+     * A malformed UTF-16 singleton cannot acquire runtime UTF-8 key authority. */
+    private static boolean validLiteralString(String value) {
+        if (value == null) return false;
+        for (int i = 0; i < value.length(); ++i) {
+            char ch = value.charAt(i);
+            if (Character.isHighSurrogate(ch)) {
+                if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i)))
+                    return false;
+            } else if (Character.isLowSurrogate(ch)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Map keys are always invariant; no numeric widening or object hash guesses. */
     public static boolean stableKey(Type type) {
         return type == Types.Primitive.STRING || type == Types.Primitive.INT
                 || type == Types.Primitive.BOOL
-                || type instanceof Types.StringLiteral
+                || type instanceof Types.StringLiteral literal
+                    && validLiteralString(literal.value())
                 || type instanceof Types.BoolLiteral;
     }
 
@@ -87,7 +104,8 @@ public final class StructuralContainerPolicy {
         if (type instanceof Types.Primitive p) {
             return p != Types.Primitive.NULL && p != Types.Primitive.VOID;
         }
-        if (type instanceof Types.StringLiteral || type instanceof Types.BoolLiteral) return true;
+        if (type instanceof Types.StringLiteral literal) return validLiteralString(literal.value());
+        if (type instanceof Types.BoolLiteral) return true;
         if (type instanceof Types.Named n) {
             return n.name().equals("Option") && n.arguments().size() == 1
                     && closedValue(n.arguments().get(0), depth + 1);
