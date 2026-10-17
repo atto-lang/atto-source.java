@@ -76,6 +76,54 @@ final class ActorAffinityDispatcherTest {
     }
 
     @Test
+    @org.junit.jupiter.api.condition.EnabledOnOs(org.junit.jupiter.api.condition.OS.LINUX)
+    void nativeNioHostCompletionsReuseExistingPthreadWithoutStartingColdLanes()
+            throws Exception {
+        var nativeLanes = new java.util.ArrayList<NativeCarrierExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(3, 64, new int[0], index -> {
+            var lane = new NativeCarrierExecutor(
+                    1, 1, 64, "ores-native-host-affinity-" + index + "-");
+            nativeLanes.add(lane);
+            return lane;
+        });
+        try {
+            assertEquals(0, dispatcher.startedCarrierCount());
+            var running = new CountDownLatch(1);
+            var nativeTid = new java.util.concurrent.atomic.AtomicLong();
+            dispatcher.executeOnLane(2, () -> {
+                nativeTid.set(NativeCarrierExecutor.currentNativeThreadId());
+                running.countDown();
+            });
+            assertTrue(running.await(3, TimeUnit.SECONDS));
+            assertTrue(nativeTid.get() > 0);
+            assertEquals(0, nativeLanes.get(0).getStartedCarrierCount());
+            assertEquals(0, nativeLanes.get(1).getStartedCarrierCount());
+            assertTrue(nativeLanes.get(2).readyForNoBootstrapAdmission());
+
+            var allDelivered = new CountDownLatch(48);
+            var wrongPthread = new AtomicInteger();
+            for (int i = 0; i < 48; i++) {
+                dispatcher.executeHostOnWarmLane(() -> {
+                    if (NativeCarrierExecutor.currentNativeThreadId() != nativeTid.get())
+                        wrongPthread.incrementAndGet();
+                    allDelivered.countDown();
+                });
+            }
+            assertTrue(allDelivered.await(5, TimeUnit.SECONDS));
+            assertEquals(0, wrongPthread.get());
+            assertEquals(0, nativeLanes.get(0).getStartedCarrierCount(),
+                    "host completions must not create native lane zero");
+            assertEquals(0, nativeLanes.get(1).getStartedCarrierCount(),
+                    "host completions must not create native lane one");
+            assertEquals(1, dispatcher.startedCarrierCount(),
+                    "all 48 host completions reuse exactly one native pthread");
+        } finally {
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void busyHostSubscriberCannotHideAnIdleAlreadyWarmLane() throws Exception {
         var executors = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
         var dispatcher = new ActorAffinityDispatcher(3, 32, new int[0], index -> {
