@@ -240,7 +240,7 @@ final class ActorSupervisorRestartCircuit {
                 end,
                 attempt,
                 width,
-                restartDelayNanos(attempt),
+                restartDelayNanos(childIndex, actorGeneration, attempt),
                 decisionSequence,
                 "restart-admitted");
     }
@@ -276,15 +276,43 @@ final class ActorSupervisorRestartCircuit {
         };
     }
 
-    private long restartDelayNanos(int attempt) {
+    private long restartDelayNanos(
+            int childIndex,
+            long actorGeneration,
+            int attempt) {
         if (config.baseBackoffNanos() == 0 || attempt <= 0) return 0;
         long delay = config.baseBackoffNanos();
         for (int i = 1; i < attempt; ++i) {
-            if (delay >= config.maxBackoffNanos()) return config.maxBackoffNanos();
-            if (delay > config.maxBackoffNanos() / 2) return config.maxBackoffNanos();
+            if (delay >= config.maxBackoffNanos()) {
+                return config.maxBackoffNanos();
+            }
+            if (delay > config.maxBackoffNanos() / 2) {
+                delay = config.maxBackoffNanos();
+                break;
+            }
             delay *= 2;
         }
-        return Math.min(delay, config.maxBackoffNanos());
+        delay = Math.min(delay, config.maxBackoffNanos());
+
+        // Deterministic <=12.5% phase spread avoids synchronized supervisor
+        // herds without sacrificing reproducibility or requiring entropy.
+        long remaining = config.maxBackoffNanos() - delay;
+        long spreadCap = Math.min(delay >>> 3, remaining);
+        if (spreadCap <= 0) return delay;
+
+        long mixed = mix64(
+                actorGeneration
+                        ^ (((long) childIndex) << 32)
+                        ^ ((long) attempt * 0x9E3779B97F4A7C15L));
+        long spread = Long.remainderUnsigned(mixed, spreadCap + 1L);
+        return delay + spread;
+    }
+
+    private static long mix64(long value) {
+        long z = value;
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        return z ^ (z >>> 31);
     }
 
     private void pruneWindow(long nowNanos) {
