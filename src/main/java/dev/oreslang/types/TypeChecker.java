@@ -1284,6 +1284,10 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        if (containsPointerType(actual)) {
+            throw new IllegalArgumentException(
+                    "module/global storage cannot contain Pointer<T> until place-aware storage ownership is implemented");
+        }
         requireMutableReferentCompatible(
                 actual,
                 field.mutableReferent(),
@@ -6845,6 +6849,28 @@ public final class TypeChecker {
     }
 
     private final Set<Type> validatingPointerTargets = new HashSet<>();
+
+    private boolean containsPointerType(Type type) {
+        if (type instanceof Borrow borrow) return containsPointerType(borrow.target());
+        if (type instanceof ListType list) return containsPointerType(list.element());
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) if (containsPointerType(element)) return true;
+            return false;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) if (containsPointerType(member)) return true;
+            return false;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) if (containsPointerType(option)) return true;
+            return false;
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Pointer")) return true;
+            for (Type argument : named.arguments()) if (containsPointerType(argument)) return true;
+        }
+        return false;
+    }
 
     private void requirePointerTarget(Type target) {
         if (!validatingPointerTargets.add(target)) {
