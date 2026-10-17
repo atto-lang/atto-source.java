@@ -1,0 +1,246 @@
+# Oreslang semantic IR: construction, callables, recursive aliases
+
+This document defines the backend-neutral semantic objects for constructor and
+callable/type checking. It is a language contract, not a Java AST ABI. Backends
+may lower these objects differently, but they must preserve the same identities,
+state transitions and rejection conditions.
+
+## ConstructorDecl
+
+A semantic constructor declaration has:
+
+```text
+ConstructorDecl {
+  owner: ClassId
+  receiver_binding: IMPLICIT | EXPLICIT_SELF
+  user_parameters: Parameter[]
+  effective_arity: u32
+  body: CheckedBody
+
+  // reserved for delegation work
+  delegates_to: ConstructorKey?
+}
+```
+
+`effective_arity == user_parameters.length`. The optional source token
+`self` is a receiver binder and is never a user parameter.
+
+The overload key is:
+
+```text
+ConstructorKey {
+  owner: ClassId
+  effective_arity: u32
+}
+```
+
+Parameter types, generic substitutions, receiver spelling and backend ABI
+parameters do not participate in constructor overload identity.
+
+Constructors are not ordinary callable values and are never subtypes of
+`AnyCallable`.
+
+Actor declarations have no constructor semantic object at all. A parsed actor
+constructor is rejected before overload analysis.
+
+## ConstructionState
+
+Each blank constructor-initialized immutable field carries a saturated
+assignment interval:
+
+```text
+AssignmentCount {
+  min: 0 | 1 | 2+
+  max: 0 | 1 | 2+
+}
+```
+
+The useful states are:
+
+```text
+[0,0]  definitely uninitialized
+[0,1]  maybe initialized
+[1,1]  definitely initialized exactly once
+[0,2+] maybe multiply initialized
+[1,2+] initialized, possibly more than once
+[2+,2+] definitely multiply initialized
+```
+
+A direct write maps `[a,b]` to
+`[min(2+,a+1), min(2+,b+1)]`.
+
+For a blank `val`, a write is admitted only from `[0,0]`. A normal
+constructor completion requires `[1,1]` for every required field.
+
+Control-flow join is:
+
+```text
+join([a,b], [c,d]) = [min(a,c), max(b,d)]
+```
+
+This is equivalent to MUST-set intersection plus MAY-set union, while preserving
+an extensible representation for loop and callback cardinality work.
+
+A semantic construction state also conceptually carries:
+
+```text
+ConstructionState {
+  region: ConstructionRegionId
+  phase: ALLOCATED | INITIALIZING | INITIALIZED | CONSTRUCTED
+  fields: Map<FieldId, AssignmentCount>
+  pending_cleanups: CleanupEdge[]
+}
+```
+
+The current Java slice materializes the field lattice. The phase, region and
+cleanup components remain explicit contract requirements for later CFG and
+backend lowering.
+
+`INITIALIZED` does not imply publication. The ordinary `Foo` capability is
+created only at successful `CONSTRUCTED` completion. A construction receiver
+must not escape or cross a scheduler/suspension boundary.
+
+## Control-flow rules
+
+Normal branch joins use the assignment interval join above.
+
+A normally returning constructor edge must satisfy all required field states.
+An abnormal edge that leaves construction does not need to initialize remaining
+fields, but it still may not publish the partial receiver or read uninitialized
+state.
+
+RHS evaluation precedes the field write. Therefore:
+
+```ores
+self.x = self.x + 1;
+```
+
+reads `x` while it is still uninitialized.
+
+A source `match` may contribute branch states only when exhaustiveness is
+proven. The first Java implementation recognizes an explicit unguarded
+catch-all (`_` or a binding pattern) locally; richer finite-domain
+exhaustiveness remains owned by the general match checker.
+
+Loop backedges, exceptional edges and deferred cleanups must be represented
+explicitly before they may establish required-field initialization. A backend
+must fail closed rather than infer initialization from syntax alone.
+
+## Construction suspension
+
+Construction-scoped state may not survive a scheduler boundary.
+
+The semantic checker rejects construction through at least:
+
+- `await`;
+- asynchronous iteration;
+- blocking channel operations;
+- blocking select/dynamic select;
+- any future operation whose effect summary includes suspension.
+
+This rule is independent of definite initialization. Even a field-complete
+object remains unpublished until the constructor successfully completes.
+
+## CallableType
+
+A concrete callable semantic type is:
+
+```text
+CallableType {
+  parameters: ParameterType[]
+  result: Type
+  effects: EffectSet
+  capture_capabilities: CapabilitySet
+}
+```
+
+Parameter source names are not part of callable identity.
+
+`AnyCallable` is a sealed erased callable top type:
+
+```text
+ConcreteCallable <: AnyCallable <: Any
+```
+
+`AnyCallable` proves that the runtime value is a reifiable callable, but it
+does not retain an invocation signature. Therefore an `AnyCallable` value
+cannot be invoked until checked narrowing establishes a concrete
+`CallableType`.
+
+Erasing to `AnyCallable` never erases capture, borrow, actor-isolation,
+serialization, sharing or construction-region restrictions.
+
+Ordinary objects do not become callable by declaring a method named `call`.
+Constructors do not become callable values. Instance methods do not silently
+become bound callables; an explicit lambda makes receiver capture visible to
+ownership analysis.
+
+## RecursiveAliasType
+
+A recursive alias gets stable nominal identity before its body is resolved:
+
+```text
+RecursiveAliasType {
+  id: RecursiveTypeId
+  generic_parameters: GenericParameter[]
+  body: Type
+}
+```
+
+Example:
+
+```ores
+type Callback = (Callback next) => void;
+```
+
+The recursive occurrence is a back-reference to the declared
+`RecursiveTypeId`, never textual infinite expansion.
+
+Recursive validation has two independent obligations:
+
+1. **Representation recursion:** every runtime storage cycle must cross a
+   representation indirection barrier such as a callable handle, `Ref`,
+   `WeakRef`, pointer/box, or ordinary reference object.
+2. **Type-instantiation recursion:** recursive generic references must be
+   regular and finite. Initially, a recursive alias may recurse only with the
+   same generic arguments.
+
+Thus:
+
+```ores
+type Callback<T> = (T, Callback<T>) => void;   // regular
+type Node = Ref<Node>;                         // indirect
+type Inline = (int, Inline);                   // infinite layout: reject
+type Strange<T> = (Strange<(T, T)>) => void;  // non-regular: reject
+```
+
+Direct unguarded alias cycles are rejected.
+
+`typeof` remains an expression type query. Recursive aliases refer to
+themselves by name; `typeof Alias` is not recursive-type syntax.
+
+## Required diagnostic classes
+
+Backend wording may differ, but the semantic failure category must be stable:
+
+```text
+CTOR_DUPLICATE_ARITY
+CTOR_ACTOR_FORBIDDEN
+CTOR_SELF_POSITION
+CTOR_DELEGATION_POSITION
+CTOR_DELEGATION_CYCLE
+INIT_READ_BEFORE_WRITE
+INIT_VAL_REASSIGN
+INIT_MISSING_ON_SUCCESS
+CONSTRUCTION_ESCAPE
+CONSTRUCTION_SUSPEND
+CONSTRUCTION_DISPATCH
+CALL_ERASED_SIGNATURE
+RECURSIVE_ALIAS_UNGUARDED
+RECURSIVE_LAYOUT_INFINITE
+RECURSIVE_GENERIC_NONREGULAR
+```
+
+Backend parity means identical source acceptance/rejection and observable
+runtime behavior for conformance fixtures. Matching internal object layouts,
+symbol names or machine-level hidden receiver parameters is not required.
