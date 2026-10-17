@@ -65,6 +65,16 @@ def inspect(reports, provenance, source_root=None, require_ci=False):
             require(command.returncode == 0
                     and command.stdout.strip() == source[key],
                     "JUnit evidence does not match the checked-out " + revision)
+        # Git HEAD can remain fixed while an earlier build/test step rewrites
+        # tracked source in the working tree. Do not certify a dirty checkout
+        # as the exact, immutable source revision.
+        for diff_args in (("diff", "--quiet", "HEAD", "--"),
+                          ("diff", "--cached", "--quiet", "HEAD", "--")):
+            clean = subprocess.run(
+                ["git", "-C", str(source_root), *diff_args],
+                capture_output=True, text=True, check=False, timeout=5)
+            require(clean.returncode == 0,
+                    "tracked source changed after checkout; exact-head evidence denied")
     evidence = []
     for name in SUITES:
         path = reports / ("TEST-dev.oreslang." + name + ".xml")
@@ -171,6 +181,32 @@ def self_test():
         provenance.write_text(json.dumps(actual), encoding="utf-8")
         require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
                 "exact synthetic HEAD/tree was not accepted")
+        # A real Git HEAD/tree match is not sufficient if compiler scripts
+        # overwrite a tracked source file before the JUnit report is emitted.
+        tracked = checkout / "README.md"
+        original = tracked.read_text(encoding="utf-8")
+        tracked.write_text(original + "dirty checkout\\n", encoding="utf-8")
+        try:
+            try:
+                inspect(reports, provenance, checkout)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("dirty Git worktree was accepted")
+            subprocess.run(["git", "-C", str(checkout), "add", "README.md"],
+                           capture_output=True, check=True, timeout=5)
+            try:
+                inspect(reports, provenance, checkout)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("staged source mutation was accepted")
+        finally:
+            subprocess.run(["git", "-C", str(checkout), "reset", "-q", "HEAD", "--", "README.md"],
+                           capture_output=True, check=True, timeout=5)
+            tracked.write_text(original, encoding="utf-8")
+        require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
+                "clean checkout was not restored after tamper tests")
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
             try:
                 inspect(reports, provenance, checkout, require_ci=True)
