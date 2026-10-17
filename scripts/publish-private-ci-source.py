@@ -75,6 +75,15 @@ PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
 
 
+
+def safe_descriptor_flags_available():
+    """A defined-but-zero flag silently disables required open() protections."""
+    return all(type(getattr(os, flag, None)) is int
+               and getattr(os, flag) > 0
+               for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"))
+
+
+
 class Denied(RuntimeError):
     pass
 
@@ -219,8 +228,7 @@ def checked_policy_fingerprint(root, repository):
     A pathname symlink check followed by read_bytes() can be raced: the
     unapproved file can briefly be replaced with an approved symlink.
     """
-    if (not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot safely read the destination approval policy")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     policy_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -471,7 +479,7 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
     # --skip-worktree or --assume-unchanged and edit its executable bytes while
     # status --porcelain reports a clean checkout. Compare the real file
     # bytes with the blob named by the pinned, non-replaced HEAD tree.
-    if not all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot safely authenticate publisher files")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
@@ -599,8 +607,7 @@ def collect_source(root, trusted_root):
     descendants are opened relative to directory descriptors anchored at
     the trusted checkout, so a rename cannot redirect them outside it.
     """
-    if (not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
-            or not hasattr(os, "O_NONBLOCK")):
+    if not safe_descriptor_flags_available():
         raise Denied("OS cannot enforce descriptor-relative no-follow reads")
     if root.is_symlink() or not root.is_dir():
         raise Denied("source path must be a real directory")
