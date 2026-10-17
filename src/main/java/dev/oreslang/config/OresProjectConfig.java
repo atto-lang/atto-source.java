@@ -7,9 +7,15 @@ import org.tomlj.TomlParseResult;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -108,6 +114,44 @@ public final class OresProjectConfig {
         return Files.exists(legacy, LinkOption.NOFOLLOW_LINKS) ? legacy : null;
     }
 
+    private static final int MAX_MANIFEST_BYTES = 65_536;
+
+    // Read one bounded descriptor-backed snapshot, not a path twice. A
+    // no-follow open prevents a last-moment symlink substitution at the leaf.
+    // This is not a race-free sandbox for hostile mutable parent directories.
+    private static String readBoundedManifest(Path manifest) throws IOException {
+        try (var channel = Files.newByteChannel(manifest,
+                java.util.Set.<OpenOption>of(StandardOpenOption.READ,
+                        LinkOption.NOFOLLOW_LINKS))) {
+            if (channel.size() > MAX_MANIFEST_BYTES) {
+                throw new IllegalArgumentException("project manifest exceeds 64 KiB");
+            }
+            ByteBuffer bytes = ByteBuffer.allocate(MAX_MANIFEST_BYTES + 1);
+            int count;
+            while (bytes.hasRemaining() && (count = channel.read(bytes)) != -1) {
+                if (count == 0) {
+                    throw new IOException("project manifest read made no progress");
+                }
+            }
+            if (bytes.position() > MAX_MANIFEST_BYTES) {
+                throw new IllegalArgumentException("project manifest exceeds 64 KiB");
+            }
+            if (channel.size() != bytes.position()) {
+                throw new IOException("project manifest changed while being read");
+            }
+            bytes.flip();
+            try {
+                return StandardCharsets.UTF_8.newDecoder()
+                        .onMalformedInput(CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(CodingErrorAction.REPORT)
+                        .decode(bytes).toString();
+            } catch (CharacterCodingException invalid) {
+                throw new IllegalArgumentException(
+                        "project manifest requires valid UTF-8", invalid);
+            }
+        }
+    }
+
     public static OresProjectConfig load(Path manifest, Map<String, String> environment) throws IOException {
         if (manifest == null) throw new IllegalArgumentException("manifest path cannot be null");
         if (environment == null) throw new IllegalArgumentException("environment cannot be null");
@@ -127,7 +171,7 @@ public final class OresProjectConfig {
         // the TOML parser after the admission checks. LF and CRLF are valid
         // TOML line endings, but bare CR is not: it could otherwise conceal
         // a second project.root declaration behind a '#' comment.
-        String manifestContents = Files.readString(absoluteManifest);
+        String manifestContents = readBoundedManifest(absoluteManifest);
         for (int i = 0; i < manifestContents.length(); i++) {
             if (manifestContents.charAt(i) == '\r'
                     && (i + 1 == manifestContents.length()
