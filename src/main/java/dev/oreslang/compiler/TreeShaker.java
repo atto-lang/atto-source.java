@@ -182,6 +182,7 @@ public final class TreeShaker {
                     || function.generator()
                     || function.trapped()
                     || function.parameters().size() != arguments.size()
+                    || function.parameters().stream().anyMatch(Ast.Param::rest)
                     || function.body().size() != 1
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
                     || returned.value() == null
