@@ -17,8 +17,10 @@ native pointer is exposed to guest code.
 
 ## Retirement
 
-Logical actor retirement revokes all arena access immediately. Native FFM bytes
-are released by closing the owning `Arena`. A persistent read loan may outlive
+Logical actor retirement revokes all arena access immediately. Before the owning
+`Arena` is physically closed, every native slot is explicitly overwritten with
+zeroes; deterministic lifetime alone is not treated as a zeroization guarantee.
+A persistent read loan may outlive
 an actor turn and can therefore defer physical close; its bytes remain charged
 to the actor/runtime quota until the final loan closes. Scratch has no loan API
 and is reclaimed at the turn boundary.
