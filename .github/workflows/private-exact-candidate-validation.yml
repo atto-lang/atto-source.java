@@ -44,6 +44,7 @@ jobs:
       APPROVED_CANDIDATE_TREE: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE }}
       REQUESTED_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
       REQUIRE_OPTION_PATTERN: ${{ inputs.verify_option_pattern }}
+      APPROVED_OPTION_TEST_BLOB: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_OPTION_TEST_BLOB }}
     steps:
       - name: Verify approvals before any candidate source checkout
         shell: bash
@@ -58,6 +59,9 @@ jobs:
           [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$APPROVED_CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$APPROVED_CANDIDATE_TREE" =~ ^[a-f0-9]{40}$ ]]
+          if test "$REQUIRE_OPTION_PATTERN" = 'true'; then
+            [[ "$APPROVED_OPTION_TEST_BLOB" =~ ^[a-f0-9]{40}$ ]]
+          fi
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           ref: ${{ inputs.candidate_sha }}
@@ -251,6 +255,7 @@ jobs:
           test -f "$source"
           test ! -L "$source"
           test -s "$source"
+          test "$(git hash-object "$source")" = "$APPROVED_OPTION_TEST_BLOB"
           test -f contracts/v1/option-pattern-v1.json
           test ! -L contracts/v1/option-pattern-v1.json
           test -f scripts/check_option_pattern_contract.py
@@ -563,6 +568,9 @@ jobs:
               ],
               "native_modes_expected": ["aot", "hybrid", "isolate"],
               "option_pattern_requested": os.environ["REQUIRE_OPTION_PATTERN"] == "true",
+              "option_pattern_test_blob": (
+                  os.environ["APPROVED_OPTION_TEST_BLOB"]
+                  if os.environ["REQUIRE_OPTION_PATTERN"] == "true" else None),
               "option_pattern_junit_methods_required": (
                   13 if os.environ["REQUIRE_OPTION_PATTERN"] == "true" else 0),
               "verified_execution_claim": False,
