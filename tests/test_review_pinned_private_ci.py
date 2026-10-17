@@ -53,8 +53,10 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         }
 
     def reviews(self, head, reviewer=REVIEWER_LOGIN, reviewer_id=REVIEWER_ID,
-                state="APPROVED", rid=1, association="COLLABORATOR"):
+                state="APPROVED", rid=1, association="COLLABORATOR",
+                submitted="2026-10-17T20:00:00Z"):
         return [{"id": rid, "state": state, "commit_id": head,
+                 "submitted_at": submitted,
                  "author_association": association,
                  "user": {"login": reviewer, "id": reviewer_id, "type": "User"}}]
 
@@ -75,7 +77,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "destination_reviews": self.write("destination-reviews.json",
                 self.reviews(DEST_HEAD, rid=12)),
             "snapshot_pr": self.write("snapshot-pr.json",
-                self.pr(MOD.SOURCE_REPO, 1173, SNAP_HEAD)),
+                self.pr(MOD.SOURCE_REPO, 1189, SNAP_HEAD)),
             "snapshot_reviews": self.write("snapshot-reviews.json",
                 self.reviews(SNAP_HEAD, rid=13)),
             "carrier_pr": self.write("carrier-pr.json",
@@ -158,6 +160,19 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             })
         self.assertDenied(mutate)
 
+    def test_operator_accounts_cannot_be_configured_as_independent(self):
+        for operator_id in MOD.DISALLOWED_REVIEWER_IDS:
+            with self.subTest(operator_id=operator_id):
+                def mutate(fx, operator_id=operator_id):
+                    fx["reviewer_policy"] = self.write(
+                        "reviewer-policy-operator.json", {
+                            "schema": 1,
+                            "enabled": True,
+                            "requiredAuthorAssociation": "COLLABORATOR",
+                            "reviewer": {"login": "operator-alias", "id": operator_id},
+                        })
+                self.assertDenied(mutate)
+
     def test_member_association_cannot_count_as_independent(self):
         def mutate(fx):
             fx["publisher_reviews"] = self.write(
@@ -214,11 +229,14 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 self.reviews(CARRIER_HEAD, reviewer="wrong-reviewer"))
         self.assertDenied(mutate)
 
-    def test_duplicate_exact_approvals_denied(self):
-        def mutate(fx):
-            fx["snapshot_reviews"] = self.write("snapshot-reviews-dupe.json",
-                self.reviews(SNAP_HEAD, rid=1) + self.reviews(SNAP_HEAD, rid=2))
-        self.assertDenied(mutate)
+    def test_newest_exact_head_review_wins(self):
+        fx = self.fixture()
+        fx["snapshot_reviews"] = self.write(
+            "snapshot-reviews-two-approved.json",
+            self.reviews(SNAP_HEAD, rid=1, submitted="2026-10-17T20:00:00Z")
+            + self.reviews(SNAP_HEAD, rid=2, submitted="2026-10-17T20:01:00Z"))
+        receipt = self.run_fixture(fx)
+        self.assertEqual(receipt["snapshot_review_id"], 2)
 
     def test_nonapproved_review_denied(self):
         def mutate(fx):
@@ -251,8 +269,10 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         def mutate(fx):
             fx["publisher_reviews"] = self.write(
                 "publisher-reviews-revoked.json",
-                self.reviews(PUBLISHER_HEAD, state="APPROVED", rid=10)
-                + self.reviews(PUBLISHER_HEAD, state="CHANGES_REQUESTED", rid=11))
+                self.reviews(PUBLISHER_HEAD, state="APPROVED", rid=10,
+                             submitted="2026-10-17T20:00:00Z")
+                + self.reviews(PUBLISHER_HEAD, state="CHANGES_REQUESTED", rid=11,
+                               submitted="2026-10-17T20:01:00Z"))
         self.assertDenied(mutate)
 
     def test_wrong_pr_repository_denied(self):
@@ -279,14 +299,14 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                     + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
-                 "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID}},
+                 "author_association": "COLLABORATOR", "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"}},
                 {"id": 100, "body": (
                     MOD.RESUME_MARKER + " publisher=" + PUBLISHER_HEAD
                     + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
                     + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
                     + " source_tree=" + SOURCE_TREE
                     + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
-                 "user": {"login": "ORESoftware", "id": MOD.REVIEWER_ID}},
+                 "author_association": "COLLABORATOR", "user": {"login": REVIEWER_LOGIN, "id": REVIEWER_ID, "type": "User"}},
             ])
         self.assertDenied(mutate)
 
