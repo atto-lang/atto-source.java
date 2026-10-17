@@ -109,12 +109,78 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
-    void functionValuesCannotBeErasedIntoAnyBeforeAnOwnershipContractExists() {
+    void callableValuesAreSubtypesOfAnyButErasedAnyIsNotInvocable() {
         var callable = new dev.oreslang.types.Types.Function(
                 java.util.List.of(dev.oreslang.types.Types.Primitive.INT),
                 dev.oreslang.types.Types.Primitive.INT);
-        assertFalse(dev.oreslang.types.Types.isAssignable(
+        assertTrue(dev.oreslang.types.Types.isAssignable(
                 callable, dev.oreslang.types.Types.Any.INSTANCE));
+        assertFalse(dev.oreslang.types.Types.isAssignable(
+                dev.oreslang.types.Types.Any.INSTANCE, callable));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any callback): void {
+                          callback(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("not directly callable"));
+    }
+
+    @Test
+    void opaqueValuesHaveNoUncheckedMembers() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): void {
+                          value.length;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("no statically available members"));
+    }
+
+    @Test
+    void channelPayloadCannotContainOpaqueTopType() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(Channel<any> values): void {
+                          return;
+                        }
+                        """)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(Channel<List<unknown>> values): void {
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void ternaryEvaluatesOnlyTheSelectedBranch() throws Exception {
+        String output = run("""
+                fnc left(): int {
+                  stdio.stdout.write("L");
+                  return 1;
+                }
+
+                fnc right(): int {
+                  stdio.stdout.write("R");
+                  return 2;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(true ? left() : right());
+                  stdio.stdout.write(false ? left() : right());
+                  return;
+                }
+                """);
+
+        assertEquals("L1R2", output);
     }
 
     @Test
