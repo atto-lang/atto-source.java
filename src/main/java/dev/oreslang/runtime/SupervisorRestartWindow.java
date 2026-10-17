@@ -1,7 +1,5 @@
 package dev.oreslang.runtime;
 
-import java.util.Objects;
-
 /**
  * Bounded monotonic restart-intensity gate for supervisor policy.
  *
@@ -231,7 +229,6 @@ public final class SupervisorRestartWindow {
     }
 
     static long saturatingAdd(long left, long right) {
-        Objects.checkIndex(0, 1); // intrinsified null-free sanity point; no allocation.
         if (left < 0 || right < 0) {
             throw new IllegalArgumentException("saturatingAdd requires non-negative values");
         }
