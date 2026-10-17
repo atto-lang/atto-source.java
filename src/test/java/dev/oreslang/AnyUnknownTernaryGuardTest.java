@@ -108,6 +108,61 @@ final class AnyUnknownTernaryGuardTest {
                 """)));
     }
 
+    @Test
+    void functionValuesCannotBeErasedIntoAnyBeforeAnOwnershipContractExists() {
+        var callable = new dev.oreslang.types.Types.Function(
+                java.util.List.of(dev.oreslang.types.Types.Primitive.INT),
+                dev.oreslang.types.Types.Primitive.INT);
+        assertFalse(dev.oreslang.types.Types.isAssignable(
+                callable, dev.oreslang.types.Types.Any.INSTANCE));
+    }
+
+    @Test
+    void userDeclaredIntegerNamespaceCannotForgeTrustedNarrowing() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module Integer
+                          pub fnc is_int(any v): bool { return true; }
+                        end
+                        pub fnc bad(any v): int {
+                          return Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc Integer(): int { return 1; }
+                        pub fnc bad(any v): int {
+                          return Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+    }
+
+    @Test
+    void mutableBindingsDoNotGainGuardedTypeRefinement() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any v): int {
+                          let any candidate = v;
+                          return Integer.is_int(candidate) ? candidate : 0;
+                        }
+                        """)));
+    }
+
+    @Test
+    void nestedTernaryIsRightAssociativeAndConditionsRequireBool() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc choose(bool a, bool b): int {
+                  return a ? 1 : b ? 2 : 3;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc wrong(): int {
+                          return 1 ? 2 : 3;
+                        }
+                        """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "any-guard.ores")
