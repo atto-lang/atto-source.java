@@ -77,12 +77,13 @@ final class TernaryAnyGuardLanguageTest {
                 pub fnc foo(any v): int {
                   return Integer.is_int(v) ? v : 0;
                 }
+                fnc boxString(string v): any { return v; }
                 pub fnc main(): void {
                   stdio.println(foo(7));
                   stdio.println(foo("seven"));
                   stdio.println(foo(true));
                   stdio.println(Integer.is_int(3) ? 11 : 22);
-                  stdio.println(Integer.is_int("no") ? 11 : 22);
+                  stdio.println(Integer.is_int(boxString("no")) ? 11 : 22);
                   return;
                 }
                 """;
