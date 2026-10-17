@@ -78,14 +78,50 @@ jobs:
           python3 contracts/v1/verify_actor_pipeline_v1.py contracts/v1/actor-pipeline-routing-v1.json
           python3 contracts/v1/test_actor_pipeline_v1.py
       - name: Compile and test Java routing on the image's pinned JDK 21
+        shell: bash
         run: |
           set -euo pipefail
           : "${JAVA_HOME_21_X64:?hosted image needs Java 21}"
           export JAVA_HOME="$JAVA_HOME_21_X64"
           export PATH="$JAVA_HOME/bin:$PATH"
-          java -version
-          javac -version
-          sh scripts/test-actor-pipeline-route-plan.sh
-          sh scripts/test-actor-pipeline-router-host-gate.sh
-          mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
-            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineRoutingAdmissionTest,ActorPipelineAdmissionBridgeTest test
+          evidence="$RUNNER_TEMP/actor-routing-evidence"
+          mkdir -p "$evidence"
+          {
+            java -version
+            javac -version
+            sh scripts/test-actor-pipeline-route-plan.sh
+            sh scripts/test-actor-pipeline-router-host-gate.sh
+            mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
+              -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineRoutingAdmissionTest,ActorPipelineAdmissionBridgeTest test
+          } 2>&1 | tee "$evidence/java-routing-tests.log"
+      - name: Bind exact Java routing test evidence to checkout
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/actor-routing-evidence"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -s "$evidence/java-routing-tests.log"
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'commit=%s\n' "$(git rev-parse HEAD)"
+            printf 'tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'event=%s\n' "$GITHUB_EVENT_NAME"
+            for file in contracts/v1/verify_actor_pipeline_v1.py \
+                contracts/v1/test_actor_pipeline_v1.py \
+                contracts/v1/actor-pipeline-routing-v1.json; do
+              printf 'blob:%s=%s\n' "$file" "$(git hash-object "$file")"
+            done
+            printf 'sha256:java-routing-tests.log=%s\n' "$(sha256sum "$evidence/java-routing-tests.log" | cut -d ' ' -f1)"
+          } > "$evidence/identity.txt"
+      - name: Upload exact-source Java routing test evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: java-actor-routing-${{ github.event.pull_request.head.sha || github.sha }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/actor-routing-evidence/
+          retention-days: 3
+          if-no-files-found: error
