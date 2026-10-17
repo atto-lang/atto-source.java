@@ -103,6 +103,37 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void legacyOpaqueTypeSpellingsCanonicalizeToTheSameIncrementalAbi() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> initial = Map.of(
+                "service.ores", """
+                        pub fnc hide(Any value): Unknown {
+                          return value;
+                        }
+                        """,
+                "consumer.ores", """
+                        import fnc hide from "./service.ores";
+                        pub routine main(): void { return; }
+                        """);
+
+        compiler.compile(initial);
+
+        Map<String, String> canonicalized = Map.of(
+                "service.ores", """
+                        pub fnc hide(any value): unknown {
+                          return value;
+                        }
+                        """,
+                "consumer.ores", initial.get("consumer.ores"));
+
+        var result = compiler.compile(canonicalized);
+        assertTrue(result.rebuilt("service.ores"),
+                "the edited source unit itself must rebuild");
+        assertTrue(result.reused("consumer.ores"),
+                "Any/Unknown compatibility spellings must not create a distinct exported ABI");
+    }
+
+    @Test
     void callableKindAndActorKindParticipateInAbiInvalidation() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> initial = Map.of(
