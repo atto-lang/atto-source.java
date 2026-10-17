@@ -83,6 +83,15 @@ create an independent owner of `payload`; moving `payload` and then
 moving `inner` again must be rejected. Patterns on *different* original
 Option values keep distinct ownership roots.
 
+When the scrutinee is a stable field or index projection (for example,
+`holder.slot matches Some(payload)`), the matching payload retains the
+containing storage owner's ownership root. Moving `payload` therefore
+invalidates subsequent moves of the same `holder` in that control-flow
+path. The initial implementation intentionally treats separate fields on one
+owner conservatively; path-disjoint partial moves are not yet proven.
+Unstable or unresolved projected places must be rejected rather than
+inventing a detached move-only owner.
+
 A refinement binding is not a copy. If `dog` is introduced by
 `animal is type Dog dog`, both names identify the same ownership place. Moving
 through either name consumes the same move-only value.
