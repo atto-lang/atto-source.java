@@ -79,6 +79,14 @@ public final class RefinementRules {
 
     private static String canonicalBaseName(Ast.TypeRef base) {
         Objects.requireNonNull(base);
+        // Refinement schemas are a closed scalar vocabulary. Never erase
+        // generic arguments or inferred-argument state merely because the
+        // outer spelling happens to be "int" or "string": that would let a
+        // malformed/parameterized type acquire a trusted scalar descriptor.
+        if (!base.arguments().isEmpty() || base.inferArguments()) {
+            throw new IllegalArgumentException(
+                    "refinement base must be a concrete unparameterized scalar");
+        }
         return switch (base.name()) {
             case "string", "String" -> "string";
             case "int" -> "int";
