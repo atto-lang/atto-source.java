@@ -120,6 +120,16 @@ final class NativeIoPinnedNetworkTest {
     }
 
     @Test
+    void httpProxyConfigurationNeverUsesAmbientSystemProxy() {
+        assertEquals(java.util.List.of(java.net.Proxy.NO_PROXY),
+                NativeIo.directProxySelector().select(
+                        java.net.URI.create("https://127.0.0.1:443/path")));
+        assertEquals(java.util.List.of(java.net.Proxy.NO_PROXY),
+                NativeIo.directProxySelector().select(
+                        java.net.URI.create("http://127.0.0.1:80/")));
+    }
+
+    @Test
     void builtInHttpRefusesUnpinnedHostnamesEvenWhenAllowed() {
         RuntimePermissions broad = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "*");
