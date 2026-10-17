@@ -198,4 +198,46 @@ final class ConstructorValAdditionalFlowTest {
             """);
     }
 
+    @Test void deterministicBranchInitializationMatrix() {
+        java.util.Random random = new java.util.Random(20261017L);
+        for (int i = 0; i < 128; i++) {
+            int first = random.nextInt(1000);
+            int second = random.nextInt(1000);
+            int third = random.nextInt(1000);
+            int fourth = random.nextInt(1000);
+            String valid = """
+                define class Matrix as
+                  val int x;
+                  val int y;
+                  constructor(bool flag) {
+                    if flag then
+                      self.x = %d;
+                      self.y = %d;
+                    else
+                      self.y = %d;
+                      self.x = %d;
+                    fi
+                  }
+                end
+                """.formatted(first, second, third, fourth);
+            ok(valid);
+
+            String invalid = """
+                define class Matrix as
+                  val int x;
+                  val int y;
+                  constructor(bool flag) {
+                    if flag then
+                      self.x = %d;
+                      self.y = %d;
+                    else
+                      self.x = %d;
+                    fi
+                  }
+                end
+                """.formatted(first, second, third);
+            bad(invalid);
+        }
+    }
+
 }
