@@ -8703,7 +8703,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "explicit conversion required from BigInt/Decimal to binary64 complex");
             }
-            if (value instanceof Number n) return new Complex(n.doubleValue(), 0.0);
+            if (value instanceof Number n) {
+                if (isIntegral(n)) {
+                    long integer = n.longValue();
+                    if (integer < -9_007_199_254_740_992L
+                            || integer > 9_007_199_254_740_992L) {
+                        throw new IllegalArgumentException(
+                                "explicit conversion required from integer outside exact binary64 range to complex");
+                    }
+                }
+                return new Complex(n.doubleValue(), 0.0);
+            }
             throw new IllegalArgumentException("value is not numeric");
         }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
