@@ -552,11 +552,11 @@ def require_protected_main_policy(approved_policy):
             or rules["enforce_admins"].get("enabled") is not True):
         raise Denied("protected main must enforce rules for administrators")
     required_checks = rules.get("required_status_checks")
+    # The only trusted required status entries are checks[] with explicit
+    # issuer identities. Legacy contexts[] MUST stay empty: those are not
+    # independently app-bound. require_pinned_actions_check enforces both.
     if (not isinstance(required_checks, dict)
-            or required_checks.get("strict") is not True
-            or not isinstance(required_checks.get("contexts"), list)
-            or not required_checks["contexts"]
-            or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
+            or required_checks.get("strict") is not True):
         raise Denied("protected main must require strict source CI checks")
     require_pinned_actions_check(required_checks, SOURCE_POLICY_CHECK)
     # An unresolved security review thread must be able to block the policy
@@ -1089,10 +1089,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         if (not isinstance(carrier_rules.get("enforce_admins"), dict)
                 or carrier_rules["enforce_admins"].get("enabled") is not True
                 or not isinstance(checks, dict)
-                or checks.get("strict") is not True
-                or not isinstance(checks.get("contexts"), list)
-                or not checks["contexts"]
-                or not all(isinstance(c, str) and c for c in checks["contexts"])):
+                or checks.get("strict") is not True):
             raise Denied("private carrier main lacks enforced administrator and CI protections")
         require_pinned_actions_check(checks, CARRIER_POLICY_CHECK)
         conversations = carrier_rules.get("required_conversation_resolution")

@@ -309,6 +309,25 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
         self.assertEqual(self.dispatch_calls, [])
 
+    def test_strict_checks_only_policy_passes_source_and_carrier_before_each_write(self):
+        # This regression catches a deadlock where a precheck demanded
+        # nonempty legacy contexts even though the issuer guard forbids them.
+        # Both main protections must accept checks[] with real app IDs while
+        # the deprecated contexts[] array remains empty.
+        source_rules = self.fake_api(pub.PROTECTED_RULES_ROUTE)
+        carrier_rules = self.fake_api("repos/trusted/ci/branches/main/protection")
+        for rules in (source_rules, carrier_rules):
+            self.assertTrue(rules["required_status_checks"]["strict"])
+            self.assertEqual(rules["required_status_checks"]["contexts"], [])
+            self.assertTrue(rules["required_status_checks"]["checks"])
+        commit, count = self.publish()
+        self.assertEqual((commit, count), (C, 1))
+        routes = [route for _method, route, _payload in self.route_calls]
+        self.assertGreaterEqual(routes.count(pub.PROTECTED_RULES_ROUTE), 2)
+        self.assertGreaterEqual(
+            routes.count("repos/trusted/ci/branches/main/protection"), 2)
+        self.assertEqual(len(self.dispatch_calls), 1)
+
     def test_success_dispatches_protected_main_validation_for_exact_commit(self):
         commit, count = self.publish()
         self.assertEqual((commit, count), (C, 1))
