@@ -935,6 +935,97 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         assertTrue(approved.contains("source_or_binaries_in_artifact"));
     }
 
+
+    @Test
+    void requestedOptionCandidateNeedsFreshAllThirteenMethodsAndFullMavenEvidence() throws Exception {
+        String yaml = Files.readString(Path.of(
+                ".github/workflows/private-exact-candidate-validation.yml"));
+        String runner = yaml.substring(yaml.indexOf("  validate-approved-candidate:"));
+        assertTrue(yaml.contains("      verify_option_pattern:\\n"
+                + "        description:"));
+        assertTrue(yaml.contains("        default: false\\n"
+                + "        type: boolean"));
+        assertTrue(runner.contains("REQUIRE_OPTION_PATTERN: "
+                + "$" + "{{ inputs.verify_option_pattern }}"));
+        String[] ordered = {
+                "Require exact Option-pattern source when requested",
+                "Remove prior Surefire reports before Option-pattern execution",
+                "Execute exact candidate Option-pattern JUnit runtime",
+                "Attest all 13 Option-pattern JUnit methods from fresh Surefire XML",
+                "Full Java 25 Maven candidate verification",
+                "Prove full Maven suite executed beyond focused security classes",
+        };
+        int previous = -1;
+        for (String name : ordered) {
+            int position = runner.indexOf("      - name: " + name);
+            assertTrue(position > previous,
+                    "Missing/incorrectly ordered option candidate proof: " + name);
+            previous = position;
+        }
+        for (String name : ordered) {
+            if (name.startsWith("Full") || name.startsWith("Prove full")) continue;
+            String stage = section(runner, "      - name: " + name,
+                    "      - name: " + ordered[java.util.Arrays.asList(ordered).indexOf(name) + 1]);
+            assertTrue(hasExactLine(stage, 8,
+                    "if: " + "$" + "{{ inputs.verify_option_pattern == true }}"),
+                    "Feature proof must be explicitly requested: " + name);
+        }
+        String reset = section(runner,
+                "      - name: Remove prior Surefire reports before Option-pattern execution",
+                "      - name: Execute exact candidate Option-pattern JUnit runtime");
+        for (String guard : new String[] {
+                "test ! -L target", "test ! -L target/surefire-reports",
+                "rm -rf -- target/surefire-reports",
+                "test ! -e target/surefire-reports" }) {
+            assertTrue(hasExactLine(reset, 10, guard),
+                    "Unsafe Option report provenance or stale XML: " + guard);
+        }
+        String run = section(runner,
+                "      - name: Execute exact candidate Option-pattern JUnit runtime",
+                "      - name: Attest all 13 Option-pattern JUnit methods from fresh Surefire XML");
+        assertTrue(hasExactLine(run, 10,
+                "mvn -B -ntp -Dores.runtime.carriers=native -DskipTests=false "
+                        + "\\"),
+                "Option suite must execute under the native-carrier runtime");
+        assertTrue(run.contains("-Dmaven.test.skip=false '-Dtest=OptionIfMatchesTest' test"));
+        String attestation = section(runner,
+                "      - name: Attest all 13 Option-pattern JUnit methods from fresh Surefire XML",
+                "      - name: Full Java 25 Maven candidate verification");
+        for (String marker : new String[] {
+                "report.is_symlink()", "report_dir.parent.is_symlink()",
+                "ElementTree.parse(report)", "root.findall(\"testcase\")",
+                "total != len(names)", "total != len(cases)",
+                "name in witnessed", "witnessed != names",
+                "failure", "error", "skipped", "flakyFailure",
+                "flakyError", "rerunFailure", "rerunError",
+                "VERIFIED_OPTION_PATTERN_JUNIT_METHODS=13" }) {
+            assertTrue(attestation.contains(marker),
+                    "The trusted Option report verifier lost: " + marker);
+        }
+        assertEquals(13L, java.util.regex.Pattern.compile(
+                "(?m)^              \"[a-zA-Z][a-zA-Z0-9]+\",$")
+                .matcher(attestation).results().count(),
+                "Expected method names must remain an exact 13-element inventory");
+        String full = section(runner,
+                "      - name: Prove full Maven suite executed beyond focused security classes",
+                "      - name: Native AOT candidate build and guest execution");
+        assertTrue(full.contains("REQUIRE_OPTION_PATTERN"));
+        assertTrue(full.contains("\"dev.oreslang.OptionIfMatchesTest\" not in executed"));
+        String metadata = section(runner,
+                "      - name: Write scoped exact-candidate identity metadata (not certification)",
+                "      - name: Upload exact-candidate identity metadata only");
+        assertTrue(metadata.contains("\"option_pattern_requested\""));
+        assertTrue(metadata.contains("\"option_pattern_junit_methods_required\""));
+        assertTrue(metadata.contains("\"verified_execution_claim\": False"));
+        assertTrue(metadata.contains("\"native_guest_parity_certified\": False"));
+        String mutation = run.replace(
+                "          -Dmaven.test.skip=false '-Dtest=OptionIfMatchesTest' test",
+                "          # -Dmaven.test.skip=false '-Dtest=OptionIfMatchesTest' test");
+        assertFalse(mutation.lines().anyMatch(line ->
+                line.equals("          -Dmaven.test.skip=false '-Dtest=OptionIfMatchesTest' test")),
+                "Commenting out the test must invalidate the executable evidence");
+    }
+
     private static boolean hasExactLine(String body, int spaces, String executable) {
         String expected = " ".repeat(spaces) + executable;
         return body.lines().anyMatch(expected::equals);
