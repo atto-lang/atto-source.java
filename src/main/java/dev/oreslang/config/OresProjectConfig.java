@@ -123,7 +123,19 @@ public final class OresProjectConfig {
             throw new IllegalArgumentException("project manifest symlink is not allowed: " + absoluteManifest);
         }
 
-        TomlParseResult toml = Toml.parse(absoluteManifest);
+        // Parse one UTF-8 snapshot rather than re-opening the manifest for
+        // the TOML parser after the admission checks. LF and CRLF are valid
+        // TOML line endings, but bare CR is not: it could otherwise conceal
+        // a second project.root declaration behind a '#' comment.
+        String manifestContents = Files.readString(absoluteManifest);
+        for (int i = 0; i < manifestContents.length(); i++) {
+            if (manifestContents.charAt(i) == '\r'
+                    && (i + 1 == manifestContents.length()
+                        || manifestContents.charAt(i + 1) != '\n')) {
+                throw new IllegalArgumentException("bare carriage return in project manifest");
+            }
+        }
+        TomlParseResult toml = Toml.parse(manifestContents);
         if (!toml.errors().isEmpty()) {
             throw new IllegalArgumentException(
                     "invalid " + MANIFEST_NAME + ": " + toml.errors().getFirst());
