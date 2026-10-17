@@ -136,6 +136,7 @@ public final class NioReadinessGroup implements AutoCloseable {
     public int reactorCount() { return liveReactors.get(); }
     public int pendingCount() { return pending.get(); }
     int pendingNotifications() { return notificationReservations.get(); }
+    int stagedNotificationCount() { return stagedNotifications.size(); }
     int activeAcceptLeases() {
         synchronized (lifecycle) { return acceptLeases.size(); }
     }
