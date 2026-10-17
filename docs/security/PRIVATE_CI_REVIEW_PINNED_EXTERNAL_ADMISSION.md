@@ -45,7 +45,7 @@ the verifier fails closed and private-source export remains impossible.
 A private-source payload may be created only when an external trusted
 dispatcher proves all of the following from live GitHub API responses:
 
-1. publisher policy PR `oreslang-source.java#1123` is open and the latest
+1. publisher policy PR `oreslang-source.java#1198` is open and the latest
    review on its exact current head by the explicitly configured independent
    reviewer is `APPROVED`; reviewer login and numeric GitHub user ID must
    match policy;
