@@ -189,9 +189,32 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         });
     }
 
+    /** Immutable, non-authority-bearing projection for guest source code. */
+    private static Map<String, Object> guestReceipt(Admission receipt) {
+        return Map.of(
+                "edge_index", (long) receipt.edgeIndex(),
+                "target", receipt.target(),
+                "flow_id", receipt.flowId(),
+                "route_id", receipt.routeId(),
+                "admitted", receipt.admitted(),
+                "status", receipt.admitted() ? "admitted" : "rejected");
+    }
+
+    private record FanoutReports(
+            List<Admission> host, List<Map<String, Object>> guest) { }
+
     /** Every recipient gets an independent admission result; earlier
-     * successes are not rolled back when a later mailbox is full or stopped. */
+     * successes are not rolled back when a later mailbox is full or stopped.
+     * Both host and guest receipts are allocated before any DATA publication. */
     List<Admission> forwardAll(M value) {
+        return forwardAllReports(value).host();
+    }
+
+    List<Map<String, Object>> forwardAllGuest(M value) {
+        return forwardAllReports(value).guest();
+    }
+
+    private FanoutReports forwardAllReports(M value) {
         return inLiveGeneration(() -> {
         var frame = current();
         Objects.requireNonNull(value, "pipeline payload");
@@ -200,35 +223,46 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         // must never strand a live, undeliverable correlation child.
         var out = graph.forwardAll(frame.receiver());
         var result = new ArrayList<Admission>(out.size());
-        // Allocate the read-only wrapper before any live correlation frame
-        // or mailbox DATA publication. No final List.copyOf allocation
-        // occurs after successful sends have become externally visible.
+        var guestResult = new ArrayList<Map<String, Object>>(out.size());
+        // Allocate both read-only wrappers before ANY irreversible admission.
         var completed = Collections.unmodifiableList(result);
+        var guestCompleted = Collections.unmodifiableList(guestResult);
+        var reports = new FanoutReports(completed, guestCompleted);
         var children = session.forwardAll(frame);
         // Pre-materialize EVERY successful AND failed branch receipt before
         // the first mailbox send. Allocation pressure must not turn a
         // nontransactional branch rejection into loss of earlier receipts.
         List<Admission> prepared;
         List<Admission> rejected;
+        List<Map<String, Object>> guestPrepared;
+        List<Map<String, Object>> guestRejected;
         try {
             var all = new ArrayList<Admission>(children.size());
             var allRejected = new ArrayList<Admission>(children.size());
+            var allGuest = new ArrayList<Map<String, Object>>(children.size());
+            var allGuestRejected = new ArrayList<Map<String, Object>>(children.size());
             for (int i = 0; i < children.size(); i++) {
                 var child = children.get(i);
                 int edgeIndex = edges.get(out.get(i));
-                all.add(new Admission(edgeIndex, child.receiver(),
-                        child.flowId(), child.routeId(), true, null));
+                var accepted = new Admission(edgeIndex, child.receiver(),
+                        child.flowId(), child.routeId(), true, null);
+                all.add(accepted);
+                allGuest.add(guestReceipt(accepted));
                 // Even failure receipts must be allocated BEFORE the first
                 // irreversible mailbox admission. The original rejection
                 // becomes this preallocated exception's cause, without
                 // creating a fresh receipt after an earlier send succeeded.
-                allRejected.add(new Admission(edgeIndex, child.receiver(),
+                var rejectedReceipt = new Admission(edgeIndex, child.receiver(),
                         child.flowId(), child.routeId(), false,
                         new IllegalStateException(
-                                "pipeline mailbox admission rejected for " + child.receiver())));
+                                "pipeline mailbox admission rejected for " + child.receiver()));
+                allRejected.add(rejectedReceipt);
+                allGuestRejected.add(guestReceipt(rejectedReceipt));
             }
             prepared = all;
             rejected = allRejected;
+            guestPrepared = allGuest;
+            guestRejected = allGuestRejected;
         } catch (RuntimeException | Error preflight) {
             for (var unpublished : children)
                 ActorPipelineRouteSession.retireDelivered(unpublished);
@@ -243,14 +277,16 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
                     // No allocation: ArrayList was pre-sized and the success
                     // receipt was created before any branch publication.
                     result.add(prepared.get(next));
+                    guestResult.add(guestPrepared.get(next));
                 } catch (RuntimeException failure) {
                     ActorPipelineRouteSession.retireDelivered(child);
                     var denied = rejected.get(next);
                     denied.failure().initCause(failure);
                     result.add(denied);
+                    guestResult.add(guestRejected.get(next));
                 }
             }
-            return completed;
+            return reports;
         } catch (RuntimeException | Error failure) {
             // Previously published branches retain their independent frames.
             // The current and later frames have not been published if the
@@ -261,6 +297,17 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
                 ActorPipelineRouteSession.retireDelivered(children.get(rest));
             throw failure;
         }
+        });
+    }
+
+    /** Source-level full-path reply: one terminal DATA delivery to the
+     * immutable graph-origin, not arbitrary named routing and not implicit
+     * callbacks through intermediary actors. The route still carries its
+     * original branch ancestry and a new one-shot route ID. */
+    void reply(M value) {
+        inLiveGeneration(() -> {
+            sendChild(session.returnToOrigin(current()), value);
+            return null;
         });
     }
 
