@@ -570,7 +570,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits ConstructorDelegateStmt, BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
@@ -655,6 +655,11 @@ public final class Ast {
         public YieldStmt {
             if (value == null) throw new IllegalArgumentException("yield requires a value");
         }
+    }
+    /** Same-object sibling constructor invocation. Never an ordinary CallExpr. */
+    public record ConstructorDelegateStmt(List<Expr> arguments) implements Stmt {
+        public ConstructorDelegateStmt { arguments = List.copyOf(arguments); }
+        public int effectiveArity() { return arguments.size(); }
     }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
