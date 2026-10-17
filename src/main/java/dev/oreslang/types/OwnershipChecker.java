@@ -1230,6 +1230,9 @@ public final class OwnershipChecker {
                 if ((concreteCollection.name().equals("Array")
                         || concreteCollection.name().equals("List"))
                         && (member.member().equals("add") || member.member().equals("set"))) {
+                    if (containsPointerCapability(concreteCollection)) {
+                        throw error("Pointer<T> cannot be stored in an array/list until place-aware move-out is implemented");
+                    }
                     ensureMutableReceiver(
                             member.receiver(),
                             scope,
