@@ -5039,6 +5039,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private int controlPriority(Throwable failure) {
+            if (failure instanceof ReturnSignal
+                    || failure instanceof BreakSignal
+                    || failure instanceof ContinueSignal
+                    || failure instanceof TailCallSignal) return 1;
             if (failure instanceof ProcessExitSignal || failure instanceof Error) return 5;
             if (failure instanceof OresPanic || failure instanceof GuestControlSignal.Panic) return 4;
             if (failure instanceof GuestControlSignal.Raise) return 3;
