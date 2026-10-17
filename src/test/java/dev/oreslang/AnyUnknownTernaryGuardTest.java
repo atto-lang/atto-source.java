@@ -370,6 +370,19 @@ final class AnyUnknownTernaryGuardTest {
                           return Integer.is_int(candidate) ? candidate : 0;
                         }
                         """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any mut candidate): int {
+                          return Integer.is_int(candidate) ? candidate : 0;
+                        }
+                        """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc good(any candidate): int {
+                  return Integer.is_int(candidate) ? candidate : 0;
+                }
+                """)));
     }
 
     @Test
