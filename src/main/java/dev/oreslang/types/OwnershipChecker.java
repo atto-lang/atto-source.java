@@ -1473,7 +1473,8 @@ public final class OwnershipChecker {
                 && !callableType.arguments().isEmpty()) {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
-                List<VarState> loans = new ArrayList<>();
+                List<VarState> immutableLoans = new ArrayList<>();
+                List<VarState> mutableLoans = new ArrayList<>();
                 try {
                     for (Ast.Expr expression : call.arguments()) {
                         ValueInfo argument = checkExpr(expression, scope, false);
@@ -1483,10 +1484,11 @@ public final class OwnershipChecker {
                         if (argument.kind == ValueKind.MUT_BORROW) {
                             throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
                         }
-                        retainCallView(argument, loans);
+                        retainCallView(argument, immutableLoans, mutableLoans);
                     }
                 } finally {
-                    for (VarState owner : loans) owner.immutableBorrows--;
+                    for (VarState owner : immutableLoans) owner.immutableBorrows--;
+                    for (VarState owner : mutableLoans) owner.mutableBorrowed = false;
                 }
                 Ast.TypeRef result = callableType.arguments().getLast();
                 return new ValueInfo(result, kindOfType(result), null);
@@ -1656,7 +1658,7 @@ public final class OwnershipChecker {
                 throw error(callable + " argument " + position
                         + " cannot consume protected mutex state through a structural by-value parameter");
             }
-            retainCallView(argument, immutableLoans);
+            retainCallView(argument, immutableLoans, mutableLoans);
             return;
         }
         if (param.type().isBorrow()) {
@@ -1831,10 +1833,21 @@ public final class OwnershipChecker {
         else root.immutableBorrows++;
     }
 
-    private void retainCallView(ValueInfo value, List<VarState> loans) {
+    private void retainCallView(
+            ValueInfo value,
+            List<VarState> immutableLoans,
+            List<VarState> mutableLoans) {
         if (!isBorrowValue(value) || value.borrowSource == null) return;
-        beginPersistentBorrow(value.borrowSource, false);
-        loans.add(ownershipRoot(value.borrowSource));
+
+        // Preserve the strength explicitly requested by the caller. In
+        // particular, an inline rt deref mut passed through a structural or
+        // first-class call must remain exclusive for the entire invocation;
+        // weakening it to an immutable loan would allow a later argument to
+        // manufacture a conflicting shared view.
+        boolean mutable = value.kind == ValueKind.MUT_BORROW
+                || (value.type != null && value.type.isBorrow() && value.type.mutableBorrow());
+        beginPersistentBorrow(value.borrowSource, mutable);
+        (mutable ? mutableLoans : immutableLoans).add(ownershipRoot(value.borrowSource));
     }
 
     private boolean isPointerView(ValueInfo value) {
