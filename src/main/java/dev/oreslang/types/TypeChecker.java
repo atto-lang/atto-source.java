@@ -305,6 +305,14 @@ public final class TypeChecker {
                     else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                     else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                     else if (decl instanceof Ast.TypeAliasDecl alias) {
+                        // This metadata is parseable but must never erase to its
+                        // underlying string/int type until all construction and
+                        // boundary invariants are compiler/runtime enforced.
+                        if (alias.refinement() != null) {
+                            throw new IllegalArgumentException(
+                                    "refinement/newtype '" + alias.name() + "' is parsed but not yet executable: "
+                                    + "checked try_from, type entailment, purity, and runtime boundary enforcement required");
+                        }
                         Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
                         resolve(alias.target(), aliasGenerics, null);
                     }
