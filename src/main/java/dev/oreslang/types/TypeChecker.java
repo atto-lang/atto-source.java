@@ -6254,7 +6254,10 @@ public final class TypeChecker {
         if (safe != null) return safe;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
-        return Unknown.INSTANCE;
+        // A conditional with two known alternatives has a sum type, not an
+        // unresolved compiler inference hole. Types.unionOf remains fail-closed
+        // for actual Unknown.INSTANCE and capability-unsafe top collapses.
+        return Types.unionOf(a, b);
     }
 
     private void requireInteger(Type type, String where) {
