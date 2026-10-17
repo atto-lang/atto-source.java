@@ -261,4 +261,43 @@ final class ConstructorValInitializationTest {
                 failure::getMessage);
     }
 
+
+    @Test
+    void definingLambdaWithAwaitDoesNotSuspendConstructorAtDefinitionTime() {
+        Ast.Program program = Parser.parse("""
+                define class Counter as
+                    constructor() {
+                        val callback = || -> {
+                            await pending;
+                            return;
+                        };
+                        return;
+                    }
+                end
+                """);
+        Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertDoesNotThrow(() -> ConstructorValInitialization.check(klass));
+    }
+
+    @Test
+    void deferredLambdaAwaitStillRunsInsideConstructionRegion() {
+        Ast.Program program = Parser.parse("""
+                define class Counter as
+                    constructor() {
+                        defer || -> {
+                            await pending;
+                            return;
+                        };
+                        return;
+                    }
+                end
+                """);
+        Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConstructorValInitialization.check(klass));
+        assertTrue(failure.getMessage().contains("cannot suspend through await"),
+                failure::getMessage);
+    }
+
 }
