@@ -87,17 +87,42 @@ final class ActorExecutionGrantGateTest {
     }
 
     @Test
-    void foreignActorGrantCannotReleaseAnotherActorsSlot() {
+    void foreignActorGrantCannotReleaseAnotherActorsSlot() throws Exception {
         var a = new ActorExecutionGrantGate(8, 1);
         var b = new ActorExecutionGrantGate(8, 1);
         var aGrant = a.tryAcquire();
-        var bGrant = b.tryAcquire();
-        assertThrows(SecurityException.class, () -> a.release(bGrant));
-        assertThrows(SecurityException.class, () -> b.release(aGrant));
-        assertEquals(1, a.activeSlots());
-        assertEquals(1, b.activeSlots());
-        aGrant.close();
-        bGrant.close();
+        var ready = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        AtomicReference<ActorExecutionGrantGate.Grant> otherGrant = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        var owner = new Thread(() -> {
+            try (var granted = b.tryAcquire()) {
+                otherGrant.set(granted);
+                ready.countDown();
+                if (!release.await(3, TimeUnit.SECONDS)) throw new AssertionError("timeout");
+            } catch (Throwable e) {
+                failure.set(e);
+                ready.countDown();
+            }
+        });
+        owner.start();
+        try {
+            assertTrue(ready.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            var bGrant = otherGrant.get();
+            assertNotNull(bGrant);
+            assertThrows(SecurityException.class, () -> a.release(bGrant));
+            assertThrows(SecurityException.class, () -> b.release(aGrant));
+            assertEquals(1, a.activeSlots());
+            assertEquals(1, b.activeSlots());
+        } finally {
+            aGrant.close();
+            release.countDown();
+            owner.join(3000);
+        }
+        assertFalse(owner.isAlive());
+        assertNull(failure.get());
+        assertEquals(0, b.activeSlots());
     }
 
     @Test
@@ -112,17 +137,17 @@ final class ActorExecutionGrantGateTest {
     @Test
     void sealedActorCannotAdmitAndRetirementWaitsForCarrierUnwind() {
         var gate = new ActorExecutionGrantGate(99, 3);
-        assertFalse(gate.tryRetire());
+        assertFalse(gate.tryRetirePhysicalGate());
         var grant = gate.tryAcquire();
         gate.seal();
         gate.seal();
         assertTrue(gate.isSealed());
         assertNull(gate.tryAcquire());
-        assertFalse(gate.tryRetire());
+        assertFalse(gate.tryRetirePhysicalGate());
         grant.close();
-        assertTrue(gate.tryRetire());
-        assertTrue(gate.isRetired());
-        assertFalse(gate.tryRetire());
+        assertTrue(gate.tryRetirePhysicalGate());
+        assertTrue(gate.isPhysicalGateRetired());
+        assertFalse(gate.tryRetirePhysicalGate());
         assertNull(gate.tryAcquire());
         assertThrows(SecurityException.class, grant::close);
     }
