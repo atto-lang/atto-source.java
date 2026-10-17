@@ -62,6 +62,49 @@ final class NativeIoSymlinkBoundaryTest {
     }
 
     @Test
+    void parentDirectorySymlinkSwapCannotRedirectGuestReadOrWrite()
+            throws Exception {
+        Path parent = Files.createDirectory(directory.resolve("authorized-parent"));
+        Path outside = Files.createDirectory(directory.resolve("outside"));
+        Path confidential = Files.writeString(outside.resolve("entry"), "secret");
+        Path checked = parent.resolve("entry");
+        Files.writeString(checked, "public");
+        // Simulate a parent-directory replacement after path authorization.
+        Path moved = directory.resolve("moved-original-parent");
+        Files.move(parent, moved);
+        try {
+            Files.createSymbolicLink(parent, outside.getFileName());
+        } catch (UnsupportedOperationException | SecurityException unsupported) {
+            assumeTrue(false, "symlink unavailable: " + unsupported);
+        } catch (IOException unsupported) {
+            assumeTrue(false, "symlink unavailable: " + unsupported);
+        }
+        assertThrows(IOException.class, () -> NativeIo.readUtf8NoFollow(checked),
+                "parent path was swapped after authorization");
+        assertThrows(IOException.class, () ->
+                NativeIo.writeUtf8NoFollow(checked, "corrupted", false));
+        assertThrows(IOException.class, () ->
+                NativeIo.writeUtf8NoFollow(checked, "corrupted", true));
+        assertEquals("secret", Files.readString(confidential));
+        assertEquals("public", Files.readString(moved.resolve("entry")));
+    }
+
+    @Test
+    void guestReadAndWriteRequireSecureDirectoryProvider() throws Exception {
+        Path root = directory.toAbsolutePath().getRoot();
+        try (var stream = Files.newDirectoryStream(root)) {
+            if (!(stream instanceof java.nio.file.SecureDirectoryStream<?>)) {
+                Path target = directory.resolve("plain");
+                Files.writeString(target, "content");
+                assertThrows(IOException.class, () -> NativeIo.readUtf8NoFollow(target));
+                assertThrows(IOException.class,
+                        () -> NativeIo.writeUtf8NoFollow(target, "change", false));
+                assertEquals("content", Files.readString(target));
+            }
+        }
+    }
+
+    @Test
     void guestReadTextRejectsOversizeFileWithoutStreamingIntoUnboundedHeap()
             throws Exception {
         Path large = directory.resolve("oversize-read-text");
