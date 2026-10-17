@@ -17,6 +17,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Prove exact Oreslang PR-head checkout (not merge ref)
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse 'HEAD^{tree}'
       - name: Test AI smoke evidence admission (no compiler claims)
         run: python3 scripts/test_ai_conformance_smoke.py
       - name: Schema validator
