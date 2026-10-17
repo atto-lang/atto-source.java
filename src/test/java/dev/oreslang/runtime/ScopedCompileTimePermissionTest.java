@@ -36,19 +36,26 @@ final class ScopedCompileTimePermissionTest {
     }
 
     @Test
-    void literalHttpOriginUsesEffectivePortNotUrlPath() {
-        String source = "pub fnc main(): void { http.get_text(\"https://api.example.com/v1\"); return; }";
-        RuntimePermissions good = RuntimePermissions.denyAll()
+    void literalHttpOriginMatchesTheJavaRuntimeIpv4OnlyTransport() {
+        String numeric = "pub fnc main(): void { http.get_text(\"https://203.0.113.7/v1\"); return; }";
+        String named = "pub fnc main(): void { http.get_text(\"https://api.example.com/v1\"); return; }";
+        RuntimePermissions approved = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.NET, "203.0.113.7:443");
+        assertDoesNotThrow(() -> check(numeric, approved, PermissionCheckMode.COMPILE));
+        assertThrows(SecurityException.class, () -> check(numeric,
+                RuntimePermissions.denyAll().withAllowed(
+                        RuntimePermissions.Permission.NET, "203.0.113.7:80"),
+                PermissionCheckMode.COMPILE));
+        assertThrows(SecurityException.class, () -> check(numeric,
+                approved.withDenied(RuntimePermissions.Permission.NET, "203.0.113.7:443"),
+                PermissionCheckMode.COMPILE));
+        // Java HttpClient currently rejects DNS hostnames even when the
+        // coarse host permission permits one: static admission must agree.
+        RuntimePermissions namedGrant = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443");
-        RuntimePermissions onlyHttp = RuntimePermissions.denyAll()
-                .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:80");
-        assertDoesNotThrow(() -> check(source, good, PermissionCheckMode.COMPILE));
         assertThrows(SecurityException.class,
-                () -> check(source, onlyHttp, PermissionCheckMode.COMPILE));
-        assertThrows(SecurityException.class,
-                () -> check(source, good.withDenied(
-                        RuntimePermissions.Permission.NET, "api.example.com:443"),
-                        PermissionCheckMode.COMPILE));
+                () -> check(named, namedGrant, PermissionCheckMode.COMPILE));
+        assertDoesNotThrow(() -> check(named, namedGrant, PermissionCheckMode.RUNTIME));
     }
 
     @Test
@@ -64,6 +71,26 @@ final class ScopedCompileTimePermissionTest {
                 () -> check(read, readOnly.withDenied(
                         RuntimePermissions.Permission.READ, "/safe/data.txt"),
                         PermissionCheckMode.COMPILE));
+    }
+
+    @Test
+    void literalFilesystemMutationCommandsCannotBypassCompileScope() {
+        String mkdir = "pub fnc main(): void { fs.mkdir_all(\"/safe/new\"); return; }";
+        String remove = "pub fnc main(): void { fs.remove(\"/safe/old\"); return; }";
+        RuntimePermissions readOnly = RuntimePermissions.denyAll()
+                .withAllowed(RuntimePermissions.Permission.READ, "/safe");
+        assertThrows(SecurityException.class, () ->
+                check(mkdir, readOnly, PermissionCheckMode.COMPILE));
+        assertThrows(SecurityException.class, () ->
+                check(remove, readOnly, PermissionCheckMode.COMPILE));
+
+        RuntimePermissions write = readOnly.withAllowed(
+                RuntimePermissions.Permission.WRITE, "/safe");
+        assertDoesNotThrow(() -> check(mkdir, write, PermissionCheckMode.COMPILE));
+        assertDoesNotThrow(() -> check(remove, write, PermissionCheckMode.COMPILE));
+        assertThrows(SecurityException.class, () -> check(remove,
+                write.withDenied(RuntimePermissions.Permission.WRITE, "/safe/old"),
+                PermissionCheckMode.COMPILE));
     }
 
     @Test
