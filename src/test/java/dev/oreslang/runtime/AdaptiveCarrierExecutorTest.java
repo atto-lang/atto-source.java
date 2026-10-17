@@ -136,6 +136,54 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void noGrowthAdmissionRejectsContendedNormalStartupWithoutParking()
+            throws Exception {
+        var created = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) task ->
+                Thread.ofPlatform().daemon(true)
+                        .name("adaptive-nonparking-" + created.incrementAndGet()).unstarted(task);
+        try (var workers = new AdaptiveCarrierExecutor(1, 2, 8, factory)) {
+            assertEquals(1, workers.prestartAllCoreThreads());
+            var lockField = AdaptiveCarrierExecutor.class.getDeclaredField("admission");
+            lockField.setAccessible(true);
+            var lock = (java.util.concurrent.locks.ReentrantLock) lockField.get(workers);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            Thread blockedAdmission = Thread.ofPlatform().start(() -> {
+                lock.lock();
+                try {
+                    entered.countDown();
+                    try { release.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            });
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                long start = System.nanoTime();
+                assertThrows(RejectedExecutionException.class,
+                        () -> workers.executeWithoutCarrierGrowth(() -> {}),
+                        "host-only completion cannot wait behind carrier admission/startup");
+                assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 1000);
+                assertEquals(1, workers.getPoolSize());
+                assertEquals(1, created.get());
+            } finally {
+                release.countDown();
+                blockedAdmission.join(3000);
+                assertFalse(blockedAdmission.isAlive());
+            }
+
+            var delivered = new CountDownLatch(1);
+            workers.executeWithoutCarrierGrowth(delivered::countDown);
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, created.get(),
+                    "rejected and accepted non-growth calls must not create more workers");
+        }
+    }
+
     @Test void noGrowthAdmissionRejectsColdJvmPoolWithoutCreatingCarrier() {
         var created = new AtomicInteger();
         var factory = (java.util.concurrent.ThreadFactory) task -> {
