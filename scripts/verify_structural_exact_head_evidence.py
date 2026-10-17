@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 from xml.etree import ElementTree as ET
 
@@ -26,7 +27,9 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def inspect(reports, provenance):
+def inspect(reports, provenance, source_root=None):
+    require(not reports.is_symlink() and not provenance.is_symlink(),
+            "unsafe suite directory or provenance symlink")
     source = json.loads(provenance.read_text(encoding="utf-8"))
     require(type(source) is dict and set(source) == {
         "source_sha", "source_tree", "scope"
@@ -36,12 +39,27 @@ def inspect(reports, provenance):
                 "invalid " + name)
     require(source["scope"] == "java-structural-exact-head-guest",
             "unexpected test scope")
+    if source_root is not None:
+        require(source_root.is_dir() and not source_root.is_symlink(),
+                "source checkout is absent or symlinked")
+        for revision, key in (("HEAD", "source_sha"),
+                              ("HEAD^{tree}", "source_tree")):
+            command = subprocess.run(
+                ["git", "-C", str(source_root), "rev-parse", revision],
+                capture_output=True, text=True, check=False, timeout=5)
+            require(command.returncode == 0
+                    and command.stdout.strip() == source[key],
+                    "JUnit evidence does not match the checked-out " + revision)
     evidence = []
     for name in SUITES:
         path = reports / ("TEST-dev.oreslang." + name + ".xml")
         require(path.is_file() and not path.is_symlink(),
                 "missing/unsafe Surefire suite: " + name)
+        require(path.stat().st_size <= 4 * 1024 * 1024,
+                "oversized Surefire suite: " + name)
         raw = path.read_bytes()
+        require(b"<!DOCTYPE" not in raw.upper() and b"<!ENTITY" not in raw.upper(),
+                "DTD/entity declaration forbidden in Surefire evidence: " + name)
         root = ET.fromstring(raw)
         require(root.tag == "testsuite", "not a Surefire testsuite: " + name)
         expected_class = "dev.oreslang." + name
@@ -125,18 +143,20 @@ def self_test():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reports", type=Path)
+    parser.add_argument("--source-root", type=Path)
     parser.add_argument("--provenance", type=Path)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
-        require(not any((args.reports, args.provenance, args.out)),
+        require(not any((args.reports, args.provenance, args.out, args.source_root)),
                 "self-test cannot publish evidence")
         self_test()
         return
-    require(all((args.reports, args.provenance, args.out)),
-            "reports, provenance and out are required")
-    results = inspect(args.reports, args.provenance)
+    require(all((args.reports, args.provenance, args.out, args.source_root)),
+            "reports, provenance, source-root and out are required")
+    require(not args.out.is_symlink(), "output evidence path must not be a symlink")
+    results = inspect(args.reports, args.provenance, args.source_root)
     args.out.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("Verified", results["tests_total"], "actual JUnit cases from", len(SUITES), "suites")
 
