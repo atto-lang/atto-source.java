@@ -44,6 +44,39 @@ final class OresCarrierBudgetTest {
         }
     }
 
+    @Test void boundedVmKeepsControlAvailableWithoutPrestartingAnyCarrier() throws Exception {
+        String previous = System.getProperty(OresCarrierBudget.PROPERTY);
+        try {
+            System.setProperty(OresCarrierBudget.PROPERTY, "4");
+            OresVM vm = OresVM.create(Runnable::run);
+            try {
+                assertEquals(0, vm.controlCarrierCount());
+                assertEquals(0, vm.nioReactorCount());
+                assertEquals(4, vm.carrierBudget().allocatedCeiling());
+                vm.executeControl(() -> { }).get(3, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(1, vm.controlCarrierCount(),
+                        "CONTROL always retains an admissible carrier in the bounded VM");
+
+                var actorConfig = new ActorRuntime.DispatcherConfig(1, 1, 16, 32);
+                var actors = new ActorRuntime(IsolatePolicy.developer(), actorConfig,
+                        ActorRuntime.TurnExecutor.direct(),
+                        ActorRuntime.ControlDispatcher.unavailable(),
+                        vm.carrierBudget());
+                try {
+                    assertEquals(0, actors.startedActorCarrierCount(),
+                            "three actor domains start cold even with global budget");
+                } finally {
+                    actors.close();
+                }
+            } finally {
+                vm.close();
+            }
+        } finally {
+            if (previous == null) System.clearProperty(OresCarrierBudget.PROPERTY);
+            else System.setProperty(OresCarrierBudget.PROPERTY, previous);
+        }
+    }
+
     @Test void forgedBudgetCannotOvercommitOrEraseControlReserve() {
         assertThrows(IllegalArgumentException.class,
                 () -> new OresCarrierBudget(4, 0, 1, 1, 1));
