@@ -83,6 +83,13 @@ class DispatcherUnitTest(unittest.TestCase):
             with self.assertRaises(MOD.Denied):
                 MOD.load_receipt(path)
 
+    def test_load_receipt_rejects_nonstandard_number(self):
+        with tempfile.TemporaryDirectory() as td:
+            path=Path(td)/"receipt.json"
+            path.write_text('{"schema":2,"x":NaN}',encoding="utf-8")
+            with self.assertRaises(MOD.Denied):
+                MOD.load_receipt(path)
+
     def test_strict_json_rejects_wrong_shape(self):
         with self.assertRaises(MOD.Denied):
             MOD.strict_json("{}",list)
@@ -121,9 +128,18 @@ class DispatcherUnitTest(unittest.TestCase):
                     receipt(),Path("."),"ci/oreslang-"+"f"*40)
             collect.assert_not_called()
 
+    def test_exact_file_rejects_blob_mismatch(self):
+        meta={"type":"file","encoding":"base64","size":3,
+              "content":base64.b64encode(b"abc").decode("ascii"),
+              "sha":"f"*40}
+        with mock.patch.object(MOD.PUB,"gh_api",return_value=meta):
+            with self.assertRaises(MOD.Denied):
+                MOD.exact_file(MOD.VERIFY.SOURCE_REPO,"x",PUB_HEAD)
+
 
 class DispatcherWriterTest(unittest.TestCase):
-    def harness(self, live=None, bad_parent=False, bad_provenance=False):
+    def harness(self, live=None, bad_parent=False, bad_provenance=False,
+                bad_ref_type=False):
         value=receipt()
         files=[("hello.txt",b"hello\n","100644")]
         calls=[]
@@ -173,10 +189,12 @@ class DispatcherWriterTest(unittest.TestCase):
                         "tree":{"sha":root_tree},"parents":parents}
             if method=="POST" and route.endswith("/git/refs"):
                 return {"ref":"refs/heads/"+BRANCH,
-                        "object":{"sha":payload_commit}}
+                        "object":{"sha":payload_commit,
+                                  "type":"tag" if bad_ref_type else "commit"}}
             if method=="GET" and "/git/ref/heads/" in route:
                 return {"ref":"refs/heads/"+BRANCH,
-                        "object":{"sha":payload_commit,"type":"commit"}}
+                        "object":{"sha":payload_commit,
+                                  "type":"tag" if bad_ref_type else "commit"}}
             if method=="GET" and route.endswith("/git/commits/"+payload_commit):
                 return {"sha":payload_commit,"tree":{"sha":root_tree},
                         "parents":[{"sha":CARRIER_HEAD}]}
@@ -260,6 +278,15 @@ class DispatcherWriterTest(unittest.TestCase):
         finally:
             for patch in reversed(patches): patch.stop()
 
+    def test_created_ref_wrong_object_type_is_denied(self):
+        value,_calls,_counters,patches=self.harness(bad_ref_type=True)
+        try:
+            for patch in patches: patch.start()
+            with self.assertRaises(MOD.Denied):
+                MOD.publish_review_pinned(value,Path("/source"),BRANCH)
+        finally:
+            for patch in reversed(patches): patch.stop()
+
     def test_revocation_mid_transfer_stops_before_ref(self):
         stale=receipt(); stale["incident_resume_comment_id"]=100
         def live(n):
@@ -323,6 +350,13 @@ class IncidentClosureTest(unittest.TestCase):
     def test_closed_incident_without_valid_time_denied(self):
         with mock.patch.object(MOD.PUB,"gh_api",
                                return_value=self.issue(closed_at="yesterday")):
+            with self.assertRaises(MOD.Denied):
+                MOD.require_incident_closed()
+
+    def test_closed_incident_non_utc_time_denied(self):
+        with mock.patch.object(
+                MOD.PUB,"gh_api",
+                return_value=self.issue(closed_at="2026-10-17T22:30:00+05:00")):
             with self.assertRaises(MOD.Denied):
                 MOD.require_incident_closed()
 
