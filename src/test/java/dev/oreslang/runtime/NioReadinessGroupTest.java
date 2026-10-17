@@ -1070,6 +1070,48 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void liveSelectorSurvivesUnexpectedExecutorFailureAndDrainsReservation()
+            throws Exception {
+        var firstFailure = new java.util.concurrent.CountDownLatch(1);
+        var submissions = new java.util.concurrent.atomic.AtomicInteger();
+        var subscribers = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor unstable = task -> {
+            if (submissions.getAndIncrement() == 0) {
+                firstFailure.countDown();
+                throw new IllegalStateException("host executor failed before acceptance");
+            }
+            task.run();
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(unstable);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var future = group.watch(pipe.source(), SelectionKey.OP_READ);
+                future.whenCompleteRuntime((events, error) -> subscribers.incrementAndGet());
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {7}));
+                assertTrue(firstFailure.await(3, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.stagedNotificationCount() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(1);
+                assertEquals(1, group.stagedNotificationCount());
+                assertEquals(1, group.unexpectedSubmissionFailures());
+                assertEquals(1, group.pendingNotifications());
+                assertEquals(1, group.reactorCount());
+                group.retryStagedNotifications();
+                assertTrue(future.get(3, TimeUnit.SECONDS) != 0);
+                assertEquals(1, subscribers.get());
+                assertEquals(0, group.pendingNotifications());
+                assertEquals(0, group.stagedNotificationCount());
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void unexpectedExecutorSubmissionFailureDoesNotLoseCompletion()
             throws Exception {
         var publish = NioReadinessGroup.class.getDeclaredMethod(
