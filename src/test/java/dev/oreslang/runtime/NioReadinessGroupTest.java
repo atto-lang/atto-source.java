@@ -1002,6 +1002,46 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void singleRetryDrainsMoreThanOneHundredTwentyEightStagedCallbacks()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(Runnable::run);
+            Thread owner = new Thread(() -> {
+                try {
+                    publish.invoke(group, (Runnable) () -> {
+                        entered.countDown();
+                        try {
+                            release.await(3, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                } catch (ReflectiveOperationException e) {
+                    throw new AssertionError(e);
+                }
+            });
+            owner.start();
+            try {
+                assertTrue(entered.await(3, TimeUnit.SECONDS));
+                for (int i = 0; i < 300; i++)
+                    publish.invoke(group, (Runnable) delivered::incrementAndGet);
+                assertEquals(300, group.stagedNotificationCount());
+            } finally {
+                release.countDown();
+                owner.join(3000);
+            }
+            assertFalse(owner.isAlive());
+            assertEquals(300, delivered.get());
+            assertEquals(0, group.stagedNotificationCount());
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
