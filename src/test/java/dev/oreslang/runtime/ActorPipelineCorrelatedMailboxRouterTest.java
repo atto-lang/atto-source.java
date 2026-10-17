@@ -126,6 +126,45 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void mailboxRejectsMismatchedFrameAuthorityPairBeforePublication() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var deliveries = new AtomicInteger();
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                deliveries.incrementAndGet();
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+
+            var graph = linearGraph();
+            var authority = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, graph,
+                    Map.of("source", source, "worker", worker, "sink", sink),
+                    37, 8);
+            var foreignSession = new ActorPipelineRouteSession(graph, 37, 8);
+            var foreignFrame = foreignSession.ingress("source");
+            try {
+                assertThrows(SecurityException.class,
+                        () -> runtime.sendWithPipelineFrame(
+                                source, "forged", foreignFrame, authority),
+                        "mailbox admission must reject a frame from another route session");
+                source.drain().get(5, TimeUnit.SECONDS);
+                assertEquals(0, deliveries.get(),
+                        "mismatched route metadata must fail before DATA publication");
+            } finally {
+                ActorPipelineRouteSession.retireDelivered(foreignFrame);
+            }
+
+            authority.close();
+            source.stop();
+            worker.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void successfulSingleRouteConsumesFrameAndCannotEmulateFanout() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var routerRef = new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
