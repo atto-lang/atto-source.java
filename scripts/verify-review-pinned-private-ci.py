@@ -290,6 +290,14 @@ def main():
         b"blob " + str(len(workflow_raw)).encode("ascii") + b"\0" + workflow_raw
     ).hexdigest()
 
+    reviewer_policy_raw = Path(args.reviewer_policy).read_bytes()
+    if not reviewer_policy_raw or len(reviewer_policy_raw) > 64 * 1024:
+        raise Denied("invalid reviewer policy bytes")
+    reviewer_policy_blob = hashlib.sha1(
+        b"blob " + str(len(reviewer_policy_raw)).encode("ascii")
+        + b"\0" + reviewer_policy_raw
+    ).hexdigest()
+
     receipt = {
         "schema": 2,
         "source_repository": SOURCE_REPO,
@@ -302,6 +310,7 @@ def main():
         "carrier_workflow_blob_sha": workflow_blob,
         "independent_reviewer_login": reviewer[0],
         "independent_reviewer_id": reviewer[1],
+        "independent_reviewer_policy_blob_sha": reviewer_policy_blob,
         "independent_reviewer_source_permission": source_permission,
         "independent_reviewer_carrier_permission": carrier_permission,
         "publisher_policy_pr": 1123,
