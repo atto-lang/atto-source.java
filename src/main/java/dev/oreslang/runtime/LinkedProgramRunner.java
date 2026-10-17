@@ -58,6 +58,15 @@ public final class LinkedProgramRunner {
             Map<String, String> environment,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) throws IOException {
+        return validate(entryFile, environment, policy, permissionCheckMode, null);
+    }
+
+    public static IncrementalCompiler.BuildResult validate(
+            Path entryFile,
+            Map<String, String> environment,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode,
+            RuntimePermissions runtimePermissions) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -85,7 +94,7 @@ public final class LinkedProgramRunner {
         Map<String, Ast.Program> programs = parsePrograms(sources);
         if (policy != null) {
             for (Ast.Program program : programs.values()) {
-                CapabilityChecker.check(program, policy, permissionCheckMode);
+                CapabilityChecker.check(program, policy, permissionCheckMode, runtimePermissions);
             }
         }
         try (MixedJavaCompiler.Compilation ignored = MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
@@ -197,6 +206,13 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build =
                 new IncrementalCompiler().compile(sources, importResolutions);
         Map<String, Ast.Program> programs = parsePrograms(sources);
+        // These checks execute before any guest initialization. In runtime
+        // mode the resource checks are deferred, but native I/O still enforces
+        // the same scoped host-owned policy at each operation.
+        if (permissionCheckMode == PermissionCheckMode.COMPILE) {
+            for (Ast.Program program : programs.values())
+                CapabilityChecker.check(program, policy, permissionCheckMode, permissions);
+        }
         int exitStatus = 0;
         String entryId = unitId(entry);
         MixedSourceUnit entryUnit = units.get(entryId);
