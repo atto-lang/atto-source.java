@@ -406,8 +406,18 @@ def dispatch(receipt_path,source_dir):
     entries=tree.get("tree")
     if tree.get("truncated") is not False or not isinstance(entries,list): raise Denied("payload root tree readback invalid")
     by_path={x.get("path"):x for x in entries if isinstance(x,dict)}
-    if (by_path.get(PREFIX,{}).get("sha")!=r["source_tree_sha"] or
-        by_path.get(PREFIX,{}).get("type")!="tree" or PROVENANCE not in by_path):
+    provenance_bytes=provenance.encode("utf-8")
+    provenance_sha=hashlib.sha1(
+        b"blob "+str(len(provenance_bytes)).encode("ascii")+b"\\0"+provenance_bytes
+    ).hexdigest()
+    source_entry=by_path.get(PREFIX,{})
+    provenance_entry=by_path.get(PROVENANCE,{})
+    if (source_entry.get("sha")!=r["source_tree_sha"]
+            or source_entry.get("type")!="tree"
+            or source_entry.get("mode") not in ("040000","40000")
+            or provenance_entry.get("sha")!=provenance_sha
+            or provenance_entry.get("type")!="blob"
+            or provenance_entry.get("mode")!="100644"):
         raise Denied("payload root tree does not contain exact source/provenance")
     refresh_authorization(r)
     return commit_sha,len(files)
