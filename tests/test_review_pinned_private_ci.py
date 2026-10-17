@@ -82,11 +82,13 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         }]
 
     def resume_comment(self, cid=99, login=REVIEWER_LOGIN, reviewer_id=REVIEWER_ID,
-                       publisher=PUBLISHER_HEAD, user_type="User"):
+                       publisher=PUBLISHER_HEAD, user_type="User",
+                       marker=None, created="2026-10-17T20:00:00Z"):
         return {
             "id": cid,
+            "created_at": created,
             "body": (
-                MOD.RESUME_MARKER
+                (MOD.RESUME_MARKER if marker is None else marker)
                 + " publisher=" + publisher
                 + " destination=" + DEST_HEAD
                 + " snapshot=" + SNAP_HEAD
@@ -353,7 +355,33 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def test_duplicate_resume_approvals_denied(self):
         self.assertDenied(lambda fx: fx.__setitem__(
             "incident_comments", self.write("incident-dupe.json", [
-                self.resume_comment(cid=99), self.resume_comment(cid=100)])))
+                self.resume_comment(cid=99, created="2026-10-17T20:00:00Z"),
+                self.resume_comment(cid=100, created="2026-10-17T20:01:00Z")])))
+
+    def test_resume_revocation_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "incident_comments", self.write("incident-revoked.json", [
+                self.resume_comment(cid=99, created="2026-10-17T20:00:00Z"),
+                self.resume_comment(cid=100, marker=MOD.RESUME_REVOKE_MARKER,
+                                    created="2026-10-17T20:01:00Z")])))
+
+    def test_resume_reapproval_after_revocation_allowed(self):
+        fx = self.fixture()
+        fx["incident_comments"] = self.write("incident-reapproved.json", [
+            self.resume_comment(cid=99, created="2026-10-17T20:00:00Z"),
+            self.resume_comment(cid=100, marker=MOD.RESUME_REVOKE_MARKER,
+                                created="2026-10-17T20:01:00Z"),
+            self.resume_comment(cid=101, created="2026-10-17T20:02:00Z"),
+        ])
+        receipt = self.run_fixture(fx)
+        self.assertEqual(receipt["incident_resume_comment_id"], 101)
+
+    def test_resume_comment_missing_created_at_denied(self):
+        def mutate(fx):
+            value = self.resume_comment()
+            del value["created_at"]
+            fx["incident_comments"] = self.write("incident-no-created.json", [value])
+        self.assertDenied(mutate)
 
     def test_unbound_resume_marker_denied(self):
         def mutate(fx):
