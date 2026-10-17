@@ -7,9 +7,12 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/private-ci-approved-source-snapshots.txt'
       - '.github/CODEOWNERS'
+      - '.github/workflows/private-ci-mirror-preflight.yml'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
   push:
     paths:
@@ -18,9 +21,12 @@ on:
       - 'scripts/run-in-private-ci-destination.sh'
       - 'scripts/publish-private-ci-source.py'
       - 'scripts/test-publish-private-ci-source.py'
+      - 'scripts/ci_private_mirror_preflight.py'
+      - 'tests/test_ci_private_mirror_preflight.py'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/private-ci-approved-source-snapshots.txt'
       - '.github/CODEOWNERS'
+      - '.github/workflows/private-ci-mirror-preflight.yml'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
 permissions:
   contents: read
@@ -32,13 +38,68 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Assert private CI guard fail-closed behavior
+      - name: Syntax-check every private CI authorization entrypoint
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -I -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          python3 -I -m py_compile             scripts/publish-private-ci-source.py             scripts/test-publish-private-ci-source.py             scripts/ci_private_mirror_preflight.py             tests/test_ci_private_mirror_preflight.py
+      - name: Execute destination-policy fail-closed Bash suite
+        run: |
+          set -euo pipefail
           bash scripts/test-private-ci-destination.sh
-          for attempt in 1 2 3; do
-            echo "Private publisher adversarial pass ${attempt}/3"
-            python3 -I scripts/test-publish-private-ci-source.py
+      - name: Execute mirror preflight adversarial suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_MIRROR_PREFLIGHT_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("tests/test_ci_private_mirror_preflight.py")
+          spec = importlib.util.spec_from_file_location("private_mirror_preflight_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Private mirror preflight unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 14:
+              raise SystemExit(f"Mirror preflight suite unexpectedly shrank to {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Mirror preflight tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_PRIVATE_MIRROR_PREFLIGHT_TESTS={result.testsRun}")
+          PY
+          done
+      - name: Execute publisher adversarial suite three complete rounds
+        run: |
+          set -euo pipefail
+          for round in 1 2 3; do
+            echo "PRIVATE_PUBLISHER_REGRESSION_ROUND=$round"
+            python3 -I - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import unittest
+
+          path = Path("scripts/test-publish-private-ci-source.py")
+          spec = importlib.util.spec_from_file_location("private_ci_publisher_tests", path)
+          if spec is None or spec.loader is None:
+              raise SystemExit("Private publisher unittest module missing")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+          count = suite.countTestCases()
+          if count < 154:
+              raise SystemExit(f"Publisher suite unexpectedly shrank to {count} tests")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (result.testsRun != count or not result.wasSuccessful()
+                  or result.skipped or result.expectedFailures
+                  or result.unexpectedSuccesses):
+              raise SystemExit("Publisher tests failed, skipped, or did not fully execute")
+          print(f"VERIFIED_PUBLISHER_TESTS={result.testsRun}")
+          PY
           done
