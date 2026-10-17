@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +17,7 @@ final class ZordeStdlibSourceTest {
     @Test void zordeModuleParsesAsOrdinaryGuestSource() throws Exception {
         String source = Files.readString(Path.of("stdlib", "zorde.ores"));
         assertNotNull(Parser.parse(source));
+        assertNotNull(OresCompiler.parseAndTypeCheck(source));
         for (String fn : new String[] {
                 "int_at_least", "int_at_most", "int_between", "int_exact"
         }) {
