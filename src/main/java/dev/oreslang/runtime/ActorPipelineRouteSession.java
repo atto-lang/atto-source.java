@@ -200,6 +200,28 @@ final class ActorPipelineRouteSession {
         return child;
     }
 
+    /**
+     * A terminal full-path reply delivers directly to the authenticated
+     * ingress actor. The immutable original path is retained for correlation
+     * and auditing, but no intermediary actor gets an unrequested reverse
+     * DATA delivery. This never accepts a guest-supplied origin/ActorRef.
+     *
+     * The child is installed before its source frame is retired. A failed
+     * frame allocation leaves the caller's current frame active. Mailbox
+     * publication remains nontransactional, as for returnOneHop().
+     */
+    synchronized MailFrame returnToOrigin(MailFrame current) {
+        requireForward(current);
+        requireReplyable(current);
+        reserveRouteIds(1);
+        MailFrame child = new MailFrame(this, generation, current.flowId,
+                nextRouteId, current.actorPath, 0, true);
+        active.put(child, Boolean.TRUE);
+        active.remove(current);
+        nextRouteId++;
+        return child;
+    }
+
     /** Send to the immediate authenticated sender of the current message. */
     public synchronized ReturnPath backward(MailFrame current) {
         requireForward(current);
