@@ -116,6 +116,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     // callback merely because another readiness record is published.
     private final AtomicBoolean notificationDispatching = new AtomicBoolean();
     private final AtomicBoolean notificationRetryRequested = new AtomicBoolean();
+    // Detect faulty host Executors separately from ordinary bounded-capacity
+    // rejection; neither case may silently lose an accepted I/O completion.
+    private final AtomicInteger unexpectedSubmissionFailures = new AtomicInteger();
     private final Object notificationDrain = new Object();
     // A transient registration burst must not spin up extra selector threads.
     // Counter is protected by the lifecycle monitor.
@@ -169,6 +172,7 @@ public final class NioReadinessGroup implements AutoCloseable {
     public int pendingCount() { return pending.get(); }
     int pendingNotifications() { return notificationReservations.get(); }
     int stagedNotificationCount() { return stagedNotifications.size(); }
+    int unexpectedSubmissionFailures() { return unexpectedSubmissionFailures.get(); }
     int activeAcceptLeases() {
         synchronized (lifecycle) { return acceptLeases.size(); }
     }
@@ -257,6 +261,8 @@ public final class NioReadinessGroup implements AutoCloseable {
                         try {
                             target.execute(next);
                         } catch (RuntimeException submissionFailure) {
+                            if (!(submissionFailure instanceof RejectedExecutionException))
+                                unexpectedSubmissionFailures.incrementAndGet();
                             // Executor.execute() can throw an arbitrary runtime
                             // failure *before* accepting a task, or even after
                             // accepting/running it. Losing a dequeued record
