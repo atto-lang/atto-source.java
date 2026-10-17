@@ -82,6 +82,10 @@ final class ActorPipelineRouteSession {
 
     private final ActorPipelineRoutePlan graph;
     private final int capacity;
+    // A selector-only session must not be used to attach VM route metadata
+    // to actual mailbox envelopes. Only supervisor-bound actor IDs confer
+    // recipient identity; graph instance strings are not capabilities.
+    private final Map<String, ?> runtimeRecipients;
     private final IdentityHashMap<MailFrame, Boolean> active = new IdentityHashMap<>();
     // Cursor is scoped to this trusted graph session / generation.
     private final Map<String, Integer> roundRobin = new HashMap<>();
@@ -94,9 +98,24 @@ final class ActorPipelineRouteSession {
 
     ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
                                      long generation, int maxActiveFrames) {
+        this(graph, generation, maxActiveFrames, Map.of());
+    }
+
+    ActorPipelineRouteSession(ActorPipelineRoutePlan graph,
+                              long generation, int maxActiveFrames,
+                              Map<String, ?> runtimeRecipients) {
         this.graph = Objects.requireNonNull(graph);
         if (generation < 1 || maxActiveFrames < 1 || maxActiveFrames > 65536) {
             throw new IllegalArgumentException("invalid route generation or frame budget");
+        }
+        this.runtimeRecipients = Map.copyOf(Objects.requireNonNull(runtimeRecipients));
+        if (!this.runtimeRecipients.isEmpty()) {
+            for (var edge : graph.edges()) {
+                if (!this.runtimeRecipients.containsKey(edge.source())
+                        || !this.runtimeRecipients.containsKey(edge.target()))
+                    throw new IllegalArgumentException(
+                            "bound routing session must cover all actor instances");
+            }
         }
         this.generation = generation;
         this.capacity = maxActiveFrames;
@@ -115,6 +134,23 @@ final class ActorPipelineRouteSession {
     /** VM-only validation for host-reported immutable correlation metadata. */
     synchronized void requireLive(MailFrame frame) {
         requireActive(frame);
+    }
+
+    /** Final DATA admission guard independent of the high-level router.
+     * Reject wrong-actor, stale and selector-only route metadata before any
+     * payload copy or mailbox slot reservation. */
+    static void requireMailboxRecipient(MailFrame frame, Object actorId) {
+        Objects.requireNonNull(frame, "route frame");
+        frame.session.requireBoundRecipient(frame, actorId);
+    }
+
+    private synchronized void requireBoundRecipient(MailFrame frame, Object actorId) {
+        requireActive(frame);
+        Object expected = runtimeRecipients.get(frame.receiver());
+        if (expected == null || !expected.equals(actorId)) {
+            throw new SecurityException(
+                    "routed DATA mailbox target does not match sealed actor binding");
+        }
     }
 
     /** Fail-closed ownership predicate used when pairing a route frame with
