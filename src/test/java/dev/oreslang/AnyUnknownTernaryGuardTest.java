@@ -221,6 +221,21 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void heterogeneousTernaryProducesExplicitUnionInsteadOfInferenceHole() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc choose(bool flag): int | string {
+                  return flag ? 7 : "seven";
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(bool flag): int {
+                          return flag ? 7 : "seven";
+                        }
+                        """)));
+    }
+
+    @Test
     void ternaryEvaluatesOnlyTheSelectedBranch() throws Exception {
         String output = run("""
                 fnc left(): int {
