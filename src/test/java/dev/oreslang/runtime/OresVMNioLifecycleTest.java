@@ -76,6 +76,48 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void boundVmNotificationsReuseActorCarriersWithoutControlOrNioWorkers()
+            throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var actors = new ActorRuntime(IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 16, 64),
+                ActorRuntime.TurnExecutor.direct(),
+                ActorRuntime.ControlDispatcher.unavailable());
+        var pipe = Pipe.open();
+        try {
+            pipe.source().configureBlocking(false);
+            actors.bindNioCompletionCapacityHook(vm.nioReadiness()::retryStagedNotifications);
+            vm.nioReadiness().bindVmCompletionExecutor(actors::executeHostIoCompletion);
+            assertTrue(vm.nioReadiness().usesVmCompletionCarriers());
+            assertEquals(0, vm.nioReadiness().completionCarrierCount());
+            assertEquals(0, actors.startedActorCarrierCount());
+
+            var completedOnActorCarrier = new java.util.concurrent.CountDownLatch(1);
+            var readiness = vm.nioReadiness().watch(pipe.source(), SelectionKey.OP_READ);
+            readiness.whenCompleteRuntime((events, failure) -> {
+                if (failure == null && !OresVM.onControlCarrier()
+                        && OresVM.onNioWorker() && !ActorRuntime.inActorExecution())
+                    completedOnActorCarrier.countDown();
+            });
+            pipe.sink().write(ByteBuffer.wrap(new byte[] {42}));
+            assertTrue(completedOnActorCarrier.await(3, TimeUnit.SECONDS),
+                    "host-only notification must execute on actor-owned runtime carriers");
+            assertEquals(0, vm.controlCarrierCount());
+            assertEquals(0, vm.nioReadiness().completionCarrierCount());
+            assertTrue(actors.startedActorCarrierCount() >= 1);
+
+            // This ordering is mandatory in OresContext.close(): the actor
+            // domain must remain alive until all NIO notifications drain.
+            vm.nioReadiness().close();
+            assertTrue(vm.nioReadiness().awaitStopped(3, TimeUnit.SECONDS));
+        } finally {
+            pipe.source().close();
+            pipe.sink().close();
+            actors.close();
+            vm.close();
+        }
+    }
+
     @Test void coldStartCreatesControlOnlyForRunnableControlWork() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
