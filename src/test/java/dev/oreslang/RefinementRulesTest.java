@@ -36,6 +36,17 @@ final class RefinementRulesTest {
         assertFalse(one.accepts(String.valueOf((char) 0xD800)));
     }
 
+    @Test void offDomainExclusionsDoNotAlterGeneratedSchema() {
+        var plain = alias("type Port = int with value gte 1 and value lte 65535;");
+        var redundant = alias(
+                "type Port = int with value gte 1 and value lte 65535 and value ne 0 and value ne 65536;");
+        assertEquals(
+                RefinementRules.descriptor(null, plain.target(), plain.refinement()),
+                RefinementRules.descriptor(null, redundant.target(), redundant.refinement()));
+        assertTrue(RefinementRules.normalize(
+                redundant.target(), redundant.refinement().bounds()).excluded().isEmpty());
+    }
+
     @Test void proveStrongerToWeakerButNotReverse() {
         Ast.TypeAliasDecl exact = alias("type Exact = string with length eq 10;");
         Ast.TypeAliasDecl nonEmpty = alias("type NonEmpty = string with length gt 0;");
