@@ -230,8 +230,9 @@ public final class NioReadinessGroup implements AutoCloseable {
 
     /** Called after an actor turn or accepted host notification retires,
      * so a temporarily full actor queue cannot strand accepted NIO work.
-     * At most 128 staged records are offered per retry. A supplied executor
-     * may be synchronous, so direct delivery is forbidden on the selector.
+     * Each dispatch pass offers at most 128 records; inline reentrant
+     * retries are coalesced into iterative, bounded dispatch leases. A
+     * supplied executor may be synchronous, so selector delivery is forbidden.
      */
     void retryStagedNotifications() {
         Executor target = boundCompletionExecutor;
