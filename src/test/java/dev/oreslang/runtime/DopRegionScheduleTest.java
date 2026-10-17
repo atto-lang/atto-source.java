@@ -79,6 +79,22 @@ final class DopRegionScheduleTest {
         assertThrows(IllegalArgumentException.class,
                 () -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
                         DopRegionSchedule.Mode.REDUCE, "sum\u007fcount"));
+        // Unicode line separators, bidi overrides, and NEL must not pass as
+        // invisible aliases for ordinary diagnostic and reduction labels.
+        for (String hidden : new String[] {
+                "pre\u0085post", "pre\u2028post", "pre\u2029post",
+                "pre\u202epost", "pre\u2066post", "pre\u00a0post",
+                "pre\u200bpost", "pre\ufeffpost", "pre\ud800post"}) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new DopRegionSchedule.Task(hidden, List.of()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
+                            DopRegionSchedule.Mode.REDUCE, hidden));
+        }
+        // Ordinary Unicode names remain admissible, including surrogate pairs.
+        assertDoesNotThrow(() -> new DopRegionSchedule.Task("résumé α 🚀", List.of()));
+        assertDoesNotThrow(() -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
+                DopRegionSchedule.Mode.REDUCE, "σ_sum"));
         assertDoesNotThrow(() -> new DopRegionSchedule.Task("phase one", List.of()));
         assertDoesNotThrow(() -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
                 DopRegionSchedule.Mode.REDUCE, "sum_count"));
