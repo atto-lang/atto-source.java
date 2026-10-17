@@ -37,6 +37,7 @@ public final class OwnershipChecker {
     // Must retain every (module, name, arity) slot. A name-only map loses
     // one overload and can silently skip/misapply its move/borrow effects.
     private final Map<String, Map<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    private final Map<String, Ast.FunctionDecl> variadicFunctions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
@@ -105,10 +106,18 @@ public final class OwnershipChecker {
         } else {
             ambiguousFunctions.add(fn.name());
             functions.remove(fn.name());
+            variadicFunctions.remove(fn.name());
         }
     }
 
     private void putFunctionSlot(String key, Ast.FunctionDecl fn) {
+        if (!fn.parameters().isEmpty() && fn.parameters().getLast().rest()) {
+            Ast.FunctionDecl duplicate = variadicFunctions.putIfAbsent(key, fn);
+            if (duplicate != null && duplicate != fn) {
+                throw error("duplicate rest overload " + key);
+            }
+            return;
+        }
         Ast.FunctionDecl previous = functions
                 .computeIfAbsent(key, ignored -> new HashMap<>())
                 .putIfAbsent(fn.parameters().size(), fn);
@@ -283,7 +292,10 @@ public final class OwnershipChecker {
     }
 
     private void defineImplicitArguments(Scope scope, List<Ast.Param> parameters) {
-        List<Ast.TypeRef> elementTypes = parameters.stream().map(Ast.Param::type).toList();
+        List<Ast.TypeRef> elementTypes = parameters.stream()
+                .map(p -> p.rest()
+                        ? new Ast.TypeRef("List", List.of(p.type()), false)
+                        : p.type()).toList();
         Ast.TypeRef tupleType = Ast.TypeRef.tupleType(elementTypes);
         VarState arguments = new VarState(
                 tupleType,
@@ -310,12 +322,15 @@ public final class OwnershipChecker {
             throw error("structural parameter '" + param.name()
                     + "' is a read-only borrowed view and cannot be declared mut");
         }
-        ValueKind kind = param.structural() && !param.type().isBorrow()
+        Ast.TypeRef type = param.rest()
+                ? new Ast.TypeRef("List", List.of(param.type()), false)
+                : param.type();
+        ValueKind kind = param.structural() && !type.isBorrow()
                 ? ValueKind.IMM_BORROW
-                : kindOfType(param.type());
+                : kindOfType(type);
         boolean mutableOwner = param.structural() ? false : param.mutable();
-        if (param.type().isBorrow() && param.type().mutableBorrow()) mutableOwner = false;
-        return new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
+        if (type.isBorrow() && type.mutableBorrow()) mutableOwner = false;
+        return new VarState(type, mutableOwner, kind, Origin.PARAM);
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
@@ -1861,6 +1876,7 @@ public final class OwnershipChecker {
         Map<VarState, Boolean> invocationLoans = new IdentityHashMap<>();
         List<CallArgumentLoan> activeLoans = new ArrayList<>();
         try {
+            boolean hasRest = !params.isEmpty() && params.getLast().rest();
             for (Ast.Expr argument : arguments) {
                 if (argument instanceof Ast.SpreadExpr spread) {
                     Ast.TypeRef spreadType = syntacticType(spread.expression(), scope);
@@ -1872,9 +1888,9 @@ public final class OwnershipChecker {
                     }
 
                     int width = spreadType.arguments().size();
-                    if (parameterIndex + width > params.size()) return; // TypeChecker reports arity.
+                    if (!hasRest && parameterIndex + width > params.size()) return; // TypeChecker reports arity.
                     for (int i = 0; i < width; i++) {
-                        Ast.Param target = params.get(parameterIndex + i);
+                        Ast.Param target = params.get(Math.min(parameterIndex + i, params.size() - 1));
                         if (target.structural() || target.type().isBorrow()) {
                             throw error(callable + " argument " + (parameterIndex + i + 1)
                                     + " cannot currently receive tuple spread into a structural/borrowed parameter; "
@@ -1890,8 +1906,8 @@ public final class OwnershipChecker {
                     continue;
                 }
 
-                if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
-                Ast.Param param = params.get(parameterIndex);
+                if (parameterIndex >= params.size() && !hasRest) return; // TypeChecker reports arity.
+                Ast.Param param = params.get(Math.min(parameterIndex, params.size() - 1));
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
@@ -3042,7 +3058,7 @@ public final class OwnershipChecker {
         List<Ast.Param> specialized = parameters.stream()
                 .map(param -> new Ast.Param(
                         substituteType(param.type(), bindings),
-                        param.name(), param.structural(), param.mutable()))
+                        param.name(), param.structural(), param.mutable(), param.rest()))
                 .toList();
         return new CallSignature(specialized, substituteType(result, bindings));
     }
@@ -3091,7 +3107,10 @@ public final class OwnershipChecker {
     private Ast.FunctionDecl findFunction(String name, int arity) {
         if (ambiguousFunctions.contains(name)) return null;
         Map<Integer, Ast.FunctionDecl> slots = functions.get(name);
-        return slots == null ? null : slots.get(arity);
+        Ast.FunctionDecl fixed = slots == null ? null : slots.get(arity);
+        if (fixed != null) return fixed;
+        Ast.FunctionDecl rest = variadicFunctions.get(name);
+        return rest != null && arity >= rest.parameters().size() - 1 ? rest : null;
     }
 
     private Ast.ClassDecl findClass(String name) {
