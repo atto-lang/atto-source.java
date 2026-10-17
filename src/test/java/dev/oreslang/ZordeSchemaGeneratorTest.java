@@ -12,6 +12,66 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ZordeSchemaGeneratorTest {
+    @Test void zodLikeSchemaFirstSourceDerivesSameTypeAsAnnotations() {
+        String schemaFirst = "namespace app; "
+                + "const PortSchema = Zorde.int().min(1).max(65535); "
+                + "type Port = Zorde.infer<PortSchema>;";
+        var derived = ZordeSchemaGenerator.planSource(schemaFirst);
+        var annotated = ZordeSchemaGenerator.planSource(
+                "namespace app; @Min(1) @Max(65535) type Port = int;");
+        var with = ZordeSchemaGenerator.planSource(
+                "namespace app; type Port = int with value gte 1 and value lte 65535;");
+        assertEquals(annotated.schema("app.Port"), derived.schema("app.Port"));
+        assertEquals(with.schema("app.Port"), derived.schema("app.Port"));
+        assertEquals(annotated.inferType("app.Port").schemaFingerprint(),
+                derived.inferType("app.Port").schemaFingerprint());
+        assertEquals(annotated.inferType("app.Port").outputRefinement().bounds().size(),
+                derived.inferType("app.Port").outputRefinement().bounds().size());
+        assertTrue(derived.tryFrom("app.Port", 443L).ok());
+        assertFalse(derived.tryFrom("app.Port", 65536L).ok());
+        assertFalse(derived.tryFrom("app.Port", 443.0).ok());
+        // Compilation still fails closed until the actual typed intrinsic
+        // and checked guest constructors have trusted runtime lowering.
+        assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.parseAndTypeCheck(schemaFirst));
+    }
+
+    @Test void compileTimeSchemaFirstStringAndRejectedDynamicInference() {
+        var stringSchema = ZordeSchemaGenerator.planSource(
+                "namespace app; "
+                + "const NameSchema = Zorde.string().minLength(1).maxLength(32); "
+                + "type Name = Zorde.infer<NameSchema>;");
+        var annotated = ZordeSchemaGenerator.planSource(
+                "namespace app; @MinLength(1) @MaxLength(32) type Name = string;");
+        assertEquals(annotated.schema("app.Name"), stringSchema.schema("app.Name"));
+        assertTrue(stringSchema.tryFrom("app.Name", "😀").ok());
+        assertFalse(stringSchema.tryFrom("app.Name", "").ok());
+        assertFalse(stringSchema.tryFrom("app.Name", String.valueOf((char)0xD800)).ok());
+        assertFalse(stringSchema.inferType("app.Name").outputRefinement().nominal());
+        for (String invalid : new String[] {
+                "const S = Zorde.int().min(x);",
+                "const S = Zorde.int().min(1.0);",
+                "const S = Zorde.string().min(1);",
+                "const S = Zorde.int().max(0).min(1);",
+                "const S = MyValidator();",
+                "const S = Zorde.int().min(1).max(3).exclude(1).exclude(2).exclude(3);",
+                "let S = Zorde.int().min(1);",
+                "const S = Zorde.int().min(1); const Zorde = 123;"
+        }) {
+            String source = "namespace app; " + invalid
+                    + " type FromSchema = Zorde.infer<S>;";
+            assertThrows(IllegalArgumentException.class,
+                    () -> ZordeSchemaGenerator.planSource(source), source);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> ZordeSchemaGenerator.planSource(
+                        "namespace app; type Undefined = Zorde.infer<Missing>;"));
+        assertThrows(IllegalArgumentException.class,
+                () -> ZordeSchemaGenerator.planSource(
+                        "namespace app; const S = Zorde.int(); "
+                        + "type Bad = Zorde.infer<S, S>;"));
+    }
+
     @Test void annotationsKeywordAndSymbolsEmitIdenticalSchema() {
         var ann = ZordeSchemaGenerator.planSource(
                 "namespace app; @Min(1) @Max(65535) type Port = int;");
