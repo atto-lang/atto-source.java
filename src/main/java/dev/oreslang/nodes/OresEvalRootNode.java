@@ -3242,19 +3242,40 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (expr instanceof Ast.BinaryExpr binary) {
                     if (binary.operator().equals("&&")) {
+                        // A plain boolean expression needs left-edge bindings
+                        // only while evaluating its RHS. It must not export the
+                        // merged proof environment beyond the expression.
                         evalSuspendableCondition(
                                 task,
-                                binary,
+                                binary.left(),
                                 env,
-                                (t, value, failure) -> {
-                                    if (failure != null) {
-                                        continuation.accept(t, null, failure);
+                                (t, leftValue, leftFailure) -> {
+                                    if (leftFailure != null) {
+                                        continuation.accept(t, null, leftFailure);
                                         return;
                                     }
-                                    continuation.accept(
+                                    ConditionResult left = (ConditionResult) leftValue;
+                                    if (!left.matched()) {
+                                        continuation.accept(t, false, null);
+                                        return;
+                                    }
+                                    Env rightEnv = new Env(env);
+                                    left.bindings().forEach((name, bound) ->
+                                            rightEnv.define(name, bound, Ast.BindingKind.VAL));
+                                    evalSuspendableCondition(
                                             t,
-                                            ((ConditionResult) value).matched(),
-                                            null);
+                                            binary.right(),
+                                            rightEnv,
+                                            (t2, rightValue, rightFailure) -> {
+                                                if (rightFailure != null) {
+                                                    continuation.accept(t2, null, rightFailure);
+                                                    return;
+                                                }
+                                                continuation.accept(
+                                                        t2,
+                                                        ((ConditionResult) rightValue).matched(),
+                                                        null);
+                                            });
                                 });
                         return;
                     }
@@ -6346,7 +6367,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.BinaryExpr binary) {
                 if (binary.operator().equals("&&")) {
-                    return evalCondition(binary, env).matched();
+                    // Bindings introduced by the left predicate are visible
+                    // only while evaluating the RHS of this boolean expression.
+                    ConditionResult left = evalCondition(binary.left(), env);
+                    if (!left.matched()) return false;
+                    Env rightEnv = new Env(env);
+                    left.bindings().forEach((name, bound) ->
+                            rightEnv.define(name, bound, Ast.BindingKind.VAL));
+                    return evalCondition(binary.right(), rightEnv).matched();
                 }
                 if (binary.operator().equals("||")) {
                     Object left = eval(binary.left(), env);
