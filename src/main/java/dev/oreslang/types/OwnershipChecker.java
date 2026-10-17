@@ -852,6 +852,10 @@ public final class OwnershipChecker {
             if (isBorrowValue(assigned)) {
                 throw error("borrowed references cannot be assigned into longer-lived storage; create a fresh lexical borrow binding instead");
             }
+            if (!(assignment.target() instanceof Ast.NameExpr)
+                    && containsPointerCapability(assigned.type)) {
+                throw error("Pointer<T> cannot be assigned into aggregate storage until place-aware move-out is implemented");
+            }
             return assigned;
         }
         if (expr instanceof Ast.TypeTestExpr test) {
@@ -1066,6 +1070,9 @@ public final class OwnershipChecker {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned array/list until explicit container lifetimes are supported");
+                if (containsPointerCapability(info.type)) {
+                    throw error("Pointer<T> cannot be stored in an array/list until place-aware move-out is implemented");
+                }
                 elementType = elementType == null
                         ? info.type
                         : joinConditionalType(elementType, info.type);
@@ -1082,6 +1089,9 @@ public final class OwnershipChecker {
                 ValueInfo info = checkExpr(item, scope, true);
                 if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 if (isBorrowValue(info)) throw error("borrowed references cannot be stored in an owned tuple until explicit container lifetimes are supported");
+                if (containsPointerCapability(info.type)) {
+                    throw error("Pointer<T> cannot be stored in a tuple until place-aware move-out is implemented");
+                }
                 copy &= info.kind == ValueKind.COPY;
             }
             return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
@@ -1102,6 +1112,9 @@ public final class OwnershipChecker {
                 }
                 if (isBorrowValue(info)) {
                     throw error("borrowed references cannot be stored in an owned struct until explicit container lifetimes are supported");
+                }
+                if (containsPointerCapability(info.type)) {
+                    throw error("Pointer<T> cannot be stored in a struct until place-aware move-out is implemented");
                 }
                 if (!object.explicitStruct()) members.put(field.name(), info.type);
             }
@@ -1158,6 +1171,10 @@ public final class OwnershipChecker {
                     || (payload.type != null && payload.type.isBorrow())) {
                 throw error(name.name()
                         + " cannot store a borrow in an owned sum value until explicit lifetime parameters are supported");
+            }
+            if (containsPointerCapability(payload.type)) {
+                throw error(name.name()
+                        + " cannot store Pointer<T> until place-aware move-out is implemented");
             }
             if (name.name().equals("Some")) {
                 Ast.TypeRef type = new Ast.TypeRef("Option", List.of(payload.type), false);
@@ -1807,6 +1824,29 @@ public final class OwnershipChecker {
                 && (value.kind == ValueKind.IMM_BORROW
                     || value.kind == ValueKind.MUT_BORROW
                     || (value.type != null && value.type.isBorrow()));
+    }
+
+    /**
+     * Pointer handles are affine capabilities. Until the checker tracks moved
+     * sub-places (field/index/variant payload state), hiding one in an ordinary
+     * aggregate would let repeated projections manufacture aliases to the same
+     * runtime handle. Explicit linear transports such as Channel<T> are handled
+     * separately and are not rejected merely because their payload type is a
+     * Pointer<T>.
+     */
+    private boolean containsPointerCapability(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return containsPointerCapability(type.borrowedTarget());
+        if (type.name().equals("Pointer")) return true;
+        if (type.isRecordType()) {
+            for (Ast.TypeRef member : type.recordMembers().values()) {
+                if (containsPointerCapability(member)) return true;
+            }
+        }
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsPointerCapability(argument)) return true;
+        }
+        return false;
     }
 
     private boolean isIncomingBorrow(VarState state) {
