@@ -18,6 +18,8 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,6 +45,8 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     private final Selector selector;
     private final ServerSocketChannel listener;
     private final Thread thread;
+    // CPU-only guest value conversion, never socket I/O or guest evaluation.
+    private final Executor completionCpuExecutor;
     private final int maxConnections;
     private final int maxPending;
     private final ConcurrentLinkedQueue<Runnable> commands = new ConcurrentLinkedQueue<>();
@@ -65,6 +69,14 @@ public final class NativeNioFutureReactor implements AutoCloseable {
 
     public static NativeNioFutureReactor loopback(int port, int backlog,
                                            int maxConnections, int maxPending) throws IOException {
+        // Standalone host tests and embeddings use the shared CPU executor.
+        // OresContext supplies the VM-owned bounded CONTROL executor instead.
+        return loopback(port, backlog, maxConnections, maxPending, ForkJoinPool.commonPool());
+    }
+
+    public static NativeNioFutureReactor loopback(int port, int backlog,
+            int maxConnections, int maxPending, Executor completionCpuExecutor) throws IOException {
+        java.util.Objects.requireNonNull(completionCpuExecutor, "completionCpuExecutor");
         if (port < 0 || port > 65535 || backlog <= 0 || backlog > 65535
                 || maxConnections < 1 || maxPending < 1 || maxPending > 65536) {
             throw new IllegalArgumentException("invalid reactor limits");
@@ -76,7 +88,7 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             server.configureBlocking(false);
             server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), backlog);
             server.register(selector, 0);
-            return new NativeNioFutureReactor(selector, server, maxConnections, maxPending);
+            return new NativeNioFutureReactor(selector, server, maxConnections, maxPending, completionCpuExecutor);
         } catch (IOException | RuntimeException | Error failure) {
             // Thread.start() can fail with an Error during native thread
             // exhaustion. Even that bootstrap failure must close the
@@ -88,11 +100,13 @@ public final class NativeNioFutureReactor implements AutoCloseable {
     }
 
     private NativeNioFutureReactor(Selector selector, ServerSocketChannel listener,
-                                   int maxConnections, int maxPending) {
+                                   int maxConnections, int maxPending,
+                                   Executor completionCpuExecutor) {
         this.selector = selector;
         this.listener = listener;
         this.maxConnections = maxConnections;
         this.maxPending = maxPending;
+        this.completionCpuExecutor = completionCpuExecutor;
         this.thread = Thread.ofPlatform().daemon(true).name("ores-nio-reactor").unstarted(this::run);
         thread.start();
     }
@@ -229,22 +243,29 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             OresFuture<java.util.List<Long>> exported =
                     new OresFuture<>(() -> read.cancel(false), () -> { });
             read.whenCompleteRuntime((bytes, failure) -> {
-                if (read.isCancelled()) {
-                    // Only the exported Future owns this raw read; cancellation
-                    // is settled by the public Future itself.
-                    return;
-                }
-                if (failure != null) {
-                    exported.failFromRuntime(failure);
-                } else {
-                    try {
-                        java.util.ArrayList<Long> values = new java.util.ArrayList<>(bytes.length);
-                        for (byte b : bytes) values.add((long) (b & 0xff));
-                        exported.completeFromRuntime(java.util.List.copyOf(values));
-                    } catch (Throwable conversionFailure) {
-                        // A mapping failure must never strand a guest await.
-                        exported.failFromRuntime(conversionFailure);
-                    }
+                if (read.isCancelled()) return;
+                // The callback can arrive on the selector thread. It may only
+                // enqueue CPU work there; boxing thousands of guest values
+                // or waking guest continuations inline would stall all sockets.
+                try {
+                    completionCpuExecutor.execute(() -> {
+                        if (exported.isDone()) return;
+                        if (failure != null) {
+                            exported.failFromRuntime(failure);
+                            return;
+                        }
+                        try {
+                            java.util.ArrayList<Long> values = new java.util.ArrayList<>(bytes.length);
+                            for (byte b : bytes) values.add((long) (b & 0xff));
+                            exported.completeFromRuntime(java.util.List.copyOf(values));
+                        } catch (Throwable conversionFailure) {
+                            exported.failFromRuntime(conversionFailure);
+                        }
+                    });
+                } catch (RuntimeException rejected) {
+                    // A saturated/stopped executor must settle the exported
+                    // Future explicitly, never silently strand an await.
+                    exported.failFromRuntime(rejected);
                 }
             });
             return exported;
