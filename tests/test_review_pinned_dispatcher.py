@@ -133,6 +133,8 @@ class DispatcherTests(unittest.TestCase):
                 return failures[key]
             if method == "GET" and route.endswith("/git/commits/" + C):
                 return {"sha": C, "tree": {"sha": "9" * 40}}
+            if method == "GET" and route.endswith("/git/trees/" + "9" * 40):
+                return {"sha": "9" * 40, "truncated": False, "tree": []}
             if method == "POST" and route.endswith("/git/blobs"):
                 data = __import__("base64").b64decode(payload["content"])
                 return {"sha": mod.git_blob_sha(data)}
@@ -188,6 +190,22 @@ class DispatcherTests(unittest.TestCase):
         self.assertFalse(auth[-1])
         commit_write = [x for x in writes if x[1].endswith("/git/commits")][0]
         self.assertEqual(commit_write[2]["parents"], [C])
+
+    def test_carrier_parent_with_existing_payload_paths_denied_before_write(self):
+        doc = receipt()
+        files = [("hello.ores", b"x", "100644")]
+        api, calls = self.successful_api(
+            doc, {("GET", f"repos/{mod.CARRIER_REPO}/git/trees/" + "9" * 40):
+                  {"sha": "9" * 40, "truncated": False,
+                   "tree": [{"path": mod.PROVENANCE_PATH, "type": "blob",
+                             "sha": "0" * 40}]}})
+        with patch.object(mod.pub, "source_tree_sha", return_value=B), \
+             patch.object(mod.pub, "gh_api", side_effect=api), \
+             patch.object(mod.pub, "nested_sha",
+                          side_effect=lambda value, key: value[key]["sha"]):
+            with self.assertRaisesRegex(mod.Denied, "already contains payload paths"):
+                mod.write_payload(files, doc, authorize=lambda *_: None)
+        self.assertFalse(any(method == "POST" for method, _, _ in calls))
 
     def test_uploaded_blob_digest_mismatch_denied(self):
         doc = receipt()
