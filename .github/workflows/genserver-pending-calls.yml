@@ -1,0 +1,31 @@
+name: GenServer pending call Future
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
+      - 'src/main/java/dev/oreslang/runtime/GenServerPendingCalls.java'
+      - 'src/test/java/dev/oreslang/runtime/GenServerPendingCallsTest.java'
+      - 'docs/GENSERVER_PENDING_CALL_FUTURE.md'
+      - '.github/workflows/genserver-pending-calls.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pending-call-races:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          cache: maven
+      - name: Run GenServer pending-call race tests
+        run: mvn -B -ntp -Dtest=GenServerPendingCallsTest test
