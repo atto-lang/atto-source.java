@@ -765,6 +765,45 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueStructuralRecoveryIsReadonlyInStandaloneOwnershipAnalysis() {
+        // OwnershipChecker must enforce readonly shape recovery on its own;
+        // it may be invoked independently by backends and incremental tools.
+        var illegalNestedWrite = Parser.parse("""
+                pub fnc bad(any value): void {
+                  if value matches structural { inner: { amount: int } } view then
+                    view.inner.amount = 99;
+                  fi
+                  return;
+                }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(illegalNestedWrite));
+
+        var illegalRootWrite = Parser.parse("""
+                pub fnc bad(unknown value): void {
+                  if value matches structural { amount: int } view then
+                    view.amount = 99;
+                  fi
+                  return;
+                }
+                """);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dev.oreslang.types.OwnershipChecker.check(illegalRootWrite));
+    }
+
+    @Test
+    void opaqueStructuralRecoveryStillAllowsReadOnlyDataUse() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc safe(any value): int {
+                  return value matches structural { amount: int } view
+                      ? view.amount : 0;
+                }
+                """)));
+    }
+
+    @Test
     void opaqueStructuralCastsAndNestedShapeTestsRemainFailClosed() {
         // Runtime structural type descriptors are not admitted as cast/is
         // targets yet. Do not mistake type-shape syntax for checked authority.
