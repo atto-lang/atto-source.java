@@ -107,9 +107,22 @@ public final class Complex128Math {
 
     private static Value divideExceptional(
             double ar, double ai, double br, double bi) {
+        // Match compiler-rt's divisor scaling before exceptional recovery.
+        // Without this, a finite subnormal divisor can square to zero and be
+        // mistaken for an actual zero divisor when NaNs are also present.
+        double divisorScale = Math.max(Math.abs(br), Math.abs(bi));
+        int divisorExponent = 0;
+        if (divisorScale > 0.0 && Double.isFinite(divisorScale)) {
+            divisorExponent = Math.getExponent(divisorScale);
+            br = Math.scalb(br, -divisorExponent);
+            bi = Math.scalb(bi, -divisorExponent);
+        }
+
         double denominator = br * br + bi * bi;
-        double realResult = (ar * br + ai * bi) / denominator;
-        double imaginaryResult = (ai * br - ar * bi) / denominator;
+        double realResult = Math.scalb(
+                (ar * br + ai * bi) / denominator, -divisorExponent);
+        double imaginaryResult = Math.scalb(
+                (ai * br - ar * bi) / denominator, -divisorExponent);
 
         if (Double.isNaN(realResult) && Double.isNaN(imaginaryResult)) {
             if (denominator == 0.0
