@@ -61,7 +61,7 @@ def inspect(reports, provenance):
             method = case.attrib.get("name")
             require(bool(method) and method not in seen, "missing/duplicate test method: " + name)
             seen.add(method)
-            require(not any(case.iter(tag) for tag in ("failure", "error", "skipped")),
+            require(not any(next(case.iter(tag), None) is not None for tag in ("failure", "error", "skipped")),
                     "failed/skipped testcase hidden by XML counters: " + name)
         evidence.append({
             "suite": expected_class,
