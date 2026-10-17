@@ -62,10 +62,23 @@ final class NioReadinessGroupTest {
                         assertEquals(0, group.activeReadLeases());
                         assertEquals(0, group.pendingCount());
                     }
+                    peer.setSoTimeout(3000);
+                    for (int round = 0; round < 32; round++) {
+                        var outbound = group.writeAsync(socket, new byte[]{(byte) round});
+                        assertEquals(1, outbound.get(3, TimeUnit.SECONDS));
+                        assertEquals(round, peer.getInputStream().read(),
+                                "same channel must re-arm OP_WRITE after key cancellation");
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                        while ((group.activeWriteLeases() != 0 || group.pendingCount() != 0)
+                                && System.nanoTime() < deadline)
+                            Thread.sleep(1);
+                        assertEquals(0, group.activeWriteLeases());
+                        assertEquals(0, group.pendingCount());
+                    }
                 }
             }
             assertEquals(1, group.reactorCount(),
-                    "64 re-armed TCP reads must use one selector, not 64 workers");
+                    "re-armed TCP reads/writes must use one selector, not per-I/O workers");
             group.close();
             assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
         }
