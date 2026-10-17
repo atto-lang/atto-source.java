@@ -14,6 +14,41 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** Closed-world schema-first prototypes are not executable guest declarations yet. */
 final class StaticZordeSchemaTest {
+    @Test void canonicalDescriptorControlsTheInferredTypeAcrossAllSpellings() {
+        var withExclusive = ZordeSchemaGenerator.planSource(
+                "namespace app; type NonEmpty = string with length gt 0;");
+        var annotated = ZordeSchemaGenerator.planSource(
+                "namespace app; @MinLength(1) type NonEmpty = string;");
+        var first = ZordeSchemaGenerator.planStaticSchemas("app",
+                Map.of("NonEmpty", StaticZordeSchema.string().minLength(1)), Set.of());
+
+        var canonicalType = first.inferType("app.NonEmpty").outputRefinement();
+        assertEquals(canonicalType, withExclusive.inferType("app.NonEmpty").outputRefinement());
+        assertEquals(canonicalType, annotated.inferType("app.NonEmpty").outputRefinement());
+        assertEquals(List.of(new Ast.RefinementBound("length", "gte", 1)),
+                canonicalType.bounds());
+        assertEquals(first.schema("app.NonEmpty").fingerprint(),
+                annotated.schema("app.NonEmpty").fingerprint());
+
+        var exact = ZordeSchemaGenerator.planStaticSchemas("app",
+                Map.of("Exactly42", StaticZordeSchema.int64().min(42).max(42)), Set.of());
+        assertEquals(List.of(new Ast.RefinementBound("value", "eq", 42)),
+                exact.inferType("app.Exactly42").outputRefinement().bounds());
+        assertTrue(exact.tryFrom("app.Exactly42", 42L).ok());
+        assertFalse(exact.tryFrom("app.Exactly42", 43L).ok());
+
+        var redundant = ZordeSchemaGenerator.planStaticSchemas("app",
+                Map.of("Range", StaticZordeSchema.int64().min(1).max(3)
+                        .excluding(0).excluding(2).excluding(4)), Set.of());
+        assertEquals(List.of(
+                new Ast.RefinementBound("value", "gte", 1),
+                new Ast.RefinementBound("value", "lte", 3),
+                new Ast.RefinementBound("value", "ne", 2)),
+                redundant.inferType("app.Range").outputRefinement().bounds());
+        assertFalse(redundant.tryFrom("app.Range", 2L).ok());
+        assertTrue(redundant.tryFrom("app.Range", 1L).ok());
+    }
+
     @Test void schemaFirstAndAnnotationFirstHaveIdenticalTypeAndValidator() {
         var port = StaticZordeSchema.int64().min(1).max(65535);
         var first = ZordeSchemaGenerator.planStaticSchemas(
