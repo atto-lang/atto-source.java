@@ -790,10 +790,28 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void complementRuntimeTypesUseCoverageNotNumericWidening() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc notInteger(string value): bool {
+                  return value is type !int;
+                }
+                """)));
+
+        IllegalArgumentException impossible = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc impossible(int value): bool {
+                          return value is type !int;
+                        }
+                        """)));
+        assertTrue(impossible.getMessage().contains("impossible type test"), impossible::getMessage);
+    }
+
+    @Test
     void nullablePatternBindingsDoNotThrowHostMapExceptions() throws Exception {
         String output = run("""
                 pub fnc main(): void {
-                  stdio.stdout.write(null matches is !int first ? 1 : 0);
+                  stdio.stdout.write(null is type !int first ? 1 : 0);
                   stdio.stdout.write(null matches is !int second ? 1 : 0);
                   return;
                 }
