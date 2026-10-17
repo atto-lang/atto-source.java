@@ -802,6 +802,75 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static ActorTerminationKind classifyTermination(Throwable failure) {
+        if (failure == null) return ActorTerminationKind.NORMAL;
+        if (failure instanceof CancellationException
+                || failure instanceof ActorCancelledException) {
+            return ActorTerminationKind.CANCELLED;
+        }
+        return ActorTerminationKind.FAILED;
+    }
+
+    /**
+     * Diagnostics must never become a lifecycle dependency. No guest/user
+     * formatting is invoked here: Throwable.getMessage()/toString can execute
+     * overridden code and is intentionally excluded from the synchronous
+     * finalization path.
+     */
+    private void recordTerminationEvent(
+            ActorCell<?> cell,
+            Throwable failure,
+            long acceptedUserMessages,
+            long processedUserMessages,
+            int abandonedUserMessages,
+            int abandonedContinuations) {
+        ActorTerminationKind kind = classifyTermination(failure);
+        switch (kind) {
+            case NORMAL -> normalTerminations.incrementAndGet();
+            case CANCELLED -> cancelledTerminations.incrementAndGet();
+            case FAILED -> failedTerminations.incrementAndGet();
+        }
+
+        long sequence;
+        for (;;) {
+            long current = supervisionEventSequence.get();
+            if (current == Long.MAX_VALUE) {
+                supervisionEventsDropped.incrementAndGet();
+                return;
+            }
+            if (supervisionEventSequence.compareAndSet(current, current + 1L)) {
+                sequence = current;
+                break;
+            }
+        }
+
+        String failureType = failure == null ? "" : failure.getClass().getName();
+        ActorTerminationEvent event;
+        try {
+            event = new ActorTerminationEvent(
+                    sequence,
+                    cell.ref.id(),
+                    cell.ref.generation(),
+                    cell.kind,
+                    cell.parent == null
+                            ? Optional.empty()
+                            : Optional.of(cell.parent.ref.id()),
+                    kind,
+                    acceptedUserMessages,
+                    processedUserMessages,
+                    abandonedUserMessages,
+                    abandonedContinuations,
+                    failureType,
+                    "");
+        } catch (RuntimeException diagnosticsInvariant) {
+            supervisionEventsDropped.incrementAndGet();
+            return;
+        }
+        if (!supervisionEvents.offer(event)) {
+            supervisionEventsDropped.incrementAndGet();
+        }
+    }
+
     /**
      * Physical carrier implementation currently backing actor turns.
      *
@@ -6987,6 +7056,44 @@ public final class ActorRuntime implements AutoCloseable {
                     : null;
         }
 
+        private ActorSnapshot snapshot() {
+            synchronized (lifecycleLock) {
+                int userQueued;
+                int continuationsQueued;
+                synchronized (mailboxAccountingLock) {
+                    userQueued = queuedUserMessages;
+                    continuationsQueued = queuedContinuations;
+                }
+                Throwable terminal = ref.terminationCause.get();
+                long processed = lastProcessedUserMessageSequence < 0
+                        ? 0L
+                        : lastProcessedUserMessageSequence + 1L;
+                return new ActorSnapshot(
+                        ref.id(),
+                        ref.generation(),
+                        kind,
+                        parent == null ? Optional.empty() : Optional.of(parent.ref.id()),
+                        ref.readyFuture.isDone(),
+                        stopped.get(),
+                        sealing,
+                        finalized,
+                        scheduled.get(),
+                        carrierActive,
+                        activeTurns,
+                        userQueued,
+                        continuationsQueued,
+                        nextUserMessageSequence,
+                        processed,
+                        children.size(),
+                        pendingOperations.size(),
+                        sourceReceiveSuspended,
+                        forceKillFenced,
+                        sharedMailboxBytes.get(),
+                        outputBytes.get(),
+                        terminal == null ? "" : terminal.getClass().getName());
+            }
+        }
+
         private long nextStaticSelectTicket(Object selectSite) {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) throw terminated(ref);
@@ -7233,6 +7340,19 @@ public final class ActorRuntime implements AutoCloseable {
                     || carrierActive
                     || !children.isEmpty()) return;
             finalized = true;
+
+            final int abandonedUserMessages;
+            final int abandonedContinuations;
+            synchronized (mailboxAccountingLock) {
+                abandonedUserMessages = queuedUserMessages;
+                abandonedContinuations = queuedContinuations;
+            }
+            final long acceptedUserMessages = nextUserMessageSequence;
+            final long processedUserMessages = lastProcessedUserMessageSequence < 0
+                    ? 0L
+                    : lastProcessedUserMessageSequence + 1L;
+            final Throwable terminalBeforeDrain = ref.terminationCause.get();
+
             OresScheduler scheduler = sourceScheduler;
             sourceScheduler = null;
             if (scheduler != null) {
@@ -7249,6 +7369,19 @@ public final class ActorRuntime implements AutoCloseable {
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
+
+            // Publish a bounded immutable record before removing the ActorCell,
+            // but after guest execution and mutable state have quiesced. This
+            // queue is observational only: a full queue drops the record and
+            // increments a counter rather than delaying actor teardown.
+            recordTerminationEvent(
+                    this,
+                    terminalBeforeDrain,
+                    acceptedUserMessages,
+                    processedUserMessages,
+                    abandonedUserMessages,
+                    abandonedContinuations);
+
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
