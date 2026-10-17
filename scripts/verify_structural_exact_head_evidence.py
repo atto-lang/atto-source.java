@@ -27,7 +27,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def inspect(reports, provenance, source_root=None):
+def inspect(reports, provenance, source_root=None, require_ci=False):
     require(not reports.is_symlink() and not provenance.is_symlink(),
             "unsafe suite directory or provenance symlink")
     source = json.loads(provenance.read_text(encoding="utf-8"))
@@ -39,6 +39,20 @@ def inspect(reports, provenance, source_root=None):
                 "invalid " + name)
     require(source["scope"] == "java-structural-exact-head-guest",
             "unexpected test scope")
+    if require_ci:
+        require(source_root is not None, "CI certification requires a local checkout")
+        require(os.environ.get("GITHUB_ACTIONS") == "true",
+                "not executing on GitHub Actions")
+        require(os.environ.get("GITHUB_REPOSITORY")
+                == "ores-truffle-oreslang/oreslang-source.java",
+                "unexpected source GitHub repository")
+        for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            value = os.environ.get(key, "")
+            require(value.isascii() and value.isdecimal() and int(value) > 0,
+                    "missing or malformed runner provenance: " + key)
+        require(os.environ.get("GITHUB_EVENT_NAME") in
+                ("pull_request", "workflow_dispatch"),
+                "unexpected GitHub event for exact-head JUnit evidence")
     if source_root is not None:
         require(source_root.is_dir() and not source_root.is_symlink(),
                 "source checkout is absent or symlinked")
@@ -201,7 +215,7 @@ def main():
     require(all((args.reports, args.provenance, args.out, args.source_root)),
             "reports, provenance, source-root and out are required")
     require(not args.out.is_symlink(), "output evidence path must not be a symlink")
-    results = inspect(args.reports, args.provenance, args.source_root)
+    results = inspect(args.reports, args.provenance, args.source_root, require_ci=True)
     args.out.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("Verified", results["tests_total"], "actual JUnit cases from", len(SUITES), "suites")
 
