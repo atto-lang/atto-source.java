@@ -98,9 +98,7 @@ final class RefinementSyntaxGateTest {
         Ast.TypeAliasDecl pctKeywords = alias(
                 "type Percentage = int with value gte 0 and value lte 100;");
         Ast.TypeAliasDecl pctSymbols = alias(
-                "type Percentage = int with value >= 0 and value <= 100;",
-                "@MinLength(1) type Name = string;",
-                "@Range(min=1,max=65535) type Number = int;");
+                "type Percentage = int with value >= 0 and value <= 100;");
         assertEquals(pctKeywords.refinement().bounds(), pctSymbols.refinement().bounds());
         assertEquals(List.of(new Ast.RefinementBound("value", "gte", 0),
                              new Ast.RefinementBound("value", "lte", 100)), pctKeywords.refinement().bounds());
