@@ -1137,7 +1137,8 @@ public final class Parser {
     }
 
     private static boolean isConstraintAnnotation(String name) {
-        return name.equals("Size") || name.equals("Length") || name.equals("NotEmpty");
+        return java.util.Set.of("Size", "Length", "NotEmpty", "MinLength", "MaxLength",
+                "Min", "Max", "Range").contains(name);
     }
 
     private List<Ast.Annotation> parseAnnotations() {
