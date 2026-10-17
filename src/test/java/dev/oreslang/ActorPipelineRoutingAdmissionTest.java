@@ -46,21 +46,37 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
-    void fanoutReceiptsAndFullPathReplyRemainFailClosed() {
-        for (String method : new String[] {"forward_all", "reply"}) {
-            String program = """
-                    define actor Worker as
-                      receive(ActorMail<int> mail): void {
-                        self.%s(mail.value);
-                      }
-                    end
-                    """.formatted(method);
-            IllegalArgumentException error = assertThrows(
-                    IllegalArgumentException.class,
-                    () -> TypeChecker.check(Parser.parse(program)), method);
-            assertTrue(error.getMessage().contains("next typed pipeline routing phase"),
-                    method + ": " + error.getMessage());
-        }
+    void sealedFanoutReceiptAndReplyCompileForSharedScalarPayloads() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    const reports = self.forward_all(mail.value);
+                    const first = reports[0];
+                    const admitted: bool = first.admitted;
+                    const target: string = first.target;
+                    self.reply(mail.value);
+                    return;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
+    void unsafeAggregateFanoutIsRejectedBeforeGuestExecution() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward_all(infer struct {data: mail.value});
+                    return;
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(error.getMessage().contains("requires immutable int/bool/string DATA"),
+                error.getMessage());
     }
 
     @Test
