@@ -17,6 +17,17 @@
     <tomlj.version>1.1.1</tomlj.version>
     <!-- Override with -Pnative-size to favor executable size over throughput. -->
     <native.image.optimization>-O2</native.image.optimization>
+    <!-- Native Image host-I/O authority ceiling. Empty means deny that category.
+         Override at image build with -Dnative.permission.net=host:port, etc.
+         Filesystem/FFI/import path scopes must be absolute or '*'. -->
+    <native.permission.read></native.permission.read>
+    <native.permission.write></native.permission.write>
+    <native.permission.net></native.permission.net>
+    <native.permission.env></native.permission.env>
+    <native.permission.run></native.permission.run>
+    <native.permission.sys></native.permission.sys>
+    <native.permission.ffi></native.permission.ffi>
+    <native.permission.import></native.permission.import>
   </properties>
 
   <dependencies>
@@ -164,7 +175,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} -p %classpath -Dores.native.build-mode=hybrid --shared --features=com.oracle.svm.truffle.PolyglotIsolateGuestFeature -H:APIFunctionPrefix=truffle_isolate_ -H:+CopyLanguageResources -H:+UnlockExperimentalVMOptions -H:-InitializeVM -H:-UnlockExperimentalVMOptions -Dgraalvm.locatorDisabled=true -o ${project.build.directory}/oresvm</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} -p %classpath -Dores.native.build-mode=hybrid -Dores.native.permission.read=${native.permission.read} -Dores.native.permission.write=${native.permission.write} -Dores.native.permission.net=${native.permission.net} -Dores.native.permission.env=${native.permission.env} -Dores.native.permission.run=${native.permission.run} -Dores.native.permission.sys=${native.permission.sys} -Dores.native.permission.ffi=${native.permission.ffi} -Dores.native.permission.import=${native.permission.import} --shared --features=com.oracle.svm.truffle.PolyglotIsolateGuestFeature -H:APIFunctionPrefix=truffle_isolate_ -H:+CopyLanguageResources -H:+UnlockExperimentalVMOptions -H:-InitializeVM -H:-UnlockExperimentalVMOptions -Dgraalvm.locatorDisabled=true -o ${project.build.directory}/oresvm</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
@@ -189,7 +200,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true -Dores.native.build-mode=aot --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true -Dores.native.build-mode=aot -Dores.native.permission.read=${native.permission.read} -Dores.native.permission.write=${native.permission.write} -Dores.native.permission.net=${native.permission.net} -Dores.native.permission.env=${native.permission.env} -Dores.native.permission.run=${native.permission.run} -Dores.native.permission.sys=${native.permission.sys} -Dores.native.permission.ffi=${native.permission.ffi} -Dores.native.permission.import=${native.permission.import} --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
@@ -214,7 +225,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>${native.image.optimization} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dores.native.build-mode=hybrid --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
+                  <commandlineArgs>${native.image.optimization} -p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dores.native.build-mode=hybrid -Dores.native.permission.read=${native.permission.read} -Dores.native.permission.write=${native.permission.write} -Dores.native.permission.net=${native.permission.net} -Dores.native.permission.env=${native.permission.env} -Dores.native.permission.run=${native.permission.run} -Dores.native.permission.sys=${native.permission.sys} -Dores.native.permission.ffi=${native.permission.ffi} -Dores.native.permission.import=${native.permission.import} --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
