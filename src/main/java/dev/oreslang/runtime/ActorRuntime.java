@@ -413,6 +413,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
+    /** Separate non-wrapping generation namespace for compiler-created
+     * ActorStream route sessions. Never derive routing authority from actor
+     * generation numbers or caller-supplied values. */
+    private final AtomicLong nextSourcePipelineGeneration = new AtomicLong(1);
     // Actor generations are capability authority, not a wrapping ticket ID.
     // Long.MAX_VALUE is the permanent exhaustion sentinel. Do not allow the
     // AtomicLong to overflow and potentially recycle previously issued IDs.
@@ -2037,6 +2041,122 @@ public final class ActorRuntime implements AutoCloseable {
             Objects.requireNonNull(kind);
             Objects.requireNonNull(transport);
             if (generation <= 0) throw new IllegalArgumentException("generation must be positive");
+        }
+    }
+
+    /**
+     * Runtime-bound source pipeline handle. It owns no actor state and exposes
+     * no ActorRef destinations: ingress is the only public DATA operation.
+     * Every subsequent self.* hop is authorized by sealed mailbox metadata.
+     */
+    public final class ActorStream {
+        private final ActorPipelineCorrelatedMailboxRouter<Object> router;
+        private final String ingress;
+        private final List<ActorRef<?>> stages;
+        private final AtomicBoolean ingressUsed = new AtomicBoolean();
+        private final AtomicInteger pendingDone;
+        private final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+        private final OresFuture<Void> done =
+                new OresFuture<>(() -> false, () -> { });
+
+        private ActorStream(
+                ActorPipelineCorrelatedMailboxRouter<Object> router,
+                String ingress,
+                List<ActorRef<?>> stages) {
+            this.router = Objects.requireNonNull(router, "pipeline router");
+            this.ingress = Objects.requireNonNull(ingress, "pipeline ingress");
+            this.stages = List.copyOf(stages);
+            this.pendingDone = new AtomicInteger(this.stages.size());
+            for (ActorRef<?> stage : this.stages) {
+                stage.done().whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null) {
+                        Throwable cause = OresFuture.unwrap(failure);
+                        if (firstFailure.compareAndSet(null, cause)) {
+                            // done() callbacks may run inline while an actor's
+                            // lifecycle monitor is still held. Never re-enter
+                            // sibling termination or router retirement here.
+                            try {
+                                privateDispatcher.execute(() ->
+                                        failRemainingStages(stage, cause));
+                            } catch (RejectedExecutionException unavailable) {
+                                if (!closed.get()) {
+                                    done.failFromRuntime(new IllegalStateException(
+                                            "ActorStream supervision dispatcher rejected terminal propagation",
+                                            unavailable));
+                                }
+                            }
+                        }
+                    }
+                    if (pendingDone.decrementAndGet() == 0) {
+                        Throwable terminal = firstFailure.get();
+                        if (terminal != null) {
+                            done.failFromRuntime(terminal);
+                        } else if (router.outstanding() != 0) {
+                            done.failFromRuntime(new IllegalStateException(
+                                    "ActorStream actors finalized with live route frames"));
+                        } else {
+                            done.completeFromRuntime(null);
+                        }
+                    }
+                });
+            }
+        }
+
+        private void failRemainingStages(
+                ActorRef<?> failedStage, Throwable cause) {
+            try {
+                router.close();
+            } catch (RuntimeException retirementFailure) {
+                cause.addSuppressed(retirementFailure);
+            }
+            IllegalStateException aborted = new IllegalStateException(
+                    "ActorStream stage failed; terminating remaining stages",
+                    cause);
+            for (ActorRef<?> sibling : stages) {
+                if (sibling == failedStage) continue;
+                ActorCell<?> cell = actors.get(sibling.id());
+                if (cell != null && !cell.finalized()) {
+                    cell.fail(aborted);
+                }
+            }
+        }
+
+        public int size() {
+            return stages.size();
+        }
+
+        /**
+         * Admit exactly one root flow. A synchronous admission failure does not
+         * consume the single-flow credit; once mailbox publication succeeds,
+         * replay is permanently rejected.
+         */
+        public void send(Object value) {
+            requireCallerRuntimeAffinity("send ActorStream ingress");
+            if (currentActor.get() != null) {
+                throw new SecurityException(
+                        "ActorStream ingress belongs to the supervisor/root turn");
+            }
+            Objects.requireNonNull(value, "ActorStream payload");
+            Throwable terminal = firstFailure.get();
+            if (terminal != null || done.isDone()) {
+                throw new IllegalStateException(
+                        "ActorStream is already terminal", terminal);
+            }
+            if (!ingressUsed.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "ActorStream admits exactly one root flow");
+            }
+            try {
+                router.ingress(ingress, value);
+            } catch (RuntimeException | Error failed) {
+                ingressUsed.set(false);
+                throw failed;
+            }
+        }
+
+        /** Physical completion barrier for every bound actor. */
+        public OresFuture<Void> getDone() {
+            return done;
         }
     }
 
@@ -3857,17 +3977,35 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("register actor pipeline routing");
         if (OresScheduler.current() != null) {
             throw new SecurityException(
-                    "actor pipeline registration cannot occur on scheduler continuations");
+                    "host actor pipeline registration cannot occur on scheduler continuations");
         }
         if (closed.get()) {
             throw new IllegalStateException("actor runtime is closed");
         }
     }
 
-    /** Correlated host frames must never enter a PRIVATE/UNTRUSTED isolate.
-     * Reject that binding before the supervisor publishes a graph. */
-    void requireSharedPipelineBinding(ActorRef<?> ref) {
-        requirePipelineRegistrationHostAuthority();
+    /**
+     * Compiler-owned source topology may be created on the non-actor root
+     * scheduler (for example from an async main continuation). It still cannot
+     * be created from any actor turn, Mailman CONTROL turn, force-cancel hook,
+     * or a closed runtime.
+     */
+    void requireSourcePipelineRegistrationAuthority() {
+        requireNoForceCancellationHookReentry("register source ActorStream");
+        requireNotActorGroupMailman("register source ActorStream");
+        if (inActorExecution()) {
+            throw new SecurityException(
+                    "actor code cannot register source ActorStream topology");
+        }
+        if (closed.get()) {
+            throw new IllegalStateException("actor runtime is closed");
+        }
+    }
+
+    private void requireSharedPipelineBindingInternal(
+            ActorRef<?> ref, boolean sourceRoot) {
+        if (sourceRoot) requireSourcePipelineRegistrationAuthority();
+        else requirePipelineRegistrationHostAuthority();
         Objects.requireNonNull(ref, "pipeline actor");
         if (!ref.ownedBy(this))
             throw new ActorInvalidReferenceException(
@@ -3876,7 +4014,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.kind != ActorKind.SHARED || cell.stopped.get()
                 || cell.finalized)
             throw new IllegalArgumentException(
-                    "correlated host routing requires a live SHARED actor binding");
+                    "correlated routing requires a live SHARED actor binding");
+    }
+
+    /** Host-only graph binding check retained for native/host tests. */
+    void requireSharedPipelineBinding(ActorRef<?> ref) {
+        requireSharedPipelineBindingInternal(ref, false);
+    }
+
+    /** Compiler-root graph binding check for source ActorStream construction. */
+    void requireSharedSourcePipelineBinding(ActorRef<?> ref) {
+        requireSharedPipelineBindingInternal(ref, true);
     }
 
 
@@ -5282,6 +5430,77 @@ public final class ActorRuntime implements AutoCloseable {
         });
         cell.schedule();
         return ref.done();
+    }
+
+    /**
+     * Compiler-only root operation used by ActorUtils.pipe / infix pipe.
+     * The source checker proves a common ActorMail<T> domain; this runtime
+     * layer independently proves same-runtime live compiler-owned SHARED
+     * actors, unique identities and constructs the sealed linear route.
+     */
+    public ActorStream bindLinearSourcePipeline(
+            List<? extends ActorRef<?>> input) {
+        Objects.requireNonNull(input, "pipeline stages");
+        requireCallerRuntimeAffinity("bind source ActorStream");
+        requireSourcePipelineRegistrationAuthority();
+        if (input.size() < 2 || input.size() > 16) {
+            throw new IllegalArgumentException(
+                    "ActorStream requires 2..16 stages");
+        }
+
+        List<ActorRef<?>> refs = List.copyOf(input);
+        java.util.HashSet<ActorId> identities = new java.util.HashSet<>();
+        List<ActorPipelineRoutePlan.Stage> planStages =
+                new ArrayList<>(refs.size());
+        List<ActorPipelineRoutePlan.Edge> edges =
+                new ArrayList<>(refs.size() - 1);
+        Map<String, ActorRef<Object>> bindings = new java.util.LinkedHashMap<>();
+        final String payloadType = "ActorStreamPayload";
+
+        for (int i = 0; i < refs.size(); i++) {
+            ActorRef<?> ref = Objects.requireNonNull(
+                    refs.get(i), "pipeline stage " + i);
+            if (!ref.ownedBy(this) || ref.kind != ActorKind.SHARED
+                    || !identities.add(ref.id)) {
+                throw new SecurityException(
+                        "ActorStream requires distinct same-runtime SHARED actor references");
+            }
+            ActorCell<?> cell = actors.get(ref.id);
+            if (cell == null || cell.finalized || cell.stopped.get()
+                    || cell.codeExecutor == null
+                    || cell.codeActorType == null || cell.codeActorType.isBlank()) {
+                throw new IllegalStateException(
+                        "ActorStream requires live compiler-owned source actors");
+            }
+
+            String id = "stage-" + i;
+            ActorPipelineRoutePlan.Role role =
+                    i == 0
+                            ? ActorPipelineRoutePlan.Role.READABLE
+                            : i + 1 == refs.size()
+                                    ? ActorPipelineRoutePlan.Role.WRITABLE
+                                    : ActorPipelineRoutePlan.Role.TRANSFORM;
+            String inbound = i == 0 ? "" : payloadType;
+            String outbound = i + 1 == refs.size() ? "" : payloadType;
+            planStages.add(new ActorPipelineRoutePlan.Stage(
+                    id, cell.codeActorType, role, inbound, outbound));
+            @SuppressWarnings("unchecked")
+            ActorRef<Object> erased = (ActorRef<Object>) ref;
+            bindings.put(id, erased);
+            if (i > 0) {
+                edges.add(new ActorPipelineRoutePlan.Edge(
+                        "stage-" + (i - 1), id, payloadType));
+            }
+        }
+
+        long generation = claimActorGeneration(nextSourcePipelineGeneration);
+        ActorPipelineRoutePlan plan =
+                new ActorPipelineRoutePlan(planStages, edges);
+        int frameBudget = Math.max(32, refs.size() * 4);
+        ActorPipelineCorrelatedMailboxRouter<Object> router =
+                new ActorPipelineCorrelatedMailboxRouter<>(
+                        this, plan, bindings, generation, frameBudget, true);
+        return new ActorStream(router, "stage-0", refs);
     }
 
     public <M> void send(ActorRef<M> ref, M message) {
