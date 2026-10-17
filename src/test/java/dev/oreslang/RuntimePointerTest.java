@@ -74,13 +74,103 @@ final class RuntimePointerTest {
         assertTrue(error.getMessage().contains("managed Java backend"), error.getMessage());
     }
 
-    @Test void unsupportedExclusivePointerFormsAreRejectedBeforeTypeChecking() {
-        for (String operation : new String[] {"ref", "unref", "deref"}) {
+    @Test void invalidExclusivePointerTransferFormsAreRejectedBeforeTypeChecking() {
+        for (String operation : new String[] {"ref", "unref"}) {
             var error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse(BOX + "fnc bad(): void { const p = rt " + operation
                             + " mut value; return; }"));
-            assertTrue(error.getMessage().contains("exclusive Pointer<T>"), error.getMessage());
+            assertTrue(error.getMessage().contains("not a valid Pointer<T> operation"), error.getMessage());
         }
+    }
+
+    @Test void mutableDereferenceIsExclusiveAndZeroCopy() throws Exception {
+        String code = BOX + """
+                pub routine main(): void {
+                  let mut Pointer<Box> p = rt ref new Box();
+                  block {
+                    val borrow mut Box view = rt deref mut p;
+                    view.value = 9;
+                    stdio.stdout.write(view.value);
+                  }
+                  const Box owned = rt unref p;
+                  stdio.stdout.write(owned.value);
+                  return;
+                }
+                """;
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
+            context.eval("ores", code);
+        }
+        // The mutation is observed after unref, proving deref mut viewed the
+        // same pointee rather than a copied/writeback temporary.
+        assertEquals("99", out.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test void mutableDereferenceRequiresMutablePointerAndExcludesConflictingLoans() {
+        reject("const p = rt ref new Box(); val borrow mut Box view = rt deref mut p;",
+                "immutable owner");
+
+        reject("let mut p = rt ref new Box(); "
+                        + "const Box read = rt deref p; "
+                        + "val borrow mut Box write = rt deref mut p;",
+                "another borrow is active");
+
+        reject("let mut p = rt ref new Box(); "
+                        + "val borrow mut Box write = rt deref mut p; "
+                        + "const Box read = rt deref p;",
+                "mutable borrow is active");
+
+        reject("let mut p = rt ref new Box(); "
+                        + "val borrow mut Box write = rt deref mut p; "
+                        + "const Box owned = rt unref p;",
+                "borrow");
+
+        reject("let mut p = rt ref new Box(); "
+                        + "val borrow mut Box write = rt deref mut p; "
+                        + "rt cooperate;",
+                "borrow is live");
+    }
+
+    @Test void mutableDereferenceCanSatisfyMutableBorrowedCallForCallDuration() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + """
+                fnc edit(borrow mut Box value): void {
+                  value.value = 12;
+                  return;
+                }
+                fnc ok(): void {
+                  let mut Pointer<Box> p = rt ref new Box();
+                  edit(rt deref mut p);
+                  const Box owned = rt unref p;
+                  return;
+                }
+                """)));
+
+        var immutableFailure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(BOX + """
+                        fnc edit(borrow mut Box value): void {
+                          value.value = 12;
+                          return;
+                        }
+                        fnc bad(): void {
+                          let mut Pointer<Box> p = rt ref new Box();
+                          edit(rt deref p);
+                          return;
+                        }
+                        """)));
+        assertTrue(immutableFailure.getMessage().contains("read-only borrow"),
+                immutableFailure.getMessage());
+
+        var callLoanFailure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(BOX + """
+                        fnc consume(borrow Box view, Box owned): void { return; }
+                        fnc bad(): void {
+                          let mut Pointer<Box> p = rt ref new Box();
+                          consume(rt deref mut p, rt unref p);
+                          return;
+                        }
+                        """)));
+        assertTrue(callLoanFailure.getMessage().contains("borrow"),
+                callLoanFailure.getMessage());
     }
 
     @Test void localChannelTakeExecutesWithBorrowedReceiverAccess() throws Exception {
