@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -98,6 +99,9 @@ public final class ExecutionRegionGraph {
         private final List<Step> steps = new ArrayList<>();
         private final EnumSet<Effect> effects = EnumSet.noneOf(Effect.class);
         private int deviceKernels;
+        // Conservative linear ownership for host/device buffers. This reference
+        // slice has no borrowed parameter modes; each owned input is used once.
+        private final HashSet<String> takenParameters = new HashSet<>();
         private Builder(Map<String, Type> parameters) { this.parameters = parameters; }
         private Value emit(Opcode op, Domain domain, Type type, int left, int right,
                            String detail, Long literal) {
@@ -129,6 +133,9 @@ public final class ExecutionRegionGraph {
             if (expr instanceof Parameter p) {
                 if (!Objects.equals(parameters.get(p.name()), p.type()))
                     throw reject("undeclared/mistyped parameter");
+                if ((p.type().equals(HOST_F32) || p.type().equals(GPU_F32))
+                        && !takenParameters.add(p.name()))
+                    throw reject("use of moved owned buffer parameter '" + p.name() + "'");
                 return emit(Opcode.PARAM, Domain.HOST, p.type(), -1, -1, p.name(), null);
             }
             if (expr instanceof Add a) {
