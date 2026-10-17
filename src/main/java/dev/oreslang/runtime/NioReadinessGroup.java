@@ -323,13 +323,15 @@ public final class NioReadinessGroup implements AutoCloseable {
                 commands.clear();
                 cancellations.clear();
                 try { selector.close(); } catch (IOException ignored) { }
-                stopped.countDown();
-                // Last selector closes admission and only then allows the
-                // dedicated completion workers to drain and terminate.
+                // Publish the completion-drain transition before advertising
+                // reactor quiescence. An external awaitStopped() may wake at
+                // stopped.countDown(), so shutdown must already be visible to
+                // its subsequent completionExecutor.awaitTermination().
                 if (liveReactors.decrementAndGet() == 0) {
                     synchronized (lifecycle) { closed = true; }
                     completionExecutor.shutdown();
                 }
+                stopped.countDown();
             }
         }
     }
