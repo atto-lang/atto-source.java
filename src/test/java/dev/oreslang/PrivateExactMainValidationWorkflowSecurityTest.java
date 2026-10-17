@@ -1108,6 +1108,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "printf 'GIT_CONFIG_NOSYSTEM=1\\n'",
                     "printf 'GIT_CONFIG_GLOBAL=%s\\n' \"$cleanroom/home/.gitconfig\"",
                     "printf 'GIT_CONFIG_COUNT=0\\n'",
+                    "GIT_CONFIG_PARAMETERS=\\nGIT_NO_REPLACE_OBJECTS=1\\nGIT_ATTR_NOSYSTEM=1\\n",
+                    "GIT_TRACE=\\nGIT_TRACE2=\\nGIT_TRACE2_EVENT=\\nGIT_TRACE2_PERF=\\nGIT_TRACE_PACKET=\\nGIT_TRACE_CURL=\\nGIT_CURL_VERBOSE=\\n",
                     "GIT_OBJECT_DIRECTORY=\\nGIT_ALTERNATE_OBJECT_DIRECTORIES=\\nGIT_COMMON_DIR=\\n",
                     "GIT_SSL_CAINFO=\\nGIT_SSL_NO_VERIFY=\\nGIT_PROXY_COMMAND=\\n",
                     "BASH_ENV=\\nENV=\\nCDPATH=\\nGLOBIGNORE=\\nPYTHONPATH=\\nPYTHONHOME=\\n",
@@ -1116,7 +1118,10 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "M2_HOME=\\nMAVEN_HOME=\\nMAVEN_ARGS=\\n",
                     "printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\\n' \"$cleanroom/m2-repository\"",
                     "HTTP_PROXY=\\nHTTPS_PROXY=\\nALL_PROXY=\\nNO_PROXY=\\n",
-                    "SSL_CERT_FILE=\\nSSL_CERT_DIR=\\nCURL_CA_BUNDLE=\\nREQUESTS_CA_BUNDLE=\\nNODE_EXTRA_CA_CERTS=\\n",
+                    "SSL_CERT_FILE=\\nSSL_CERT_DIR=\\nSSLKEYLOGFILE=\\nCURL_CA_BUNDLE=\\nREQUESTS_CA_BUNDLE=\\nNODE_EXTRA_CA_CERTS=\\n",
+                    "OPENSSL_CONF=\\nOPENSSL_MODULES=\\nNODE_OPTIONS=\\nNODE_TLS_REJECT_UNAUTHORIZED=\\n",
+                    "GH_CONFIG_DIR=\\nGH_HOST=\\n",
+                    "SSH_AUTH_SOCK=\\n",
                     "LD_PRELOAD=\\nLD_LIBRARY_PATH=\\n",
                     "} >> \"$GITHUB_ENV\""
             }) {
