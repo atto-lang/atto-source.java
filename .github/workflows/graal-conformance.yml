@@ -55,6 +55,8 @@ jobs:
           python3 scripts/check_option_pattern_contract.py --backend graal \
             --revision "${{ github.sha }}" --report target/option-pattern-graal.json \
             -- python3 contracts/v1/java_probe.py '{source}'
+      - name: Execute Option-pattern JUnit runtime and ownership regression suite
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=OptionIfMatchesTest test
       - name: Validate Java compiler admission
         run: python3 contracts/v1/run.py --backend graal --command 'python3 contracts/v1/java_probe.py {source}' --report target/conformance-graal.json
       - name: Real Java compiler AI smoke (source acceptance, rejection, native guest exit)
