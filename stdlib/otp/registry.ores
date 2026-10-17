@@ -19,7 +19,7 @@ define module OtpRegistry as
     if incarnation <= 0; do
       return Err("registry incarnation must be positive");
     fi
-    return Ok(new Entry<Name, TargetRef>(name, ref, incarnation));
+    return Ok(new Entry<Name, TargetRef>(name, actor_ref, incarnation));
   }
 
   pub fnc same_incarnation(
