@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -83,14 +84,23 @@ final class GenServerReplyLedger {
         synchronized (pending) { return pending.size(); }
     }
 
-    /** Close atomically fences further registrations/replies; no callbacks. */
-    int close() {
+    /**
+     * Close atomically fences further registrations/replies and returns the
+     * exact tickets that lost to shutdown. The caller may settle associated
+     * runtime-owned Futures only after this method releases the ledger lock.
+     */
+    List<Ticket> closeTickets() {
         synchronized (pending) {
-            if (closed) return 0;
+            if (closed) return List.of();
             closed = true;
-            int discarded = pending.size();
+            List<Ticket> discarded = List.copyOf(pending.values());
             pending.clear();
             return discarded;
         }
+    }
+
+    /** Close atomically fences further registrations/replies; no callbacks. */
+    int close() {
+        return closeTickets().size();
     }
 }
