@@ -74,7 +74,7 @@ final class SupervisorFailureControlTest {
     }
 
     @Test
-    void controlLaneIsBoundedSingleFlightAndRecordsHandlerFailure() throws Exception {
+    void controlLanePreReservesCapacityAndStaysSingleFlight() throws Exception {
         try (ExecutorService pool = Executors.newFixedThreadPool(3)) {
             ActorRuntime.SupervisorId supervisorId = ActorRuntime.SupervisorId.create();
             ActorRuntime.ActorGroupId groupId = ActorRuntime.ActorGroupId.create();
