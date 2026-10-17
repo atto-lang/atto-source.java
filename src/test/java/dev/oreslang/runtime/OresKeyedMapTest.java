@@ -347,4 +347,38 @@ final class OresKeyedMapTest {
         assertEquals(1, entries.size());
         assertEquals(2, map.size());
     }
+
+    @Test void equalTypedMapsUseValueEqualityAndMatchingHash() {
+        OresKeyedMap<String, Integer> a =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        OresKeyedMap<String, Integer> b =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        a.put("x", 1);
+        a.put("y", 2);
+        b.put("x", 1);
+        b.put("y", 2);
+
+        assertNotSame(a, b);
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+
+        b.put("y", 3);
+        assertNotEquals(a, b);
+    }
+
+    @Test void typedMapEqualityIncludesKeyAndValueDomains() {
+        OresKeyedMap<Object, Integer> mixed =
+                OresKeyedMap.stringOrSymbolKeys(OresKeyedMap.ValueDomain.INT);
+        OresKeyedMap<String, Integer> strings =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.INT);
+        OresKeyedMap<String, Object> dynamic =
+                OresKeyedMap.stringKeys(OresKeyedMap.ValueDomain.ANY);
+        mixed.put("x", 1);
+        strings.put("x", 1);
+        dynamic.put("x", 1);
+
+        assertNotEquals(mixed, strings);
+        assertNotEquals(strings, dynamic);
+    }
+
 }
