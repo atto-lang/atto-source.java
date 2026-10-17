@@ -436,6 +436,13 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "test \"$GITHUB_SHA\" = \"$APPROVED_WORKFLOW_SHA\""));
         assertTrue(hasExactLine(runner, 10,
                 "test \"$REQUESTED_CANDIDATE_SHA\" = \"$APPROVED_CANDIDATE_SHA\""));
+        String preCheckout = section(runner,
+                "      - name: Verify approvals before any candidate source checkout",
+                "      - uses: actions/checkout@");
+        assertTrue(preCheckout.contains("if test \"$REQUIRE_OPTION_PATTERN\" = 'true'; then"));
+        assertTrue(hasExactLine(preCheckout, 12,
+                "[[ \"$APPROVED_OPTION_TEST_BLOB\" =~ ^[a-f0-9]{40}$ ]]"),
+                "requested Option evidence must pin its reviewed test blob before checkout");
         assertTrue(hasExactLine(runner, 10,
                 "test \"$(git rev-parse --verify HEAD)\" = \"$APPROVED_CANDIDATE_SHA\""));
         assertTrue(hasExactLine(runner, 10,
