@@ -34,10 +34,10 @@ Xor(a, b)    -> a ^^ b
 ```
 
 This is required for semantic correctness. A source implementation such as
-`fnc Or(bool a, bool b, ...rest)` would receive already-evaluated arguments in
+`fnc Or(bool a, bool b, rest ...bool)` receives already-evaluated arguments in
 an ordinary eager call, so it could not preserve the established rule that
 later scalar operands are skipped after a decisive value. General user-defined
-variadic parameters are also not part of the current callable grammar.
+variadic parameters use terminal `rest ...Type` on synchronous source callables; grammar.
 
 Lowering occurs **after type/name resolution** so a source-defined `And`, `Or`,
 or `Xor`, and a real source module named `BooleanOps`, are never accidentally
@@ -60,6 +60,40 @@ pub fnc main(): void {
   stdio.println(false and [true][99]);                 // false; no invalid index access
 }
 ```
+
+## Public callable overloads and terminal rest arguments
+
+The standard-library surface is a real overload family selected by caller-visible
+argument count, not parameter type and not return type:
+
+```ores
+pub fnc Or(List<bool> values): bool { return any_bool(values); }
+pub fnc Or(bool a, bool b, rest ...bool): bool {
+  if a or b then return true; fi
+  for const value of rest do
+    if value then return true; fi
+  done
+  return false;
+}
+```
+
+`And` has the same pair of overloads. `Xor` retains the binary scalar
+overload and the unary `List<bool>` parity overload. For `Or/And`, arity 1
+selects the collection overload and arity >=2 selects the scalar rest fallback.
+Arity 0 is rejected. A fixed exact-arity overload, if declared, wins over the
+single rest fallback. Each family may declare at most one rest fallback.
+
+The final formal `rest ...T` collects zero or more trailing **already evaluated**
+arguments into a fresh owned `List<T>` in the function body. This is a general
+source-callable argument feature, separate from trusted builtin lowering.
+Ordinary calls, including `core.Or(a,b,c)`, eagerly evaluate arguments before
+entering the function; the unqualified compiler-owned `Or(a,b,c)` builtin
+lowers to a short-circuit AST instead. Never conflate those contracts.
+Current rest implementation is for synchronous, non-generic, non-actor
+functions/routines; methods, interface methods, constructors, async,
+generators, and effectful rest callables remain fail-closed pending ABI,
+scheduling and ownership hardening. Reifying a rest callable as a fixed-signature
+function value is rejected pending a typed variadic callable ABI.
 
 ## Lowering architecture
 
