@@ -79,3 +79,33 @@ call sites, raising the required case count to **150**. Exact-head execution
 on original-source CI remains blocked pending runner allocation and protected
 main approval. Do not mistake a source-free hosted mock for candidate JUnit,
 GraalVM, or publisher test evidence.
+
+
+## Follow-up: fail-closed descriptor flag admission and exact-run parity (2026-10-16)
+
+- The previously reviewed publisher checked only `hasattr(os, O_NOFOLLOW/O_DIRECTORY/O_NONBLOCK)`.
+  A defined but **zero-valued** or non-integer flag bypassed this availability
+  gate even though the required no-symlink, directory and nonblocking open
+  protections were absent. A shared `safe_descriptor_flags_available()`
+  predicate now rejects missing, zero, negative, boolean and non-integer flags.
+  It is used by the approval-policy read, the trusted publisher checkout
+  attestation and the descriptor-relative source snapshot collector.
+- Added two unprivileged publisher test methods that simulate missing/zero
+  protection flags and require all three admission boundaries to reject
+  **before an unsafe `os.open`**. The expected checked-in Python test suite
+  is now **152 cases** and the trusted publisher workflow rejects lower counts
+  during each of its three required isolated replays.
+- A focused isolated Python 3 smoke executed 3 tests including 15 invalid flag
+  substitutions successfully. The 152-case original-source Python suite was
+  **not executed** and must not be called green.
+- Read the actual protected-candidate workflow YAML from this branch and
+  exhaustively compared the inverse admission expressions: 512 exact-main,
+  2,048 exact-candidate and 2,048 exact-publisher Boolean assignments, **zero
+  allow/deny contradictions**. This is structural expression verification,
+  not GitHub Actions execution or runner-policy authorization.
+- Security hold remains: source `main` reports unprotected, the destination
+  and snapshot allowlists remain empty, and
+  `oreslang-platform-conformance#22` (private source exposed on a public
+  carrier) is open. Do not transfer private source to a new organization
+  or mark this PR merge-ready without independent incident containment and
+  CODEOWNER/admin review.
