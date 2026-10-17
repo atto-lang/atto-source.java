@@ -330,6 +330,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String owners = Files.readString(Path.of(".github/CODEOWNERS"));
         for (String exact : new String[] {
                 "/.github/CODEOWNERS @ORESoftware",
+                "/.github/workflows/private-ci-mirror-preflight.yml @ORESoftware",
+                "/scripts/ci_private_mirror_preflight.py @ORESoftware",
+                "/tests/test_ci_private_mirror_preflight.py @ORESoftware",
                 "/.github/workflows/private-exact-main-validation.yml @ORESoftware",
                 "/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware",
                 "/docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware"
