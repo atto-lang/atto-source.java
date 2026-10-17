@@ -268,6 +268,61 @@ final class ActorReliabilityKernelTest {
     }
 
     @Test
+    void activeFailureUpgradesEarlierCancellationAndIsNotMasked() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            CoreLog.configure(CoreLog.Level.INFO);
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("test release timed out");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                    throw new IllegalStateException("secret-active-failure");
+                });
+
+                actor.send("run");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                assertTrue(actor.cancel(), "cancellation must seal the actor first");
+                release.countDown();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+
+                ActorRuntime.ActorHealthSnapshot health =
+                        runtime.actorHealth(actor).orElseThrow();
+                assertEquals(ActorRuntime.ActorTerminalClass.FAILURE,
+                        health.terminalClass());
+                assertTrue(health.failed());
+
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                CoreLog.dumpRetained(
+                        new PrintStream(bytes, true, StandardCharsets.UTF_8));
+                String logs = bytes.toString(StandardCharsets.UTF_8);
+                long failures = logs.lines()
+                        .filter(line -> line.contains(
+                                "\"event\":\"actor.terminal.failure\""))
+                        .count();
+                long cancellations = logs.lines()
+                        .filter(line -> line.contains(
+                                "\"event\":\"actor.cancelled\""))
+                        .count();
+                assertEquals(1L, failures);
+                assertEquals(0L, cancellations);
+                assertFalse(logs.contains("secret-active-failure"));
+            }
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+    }
+
+    @Test
     void terminalHealthSurvivesCellRetirementWithoutRetainingFailureText() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var failing = runtime.<String>spawnShared(() -> (message, context) -> {
