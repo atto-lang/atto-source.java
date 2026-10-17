@@ -886,6 +886,48 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void lateAcceptedExecutorTaskCleansItsRejectedQueueEntry()
+            throws Exception {
+        var queued = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+        var rejected = new java.util.concurrent.CountDownLatch(1);
+        var notifications = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor hostile = task -> {
+            queued.add(task);
+            rejected.countDown();
+            throw new java.util.concurrent.RejectedExecutionException(
+                    "task accepted but executor lied about rejection");
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(hostile);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var future = group.watch(pipe.source(), SelectionKey.OP_READ);
+                future.whenCompleteRuntime((value, failure) ->
+                        notifications.incrementAndGet());
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {3}));
+                assertTrue(rejected.await(3, TimeUnit.SECONDS));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.stagedNotificationCount() == 0
+                        && System.nanoTime() < deadline) Thread.sleep(1);
+                assertEquals(1, group.stagedNotificationCount());
+                // Execute the already-accepted original instead of retrying
+                // first; it must remove its own stale queued retry entry.
+                Runnable accepted = queued.poll();
+                assertNotNull(accepted);
+                accepted.run();
+                assertEquals(1, notifications.get());
+                assertEquals(0, group.stagedNotificationCount());
+                assertEquals(0, group.pendingNotifications());
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
