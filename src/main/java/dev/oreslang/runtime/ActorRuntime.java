@@ -659,6 +659,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null) return Optional.ofNullable(ref.terminalHealth);
 
         synchronized (cell.lifecycleLock) {
+            if (cell.finalized && ref.terminalHealth != null) {
+                return Optional.of(ref.terminalHealth);
+            }
             return Optional.of(snapshotHealthLocked(cell));
         }
     }
