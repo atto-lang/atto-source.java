@@ -161,11 +161,14 @@ public final class RefinementRules {
     /** A constrained alias may flow into a weaker alias; nominal identities must match. */
     public static boolean entails(String fromIdentity, Ast.TypeRef fromType, Ast.RefinementSpec from,
                                    String toIdentity, Ast.TypeRef toType, Ast.RefinementSpec to) {
-        if (!canonicalBaseName(fromType).equals(canonicalBaseName(toType))) return false;
         if (from == null || to == null) return false;
+        if (!canonicalBaseName(fromType).equals(canonicalBaseName(toType))) return false;
         if (from.nominal() || to.nominal()) {
-            if (!from.nominal() || !to.nominal() || !Objects.equals(fromIdentity, toIdentity))
+            if (!from.nominal() || !to.nominal()
+                    || !qualifiedIdentity(fromIdentity) || !qualifiedIdentity(toIdentity)
+                    || !Objects.equals(fromIdentity, toIdentity)) {
                 return false;
+            }
         }
         // General where predicates have no implication proof until purity, a
         // typed verifier and a restricted solver are integrated. Identical
