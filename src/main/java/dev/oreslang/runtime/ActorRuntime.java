@@ -2192,9 +2192,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Unforgeable join authority for one ActorGroup. Capabilities may cross
-     * actor mailboxes but are runtime-affine and cannot be reconstructed from a
-     * group id.
+     * Unforgeable join authority for one ActorGroup. Raw capabilities are
+     * runtime-affine manager/CONTROL authority and are deliberately NOT
+     * Sendable through ordinary actor DATA mailboxes. A future target-bound,
+     * one-use invitation must use a distinct CONTROL-lane capability type.
      */
     public final class ActorGroupJoinCapability {
         private final ActorGroupId groupId;
@@ -5559,12 +5560,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
-            if (!capability.ownedBy(this)) {
-                throw new IllegalArgumentException(
-                        "ActorGroup capability belongs to a different ActorRuntime");
-            }
-            return;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
         }
         if (value instanceof Shared<?> shared) {
             requireOwnedActorRefs(shared.value(), visiting, depth + 1);
@@ -6004,7 +6003,11 @@ public final class ActorRuntime implements AutoCloseable {
             return shared;
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -6072,7 +6075,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) return capability;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -6123,7 +6130,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
         if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -6191,7 +6202,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
@@ -6247,7 +6262,11 @@ public final class ActorRuntime implements AutoCloseable {
             return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -6365,7 +6384,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot be frozen as data; "
+                            + "use a target-bound CONTROL invitation");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
