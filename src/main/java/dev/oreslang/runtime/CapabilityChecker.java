@@ -321,6 +321,7 @@ public final class CapabilityChecker {
             } else if (stmt instanceof Ast.MatchStmt s) {
                 checkExpr(s.subject(), policy);
                 for (Ast.MatchArm arm : s.arms()) {
+                    checkPattern(arm.pattern(), policy);
                     if (arm.guard() != null) checkExpr(arm.guard(), policy);
                     checkStatements(arm.body(), policy);
                 }
@@ -487,7 +488,33 @@ public final class CapabilityChecker {
             checkExpr(e.target(), policy);
             checkExpr(e.value(), policy);
         }
-        else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
+        else if (expr instanceof Ast.ConditionalExpr e) {
+            checkExpr(e.condition(), policy);
+            checkExpr(e.whenTrue(), policy);
+            checkExpr(e.whenFalse(), policy);
+        }
+        else if (expr instanceof Ast.MatchExpr e) {
+            checkExpr(e.subject(), policy);
+            checkType(e.resultType(), policy);
+            for (Ast.MatchValueArm arm : e.arms()) {
+                checkPattern(arm.pattern(), policy);
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkExpr(arm.value(), policy);
+            }
+        }
+        else if (expr instanceof Ast.TypeTestExpr e) {
+            checkExpr(e.value(), policy);
+            checkType(e.targetType(), policy);
+        }
+        else if (expr instanceof Ast.PatternTestExpr e) {
+            checkExpr(e.value(), policy);
+            checkPattern(e.pattern(), policy);
+        }
+        else if (expr instanceof Ast.CastExpr e) {
+            checkExpr(e.value(), policy);
+            checkType(e.targetType(), policy);
+        }
+        else if (expr instanceof Ast.TrapExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
         else if (expr instanceof Ast.NewExpr e) {
             checkType(e.type(), policy);
@@ -510,6 +537,25 @@ public final class CapabilityChecker {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
         }
+    }
+
+    private void checkPattern(Ast.Pattern pattern, IsolatePolicy policy) {
+        if (pattern instanceof Ast.TypePattern typed) {
+            checkType(typed.type(), policy);
+            return;
+        }
+        if (pattern instanceof Ast.StructuralPattern structural) {
+            checkType(structural.target(), policy);
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) checkPattern(element, policy);
+            return;
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            for (Ast.Pattern argument : constructor.arguments()) checkPattern(argument, policy);
+        }
+        // Wildcard/literal/binding patterns carry no type/capability reference.
     }
 
     private static boolean isZeroAuthorityAdversarial(IsolatePolicy policy) {
