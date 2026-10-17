@@ -1,6 +1,14 @@
 # Review-pinned external admission for private CI
 
-Status: **candidate security fallback; no export authorized until independent approvals exist.**
+Status: **authorization-only candidate fallback; no export is implemented or authorized.**
+
+The read-only verifier is implemented and hardened. The source-writing
+dispatcher described below is **not yet implemented or wired to
+`scripts/publish-private-ci-source.py`**. That existing publisher enforces the
+older protected-main model and must not be treated as the review-pinned
+dispatcher. A valid review-pinned receipt therefore remains non-executable
+authorization evidence until a separately reviewed dispatcher integrates the
+receipt with the existing fail-closed Git-object writer.
 
 This mode exists because the current GitHub plan does not provide branch
 protection or repository rulesets for these private repositories. It does not
@@ -76,7 +84,10 @@ CI.
 
 ## Payload construction
 
-The dispatcher creates a **new** branch only if
+**Not yet implemented.** These are mandatory requirements for the future
+review-pinned dispatcher, not evidence that a writer currently exists.
+
+The dispatcher must create a **new** branch only if
 `ci/oreslang-<source-tree-sha>` does not already exist. Reuse, force-update or
 branch-name substitution is denied.
 
@@ -159,6 +170,9 @@ without weakening any exact-head checks.
 
 This fallback becomes usable only after:
 
+- a reviewed dispatcher is implemented that consumes the canonical receipt
+  and invokes the bounded Git-object writer without falling back to mutable or
+  protected-branch assumptions;
 - all four exact-head independent approvals exist;
 - incident #22 has the explicit independent resume comment;
 - the carrier workflow/security changes themselves have been independently
