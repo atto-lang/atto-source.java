@@ -1469,6 +1469,25 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void fatalErrorAfterInlineClaimPropagatesInsteadOfBeingSwallowed()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        java.util.concurrent.Executor inline = Runnable::run;
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(inline);
+            var thrown = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                    () -> publish.invoke(group, (Runnable) () -> {
+                        throw new OutOfMemoryError("synthetic fatal callback failure");
+                    }));
+            assertInstanceOf(OutOfMemoryError.class, thrown.getCause());
+            assertEquals(1, group.unexpectedSubmissionFailures());
+            assertEquals(0, group.stagedNotificationCount(),
+                    "claimed fatal delivery must not be duplicated or restaged");
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
