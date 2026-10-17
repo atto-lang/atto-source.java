@@ -118,7 +118,11 @@ public final class ActorArena implements AutoCloseable {
             this.scratchPin = scratchPin;
         }
 
-        @Override public void close() {
+        @Override public synchronized void close() {
+            // A physical/native close failure can happen after the region
+            // logically consumed its pin. Repeated close retries native
+            // reclamation, so NEVER decrement the actor-level lease count or
+            // consume its retry authority until both regions close cleanly.
             Throwable failure = null;
             try { scratchPin.close(); }
             catch (RuntimeException | Error error) { failure = error; }
@@ -127,16 +131,19 @@ public final class ActorArena implements AutoCloseable {
                 if (failure == null) failure = error;
                 else if (failure != error) failure.addSuppressed(error);
             }
-            if (accounted.compareAndSet(false, true)) {
-                synchronized (ActorArena.this) {
+            if (failure instanceof RuntimeException error) throw error;
+            if (failure instanceof Error error) throw error;
+            synchronized (ActorArena.this) {
+                // Serialize duplicate completion callbacks against the arena
+                // counter. A failed counter check must also remain retryable.
+                if (!accounted.get()) {
                     if (externalLeases <= 0) {
                         throw new IllegalStateException("actor arena external lease accounting underflow");
                     }
                     externalLeases--;
+                    accounted.set(true);
                 }
             }
-            if (failure instanceof RuntimeException error) throw error;
-            if (failure instanceof Error error) throw error;
         }
     }
 

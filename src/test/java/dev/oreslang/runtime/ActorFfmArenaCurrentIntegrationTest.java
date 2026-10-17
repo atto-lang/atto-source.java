@@ -170,6 +170,50 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void failedArenaLeaseAccountingRetainsRetryAuthority() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var leaseRef = new AtomicReference<ActorArena.ExternalLease>();
+        var admitted = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arenaRef.set(arena);
+                leaseRef.set(arena.acquireExternalLease());
+                admitted.countDown();
+                turn.self().stop();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("pin");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, arenaRef.get().outstandingExternalLeases());
+
+            // Deterministically inject the *accounting* half of a partial
+            // teardown failure. The first close may release both native pins,
+            // but it must not irreversibly mark the actor lease accounted
+            // before successfully decrementing the owning arena's count.
+            java.lang.reflect.Field counter =
+                    ActorArena.class.getDeclaredField("externalLeases");
+            counter.setAccessible(true);
+            counter.setInt(arenaRef.get(), 0);
+            try {
+                assertThrows(IllegalStateException.class, leaseRef.get()::close);
+            } finally {
+                counter.setInt(arenaRef.get(), 1);
+            }
+
+            leaseRef.get().close(); // Must retry the failed counter release.
+            leaseRef.get().close(); // Idempotent after confirmed release.
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void sourceContinuationPinsArenaAcrossSuspendAndReleasesOnSettlement() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
