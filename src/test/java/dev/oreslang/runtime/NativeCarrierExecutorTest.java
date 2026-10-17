@@ -13,6 +13,76 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class NativeCarrierExecutorTest {
 
     @Test
+    void noBootstrapAdmissionRejectsColdNativePoolAndRunsOnlyAfterPublication()
+            throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        for (int round = 0; round < 24; ++round) {
+            var pool = new NativeCarrierExecutor(1, 1, 16, "ores-native-no-bootstrap-");
+            try {
+                assertFalse(pool.readyForNoBootstrapAdmission());
+                assertEquals(0, pool.getStartedCarrierCount());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> pool.executeWithoutBootstrap(() -> {}));
+                assertEquals(0, pool.getStartedCarrierCount(),
+                        "rejected no-bootstrap admission must not create pthreads");
+
+                var first = new CountDownLatch(1);
+                pool.execute(first::countDown);
+                assertTrue(first.await(3, TimeUnit.SECONDS));
+                assertTrue(pool.readyForNoBootstrapAdmission());
+                assertEquals(1, pool.getStartedCarrierCount());
+
+                var later = new CountDownLatch(1);
+                pool.executeWithoutBootstrap(later::countDown);
+                assertTrue(later.await(3, TimeUnit.SECONDS));
+                assertEquals(1, pool.getStartedCarrierCount(),
+                        "host completion admission must reuse already published pthread");
+            } finally {
+                pool.shutdownNow();
+                assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+                assertFalse(pool.readyForNoBootstrapAdmission());
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> pool.executeWithoutBootstrap(() -> {}));
+            }
+        }
+    }
+
+    @Test
+    void noBootstrapAdmissionRespectsNativeReadyQueueSaturation() throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var pool = new NativeCarrierExecutor(1, 1, 1, "ores-native-no-bootstrap-full-");
+        var occupied = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try {
+            pool.execute(() -> {
+                occupied.countDown();
+                try { release.await(5, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(occupied.await(3, TimeUnit.SECONDS));
+            assertTrue(pool.readyForNoBootstrapAdmission());
+            var queued = new CountDownLatch(1);
+            pool.executeWithoutBootstrap(queued::countDown);
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> pool.executeWithoutBootstrap(() -> {}),
+                    "bounded native queue must reject without allocating a second carrier");
+            assertEquals(1, pool.getStartedCarrierCount());
+            release.countDown();
+            assertTrue(queued.await(3, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void firstAdmissionPublishesEveryNativeCarrierBeforeExecuteReturns() throws Exception {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
