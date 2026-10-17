@@ -2950,7 +2950,7 @@ public final class Parser {
         }
 
         if (match(INT)) return new Ast.LiteralPattern(parseSignedI64(previous()));
-        if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralPattern(parseBinary64(previous(), false));
         if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralPattern(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
         if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
@@ -3532,6 +3532,29 @@ public final class Parser {
     // A guest-language literal must not leak Java's NumberFormatException.
     // Both expression and pattern literals use the same signed-i64 bound.
     // Wider integers require a separately admitted type and backend contract.
+    private double parseBinary64(Token token, boolean imaginary) {
+        String literal = token.lexeme();
+        if (imaginary) {
+            if (!literal.endsWith("i")) {
+                throw error(token, "malformed imaginary literal: " + literal);
+            }
+            literal = literal.substring(0, literal.length() - 1);
+        }
+        for (int i = 0; i < literal.length(); i++) {
+            if (literal.charAt(i) != '_') continue;
+            if (i == 0 || i + 1 == literal.length()
+                    || !Character.isDigit(literal.charAt(i - 1))
+                    || !Character.isDigit(literal.charAt(i + 1))) {
+                throw error(token, "malformed numeric separator: " + token.lexeme());
+            }
+        }
+        try {
+            return Double.parseDouble(literal.replace("_", ""));
+        } catch (NumberFormatException invalid) {
+            throw error(token, "malformed binary64 literal: " + token.lexeme());
+        }
+    }
+
     private long parseSignedI64(Token token) {
         String literal = token.lexeme();
         // Do not silently turn malformed token separators into valid integers.
@@ -3548,10 +3571,9 @@ public final class Parser {
     private Ast.Expr parsePrimary() {
         if (match(MATCH)) return parseValueMatch();
         if (match(INT)) return new Ast.LiteralExpr(parseSignedI64(previous()));
-        if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralExpr(parseBinary64(previous(), false));
         if (match(IMAG)) {
-            String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
-            return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
+            return new Ast.LiteralExpr(new Ast.Imaginary(parseBinary64(previous(), true)));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(SYMBOL_LITERAL)) return new Ast.LiteralExpr(dev.oreslang.runtime.OresSymbol.process(previous().lexeme()));
