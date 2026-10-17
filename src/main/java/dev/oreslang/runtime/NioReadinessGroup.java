@@ -29,9 +29,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * initially; up to four can be created on sustained registration-command
  * pressure, never just because sockets are waiting for events.
  *
- * This is a low-level host substrate. It does not currently own sockets or
- * implement source-level std/net. Only one pending readiness watch per channel
- * is permitted; the host retains the channel until the watch settles.
+ * This is a low-level host substrate. It provides one-shot nonblocking
+ * TCP accept on VM-owned selectors, but does not yet replace source-level
+ * std/net read/write or own the caller's listening socket. Only one pending
+ * readiness watch per channel is permitted; the host retains the channel
+ * until the watch settles.
  * Completion only settles OresFuture: guest continuations are enqueued by
  * the Future's owning OresScheduler, not executed by a reactor.
  */
