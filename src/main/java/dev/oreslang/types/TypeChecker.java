@@ -4118,13 +4118,15 @@ public final class TypeChecker {
                             ? "Xor expects exactly two bool arguments (or one List<bool> parity-reduction argument)"
                             : name + " expects either one List<bool> argument or at least two bool arguments");
         }
-        for (int i = 0; i < arguments.size(); i++) {
-            requireAssignable(
-                    typeOf(arguments.get(i), env, generics, self),
-                    Primitive.BOOL,
-                    name + " scalar argument " + (i + 1));
-        }
-        return Primitive.BOOL;
+        // Analyze exactly the AST that will execute. In particular And/Or
+        // must inherit &&/|| definite-initialization semantics: operands after
+        // the first are conditionally evaluated and cannot establish state for
+        // code following the call.
+        return typeOf(
+                BooleanIntrinsicLowering.lowerScalarCall(name, arguments),
+                env,
+                generics,
+                self);
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
