@@ -70,6 +70,9 @@ public final class DopKernelIR {
             // native allocation or report a GC-reclaimed backing as live.
             // Holding a real execution loan still strongly retains State.
             private final WeakReference<State> ownerState;
+            // Moved-from wrappers may retain State for synchronization, so
+            // liveness additionally follows the CURRENT owner, never a stale handle.
+            private volatile WeakReference<HostBuffer> currentOwner;
             private RegionToken(State ownerState, long rows, int fields) {
                 this.rows = rows;
                 this.fields = fields;
@@ -77,7 +80,13 @@ public final class DopKernelIR {
             }
             public long rows() { return rows; }
             public int fields() { return fields; }
-            public boolean isLive() { return live && ownerState.get() != null; }
+            public boolean isLive() {
+                var owner = currentOwner;
+                return live && ownerState.get() != null && owner != null && owner.get() != null;
+            }
+            private void bindOwner(HostBuffer owner) {
+                currentOwner = new WeakReference<>(Objects.requireNonNull(owner));
+            }
             private void retire() { live = false; }
         }
         private final State state;
@@ -87,7 +96,10 @@ public final class DopKernelIR {
             this(new State(Objects.requireNonNull(layout)));
         }
 
-        private HostBuffer(State state) { this.state = state; }
+        private HostBuffer(State state) {
+            this.state = Objects.requireNonNull(state);
+            this.state.regionToken.bindOwner(this);
+        }
 
         public RegionToken regionToken() {
             synchronized (state) {
@@ -111,8 +123,11 @@ public final class DopKernelIR {
             synchronized (state) {
                 active();
                 if (state.readLoans != 0 || state.writeLoan) throw new IllegalStateException("cannot move borrowed buffer");
+                // Publish the successor token before retiring this wrapper.
+                // Failure to create the new owner must not orphan live storage.
+                HostBuffer successor = new HostBuffer(state);
                 moved = true;
-                return new HostBuffer(state);
+                return successor;
             }
         }
         public ReadLoan borrowRead() {
