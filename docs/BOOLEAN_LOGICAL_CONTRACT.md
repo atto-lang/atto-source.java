@@ -5,7 +5,7 @@
 - `and` is a reserved, case-sensitive, short-circuit alias for `&&`.
 - `or` is a reserved, case-sensitive, short-circuit alias for `||`.
 - `xor` is a reserved, case-sensitive alias for Boolean `^^`. It evaluates both operands exactly once, left to right; unlike `and` / `or`, it does not short-circuit.
-- All three word operators use precisely the same AST operators (`&&` and `||`), Boolean-only type checking, evaluation order, associativity and definite-initialization treatment as their symbolic spellings.
+- All three word operators use their corresponding symbolic AST operators (`&&`, `||`, and `^^`), with the same Boolean-only typing, evaluation order, associativity and control-flow treatment as the symbolic spellings.
 - Evaluation proceeds left to right; `and` does not evaluate its right expression when its left side is false, and `or` does not evaluate its right expression when its left side is true.
 - There is **no implicit truthiness** and no implicit integer-to-Boolean conversion. `and`, `or`, and `xor` are not callable names. Capitalized `And`, `Or`, and `Xor` remain distinct callable builtin families.
 - Precedence, high to low: comparison/equality, bitwise `&`, bitwise `^`, bitwise `|`, logical `and`/`&&`, logical `xor`/`^^`, logical `or`/`||`, ternary `?:`, assignment `=`. Operators of the same precedence are left-associative. Mixing word and symbol spellings must not change meaning.
@@ -21,7 +21,7 @@
 
 The legacy `Xor(array)` reducer computes odd parity for any array length, including empty (`false`). It is a *distinct one-argument aggregate overload*; it does not authorize `Xor(a, b, c)`. The packaged Oreslang `std/core` module now owns equivalent `all_bool(Array<bool>)`, `any_bool(Array<bool>)`, and `xor_parity_bool(Array<bool>)` reducer loops. Public one-argument builtins still retain their compatibility surface while linker/bootstrap work is completed; parity tests must prove builtin results equal the source reducers before the Java aggregate fallback is removed. A future migration may introduce an explicit `XorParity`/parity reducer before retiring that aggregate overload; do not silently change its result, and do not remove it without an API migration plan.
 
-Calls have no generic call-site type parameters. Scalar parameters must type-check as `bool`; array/list contents must type-check as `bool`. Namespace qualification does not change built-in semantics. User-defined callables with the same name or a user-defined `BooleanOps` module retain normal shadowing/overloading rules, rather than being rewritten as intrinsics.
+Calls have no generic call-site type parameters. Scalar parameters must type-check as `bool`; array/list contents must type-check as `bool`. Qualification through the trusted builtin `BooleanOps` namespace preserves intrinsic behavior; qualified `std/core` source-module calls are ordinary eager calls. User-defined callables with the same name or a user-defined `BooleanOps` module retain normal shadowing/overloading rules, rather than being rewritten as intrinsics.
 
 ### Scalar lowering model
 
@@ -37,7 +37,7 @@ This is required for semantic correctness. A source implementation such as
 `fnc Or(bool a, bool b, rest ...bool)` receives already-evaluated arguments in
 an ordinary eager call, so it could not preserve the established rule that
 later scalar operands are skipped after a decisive value. General user-defined
-variadic parameters use terminal `rest ...Type` on synchronous source callables; grammar.
+variadic parameters use terminal `rest ...Type` on synchronous source callables; this source-call ABI does not grant laziness.
 
 Lowering occurs **after type/name resolution** so a source-defined `And`, `Or`,
 or `Xor`, and a real source module named `BooleanOps`, are never accidentally
@@ -106,7 +106,7 @@ Scalar calls do not need variadic source functions. After name resolution and ty
 - User-defined functions/modules named `And`, `Or`, `Xor`, or `BooleanOps` are never rewritten.
 - Aggregate one-argument calls are the remaining bootstrap path. Their semantic implementation now exists in packaged Oreslang source; the final step is to route the builtin aggregate surface to those linked source functions without introducing a shadowable implicit user binding.
 
-Rest/variadic parameters should therefore be designed independently for general language use; Boolean scalar builtins are not a justification for weakening name+arity overload identity or adding a special variadic exception.
+The synchronous source `rest ...Type` ABI is independent of trusted Boolean scalar intrinsic lowering. Neither the variadic fallback nor the builtin rewrite changes the rule that fixed overload identity is caller-visible name + exact arity.
 
 ### Arity-selected source/API signatures
 
