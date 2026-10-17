@@ -20,7 +20,8 @@ final class ActorPipelineRoutingAdmissionTest {
             "self.forward_round_robin(mail.value);",
             "self.forward_to(\"worker\", mail.value);",
             "self.forward_by_key(\"customer-7\", mail.value);",
-            "self.backward(mail.value);"
+            "self.backward(mail.value);",
+            "self.reply(mail.value);"
         };
         for (String call : calls) {
             String program = """
@@ -37,10 +38,9 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
-    void fanoutReceiptsAndFullReplyRemainFailClosed() {
+    void fanoutReceiptsRemainFailClosed() {
         String[] calls = {
-            "self.forward_all(mail.value);",
-            "self.reply(mail.value);"
+            "self.forward_all(mail.value);"
         };
         for (String call : calls) {
             String program = """
