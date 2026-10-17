@@ -4559,6 +4559,19 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.NewExpr created,
                 List<Object> args,
                 Env env) {
+            if (created.type().name().equals("Error") && findClass("Error") == null) {
+                if (args.size() > 1) {
+                    throw new IllegalArgumentException("Error constructor accepts zero or one message argument");
+                }
+                return new GuestErrorValue(args.isEmpty()
+                        ? ""
+                        : requireString(args.getFirst(), "Error message"));
+            }
+            if (Set.of("TrapResult", "TrapError", "RecoverySignal").contains(created.type().name())
+                    && findClass(created.type().name()) == null) {
+                throw new IllegalArgumentException(
+                        created.type().name() + " is compiler-managed and cannot be constructed directly");
+            }
             if (created.type().name().equals("Array")
                     || created.type().name().equals("List")) {
                 if (!args.isEmpty()) {
@@ -4794,6 +4807,15 @@ public final class OresEvalRootNode extends RootNode {
                     return option.present()
                             ? new OptionValue(true, detachAsyncValue(option.value(), visiting))
                             : option;
+                }
+                if (value instanceof TrapResultValue trap) {
+                    return trap.success()
+                            ? new TrapResultValue(
+                                    true,
+                                    trap.value() == null ? null : detachAsyncValue(trap.value(), visiting),
+                                    null,
+                                    trap.voidSuccess())
+                            : trap;
                 }
                 if (value instanceof ResultValue result) {
                     return new ResultValue(result.ok(), detachAsyncValue(result.value(), visiting));
@@ -6438,6 +6460,20 @@ public final class OresEvalRootNode extends RootNode {
                 return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Error") && findClass("Error") == null) {
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    if (args.size() > 1) {
+                        throw new IllegalArgumentException("Error constructor accepts zero or one message argument");
+                    }
+                    return new GuestErrorValue(args.isEmpty()
+                            ? ""
+                            : requireString(args.getFirst(), "Error message"));
+                }
+                if (Set.of("TrapResult", "TrapError", "RecoverySignal").contains(created.type().name())
+                        && findClass(created.type().name()) == null) {
+                    throw new IllegalArgumentException(
+                            created.type().name() + " is compiler-managed and cannot be constructed directly");
+                }
                 if (created.type().name().equals("Array")
                         || created.type().name().equals("List")) {
                     if (!created.arguments().isEmpty()) {
@@ -7122,6 +7158,27 @@ public final class OresEvalRootNode extends RootNode {
                     case "value" -> new OptionValue(!step.done(), step.value());
                     default -> throw new IllegalArgumentException("unknown IteratorResult member " + name);
                 };
+            }
+            if (receiver instanceof GuestErrorValue error) {
+                if (name.equals("message")) return error.message();
+                throw new IllegalArgumentException("unknown Error member " + name);
+            }
+            if (receiver instanceof TrapErrorValue error) {
+                return switch (name) {
+                    case "kind" -> error.kind();
+                    case "message" -> error.message();
+                    default -> throw new IllegalArgumentException("unknown TrapError member " + name);
+                };
+            }
+            if (receiver instanceof RecoverySignalValue signal) {
+                return switch (name) {
+                    case "kind" -> signal.kind();
+                    case "message" -> signal.message();
+                    default -> throw new IllegalArgumentException("unknown RecoverySignal member " + name);
+                };
+            }
+            if (receiver instanceof TrapResultValue) {
+                throw new IllegalArgumentException("TrapResult must be destructured into success and error slots");
             }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
@@ -8869,7 +8926,69 @@ public final class OresEvalRootNode extends RootNode {
                     + " but declared " + declared);
         }
 
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private boolean containsNestedDestructure(Ast.DestructurePattern pattern) {
+            if (pattern instanceof Ast.DestructureBindingPattern) return false;
+            Ast.NestedDestructurePattern nested = (Ast.NestedDestructurePattern) pattern;
+            return nested.children().stream().anyMatch(this::containsNestedDestructure);
+        }
+
+        private void bindTrapResultDestructure(
+                Ast.DestructurePattern pattern, TrapResultValue result, Env destination) {
+            if (!(pattern instanceof Ast.NestedDestructurePattern root)
+                    || root.kind() != Ast.DestructureKind.SEQUENCE
+                    || root.children().size() != 2
+                    || !(root.children().get(1) instanceof Ast.DestructureBindingPattern errorPattern)) {
+                throw new IllegalArgumentException(
+                        "TrapResult destructuring requires [success, error] with exactly two slots");
+            }
+            Ast.DestructureBinding errorBinding = errorPattern.binding();
+            if (errorBinding.isDiscard() || errorBinding.rest()) {
+                throw new IllegalArgumentException(
+                        "trap error slot cannot be discarded or used as a rest binding");
+            }
+
+            Ast.DestructurePattern successPattern = root.children().getFirst();
+            if (successPattern instanceof Ast.DestructureBindingPattern successPatternBinding) {
+                Ast.DestructureBinding successBinding = successPatternBinding.binding();
+                if (successBinding.rest()) {
+                    throw new IllegalArgumentException("TrapResult success slot cannot be a rest binding");
+                }
+                if (!successBinding.isDiscard()) {
+                    destination.define(
+                            successBinding.name(),
+                            result.successProjection(),
+                            successBinding.kind());
+                }
+            } else if (successPattern instanceof Ast.NestedDestructurePattern nestedSuccess
+                    && nestedSuccess.kind() == Ast.DestructureKind.SEQUENCE
+                    && nestedSuccess.children().size() == 1
+                    && nestedSuccess.children().getFirst() instanceof Ast.DestructureBindingPattern single) {
+                Ast.DestructureBinding successBinding = single.binding();
+                if (successBinding.rest()) {
+                    throw new IllegalArgumentException("nested TrapResult success binding cannot be a rest binding");
+                }
+                if (!successBinding.isDiscard()) {
+                    destination.define(
+                            successBinding.name(),
+                            new OptionValue(result.success(), result.success() ? result.value() : null),
+                            successBinding.kind());
+                }
+            } else {
+                throw new IllegalArgumentException(
+                        "nested TrapResult success syntax must be [const [value], const error]");
+            }
+
+            destination.define(
+                    errorBinding.name(),
+                    result.errorProjection(),
+                    errorBinding.kind());
+        }
+
+        private List<?> asSequence(Object value) {
+            if (value instanceof List<?> list) return list;
+            if (value instanceof Object[] array) return List.of(array);
+            throw new IllegalArgumentException("value is not sequence-destructurable");
+        }
 
         private void bindSequenceDestructure(
                 Iterable<?> values,
