@@ -115,6 +115,9 @@ final class OresVMNioLifecycleTest {
             int secondPort = ((java.net.InetSocketAddress) second.getLocalAddress()).getPort();
             var firstAccepted = vm.nioReadiness().acceptAsync(first);
             var secondAccepted = vm.nioReadiness().acceptAsync(second);
+            var callbackThread = new java.util.concurrent.CompletableFuture<String>();
+            firstAccepted.whenCompleteRuntime((socket, failure) ->
+                    callbackThread.complete(Thread.currentThread().getName()));
             assertEquals(1, vm.nioReactorCount(),
                     "two listeners share the VM selector instead of launching listener reactors");
             try (var firstPeer = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), firstPort);
@@ -123,6 +126,8 @@ final class OresVMNioLifecycleTest {
                  var secondChannel = secondAccepted.get(3, TimeUnit.SECONDS)) {
                 assertFalse(firstChannel.isBlocking());
                 assertFalse(secondChannel.isBlocking());
+                assertTrue(callbackThread.get(2, TimeUnit.SECONDS).startsWith("ores-nio-completion-"),
+                        "TCP accept Future must settle off selector, CONTROL and actor carriers");
                 assertEquals(1, vm.nioReactorCount());
             }
 
