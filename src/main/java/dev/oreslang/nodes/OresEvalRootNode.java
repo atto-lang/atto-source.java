@@ -5153,7 +5153,7 @@ public final class OresEvalRootNode extends RootNode {
                                         + "the static pattern proof and runtime type metadata disagree");
                     }
                     selected = arm;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = frozenConditionBindings(bindings);
                 }
 
                 if (selected == null && fallback != null) {
@@ -5162,7 +5162,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException("match fallback did not accept the unmatched subject");
                     }
                     selected = fallback;
-                    selectedBindings = Map.copyOf(bindings);
+                    selectedBindings = frozenConditionBindings(bindings);
                 }
 
                 if (selected == null) {
