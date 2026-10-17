@@ -62,7 +62,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             // startup while choosing an execution lane.
             int load;
             if (lane instanceof NativeCarrierExecutor nativeLane) {
-                if (nativeLane.getStartedCarrierCount() == 0) continue;
+                if (!nativeLane.readyForNoBootstrapAdmission()) continue;
                 load = nativeLane.getActiveCount() + nativeLane.getQueueSize();
             } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
                 if (pool.getPoolSize() == 0) continue;
@@ -77,11 +77,15 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             }
         }
         if (best >= 0) {
-            executeOnLane(best, notification);
+            executeOnLane(best, notification, true);
             return;
         }
-        // Deterministic cold lane avoids bootstrapping a different native
-        // pthread on each queued completion during the first admission burst.
+        // The first completion is submitted by the off-selector bootstrap
+        // helper. If all native pools are still cold (or already retiring),
+        // a selector must NEVER trigger nativeStart() or Thread.start().
+        if (NioReadinessGroup.onReactorThread())
+            throw new RejectedExecutionException(
+                    "no fully started actor carrier available for reactor completion");
         executeOnLane(0, notification);
     }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
@@ -99,12 +103,23 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     void executeOnLane(int lane, Runnable command) {
+        executeOnLane(lane, command, false);
+    }
+
+    private void executeOnLane(int lane, Runnable command, boolean noBootstrap) {
         Objects.requireNonNull(command);
-        if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
+        if (lane < 0 || lane >= lanes.size())
+            throw new IllegalArgumentException("actor lane outside configured range");
+        if (closed.get() || !queueSlots.tryAcquire())
+            throw new RejectedExecutionException("actor lane queue unavailable");
         QueuedTurn task = new QueuedTurn(command);
         try {
             if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
-            lanes.get(lane).execute(task);
+            ExecutorService executor = lanes.get(lane);
+            if (noBootstrap && executor instanceof NativeCarrierExecutor nativeLane)
+                nativeLane.executeWithoutBootstrap(task);
+            else
+                executor.execute(task);
         } catch (RuntimeException | Error failure) {
             task.releaseSlot();
             throw failure;
