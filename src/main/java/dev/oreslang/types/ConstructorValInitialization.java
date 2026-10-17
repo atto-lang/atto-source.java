@@ -34,8 +34,9 @@ public final class ConstructorValInitialization {
                 required.add(field.name());
             }
         }
-        if (required.isEmpty()) return;
-
+        // Even classes with no blank val slots must not publish constructing
+        // self. Ownership checks must not be the only protection: run the
+        // constructor expression walker independently for every constructor.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
             State normalExit = block(constructor.body(), new State(), required, klass.name());
             if (normalExit != null) requireComplete(normalExit, required, klass.name());
