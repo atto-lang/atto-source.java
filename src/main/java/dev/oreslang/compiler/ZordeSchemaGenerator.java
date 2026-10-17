@@ -180,6 +180,96 @@ public final class ZordeSchemaGenerator {
     }
 
     /**
+     * Experimental schema-first elaborator for parsed Oreslang source:
+     *
+     *   const PortSchema = Zorde.int().min(1).max(65535);
+     *   type Port = Zorde.infer<PortSchema>;
+     *
+     * The schema expression MUST be a compile-time-constant chain of approved
+     * core Zorde scalar builder calls. Absolutely no user callbacks,
+     * variables, arbitrary function calls, reflection or runtime evaluation.
+     * This is analysis-only; the ordinary TypeChecker still fails closed.
+     */
+    private static StaticZordeSchema evaluateStaticExpression(Ast.Expr expr) {
+        if (!(expr instanceof Ast.CallExpr call)
+                || call.typeArgumentsPresent()
+                || !(call.callee() instanceof Ast.MemberExpr member)) {
+            throw new IllegalArgumentException(
+                    "Zorde schema inference requires a static approved builder call");
+        }
+        if (member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals("Zorde")) {
+            if (!call.arguments().isEmpty())
+                throw new IllegalArgumentException("Zorde primitive schema takes no arguments");
+            return switch (member.member()) {
+                case "int" -> StaticZordeSchema.int64();
+                case "string" -> StaticZordeSchema.string();
+                default -> throw new IllegalArgumentException(
+                        "unsupported Zorde schema constructor " + member.member());
+            };
+        }
+        if (call.arguments().size() != 1)
+            throw new IllegalArgumentException(
+                    "Zorde scalar refinement builder requires one constant integer");
+        Ast.Expr argument = call.arguments().getFirst();
+        long number;
+        if (argument instanceof Ast.LiteralExpr literal && literal.value() instanceof Long value) {
+            number = value;
+        } else if (argument instanceof Ast.UnaryExpr unary
+                && unary.operator().equals("-")
+                && unary.operand() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long value) {
+            number = Math.negateExact(value);
+        } else {
+            throw new IllegalArgumentException(
+                    "Zorde inferred bounds must be compile-time signed int64 literals");
+        }
+        StaticZordeSchema base = evaluateStaticExpression(member.receiver());
+        return switch (member.member()) {
+            case "min" -> base.min(number);
+            case "max" -> base.max(number);
+            case "gt" -> base.greaterThan(number);
+            case "lt" -> base.lessThan(number);
+            case "exact" -> base.exact(number);
+            case "exclude" -> base.excluding(number);
+            case "minLength" -> base.minLength(number);
+            case "maxLength" -> base.maxLength(number);
+            case "exactLength" -> base.exactLength(number);
+            case "excludeLength" -> base.excludingLength(number);
+            default -> throw new IllegalArgumentException(
+                    "unsupported compile-time Zorde scalar operation " + member.member());
+        };
+    }
+
+    private static boolean isInferredSchemaAlias(Ast.TypeAliasDecl alias) {
+        return alias.refinement() == null
+                && alias.target().name().equals("Zorde.infer");
+    }
+
+    private static StaticZordeSchema schemaOfSourceAlias(
+            Ast.TypeAliasDecl alias, Map<String, Ast.FieldDecl> bindings) {
+        Ast.TypeRef ref = alias.target();
+        if (ref.arguments().size() != 1 || ref.inferArguments()
+                || !ref.arguments().getFirst().arguments().isEmpty()
+                || ref.arguments().getFirst().inferArguments()) {
+            throw new IllegalArgumentException(
+                    "Zorde.infer expects exactly one statically bound schema name");
+        }
+        String bindingName = ref.arguments().getFirst().name();
+        Ast.FieldDecl field = bindings.get(bindingName);
+        if (field == null) {
+            throw new IllegalArgumentException(
+                    "unknown compile-time Zorde schema " + bindingName);
+        }
+        if (field.bindingKind() != Ast.BindingKind.CONST || field.mutableReferent()
+                || field.type() != null || field.initializer() == null) {
+            throw new IllegalArgumentException(
+                    "Zorde.infer only accepts immutable const schema definitions");
+        }
+        return evaluateStaticExpression(field.initializer());
+    }
+
+    /**
      * Parse source into a schema plan without enabling guest execution.
      * This is deliberately separate from OresCompiler.parseAndTypeCheck,
      * which must continue to reject unimplemented refined declarations.
@@ -210,9 +300,17 @@ public final class ZordeSchemaGenerator {
             }
             String prefix = (namespace == null ? "" : namespace + ".")
                     + (moduleName.equals(Parser.ROOT_MODULE) ? "" : moduleName + ".");
+            Map<String, Ast.FieldDecl> schemaBindings = new LinkedHashMap<>();
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FieldDecl field
+                        && field.initializer() != null && field.bindingKind() == Ast.BindingKind.CONST) {
+                    if (schemaBindings.putIfAbsent(field.name(), field) != null)
+                        throw new IllegalArgumentException("duplicate Zorde source binding " + field.name());
+                }
+            }
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.TypeAliasDecl alias)
-                        || alias.refinement() == null) {
+                        || (alias.refinement() == null && !isInferredSchemaAlias(alias))) {
                     continue;
                 }
                 if (!alias.name().matches("[A-Za-z_][A-Za-z_0-9]*")) {
@@ -226,16 +324,18 @@ public final class ZordeSchemaGenerator {
                                     + alias.name());
                 }
                 String qualifiedName = prefix + alias.name();
-                if (alias.refinement().nominal() && namespace == null) {
+                boolean inferredFromSource = isInferredSchemaAlias(alias);
+                boolean nominal = !inferredFromSource && alias.refinement().nominal();
+                if (nominal && namespace == null) {
                     throw new IllegalArgumentException(
                             "nominal Zorde schema requires a namespace: " + alias.name());
                 }
-                // Annotation-first and schema-first MUST lower via the same
-                // pure schema builder and the same descriptor construction.
-                StaticZordeSchema staticSchema =
-                        StaticZordeSchema.fromRefinement(alias.target(), alias.refinement());
-                insertSchema(collected, inferred, qualifiedName, staticSchema,
-                        alias.refinement().nominal());
+                // Annotation-first and schema-first MUST lower through the
+                // same pure schema builder, descriptor and acceptance kernel.
+                StaticZordeSchema staticSchema = inferredFromSource
+                        ? schemaOfSourceAlias(alias, schemaBindings)
+                        : StaticZordeSchema.fromRefinement(alias.target(), alias.refinement());
+                insertSchema(collected, inferred, qualifiedName, staticSchema, nominal);
             }
         }
         return new Plan(collected, inferred);
