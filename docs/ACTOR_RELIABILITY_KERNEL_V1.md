@@ -68,6 +68,29 @@ remain predictable under saturation.
 - logging message bodies or exception text in always-on runtime telemetry;
 - conflating actor fault isolation with hostile-code security isolation.
 
+## Cross-runtime lessons encoded as Oreslang constraints
+
+The comparison target is current behavior, not historical caricatures:
+
+- Erlang/OTP now supports opt-in priority messages, but selective receive still
+  has queue-position-dependent cost and OTP warns that accumulating large
+  volumes of priority messages is itself a protocol design problem. Oreslang
+  therefore keeps ordinary typed actor dispatch FIFO and does not make
+  arbitrary selective mailbox scanning a core primitive.
+- Akka supports bounded and priority mailboxes, but enqueue timeout is a
+  configuration concern and infinite bounded-mailbox push timeout is documented
+  as deadlock-prone. Oreslang actor sends do not park a carrier waiting for
+  mailbox capacity.
+- Actix exposes an unconditional `do_send` path that may bypass mailbox
+  capacity and silently drop when the destination is closed. Oreslang does not
+  provide a silent-success send variant: admission has a stable failure reason.
+- Ractor separates signal, stop, supervision, and ordinary-message priorities.
+  Oreslang adopts the useful separation principle but keeps CONTROL
+  runtime-authenticated, bounded, and distinct from user priority messages.
+
+These are architectural constraints, not compatibility claims about the other
+systems.
+
 ## Next release gates
 
 The following remain explicit gates rather than assumed features:
