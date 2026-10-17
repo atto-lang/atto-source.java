@@ -7,6 +7,7 @@ on:
       - 'src/main/java/dev/oreslang/types/**'
       - 'src/test/java/dev/oreslang/*Structural*Test.java'
       - 'src/test/java/dev/oreslang/*Tuple*Test.java'
+      - 'src/test/java/dev/oreslang/*Container*Test.java'
       - 'src/test/java/dev/oreslang/RecordWriteVarianceTest.java'
       - 'contracts/structural/**'
       - 'scripts/verify_structural_exact_head_evidence.py'
@@ -48,7 +49,7 @@ jobs:
         run: python3 scripts/verify_structural_exact_head_evidence.py --self-test
       - name: Execute real parser, readonly, ownership and guest regressions
         run: |
-          mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest test
+          mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest,StructuralContainerPolicyTest test
       - name: Recheck immutable Git HEAD and clean tracked tree after Maven
         shell: bash
         env:
