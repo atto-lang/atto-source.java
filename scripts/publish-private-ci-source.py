@@ -408,6 +408,11 @@ def require_protected_source_codeowners():
                 for path in REQUIRED_CODEOWNER_PATHS]
     if effective[-len(required):] != required:
         raise Denied("private CI publisher and policies lack terminal CODEOWNER coverage")
+    # All workflows (including future names) must require the same reviewer.
+    # Otherwise an unreviewed workflow can emit the same Actions check name.
+    if (len(effective) <= len(required)
+            or effective[-len(required)-1] != "/.github/workflows/ @ORESoftware"):
+        raise Denied("source workflow directory lacks terminal CODEOWNER coverage")
     # The CODEOWNERS text can be syntactically well-formed yet ignored by
     # GitHub (for example, a non-existent owner or invalid pattern). Ask
     # GitHub's CODEOWNERS validator about the protected main revision.
