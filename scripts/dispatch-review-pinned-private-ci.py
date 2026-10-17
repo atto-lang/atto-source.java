@@ -21,7 +21,9 @@ SOURCE_REPO_ID=1400792274
 CARRIER_REPO="sagitta-stack/sagitta-infra"
 CARRIER_REPO_ID=1357615104
 INCIDENT_REPO="ores-truffle-oreslang/oreslang-platform-conformance"
+INCIDENT_REPO_ID=1413795502
 INCIDENT_NUMBER=22
+INCIDENT_ISSUE_ID=5832921751
 PUBLISHER_PR=1217
 DESTINATION_PR=1092
 SNAPSHOT_PR=1189
@@ -223,6 +225,14 @@ def require_exact_ledger(repo,path,ref,expected):
     rows=[x.strip() for x in text.splitlines() if x.strip() and not x.lstrip().startswith("#")]
     if rows!=[expected]: raise Denied("reviewed ledger entry changed: "+path)
 
+def require_incident_closed():
+    repo_identity(INCIDENT_REPO,INCIDENT_REPO_ID)
+    issue=PUB.gh_api(f"repos/{INCIDENT_REPO}/issues/{INCIDENT_NUMBER}")
+    if (issue.get("id")!=INCIDENT_ISSUE_ID or issue.get("number")!=INCIDENT_NUMBER
+            or issue.get("state")!="closed" or issue.get("state_reason")!="completed"
+            or issue.get("pull_request") is not None):
+        raise Denied("private-source exposure incident remains unresolved")
+
 def incident_resume(r):
     comments=api_list(f"repos/{INCIDENT_REPO}/issues/{INCIDENT_NUMBER}/comments?per_page=100&page=1")
     if api_list(f"repos/{INCIDENT_REPO}/issues/{INCIDENT_NUMBER}/comments?per_page=100&page=2")!=[]:
@@ -288,6 +298,7 @@ def refresh_authorization(r, require_new_ref=False):
     commit=PUB.gh_api(f"repos/{SOURCE_REPO}/git/commits/{r['source_commit_sha']}")
     if commit.get("sha")!=r["source_commit_sha"] or PUB.nested_sha(commit,"tree")!=r["source_tree_sha"]:
         raise Denied("approved source commit/tree changed")
+    require_incident_closed()
     incident_resume(r)
     parent=PUB.gh_api(f"repos/{CARRIER_REPO}/git/commits/{r['carrier_base_sha']}")
     if parent.get("sha")!=r["carrier_base_sha"]: raise Denied("carrier parent changed")
