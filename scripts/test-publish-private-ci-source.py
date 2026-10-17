@@ -361,9 +361,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
-    def test_child_environment_strips_shell_git_and_loader_injection(self):
+    def test_child_environment_strips_shell_git_loader_proxy_ca_and_gh_config_injection(self):
         suspicious = {
             "PATH": str(self.root),
+            "HOME": str(self.root),
+            "XDG_CONFIG_HOME": str(self.root / "xdg"),
             "BASH_ENV": str(self.root / "untrusted-startup.sh"),
             "ENV": str(self.root / "untrusted-startup.sh"),
             "BASH_FUNC_gh%%": "() { exit 0; }",
@@ -372,16 +374,40 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "LD_PRELOAD": str(self.root / "payload.so"),
             "PYTHONPATH": str(self.root),
             "GH_HOST": "attacker.invalid",
+            "GH_CONFIG_DIR": str(self.root / "gh"),
+            "GH_DEBUG": "api",
+            "HTTPS_PROXY": "https://attacker.invalid:8443",
+            "https_proxy": "https://attacker.invalid:8443",
+            "ALL_PROXY": "socks5://attacker.invalid:1080",
+            "NO_PROXY": "github.com",
+            "SSL_CERT_FILE": str(self.root / "attacker-ca.pem"),
+            "SSL_CERT_DIR": str(self.root / "certs"),
+            "SSLKEYLOGFILE": str(self.root / "tls-keys.log"),
+            "CURL_CA_BUNDLE": str(self.root / "attacker-ca.pem"),
+            "REQUESTS_CA_BUNDLE": str(self.root / "attacker-ca.pem"),
+            "NODE_EXTRA_CA_CERTS": str(self.root / "attacker-ca.pem"),
+            "GODEBUG": "x509usefallbackroots=1",
+            "GITHUB_API_URL": "https://attacker.invalid/api",
+            "GITHUB_GRAPHQL_URL": "https://attacker.invalid/graphql",
+            "GITHUB_SERVER_URL": "https://attacker.invalid",
+            "GH_TOKEN": "reviewed-token",
+            "GITHUB_TOKEN": "actions-token",
         }
         with patch.dict(os.environ, suspicious):
             child = pub.verified_child_env()
         for key in suspicious:
-            if key not in ("PATH", "GH_HOST"):
+            if key not in ("PATH", "HOME", "XDG_CONFIG_HOME", "GH_HOST",
+                           "GH_TOKEN", "GITHUB_TOKEN"):
                 self.assertNotIn(key, child)
         self.assertEqual(child["PATH"], pub.SAFE_EXEC_PATH)
+        self.assertEqual(child["HOME"], "/nonexistent")
+        self.assertEqual(child["XDG_CONFIG_HOME"], "/nonexistent")
         self.assertEqual(child["GH_HOST"], "github.com")
         self.assertEqual(child["GH_PROMPT_DISABLED"], "1")
         self.assertEqual(child["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self.assertEqual(child["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(child["GH_TOKEN"], "reviewed-token")
+        self.assertEqual(child["GITHUB_TOKEN"], "actions-token")
 
     def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
         # Approval is now parsed strictly as data: even a script that
