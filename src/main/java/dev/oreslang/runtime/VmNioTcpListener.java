@@ -177,8 +177,29 @@ public final class VmNioTcpListener implements AutoCloseable {
     public final class Connection implements AutoCloseable {
         private final SocketChannel channel;
         private boolean terminated;
+        // Only terminal-exported operations are retained; each removes itself
+        // on settlement. Guarded by the listener gate with 'terminated'.
+        private final Set<OresFuture<?>> outstanding = new HashSet<>();
 
         private Connection(SocketChannel channel) { this.channel = channel; }
+
+        private <T> OresFuture<T> track(OresFuture<T> future) {
+            boolean shutdown;
+            synchronized (gate) {
+                shutdown = closed || terminated;
+                if (!shutdown && !future.isDone()) outstanding.add(future);
+            }
+            future.whenCompleteRuntime((value, failure) -> {
+                synchronized (gate) { outstanding.remove(future); }
+            });
+            if (shutdown && !future.isDone()) {
+                // The kernel may already have committed a write; a failed
+                // cancellation is not a license to fabricate a clean cancel.
+                // Closing the socket below forces ordinary terminal delivery.
+                future.cancel(false);
+            }
+            return future;
+        }
 
         public VmNioTcpListener ownerListener() { return VmNioTcpListener.this; }
 
@@ -219,7 +240,7 @@ public final class VmNioTcpListener implements AutoCloseable {
                     releaseOperation();
                 }
             });
-            return exposed;
+            return track(exposed);
         }
 
         public OresFuture<Integer> writeBytesAsync(List<?> bytes) {
@@ -249,7 +270,7 @@ public final class VmNioTcpListener implements AutoCloseable {
                 throw failure;
             }
             written.whenCompleteRuntime((value, failure) -> releaseOperation());
-            return written;
+            return track(written);
         }
 
         public OresFuture<Void> closeAsync() {
@@ -258,11 +279,17 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
 
         @Override public void close() {
+            final List<OresFuture<?>> snapshot;
             synchronized (gate) {
                 if (terminated) return;
                 terminated = true;
                 connections.remove(this);
+                snapshot = new ArrayList<>(outstanding);
             }
+            // Revoke only still-cancellable operations. An already committed
+            // kernel write may instead fail or finish after descriptor close,
+            // but must never be reported as cleanly cancelled.
+            for (OresFuture<?> pending : snapshot) pending.cancel(false);
             try { channel.close(); } catch (IOException ignored) { }
         }
     }
