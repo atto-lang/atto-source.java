@@ -22,6 +22,13 @@ final class TrapFailurePolicyTest {
                 new GuestControlSignal.Throw("ordinary guest throw"), GuestPanic.class));
     }
 
+    @Test void unclassifiedHostRuntimeFailuresFailClosed() {
+        assertFalse(TrapFailurePolicy.isTrappable(
+                new RuntimeException("unclassified host failure"), GuestPanic.class));
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new RuntimeException("unclassified host failure"), GuestPanic.class));
+    }
+
     @Test void directTerminalFailuresCannotBecomeNone() {
         for (RuntimeException terminal : new RuntimeException[]{
                 new SecurityException("denied"),
