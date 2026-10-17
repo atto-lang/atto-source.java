@@ -134,6 +134,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     }
     public int pendingCount() { return pending.get(); }
     int pendingNotifications() { return notificationReservations.get(); }
+    int activeAcceptLeases() {
+        synchronized (lifecycle) { return acceptLeases.size(); }
+    }
     boolean usesVmCompletionCarriers() { return ownedCompletionExecutor == null; }
 
     private void releaseNotificationReservation() {
