@@ -324,6 +324,11 @@ def refresh_authorization(r, require_new_ref=False):
     if require_new_ref: branch_absent(r)
     return parent_tree
 
+def verify_payload_root_entries(entries,r,provenance):
+    if not isinstance(entries,list):
+        raise Denied("payload root tree readback invalid")
+    verify_payload_root_entries(entries,r,provenance)
+
 def require_staged_source(source_dir):
     source=Path(source_dir).resolve(strict=True)
     trusted=ROOT.resolve(strict=True)
