@@ -7,6 +7,7 @@ import dev.oreslang.config.OresProjectConfig;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.NativeBuildMode;
+import dev.oreslang.runtime.NativeBuildPermissions;
 import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.CoreDebug;
 import dev.oreslang.runtime.CoreLog;
@@ -259,6 +260,9 @@ public final class OresMain {
             }
         }
 
+        RuntimePermissions buildCeiling = NativeBuildPermissions.ceiling();
+        RuntimePermissions effectivePermissions = permissions.boundedBy(buildCeiling);
+
         if (buildAnalysis) {
             if (!filename.endsWith(".ores")) {
                 throw new UsageException("--build-analysis currently requires a .ores source file");
@@ -266,7 +270,7 @@ public final class OresMain {
             String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
                 var parsed = OresCompiler.validateForIsolate(source, policy);
-                CapabilityChecker.check(parsed, policy, permissionCheckMode, permissions);
+                CapabilityChecker.check(parsed, policy, permissionCheckMode, effectivePermissions);
             }
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
@@ -292,7 +296,7 @@ public final class OresMain {
                         System.getenv(),
                         policy,
                         permissionCheckMode,
-                        permissions);
+                        effectivePermissions);
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
                 return 1;
@@ -304,6 +308,7 @@ public final class OresMain {
         int exitStatus = LinkedProgramRunner.runWithExitStatus(
                 path,
                 policy,
+                buildCeiling,
                 permissions,
                 permissionCheckMode,
                 profile,
