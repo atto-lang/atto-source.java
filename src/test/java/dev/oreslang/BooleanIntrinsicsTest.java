@@ -281,6 +281,57 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void sourceArityOneOverloadsDoNotHideDistinctBuiltinScalarArities() throws Exception {
+        String program = """
+                fnc Or(List<bool> values): bool {
+                  return false;
+                }
+
+                fnc And(List<bool> values): bool {
+                  return false;
+                }
+
+                fnc Xor(List<bool> values): bool {
+                  return true;
+                }
+
+                pub fnc main(): void {
+                  stdio.println(Or([true]));
+                  stdio.println(Or(false, true, false));
+                  stdio.println(And([true, true]));
+                  stdio.println(And(true, true, true));
+                  stdio.println(Xor([false, false]));
+                  stdio.println(Xor(true, true));
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        assertEquals("""
+                false
+                true
+                false
+                true
+                true
+                false
+                """, run(program, "boolean-arity-family.ores"));
+    }
+
+    @Test
+    void oneListOverloadAndScalarVariadicBuiltinsRejectCrossArityAmbiguity() {
+        for (String operands : new String[]{"", "true", "[true], false",
+                "true, [true]", "1, true"}) {
+            String source = "fnc bad(): bool { return Or(" + operands + "); }";
+            assertThrows(IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)), source);
+        }
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc accepts(): bool {
+                  return Or([true, false]) and And(true, true, true);
+                }
+                """)));
+    }
+
+    @Test
     void moduleAndTopLevelFunctionsOverloadByNameAndExactArity() throws Exception {
         String program = """
                 define module Picks as
