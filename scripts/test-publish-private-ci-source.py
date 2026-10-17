@@ -69,6 +69,52 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root)
 
+    def test_unusable_secure_open_flags_deny_before_any_file_open(self):
+        self.assertTrue(pub.safe_descriptor_flags_available())
+        for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
+            for replacement in (0, None, True, -1, "1"):
+                with self.subTest(flag=flag, replacement=replacement):
+                    with patch.object(pub.os, flag, replacement):
+                        self.assertFalse(pub.safe_descriptor_flags_available())
+                        with patch.object(
+                                pub.os, "open",
+                                side_effect=AssertionError("unsafe file open")) as opened:
+                            with self.assertRaisesRegex(
+                                    pub.Denied, "OS cannot safely read"):
+                                pub.checked_policy_fingerprint(
+                                    self.root, "trusted/ci")
+                            with self.assertRaisesRegex(
+                                    pub.Denied, "OS cannot enforce"):
+                                pub.collect_source(self.source, self.root)
+                            opened.assert_not_called()
+
+    def test_overlapping_secure_open_flag_masks_deny_before_any_file_open(self):
+        self.assertTrue(pub.safe_descriptor_flags_available())
+        originals = {name: getattr(pub.os, name)
+                     for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")}
+        masks = (
+            {"O_NOFOLLOW": originals["O_DIRECTORY"]},
+            {"O_NONBLOCK": originals["O_NOFOLLOW"]},
+            {"O_DIRECTORY": originals["O_NONBLOCK"]},
+            {"O_NOFOLLOW":
+                 originals["O_DIRECTORY"] | originals["O_NOFOLLOW"]},
+        )
+        for mask in masks:
+            with self.subTest(mask=mask):
+                with patch.multiple(pub.os, **mask):
+                    self.assertFalse(pub.safe_descriptor_flags_available())
+                    with patch.object(
+                            pub.os, "open",
+                            side_effect=AssertionError("unsafe file open")) as opened:
+                        with self.assertRaisesRegex(
+                                pub.Denied, "OS cannot safely read"):
+                            pub.checked_policy_fingerprint(
+                                self.root, "trusted/ci")
+                        with self.assertRaisesRegex(
+                                pub.Denied, "OS cannot enforce"):
+                            pub.collect_source(self.source, self.root)
+                        opened.assert_not_called()
+
     def test_only_exact_private_repo_write_routes_and_new_ref(self):
         sha, count = self.publish()
         self.assertEqual((sha, count), (A, 1))
