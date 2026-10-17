@@ -829,6 +829,35 @@ public final class ActorRuntime implements AutoCloseable {
         return ActorTerminationKind.FAILED;
     }
 
+    private static boolean isHostFatal(Throwable failure) {
+        return failure instanceof VirtualMachineError
+                || failure instanceof ThreadDeath
+                || failure instanceof LinkageError;
+    }
+
+    /**
+     * Runtime-cleanup failures are observable but cannot become a reason to
+     * leave an ActorCell half-finalized. Preserve only the first host-fatal
+     * error for deferred rethrow; all failures increment telemetry without
+     * invoking Throwable formatting.
+     */
+    private Throwable noteLifecyclePublicationFailure(
+            Throwable firstFatal,
+            Throwable failure) {
+        lifecyclePublicationFailures.incrementAndGet();
+        return firstFatal == null && isHostFatal(failure)
+                ? failure
+                : firstFatal;
+    }
+
+    private static void rethrowHostFatal(Throwable fatal) {
+        if (fatal == null) return;
+        if (fatal instanceof VirtualMachineError vm) throw vm;
+        if (fatal instanceof ThreadDeath death) throw death;
+        if (fatal instanceof LinkageError linkage) throw linkage;
+        throw new AssertionError("non-fatal error reached host-fatal rethrow", fatal);
+    }
+
     /**
      * Diagnostics must never become a lifecycle dependency. No guest/user
      * formatting is invoked here: Throwable.getMessage()/toString can execute
@@ -4884,33 +4913,50 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void unregisterActor(ActorCell<?> cell) {
+    private Throwable unregisterActor(
+            ActorCell<?> cell,
+            Throwable firstFatal) {
         // Keep registry/group cleanup ahead of terminal observer publication.
-        // ActorRef.awaitTermination() no longer treats registry absence alone
-        // as success; it falls back to DONE across this unregister-to-publish
-        // window, so out-of-lock teardown cannot fabricate termination.
+        // One corrupt/closing ActorGroup cannot retain an otherwise dead actor
+        // forever: per-group cleanup is best-effort and independently counted.
         Set<ActorGroupId> affected = new java.util.HashSet<>();
-        synchronized (groupMembershipLock) {
-            Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
-            if (memberships != null) affected.addAll(memberships);
-            Set<ActorGroupId> created = createdGroupsByActor.get(cell.ref.id());
-            if (created != null) affected.addAll(created);
-            // An explicitly managed worker is not necessarily a cooperating
-            // member. The owner needs its independent termination callback.
-            ActorGroupId managedBy = cell.managedByGroup.get();
-            if (managedBy != null) affected.add(managedBy);
+        try {
+            synchronized (groupMembershipLock) {
+                Set<ActorGroupId> memberships = groupMemberships.get(cell.ref.id());
+                if (memberships != null) affected.addAll(memberships);
+                Set<ActorGroupId> created = createdGroupsByActor.get(cell.ref.id());
+                if (created != null) affected.addAll(created);
+                ActorGroupId managedBy = cell.managedByGroup.get();
+                if (managedBy != null) affected.add(managedBy);
+            }
+        } catch (Throwable failure) {
+            firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
         }
+
         for (ActorGroupId groupId : affected) {
-            ActorGroup group = actorGroups.get(groupId);
-            if (group != null) group.actorTerminated(cell.ref.id());
-        }
-        if (actors.remove(cell.ref.id(), cell)) {
-            int remaining = actorCount.decrementAndGet();
-            if (remaining < 0) {
-                actorCount.incrementAndGet();
-                throw new IllegalStateException("actor count accounting underflow");
+            try {
+                ActorGroup group = actorGroups.get(groupId);
+                if (group != null) group.actorTerminated(cell.ref.id());
+            } catch (Throwable failure) {
+                firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
             }
         }
+
+        try {
+            if (actors.remove(cell.ref.id(), cell)) {
+                int remaining = actorCount.decrementAndGet();
+                if (remaining < 0) {
+                    actorCount.incrementAndGet();
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
+            }
+        } catch (Throwable failure) {
+            firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+            // ConcurrentHashMap removal should not fail under normal JVM
+            // semantics. If the host itself is failing, finalization state and
+            // observers still progress below; the counter exposes the leak.
+        }
+        return firstFatal;
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
