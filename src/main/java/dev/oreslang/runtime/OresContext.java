@@ -511,13 +511,19 @@ public final class OresContext implements AutoCloseable {
                     "OresContext shutdown requires an external trusted host thread");
         }
         java.util.Set<NativeNioFutureReactor> closingNio;
+        final long deadline = System.nanoTime()
+                + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
         synchronized (nioLifecycle) {
             nioContextClosed = true;
             // Reactor constructors reserve nioOpening BEFORE entering OS/JDK
             // bootstrap. Wait only as an external host so that an unfinished
             // selector cannot be published after the actor scheduler closes.
             while (nioOpening > 0) {
-                try { nioLifecycle.wait(); }
+                long left = deadline - System.nanoTime();
+                if (left <= 0)
+                    throw new IllegalStateException(
+                            "Oreslang TCP listener bootstrap failed to quiesce");
+                try { java.util.concurrent.TimeUnit.NANOSECONDS.timedWait(nioLifecycle, left); }
                 catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new IllegalStateException(
@@ -529,7 +535,6 @@ public final class OresContext implements AutoCloseable {
         for (NativeNioFutureReactor reactor : closingNio) reactor.close();
         // No reactor is allowed to complete a Future into a destroyed CONTROL
         // mapping executor. Joining selector threads is reserved to the host.
-        final long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
         for (NativeNioFutureReactor reactor : closingNio) {
             try {
                 long remaining = deadline - System.nanoTime();
