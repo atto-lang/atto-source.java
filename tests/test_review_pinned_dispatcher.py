@@ -123,9 +123,47 @@ class DispatcherTests(unittest.TestCase):
         with self.assertRaisesRegex(mod.Denied, "duplicate JSON key"):
             mod.parse_json_bytes(b'{"schema":2,"schema":2}', "dupe")
 
+    def test_dispatcher_checkout_must_equal_reviewed_publisher_head(self):
+        doc = receipt()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "scripts").mkdir()
+            with patch.object(mod, "SCRIPT_DIR", root / "scripts"), \
+                 patch.object(mod, "git_output", side_effect=[str(root), C]):
+                with self.assertRaisesRegex(mod.Denied, "reviewed publisher head"):
+                    mod.verify_dispatcher_checkout(doc)
+
+    def test_dispatcher_checkout_must_be_clean(self):
+        doc = receipt()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "scripts").mkdir()
+            with patch.object(mod, "SCRIPT_DIR", root / "scripts"), \
+                 patch.object(mod, "git_output",
+                              side_effect=[str(root), D, " M scripts/verify-review-pinned-private-ci.py"]):
+                with self.assertRaisesRegex(mod.Denied, "not clean"):
+                    mod.verify_dispatcher_checkout(doc)
+
+    def test_dispatcher_checkout_file_blob_must_match_git_index(self):
+        doc = receipt()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            for relative in mod.LOCAL_REVIEWED_FILES:
+                p = root / relative
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("reviewed\n")
+            with patch.object(mod, "SCRIPT_DIR", scripts), \
+                 patch.object(mod, "git_output",
+                              side_effect=[str(root), D, "", "0" * 40]):
+                with self.assertRaisesRegex(mod.Denied, "differs from Git index"):
+                    mod.verify_dispatcher_checkout(doc)
+
     def test_existing_payload_branch_denied(self):
         doc = receipt()
-        with patch.object(mod, "fresh_receipt", return_value=doc), \
+        with patch.object(mod, "verify_dispatcher_checkout", return_value=Path("/trusted")), \
+             patch.object(mod, "fresh_receipt", return_value=doc), \
              patch.object(mod, "source_repository_live", return_value={}), \
              patch.object(mod.pub, "checked_repo",
                           return_value={"default_branch": "main"}), \
@@ -136,7 +174,8 @@ class DispatcherTests(unittest.TestCase):
 
     def test_final_authorization_allows_only_existing_branch_predicate_to_relax(self):
         doc = receipt()
-        with patch.object(mod, "fresh_receipt", return_value=doc) as fresh, \
+        with patch.object(mod, "verify_dispatcher_checkout", return_value=Path("/trusted")), \
+             patch.object(mod, "fresh_receipt", return_value=doc) as fresh, \
              patch.object(mod, "source_repository_live", return_value={}), \
              patch.object(mod.pub, "checked_repo",
                           return_value={"default_branch": "main"}), \
