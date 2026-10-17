@@ -1907,6 +1907,11 @@ public final class OwnershipChecker {
 
                 if (parameterIndex >= params.size()) return; // TypeChecker reports arity.
                 Ast.Param param = params.get(parameterIndex);
+                VarState constructionLoanOwner =
+                        isBorrowedCallable(param.type())
+                                && !param.type().mutableBorrow()
+                                ? constructionSelfCaptureRoot(argument, scope)
+                                : null;
                 VarState loanOwner = param.type().isBorrow()
                         ? invocationLoanRoot(argument, scope) : null;
                 boolean mutable = param.type().isBorrow() && param.type().mutableBorrow();
