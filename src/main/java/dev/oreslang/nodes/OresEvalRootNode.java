@@ -9377,10 +9377,26 @@ public final class OresEvalRootNode extends RootNode {
                     return divExtremeFinite(o);
                 }
                 double denominator = c * c + d * d;
+                double ac = a * c, bd = b * d, bc = b * c, ad = a * d;
+                double realNumerator = ac + bd;
+                double imaginaryNumerator = bc - ad;
+                // A rounded-to-zero numerator is not necessarily exact zero:
+                // equal-looking binary64 products can hide a representable
+                // small quotient component after rescaling. Reconstruct from
+                // exact binary64 operands rather than certify a false zero.
+                // Limit allocations to the rare cancellation/underflow path.
+                if ((realNumerator == 0.0 && (ac != 0.0 || bd != 0.0))
+                        || (imaginaryNumerator == 0.0 && (bc != 0.0 || ad != 0.0))
+                        || (ac == 0.0 && a != 0.0 && c != 0.0)
+                        || (bd == 0.0 && b != 0.0 && d != 0.0)
+                        || (bc == 0.0 && b != 0.0 && c != 0.0)
+                        || (ad == 0.0 && a != 0.0 && d != 0.0)) {
+                    return divExtremeFinite(o);
+                }
                 int exponent = numeratorExponent - divisorExponent;
                 return new Complex(
-                        Math.scalb((a * c + b * d) / denominator, exponent),
-                        Math.scalb((b * c - a * d) / denominator, exponent));
+                        Math.scalb(realNumerator / denominator, exponent),
+                        Math.scalb(imaginaryNumerator / denominator, exponent));
             }
             double denominator = o.real * o.real + o.imaginary * o.imaginary;
             return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
