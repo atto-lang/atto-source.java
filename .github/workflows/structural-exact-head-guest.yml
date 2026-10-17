@@ -9,6 +9,7 @@ on:
       - 'src/test/java/dev/oreslang/*Tuple*Test.java'
       - 'src/test/java/dev/oreslang/RecordWriteVarianceTest.java'
       - 'contracts/structural/**'
+      - 'scripts/verify_structural_exact_head_evidence.py'
       - '.github/workflows/structural-exact-head-guest.yml'
   workflow_dispatch:
 permissions:
@@ -46,29 +47,14 @@ jobs:
       - name: Execute real parser, readonly, ownership and guest regressions
         run: |
           mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest test
-      - name: Require nonempty JUnit results for every selected suite
+      - name: Verify case-level evidence verifier rejects forged reports
+        run: python3 scripts/verify_structural_exact_head_evidence.py --self-test
+      - name: Bind JUnit testcase evidence to the checked-out source revision
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          from xml.etree import ElementTree as ET
-          names = (
-              'StructuralTuplePolicyTest', 'PositionalTupleSyntaxTest',
-              'StructuralCallableParityTest', 'FixedProductCallPlanTest',
-              'RecordWriteVarianceTest', 'StructuralCrossSurfaceParityTest',
-              'StructuralTuplePatternMatchTest',
-          )
-          root = Path('target/surefire-reports')
-          for name in names:
-              path = root / ('TEST-dev.oreslang.' + name + '.xml')
-              if not path.is_file():
-                  raise SystemExit('Missing actual test report: ' + str(path))
-              data = ET.parse(path).getroot()
-              if int(data.attrib.get('tests', '0')) < 1:
-                  raise SystemExit('Zero tests executed: ' + name)
-              if any(int(data.attrib.get(field, '0')) for field in ('errors', 'failures', 'skipped')):
-                  raise SystemExit('Nonpassing/skipped structural suite: ' + name)
-          print('Executed and verified all seven JUnit suites')
-          PY
+          python3 scripts/verify_structural_exact_head_evidence.py \
+            --reports target/surefire-reports \
+            --provenance target/structural-guest-provenance.json \
+            --out target/structural-guest-junit-manifest.json
       - name: Preserve exact-head provenance and JUnit results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -76,6 +62,7 @@ jobs:
           name: structural-graal-exact-head-${{ github.run_id }}
           path: |
             target/structural-guest-provenance.json
+            target/structural-guest-junit-manifest.json
             target/surefire-reports/TEST-dev.oreslang.*.xml
           if-no-files-found: error
           retention-days: 7
