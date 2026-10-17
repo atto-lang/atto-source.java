@@ -84,6 +84,40 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void mutableBlankFieldIsDefinitelyInitializedAndMayBeReassigned() throws Exception {
+        String output = run("""
+                define class MutableCounter as
+                  let int count;
+                  constructor(int n) {
+                    self.count = 1;
+                    self.count = n;
+                  }
+                  pub get(): int { return self.count; }
+                end
+                pub routine main(): void {
+                  val counter = new MutableCounter(42);
+                  stdio.stdout.write(counter.get());
+                  return;
+                }
+                """);
+        assertEquals("42", output);
+    }
+
+    @Test
+    void missingMutableBlankFieldFailsAtTypeCheckRatherThanRuntime() {
+        var model = Parser.parse("""
+                define class Broken as
+                  let int count;
+                  constructor() { return; }
+                end
+                """);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.checkTypes(model));
+        assertTrue(failure.getMessage().contains("did not initialize field 'count'"),
+                failure.getMessage());
+    }
+
+    @Test
     void overloadsResolveByArityNotParameterTypes() throws Exception {
         String source = """
                 define class Sample as
