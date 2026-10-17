@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,6 +41,8 @@ public final class OwnershipChecker {
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> modules = new HashSet<>();
+    /** Every lexical import binding, including type-only namespace aliases. */
+    private final Set<String> importedBindings = new HashSet<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
@@ -87,6 +90,9 @@ public final class OwnershipChecker {
     }
 
     private void index(Ast.Program program) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            importedBindings.addAll(ImportRules.exposedBindings(imported));
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             modules.add(module.name());
             for (Ast.Decl decl : module.declarations()) {
@@ -1089,11 +1095,16 @@ public final class OwnershipChecker {
             checkExpr(conditional.condition(), scope, false);
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
 
-            ValueInfo left = checkExpr(conditional.whenTrue(), scope, consuming);
+            Scope trueScope = new Scope(scope);
+            defineConditionAliases(conditional.condition(), trueScope, scope);
+            ValueInfo left = checkExpr(conditional.whenTrue(), trueScope, consuming);
+            trueScope.close();
             Map<VarState, StateSnapshot> leftExit = stateSnapshot(scope);
 
             restoreState(base);
-            ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
+            Scope falseScope = new Scope(scope);
+            ValueInfo right = checkExpr(conditional.whenFalse(), falseScope, consuming);
+            falseScope.close();
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
@@ -1368,6 +1379,14 @@ public final class OwnershipChecker {
                     throw error("constructor cannot borrow partially initialized self for a call");
                 }
             }
+        }
+        if (isIntegerIntrinsicCall(call, scope)) {
+            for (Ast.Expr argument : call.arguments()) {
+                Ast.Expr value = argument instanceof Ast.SpreadExpr spread
+                        ? spread.expression() : argument;
+                checkExpr(value, scope, false);
+            }
+            return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
         }
         if (isBooleanIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
@@ -1766,6 +1785,19 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private boolean isIntegerIntrinsicCall(Ast.CallExpr call, Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Integer")
+                || !member.member().equals("is_int")) return false;
+        return scope.lookup("Integer") == null
+                && !modules.contains("Integer")
+                && findClass("Integer") == null
+                && !functions.containsKey("Integer")
+                && !ambiguousFunctions.contains("Integer")
+                && !importedBindings.contains("Integer");
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -2585,6 +2617,20 @@ public final class OwnershipChecker {
     }
 
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
+        if (condition instanceof Ast.CallExpr call
+                && isIntegerIntrinsicCall(call, source)
+                && call.arguments().size() == 1
+                && call.arguments().getFirst() instanceof Ast.NameExpr name) {
+            VarState original = source.lookup(name.name());
+            if (original == null || original.rebindable) return;
+            if (destination.locals.containsKey(name.name())) return;
+            defineRefinementAlias(
+                    name.name(),
+                    Ast.TypeRef.simple("int"),
+                    original,
+                    destination);
+            return;
+        }
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
             defineRefinementAlias(test.binding(), test.targetType(), original, destination);
@@ -2598,7 +2644,9 @@ public final class OwnershipChecker {
         }
         if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             defineConditionAliases(binary.left(), destination, source);
-            defineConditionAliases(binary.right(), destination, source);
+            // The right edge executes only after the left edge succeeds, so it
+            // resolves through the already-refined scope.
+            defineConditionAliases(binary.right(), destination, destination);
         }
     }
 
