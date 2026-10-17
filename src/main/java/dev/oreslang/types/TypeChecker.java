@@ -6355,12 +6355,11 @@ public final class TypeChecker {
         Map<String, Type> bindings = new HashMap<>();
         Set<String> classGenericNames = Set.copyOf(klass.genericParameters());
 
-        Ast.ConstructorDecl constructor = klass.constructor();
-        if (constructor != null) {
-            if (arguments.size() != constructor.arity()) {
-                throw new IllegalArgumentException(
-                        "constructor for " + klass.name() + " expects "
-                                + constructor.arity() + " argument(s), got " + arguments.size());
+        if (!klass.constructors().isEmpty()) {
+            Ast.ConstructorDecl constructor = klass.constructorForArity(arguments.size());
+            if (constructor == null) {
+                throw new IllegalArgumentException("no constructor for " + klass.name()
+                        + " with arity " + arguments.size());
             }
             for (int i = 0; i < arguments.size(); i++) {
                 Type parameterPattern = resolveParam(
