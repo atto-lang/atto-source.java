@@ -141,8 +141,15 @@ public final class NativeIo {
     private static java.nio.channels.SeekableByteChannel openCheckedFile(
             Path path, java.util.Set<? extends java.nio.file.OpenOption> options)
             throws IOException {
-        return withSecureParent(path, (parent, leaf) ->
-                parent.newByteChannel(leaf, options));
+        return withSecureParent(path, (parent, leaf) -> {
+            if (options.contains(StandardOpenOption.CREATE)
+                    || options.contains(StandardOpenOption.CREATE_NEW)) {
+                return parent.newByteChannel(leaf, options,
+                        java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                                java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
+            }
+            return parent.newByteChannel(leaf, options);
+        });
     }
 
     static java.nio.file.attribute.BasicFileAttributes secureFileAttributes(Path path)
@@ -165,7 +172,9 @@ public final class NativeIo {
             try {
                 try (var channel = parent.newByteChannel(temporary,
                             java.util.Set.of(StandardOpenOption.CREATE_NEW,
-                                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS));
+                                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS),
+                            java.nio.file.attribute.PosixFilePermissions.asFileAttribute(
+                                    java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")));
                      var stream = java.nio.channels.Channels.newOutputStream(channel);
                      var writer = new OutputStreamWriter(
                              stream, StandardCharsets.UTF_8.newEncoder())) {
