@@ -89,6 +89,12 @@ final class ActorObservabilityTest {
             assertEquals(0, event.abandonedContinuations());
             assertEquals("", event.failureType());
             assertEquals("", event.failureMessage());
+            ActorRuntime.ActorTerminalState retained =
+                    actor.terminalState().orElseThrow();
+            assertEquals(event.actorId(), retained.actorId());
+            assertEquals(event.terminationKind(), retained.terminationKind());
+            assertEquals(event.acceptedUserMessages(), retained.acceptedUserMessages());
+            assertEquals(event.processedUserMessages(), retained.processedUserMessages());
             assertTrue(runtime.pollTerminationEvent().isEmpty());
         } finally {
             release.countDown();
@@ -290,6 +296,13 @@ final class ActorObservabilityTest {
             assertEquals(1L, runtime.supervisionEventsDropped());
             assertEquals(1L, runtime.runtimeStats().normalTerminations(),
                     "termination accounting is authoritative even if its journal record is dropped");
+            ActorRuntime.ActorTerminalState retained =
+                    actor.terminalState().orElseThrow();
+            assertEquals(actor.id(), retained.actorId());
+            assertEquals(ActorRuntime.ActorTerminationKind.NORMAL,
+                    retained.terminationKind());
+            assertEquals(0L, retained.acceptedUserMessages());
+            assertEquals(0L, retained.processedUserMessages());
         }
     }
 
