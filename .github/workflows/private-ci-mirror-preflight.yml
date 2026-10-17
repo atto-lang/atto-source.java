@@ -111,8 +111,8 @@ jobs:
           spec.loader.exec_module(module)
           suite = unittest.defaultTestLoader.loadTestsFromModule(module)
           count = suite.countTestCases()
-          if count < 45:
-              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 45: {count} tests")
+          if count < 46:
+              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 46: {count} tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if (result.testsRun != count or not result.wasSuccessful()
                   or result.skipped or result.expectedFailures
