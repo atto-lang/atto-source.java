@@ -1380,7 +1380,7 @@ public final class OwnershipChecker {
                 }
             }
         }
-        if (isIntegerIntrinsicCall(call, scope)) {
+        if (isIntegerIntrinsicCall(call, scope) || isDoubleIntrinsicCall(call, scope)) {
             for (Ast.Expr argument : call.arguments()) {
                 Ast.Expr value = argument instanceof Ast.SpreadExpr spread
                         ? spread.expression() : argument;
@@ -1798,6 +1798,19 @@ public final class OwnershipChecker {
                 && !functions.containsKey("Integer")
                 && !ambiguousFunctions.contains("Integer")
                 && !importedBindings.contains("Integer");
+    }
+
+    private boolean isDoubleIntrinsicCall(Ast.CallExpr call, Scope scope) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Double")
+                || !member.member().equals("is_double")) return false;
+        return scope.lookup("Double") == null
+                && !modules.contains("Double")
+                && findClass("Double") == null
+                && !functions.containsKey("Double")
+                && !ambiguousFunctions.contains("Double")
+                && !importedBindings.contains("Double");
     }
 
     private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Scope scope) {
@@ -2618,15 +2631,19 @@ public final class OwnershipChecker {
 
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
         if (condition instanceof Ast.CallExpr call
-                && isIntegerIntrinsicCall(call, source)
+                && (isIntegerIntrinsicCall(call, source)
+                    || isDoubleIntrinsicCall(call, source))
                 && call.arguments().size() == 1
                 && call.arguments().getFirst() instanceof Ast.NameExpr name) {
             VarState original = source.lookup(name.name());
             if (original == null || original.rebindable) return;
             if (destination.locals.containsKey(name.name())) return;
+            Ast.TypeRef narrowed = isIntegerIntrinsicCall(call, source)
+                    ? Ast.TypeRef.simple("int")
+                    : Ast.TypeRef.simple("float");
             defineRefinementAlias(
                     name.name(),
-                    Ast.TypeRef.simple("int"),
+                    narrowed,
                     original,
                     destination);
             return;
