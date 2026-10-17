@@ -130,6 +130,51 @@ def self_test():
                 continue
             raise ValueError("adversarial JUnit alteration was accepted")
         first.write_text(good, encoding="utf-8")
+        # A source-free local Git checkout exercises the real HEAD/tree
+        # command path without exporting any Oreslang repository contents.
+        checkout = p / "synthetic-git-checkout"
+        checkout.mkdir()
+        subprocess.run(["git", "init", "-q", str(checkout)],
+                       capture_output=True, check=True, timeout=10)
+        (checkout / "README.md").write_text("synthetic only\\n".replace("\\n", "\n"),
+                                            encoding="utf-8")
+        subprocess.run(["git", "-C", str(checkout), "add", "README.md"],
+                       capture_output=True, check=True, timeout=10)
+        subprocess.run([
+            "git", "-C", str(checkout), "-c", "user.name=CI harness",
+            "-c", "user.email=ci-harness@example.invalid",
+            "commit", "-qm", "synthetic evidence fixture",
+        ], capture_output=True, check=True, timeout=10)
+        def git_sha(revision):
+            return subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", revision],
+                capture_output=True, text=True, check=True, timeout=5
+            ).stdout.strip()
+        actual = {"source_sha": git_sha("HEAD"),
+                  "source_tree": git_sha("HEAD^{tree}"),
+                  "scope": "java-structural-exact-head-guest"}
+        provenance.write_text(json.dumps(actual), encoding="utf-8")
+        require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
+                "exact synthetic HEAD/tree was not accepted")
+        for field in ("source_sha", "source_tree"):
+            forged = dict(actual)
+            forged[field] = "f" * 40
+            provenance.write_text(json.dumps(forged), encoding="utf-8")
+            try:
+                inspect(reports, provenance, checkout)
+            except ValueError:
+                pass
+            else:
+                raise ValueError("forged Git " + field + " was accepted")
+        provenance.write_text(json.dumps(actual), encoding="utf-8")
+        first.write_text("<!DOCTYPE testsuite><testsuite/>", encoding="utf-8")
+        try:
+            inspect(reports, provenance, checkout)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("DTD-bearing report was accepted")
+        first.write_text(good, encoding="utf-8")
         first.unlink()
         try:
             inspect(reports, provenance)
