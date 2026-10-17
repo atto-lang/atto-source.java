@@ -1,6 +1,10 @@
 {
-  "schema": 1,
+  "schema": 2,
   "enabled": false,
-  "requiredAuthorAssociation": "COLLABORATOR",
+  "minimumPermission": "write",
+  "disallowedReviewerIds": [
+    11139560,
+    2148448
+  ],
   "reviewer": null
 }
