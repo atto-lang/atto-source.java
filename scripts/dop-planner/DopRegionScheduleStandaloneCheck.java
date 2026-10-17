@@ -69,6 +69,23 @@ public final class DopRegionScheduleStandaloneCheck {
                     () -> new DopRegionSchedule.Access(root, 0, 0, 1,
                             DopRegionSchedule.Mode.REDUCE, bad));
         }
+        // No hidden Unicode line/paragraph separators, bidi formatting,
+        // nonbreaking spaces, or invalid surrogate halves in diagnostic names.
+        for (String hidden : new String[] {
+                "pre\u0085post", "pre\u2028post", "pre\u2029post",
+                "pre\u202epost", "pre\u2066post", "pre\u00a0post",
+                "pre\u200bpost", "pre\ufeffpost", "pre\ud800post"}) {
+            reject(IllegalArgumentException.class,
+                    () -> new DopRegionSchedule.Task(hidden, List.of()));
+            reject(IllegalArgumentException.class,
+                    () -> new DopRegionSchedule.Access(root, 0, 0, 1,
+                            DopRegionSchedule.Mode.REDUCE, hidden));
+        }
+        check(new DopRegionSchedule.Task("résumé α 🚀", List.of()).name()
+                .equals("résumé α 🚀"), "normal Unicode task name");
+        check(new DopRegionSchedule.Access(root, 0, 0, 1,
+                DopRegionSchedule.Mode.REDUCE, "σ_sum").reduction().equals("σ_sum"),
+                "normal Unicode reduction operator");
         check(new DopRegionSchedule.Task("phase one", List.of()).name().equals("phase one"),
                 "legitimate diagnostic task label accepted");
         var mutable = new ArrayList<DopRegionSchedule.Access>();
