@@ -47,6 +47,11 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 MAX_JSON = 2 * 1024 * 1024
 MAX_FILE = 256 * 1024
+LOCAL_REVIEWED_FILES = (
+    "scripts/dispatch-review-pinned-private-ci.py",
+    "scripts/verify-review-pinned-private-ci.py",
+    "scripts/publish-private-ci-source.py",
+)
 
 RECEIPT_KEYS = {
     "schema", "source_repository", "source_repository_id",
@@ -372,6 +377,34 @@ def git_output(root, *args):
     return p.stdout.strip()
 
 
+def verify_dispatcher_checkout(receipt):
+    """Prove all locally executed security code is exactly the reviewed publisher head."""
+    validate_receipt(receipt)
+    candidate = SCRIPT_DIR.parent
+    if candidate.is_symlink():
+        raise Denied("dispatcher checkout path cannot be a symlink")
+    root = candidate.resolve(strict=True)
+    if git_output(root, "rev-parse", "--show-toplevel") != str(root):
+        raise Denied("dispatcher must execute from the repository checkout root")
+    if git_output(root, "rev-parse", "--verify", "HEAD") != receipt["publisher_policy_head_sha"]:
+        raise Denied("dispatcher checkout is not the reviewed publisher head")
+    if git_output(root, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise Denied("dispatcher checkout is not clean")
+    for relative in LOCAL_REVIEWED_FILES:
+        local = root / relative
+        if local.is_symlink() or not local.is_file():
+            raise Denied("reviewed dispatcher file is missing or symlinked: " + relative)
+        raw = local.read_bytes()
+        if not raw or len(raw) > MAX_JSON:
+            raise Denied("reviewed dispatcher file has invalid size: " + relative)
+        expected_blob = require_sha(
+            git_output(root, "rev-parse", "--verify", "HEAD:" + relative),
+            "reviewed local file blob")
+        if git_blob_sha(raw) != expected_blob:
+            raise Denied("reviewed dispatcher file differs from Git index: " + relative)
+    return root
+
+
 def verify_local_checkout(root, receipt):
     candidate = Path(root)
     if candidate.is_symlink():
@@ -390,6 +423,7 @@ def verify_local_checkout(root, receipt):
 
 def full_authorize(receipt, require_branch_absent=True):
     """Revalidate revocable authority and live confidentiality state."""
+    verify_dispatcher_checkout(receipt)
     fresh_receipt(receipt)
     source_repository_live()
     destination = pub.checked_repo(CARRIER_REPO, expected_id=CARRIER_REPO_ID)
