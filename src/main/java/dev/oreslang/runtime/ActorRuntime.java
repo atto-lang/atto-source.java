@@ -727,9 +727,14 @@ public final class ActorRuntime implements AutoCloseable {
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long sharedActorLocalMemoryBytes() { return sharedActorLocalMemoryBytes.get(); }
     public long actorMemoryBytes() {
-        return privateMemoryBytes.get()
-                + sharedMemoryBytes.get()
-                + sharedActorLocalMemoryBytes.get();
+        // The three accounting domains are charged/refunded under this monitor.
+        // Read one coherent snapshot rather than mixing different instants,
+        // and never allow a wrapped total to misreport memory usage.
+        synchronized (memoryBudgetLock) {
+            return Math.addExact(
+                    Math.addExact(privateMemoryBytes.get(), sharedMemoryBytes.get()),
+                    sharedActorLocalMemoryBytes.get());
+        }
     }
 
     /**
