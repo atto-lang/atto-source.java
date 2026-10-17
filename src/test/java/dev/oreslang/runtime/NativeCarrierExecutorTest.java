@@ -94,6 +94,43 @@ final class NativeCarrierExecutorTest {
     }
 
     @Test
+    void publishedPthreadIsNotEquivalentToCompletedNativeStartBarrier() throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-partial-attach-");
+        try {
+            var active = new CountDownLatch(1);
+            pool.execute(active::countDown);
+            assertTrue(active.await(3, TimeUnit.SECONDS));
+            assertEquals(1, pool.getStartedCarrierCount());
+
+            var ready = NativeCarrierExecutor.class.getDeclaredField("nativeStarted");
+            ready.setAccessible(true);
+            // Simulate the *real* JNI ordering window between the first
+            // carrierThreads[slot] publication and nativeStart() returning.
+            // A census-based warm check would incorrectly admit from the
+            // reactor in this state.
+            ready.setBoolean(pool, false);
+            try {
+                assertEquals(1, pool.getStartedCarrierCount());
+                assertFalse(pool.readyForNoBootstrapAdmission(),
+                        "a published Java carrier identity is not the final bootstrap fence");
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> pool.executeWithoutBootstrap(() -> {}));
+            } finally {
+                ready.setBoolean(pool, true);
+            }
+            var delivered = new CountDownLatch(1);
+            pool.executeWithoutBootstrap(delivered::countDown);
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void noBootstrapAdmissionRejectsContendedFenceWithoutWaiting() throws Exception {
         String os = System.getProperty("os.name", "")
                 .toLowerCase(java.util.Locale.ROOT);
