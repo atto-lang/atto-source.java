@@ -4,9 +4,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -438,6 +444,57 @@ final class ActorSharedLocalMemoryTest {
             assertNotNull(held.get());
             assertEquals(0, runtime.sharedActorLocalMemoryBytes());
             assertEquals(0, runtime.sharedMemoryBytes());
+        }
+    }
+
+    @Test
+    void actorGenerationClaimsAreUniqueAndSaturatePermanently() throws Exception {
+        var nearEnd = new AtomicLong(Long.MAX_VALUE - 1);
+        assertEquals(Long.MAX_VALUE - 1,
+                ActorRuntime.claimActorGeneration(nearEnd));
+        assertEquals(Long.MAX_VALUE, nearEnd.get());
+        for (int i = 0; i < 3; i++) {
+            assertThrows(IllegalStateException.class,
+                    () -> ActorRuntime.claimActorGeneration(nearEnd));
+            assertEquals(Long.MAX_VALUE, nearEnd.get(),
+                    "failed claims must never wrap the generation counter");
+        }
+        var invalidZero = new AtomicLong(0);
+        assertThrows(IllegalStateException.class,
+                () -> ActorRuntime.claimActorGeneration(invalidZero));
+        assertEquals(0, invalidZero.get());
+
+        final int workers = 8;
+        final int claimsPerWorker = 1250;
+        var counter = new AtomicLong(1);
+        var executor = Executors.newFixedThreadPool(workers);
+        try {
+            List<Future<List<Long>>> futures = new ArrayList<>();
+            var start = new CountDownLatch(1);
+            for (int worker = 0; worker < workers; worker++) {
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    List<Long> assigned = new ArrayList<>(claimsPerWorker);
+                    for (int j = 0; j < claimsPerWorker; j++) {
+                        assigned.add(ActorRuntime.claimActorGeneration(counter));
+                    }
+                    return assigned;
+                }));
+            }
+            start.countDown();
+            List<Long> all = new ArrayList<>(workers * claimsPerWorker);
+            for (Future<List<Long>> future : futures) {
+                all.addAll(future.get(10, TimeUnit.SECONDS));
+            }
+            Collections.sort(all);
+            assertEquals(workers * claimsPerWorker, all.size());
+            for (int i = 0; i < all.size(); i++) {
+                assertEquals((long) i + 1, all.get(i).longValue(),
+                        "concurrent actor generations must be unique and contiguous");
+            }
+            assertEquals((long) all.size() + 1, counter.get());
+        } finally {
+            executor.shutdownNow();
         }
     }
 }
