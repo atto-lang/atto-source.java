@@ -143,6 +143,88 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void nonAffineJvmNioNotificationsReuseWarmCarrierWithoutExpansion()
+            throws Exception {
+        String previousAffinity = System.getProperty("ores.actor.affinity");
+        String previousBackend = System.getProperty("ores.runtime.carriers");
+        System.setProperty("ores.actor.affinity", "none");
+        System.setProperty("ores.runtime.carriers", "java");
+        try {
+            OresVM vm = OresVM.create(Runnable::run);
+            ActorRuntime actors = null;
+            var first = Pipe.open();
+            var second = Pipe.open();
+            var third = Pipe.open();
+            var release = new java.util.concurrent.CountDownLatch(1);
+            try {
+                actors = new ActorRuntime(IsolatePolicy.developer(),
+                        new ActorRuntime.DispatcherConfig(1, 1, 16, 64),
+                        ActorRuntime.TurnExecutor.direct(),
+                        ActorRuntime.ControlDispatcher.unavailable());
+                actors.bindNioCompletionCapacityHook(vm.nioReadiness()::retryStagedNotifications);
+                vm.nioReadiness().bindVmCompletionExecutor(
+                        actors::executeHostIoCompletion, true);
+
+                first.source().configureBlocking(false);
+                var bootstrap = new java.util.concurrent.CountDownLatch(1);
+                var one = vm.nioReadiness().watch(first.source(), SelectionKey.OP_READ);
+                one.whenCompleteRuntime((events, failure) -> bootstrap.countDown());
+                first.sink().write(ByteBuffer.wrap(new byte[] {1}));
+                assertTrue(bootstrap.await(3, TimeUnit.SECONDS));
+                assertEquals(1, actors.startedActorCarrierCount());
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (vm.nioReadiness().completionCarrierCount() != 0
+                        && System.nanoTime() < deadline)
+                    Thread.sleep(1);
+                assertEquals(0, vm.nioReadiness().completionCarrierCount(),
+                        "subsequent completions must use actor carriers, not bootstrap workers");
+
+                second.source().configureBlocking(false);
+                third.source().configureBlocking(false);
+                var callbackEntered = new java.util.concurrent.CountDownLatch(1);
+                var two = vm.nioReadiness().watch(second.source(), SelectionKey.OP_READ);
+                two.whenCompleteRuntime((events, failure) -> {
+                    callbackEntered.countDown();
+                    try { release.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                second.sink().write(ByteBuffer.wrap(new byte[] {2}));
+                assertTrue(callbackEntered.await(3, TimeUnit.SECONDS));
+
+                var three = vm.nioReadiness().watch(third.source(), SelectionKey.OP_READ);
+                third.sink().write(ByteBuffer.wrap(new byte[] {3}));
+                long pendingDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                while (vm.nioReadiness().pendingCount() != 0
+                        && System.nanoTime() < pendingDeadline)
+                    Thread.sleep(1);
+                assertEquals(0, vm.nioReadiness().pendingCount());
+                assertEquals(1, actors.startedActorCarrierCount(),
+                        "selector NIO completion must not expand non-affine JVM workers");
+                assertEquals(0, vm.controlCarrierCount());
+                release.countDown();
+                assertTrue((two.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+                assertTrue((three.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+                vm.nioReadiness().close();
+                assertTrue(vm.nioReadiness().awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                release.countDown();
+                first.source().close(); first.sink().close();
+                second.source().close(); second.sink().close();
+                third.source().close(); third.sink().close();
+                if (actors != null) actors.close();
+                vm.close();
+            }
+        } finally {
+            if (previousAffinity == null) System.clearProperty("ores.actor.affinity");
+            else System.setProperty("ores.actor.affinity", previousAffinity);
+            if (previousBackend == null) System.clearProperty("ores.runtime.carriers");
+            else System.setProperty("ores.runtime.carriers", previousBackend);
+        }
+    }
+
     @Test void coldStartCreatesControlOnlyForRunnableControlWork() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try {
