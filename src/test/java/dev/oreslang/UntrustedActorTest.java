@@ -177,9 +177,9 @@ final class UntrustedActorTest {
                 """,
                 """
                 pub untrusted actor fnc worker(): void {
-                  val int hidden = match process.context_id over
-                    on _ -> { return 1; }
-                  end;
+                  val int hidden = match process.context_id over {
+                    on _ { return 1; }
+                  };
                   return;
                 }
                 """);
