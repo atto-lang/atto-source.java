@@ -941,9 +941,9 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         String yaml = Files.readString(Path.of(
                 ".github/workflows/private-exact-candidate-validation.yml"));
         String runner = yaml.substring(yaml.indexOf("  validate-approved-candidate:"));
-        assertTrue(yaml.contains("      verify_option_pattern:\\n"
+        assertTrue(yaml.contains("      verify_option_pattern:\n"
                 + "        description:"));
-        assertTrue(yaml.contains("        default: false\\n"
+        assertTrue(yaml.contains("        default: false\n"
                 + "        type: boolean"));
         assertTrue(runner.contains("REQUIRE_OPTION_PATTERN: "
                 + "$" + "{{ inputs.verify_option_pattern }}"));
