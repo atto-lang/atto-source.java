@@ -952,6 +952,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "Remove prior Surefire reports before Option-pattern execution",
                 "Execute exact candidate Option-pattern JUnit runtime",
                 "Attest all 13 Option-pattern JUnit methods from fresh Surefire XML",
+                "Execute pinned nine-case Option admission and real guest exits",
+                "Attest pinned Option guest exit matrix without candidate-supplied verifier",
                 "Full Java 25 Maven candidate verification",
                 "Prove full Maven suite executed beyond focused security classes",
         };
@@ -1006,6 +1008,34 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "(?m)^              \"[a-zA-Z][a-zA-Z0-9]+\",$")
                 .matcher(attestation).results().count(),
                 "Expected method names must remain an exact 13-element inventory");
+        String guest = section(runner,
+                "      - name: Execute pinned nine-case Option admission and real guest exits",
+                "      - name: Attest pinned Option guest exit matrix without candidate-supplied verifier");
+        for (String marker : new String[] {
+                "git hash-object contracts/v1/option-pattern-v1.json",
+                "bb2302e138f4b36d68afd6ffa9280b24fa270d04",
+                "git hash-object scripts/check_option_pattern_contract.py",
+                "77a30027582d2496d5e7087a9a51a75c075496cd",
+                "--backend graal", "--run-command",
+                "contracts/v1/java_probe.py",
+                "option-pattern-private-candidate.json" }) {
+            assertTrue(guest.contains(marker),
+                    "Missing pinned real-guest admission requirement: " + marker);
+        }
+        String realGuestProof = section(runner,
+                "      - name: Attest pinned Option guest exit matrix without candidate-supplied verifier",
+                "      - name: Full Java 25 Maven candidate verification");
+        for (String marker : new String[] {
+                "python3 -I - <<'PY'", "reference_admission_and_runtime_verified",
+                "APPROVED_CANDIDATE_SHA", "case.get(\"verified\") is not True",
+                "case.get(\"runtime_exit\") != exit_code",
+                "seen != set(expected)", "VERIFIED_OPTION_PATTERN_GUEST_CASES=9",
+                "42", "43", "7" }) {
+            assertTrue(realGuestProof.contains(marker),
+                    "Untrusted/missing exact Option guest-exit attestation: " + marker);
+        }
+        assertFalse(realGuestProof.contains("python3 scripts/"),
+                "Guest-exit evidence verifier must be part of trusted workflow");
         String full = section(runner,
                 "      - name: Prove full Maven suite executed beyond focused security classes",
                 "      - name: Native AOT candidate build and guest execution");
