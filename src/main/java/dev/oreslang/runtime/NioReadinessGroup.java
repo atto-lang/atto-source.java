@@ -226,8 +226,12 @@ public final class NioReadinessGroup implements AutoCloseable {
                             return;
                         }
                         socket.configureBlocking(false);
-                        if (!accepted.completeFromRuntime(socket))
+                        if (accepted.completeFromRuntime(socket)) {
+                            socket = null; // Future consumer now owns accepted FD
+                        } else {
                             socket.close(); // cancelled just after accept()
+                            socket = null;
+                        }
                     } catch (IOException | RuntimeException | Error problem) {
                         if (socket != null) {
                             try { socket.close(); }
