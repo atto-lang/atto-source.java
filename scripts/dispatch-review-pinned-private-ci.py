@@ -312,14 +312,7 @@ def refresh_authorization(r, require_new_ref=False):
     if require_new_ref: branch_absent(r)
     return parent_tree
 
-def dispatch(receipt_path,source_dir):
-    r=validate_receipt(load_json(receipt_path))
-    # Executable dispatcher/publisher authority must be the exact reviewed PR
-    # head, not the source-under-test checkout. Authenticate real worktree
-    # bytes before reading any private source or writing any carrier object.
-    PUB.require_trusted_publisher_checkout(ROOT,r["publisher_policy_head_sha"])
-    branch_absent(r)
-    refresh_authorization(r,True)
+def require_staged_source(source_dir):
     source=Path(source_dir).resolve(strict=True)
     trusted=ROOT.resolve(strict=True)
     try:
@@ -328,6 +321,19 @@ def dispatch(receipt_path,source_dir):
         raise Denied("source snapshot escapes reviewed dispatcher checkout") from exc
     if relative==Path("."):
         raise Denied("source snapshot must be staged separately from dispatcher checkout")
+    if source.name==".git" or ".git" in relative.parts:
+        raise Denied("source snapshot cannot be staged inside Git metadata")
+    return source
+
+def dispatch(receipt_path,source_dir):
+    r=validate_receipt(load_json(receipt_path))
+    # Executable dispatcher/publisher authority must be the exact reviewed PR
+    # head, not the source-under-test checkout. Authenticate real worktree
+    # bytes before reading any private source or writing any carrier object.
+    PUB.require_trusted_publisher_checkout(ROOT,r["publisher_policy_head_sha"])
+    branch_absent(r)
+    refresh_authorization(r,True)
+    source=require_staged_source(source_dir)
     # The staged source is intentionally data-only (no nested Git authority).
     # The remote immutable source commit/tree is authenticated above; below we
     # reconstruct the complete Git tree from bytes and require an exact match.
