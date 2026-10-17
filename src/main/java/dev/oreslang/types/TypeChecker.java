@@ -5165,6 +5165,9 @@ public final class TypeChecker {
                     || isBuiltinDoublePredicate(call, sourceEnv))
                 && call.arguments().size() == 1 && !call.typeArgumentsPresent()
                 && call.arguments().getFirst() instanceof Ast.NameExpr name) {
+            // Repeated trusted guards along an && chain reuse the existing
+            // refinement rather than shadowing it with a duplicate binding.
+            if (destination.bindings.containsKey(name.name())) return;
             Env.Binding binding = sourceEnv.lookup(name.name());
             Type narrowed = isBuiltinIntegerPredicate(call, sourceEnv)
                     ? Primitive.INT : Primitive.FLOAT;
