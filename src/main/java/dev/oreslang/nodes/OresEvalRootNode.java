@@ -4979,14 +4979,25 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private TrapResultValue trapSuccess(Ast.FunctionDecl function, Object value) {
-            boolean voidSuccess = function.kind() == Ast.CallableKind.ROUTINE
-                    || function.returnType() == null
-                    || function.returnType().name().equals("void");
+            boolean voidSuccess = isVoidReturnType(function);
             if (voidSuccess != (value == null)) {
                 throw new OresPanic(
                         "trap success invariant violated for callable '" + function.name() + "'");
             }
             return new TrapResultValue(true, value, null, voidSuccess);
+        }
+
+        private boolean isVoidReturnType(Ast.FunctionDecl function) {
+            if (function.kind() == Ast.CallableKind.ROUTINE || function.returnType() == null) return true;
+            Ast.TypeRef type = function.returnType();
+            Set<String> seen = new java.util.HashSet<>();
+            while (type != null && seen.add(type.name())) {
+                if (type.name().equals("void")) return true;
+                Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+                if (alias == null || !alias.genericParameters().isEmpty()) return false;
+                type = alias.target();
+            }
+            return false;
         }
 
         private TrapResultValue trapFailure(Throwable failure) {
