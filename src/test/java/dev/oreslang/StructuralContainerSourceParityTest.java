@@ -465,6 +465,16 @@ final class StructuralContainerSourceParityTest {
                         && actorFuture.getMessage().contains("actor boundary"),
                 actorFuture::getMessage);
 
+        IllegalArgumentException genericZeroWidth = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad<T>(structural FixedArray[0 of T] payload): int {
+                          return payload.length;
+                        }
+                        """)));
+        assertTrue(genericZeroWidth.getMessage().contains("closed readonly-safe"),
+                genericZeroWidth::getMessage);
+
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 actor fnc ok(FixedArray[0 of int] payload): void {
                   return;
