@@ -48,6 +48,11 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final int commandCapacity;
     private final ArrayList<Reactor> reactors = new ArrayList<>();
     private final IdentityHashMap<SelectableChannel, Watch> ownership = new IdentityHashMap<>();
+    // A readiness watch retires BEFORE its Future subscribers drain. Keep a
+    // separate per-listener lease across callback settlement and re-arm,
+    // otherwise a second acceptAsync can race the first one's accept().
+    private final IdentityHashMap<ServerSocketChannel, OresFuture<SocketChannel>> acceptLeases =
+            new IdentityHashMap<>();
     private final AtomicInteger pending = new AtomicInteger();
     // Includes selector watches that have retired but whose terminal Future
     // callbacks are still queued or running. Protects against unbounded
@@ -197,53 +202,95 @@ public final class NioReadinessGroup implements AutoCloseable {
             OresFuture<Integer> pending = pendingWatch.getAndSet(null);
             if (pending != null) pending.cancel(false);
         });
+        synchronized (lifecycle) {
+            if (closed || !listener.isOpen())
+                return OresFuture.failed(new IOException("NIO TCP listener closed"));
+            if (acceptLeases.containsKey(listener))
+                return OresFuture.failed(new IllegalStateException(
+                        "listener already has an outstanding TCP accept"));
+            acceptLeases.put(listener, accepted);
+        }
 
         final class AcceptPump {
+            // Counts callbacks AND in-progress registration; the listener's
+            // lease cannot be returned between watch retirement and accept().
+            final AtomicInteger inFlight = new AtomicInteger();
+
+            void releaseIfTerminal() {
+                if (!accepted.isDone() || inFlight.get() != 0) return;
+                synchronized (lifecycle) {
+                    if (inFlight.get() == 0 && acceptLeases.get(listener) == accepted)
+                        acceptLeases.remove(listener);
+                }
+            }
+
             void arm() {
-                if (accepted.isDone()) return;
-                OresFuture<Integer> readiness = NioReadinessGroup.this.watch(
-                        listener, SelectionKey.OP_ACCEPT);
+                inFlight.incrementAndGet(); // before any externally visible watch
+                if (accepted.isDone()) {
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    return;
+                }
+                final OresFuture<Integer> readiness;
+                try {
+                    readiness = NioReadinessGroup.this.watch(listener, SelectionKey.OP_ACCEPT);
+                } catch (RuntimeException | Error problem) {
+                    accepted.failFromRuntime(problem);
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    if (problem instanceof VirtualMachineError fatal) throw fatal;
+                    if (problem instanceof ThreadDeath fatal) throw fatal;
+                    return;
+                }
                 pendingWatch.set(readiness);
+                readiness.whenCompleteRuntime((events, failure) -> {
+                    pendingWatch.compareAndSet(readiness, null);
+                    try {
+                        if (accepted.isDone()) return;
+                        if (failure != null) {
+                            accepted.failFromRuntime(failure);
+                            return;
+                        }
+                        SocketChannel socket = null;
+                        try {
+                            // The caller owns the listener and must keep it
+                            // nonblocking for the entire accepted operation.
+                            if (listener.isBlocking())
+                                throw new IllegalStateException("listener became blocking");
+                            socket = listener.accept();
+                            if (socket == null) {
+                                // A competing raw host accept consumed the
+                                // readiness; re-arm without spinning.
+                                arm();
+                                return;
+                            }
+                            socket.configureBlocking(false);
+                            if (accepted.completeFromRuntime(socket)) {
+                                socket = null; // terminal Future owns accepted FD
+                            } else {
+                                socket.close(); // cancellation won after accept
+                                socket = null;
+                            }
+                        } catch (IOException | RuntimeException | Error problem) {
+                            if (socket != null) {
+                                try { socket.close(); }
+                                catch (IOException closeFailure) { problem.addSuppressed(closeFailure); }
+                            }
+                            accepted.failFromRuntime(problem);
+                            if (problem instanceof VirtualMachineError fatal) throw fatal;
+                            if (problem instanceof ThreadDeath fatal) throw fatal;
+                        }
+                    } finally {
+                        inFlight.decrementAndGet();
+                        releaseIfTerminal();
+                    }
+                });
+                // Cancellation may have raced a re-arm. An already-ready
+                // callback still holds inFlight until its cleanup finishes.
                 if (accepted.isDone()) {
                     pendingWatch.compareAndSet(readiness, null);
                     readiness.cancel(false);
-                    return;
                 }
-                readiness.whenCompleteRuntime((events, failure) -> {
-                    pendingWatch.compareAndSet(readiness, null);
-                    if (accepted.isDone()) return;
-                    if (failure != null) {
-                        accepted.failFromRuntime(failure);
-                        return;
-                    }
-                    SocketChannel socket = null;
-                    try {
-                        // Even if another host accidentally consumes a ready
-                        // accept, null simply means re-arm rather than spin.
-                        if (listener.isBlocking())
-                            throw new IllegalStateException("listener became blocking");
-                        socket = listener.accept();
-                        if (socket == null) {
-                            arm();
-                            return;
-                        }
-                        socket.configureBlocking(false);
-                        if (accepted.completeFromRuntime(socket)) {
-                            socket = null; // Future consumer now owns accepted FD
-                        } else {
-                            socket.close(); // cancelled just after accept()
-                            socket = null;
-                        }
-                    } catch (IOException | RuntimeException | Error problem) {
-                        if (socket != null) {
-                            try { socket.close(); }
-                            catch (IOException closeFailure) { problem.addSuppressed(closeFailure); }
-                        }
-                        accepted.failFromRuntime(problem);
-                        if (problem instanceof VirtualMachineError fatal) throw fatal;
-                        if (problem instanceof ThreadDeath fatal) throw fatal;
-                    }
-                });
             }
         }
         new AcceptPump().arm();
