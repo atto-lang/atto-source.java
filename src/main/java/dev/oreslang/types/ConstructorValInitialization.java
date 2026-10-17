@@ -8,17 +8,18 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Definite initialization of ordinary-class blank val fields.
+ * Definite initialization of ordinary-class instance fields.
  *
  * <p>Tracks MUST and MAY initialized fields on normal constructor paths.
- * A write is legal only when the field is not MAY-initialized; construction
- * completes only when every blank val field is MUST-initialized. Each explicit
+ * A blank immutable val slot can be written only if it is not MAY-initialized;
+ * mutable let slots may be reassigned after their first initialization.
+ * Construction completes only when every declaration-uninitialized field is MUST-initialized. Each explicit
  * constructor is checked independently. Conditions do not publish a partially
  * constructed receiver, and constructor writes are direct self.field = value
  * statements, not arbitrary expression side effects.</p>
  *
  * <p>Loops, try/catch/finally, select, defer and match are conservatively
- * allowed only once all required val slots are initialized. This avoids
+ * allowed only once all declaration-uninitialized fields are initialized. This avoids
  * claiming exactly-once proofs across exceptional, suspended or iterative
  * edges that the current frontend does not model yet.</p>
  */
@@ -79,8 +80,8 @@ public final class ConstructorValInitialization {
     private static State statement(Ast.Stmt stmt, State state, Set<String> required, String klass) {
         if (stmt instanceof Ast.ExprStmt expression) {
             if (expression.expression() instanceof Ast.AssignExpr assignment
-                    && blankValTarget(assignment.target(), required) != null) {
-                String field = blankValTarget(assignment.target(), required);
+                    && uninitializedFieldTarget(assignment.target(), required) != null) {
+                String field = uninitializedFieldTarget(assignment.target(), required);
                 // RHS executes before the slot is written: reject reads of a missing slot.
                 scan(assignment.value(), state, required, klass);
                 if (state.fixed.contains(field) && state.may.contains(field)) {
@@ -162,7 +163,7 @@ public final class ConstructorValInitialization {
         }
     }
 
-    private static String blankValTarget(Ast.Expr expr, Set<String> required) {
+    private static String uninitializedFieldTarget(Ast.Expr expr, Set<String> required) {
         if (expr instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")
@@ -180,7 +181,7 @@ public final class ConstructorValInitialization {
     private static void scan(Object node, State state, Set<String> required, String klass) {
         if (node == null) return;
         if (node instanceof Ast.AssignExpr assignment) {
-            String field = blankValTarget(assignment.target(), required);
+            String field = uninitializedFieldTarget(assignment.target(), required);
             if (field != null
                     && (state.fixed.contains(field) || !state.must.contains(field))) {
                 throw error(klass, field,
