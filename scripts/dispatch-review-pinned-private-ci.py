@@ -301,21 +301,25 @@ def refresh_authorization(r, require_new_ref=False):
     if require_new_ref: branch_absent(r)
     return parent_tree
 
-def git_identity(source,r):
-    try:
-        env=PUB.verified_child_env()
-        head=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD^{commit}"],
-                                     text=True,timeout=20,env=env).strip()
-        tree=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD^{tree}"],
-                                     text=True,timeout=20,env=env).strip()
-    except (OSError,subprocess.SubprocessError) as exc: raise Denied("source checkout Git identity unavailable") from exc
-    if head!=r["source_commit_sha"] or tree!=r["source_tree_sha"]: raise Denied("source checkout is not approved commit/tree")
-
 def dispatch(receipt_path,source_dir):
     r=validate_receipt(load_json(receipt_path))
+    # Executable dispatcher/publisher authority must be the exact reviewed PR
+    # head, not the source-under-test checkout. Authenticate real worktree
+    # bytes before reading any private source or writing any carrier object.
+    PUB.require_trusted_publisher_checkout(ROOT,r["publisher_policy_head_sha"])
     branch_absent(r)
     refresh_authorization(r,True)
-    source=Path(source_dir).resolve(strict=True); git_identity(source,r)
+    source=Path(source_dir).resolve(strict=True)
+    trusted=ROOT.resolve(strict=True)
+    try:
+        relative=source.relative_to(trusted)
+    except ValueError as exc:
+        raise Denied("source snapshot escapes reviewed dispatcher checkout") from exc
+    if relative==Path("."):
+        raise Denied("source snapshot must be staged separately from dispatcher checkout")
+    # The staged source is intentionally data-only (no nested Git authority).
+    # The remote immutable source commit/tree is authenticated above; below we
+    # reconstruct the complete Git tree from bytes and require an exact match.
     files=PUB.collect_source(source,ROOT)
     if PUB.source_tree_sha(files)!=r["source_tree_sha"]: raise Denied("source bytes do not match approved Git tree")
     batches=PUB.prepare_source_tree_batches(files)
