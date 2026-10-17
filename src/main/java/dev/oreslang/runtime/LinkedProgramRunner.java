@@ -276,6 +276,157 @@ public final class LinkedProgramRunner {
         return new RunResult(build, exitStatus);
     }
 
+
+    /**
+     * Link and initialize the complete source graph, then invoke one exported
+     * function from the selected entry code unit without requiring main().
+     *
+     * <p>This is the embedding seam used by provider-neutral function hosts.
+     * The caller owns policy, scoped permissions, execution profile and stream
+     * redirection. Function lookup remains code-unit local and visibility
+     * checked by the Ores evaluator; module-qualified names such as
+     * {@code lambda.invoke_ping} are supported.</p>
+     */
+    public static Object invokePublic(
+            Path entryFile,
+            String functionName,
+            List<?> arguments,
+            IsolatePolicy policy,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            Map<String, String> environment,
+            OutputStream out,
+            OutputStream err) throws IOException {
+        if (functionName == null || functionName.isBlank()) {
+            throw new IllegalArgumentException("public function name cannot be blank");
+        }
+        if (functionName.startsWith("__ores_internal_")) {
+            throw new IllegalArgumentException("internal Oreslang control names are not callable");
+        }
+
+        Path entry = entryFile.toAbsolutePath().normalize();
+        if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
+
+        OresProjectConfig projectConfig = OresProjectConfig.discover(entry, environment);
+        LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
+        LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
+        collectImportClosure(entry, units, projectConfig, importResolutions,
+                new SourceAdmissionBudget(), 0);
+        ensureJavaEntryContainsOres(entry, units);
+
+        boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
+        if (hasJavaSource) {
+            policy.require(IsolatePolicy.Capability.JAVA_SOURCE_INTEROP, "mixed Java/Ores source islands");
+            policy.require(IsolatePolicy.Capability.JAVA_INTEROP, "mixed Java/Ores object interop");
+            if (policy.adversarial()) {
+                throw new SecurityException("mixed Java/Ores source islands are disabled for adversarial isolates");
+            }
+            if (executionProfile.mode() != ExecutionProfile.Mode.JIT) {
+                throw new IllegalArgumentException(
+                        "java { ... } / ores { ... } source islands currently require --mode=jit; "
+                                + "AOT/hybrid builds must precompile Java source");
+            }
+        }
+
+        Map<String, String> sources = oresSources(units);
+        IncrementalCompiler.BuildResult build =
+                new IncrementalCompiler().compile(sources, importResolutions);
+        Map<String, Ast.Program> programs = parsePrograms(sources);
+        String entryId = unitId(entry);
+        MixedSourceUnit entryUnit = units.get(entryId);
+        if (entryUnit == null) {
+            throw new IllegalStateException("entry source unit was not collected: " + entryId);
+        }
+        if (entryUnit.primaryLanguage() == MixedSourceUnit.PrimaryLanguage.JAVA) {
+            throw new IllegalArgumentException(
+                    "public Oreslang function invocation requires an .ores entry code unit");
+        }
+
+        try (MixedJavaCompiler.Compilation javaCompilation =
+                     MixedJavaCompiler.compile(new ArrayList<>(units.values()), programs)) {
+            LinkedHashSet<String> effectiveHostClasses = new LinkedHashSet<>(allowedHostClasses);
+            effectiveHostClasses.addAll(javaCompilation.hostClasses());
+
+            Thread currentThread = Thread.currentThread();
+            ClassLoader previousLoader = currentThread.getContextClassLoader();
+            currentThread.setContextClassLoader(javaCompilation.classLoader());
+            try {
+                Context.Builder builder = policy.restrictedContextBuilder(
+                        executionProfile,
+                        effectiveHostClasses,
+                        permissions,
+                        permissionCheckMode);
+                if (out != null) builder.out(forwardingStream(out));
+                if (err != null) builder.err(forwardingStream(err));
+
+                try (Context context = builder.build()) {
+                    LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
+                    List<String> ids = new ArrayList<>(build.units().keySet());
+                    ids.sort(String::compareTo);
+
+                    for (String id : ids) {
+                        IncrementalCompiler.CompiledUnit unit = build.units().get(id);
+                        Source source = Source.newBuilder(OresLanguage.ID, unit.sourceText(), id)
+                                .mimeType(OresLanguage.MIME_TYPE)
+                                .buildLiteral();
+                        parsedUnits.put(id, context.parse(source));
+                    }
+
+                    for (Map.Entry<String, Map<String, String>> importer : importResolutions.entrySet()) {
+                        Value parsed = parsedUnits.get(importer.getKey());
+                        if (parsed == null) continue;
+                        for (Map.Entry<String, String> resolution : importer.getValue().entrySet()) {
+                            parsed.execute(
+                                    OresEvalRootNode.REGISTER_IMPORT_COMMAND,
+                                    resolution.getKey(),
+                                    resolution.getValue());
+                        }
+                    }
+
+                    for (String id : ids) parsedUnits.get(id).execute(OresEvalRootNode.LINK_ONLY_COMMAND);
+                    for (List<String> group : build.initializationGroups()) {
+                        for (String id : group) {
+                            parsedUnits.get(id).execute(OresEvalRootNode.INIT_ONLY_COMMAND);
+                        }
+                    }
+
+                    LinkedHashMap<String, MixedInteropBridge.Invoker> bridgeInvokers =
+                            new LinkedHashMap<>();
+                    for (Map.Entry<String, Value> parsed : parsedUnits.entrySet()) {
+                        Value unit = parsed.getValue();
+                        bridgeInvokers.put(parsed.getKey(), (function, bridgeArguments) -> {
+                            Object[] invocation = new Object[2 + bridgeArguments.length];
+                            invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
+                            invocation[1] = function;
+                            System.arraycopy(
+                                    bridgeArguments, 0, invocation, 2, bridgeArguments.length);
+                            return toHostValue(unit.execute(invocation));
+                        });
+                    }
+
+                    try (MixedInteropBridge.Scope ignored = MixedInteropBridge.open(bridgeInvokers)) {
+                        Value entryPoint = parsedUnits.get(entryId);
+                        if (entryPoint == null) {
+                            throw new IllegalStateException(
+                                    "entry unit was not linked: " + entryId);
+                        }
+                        Object[] invocation = new Object[2 + arguments.size()];
+                        invocation[0] = OresEvalRootNode.INVOKE_PUBLIC_COMMAND;
+                        invocation[1] = functionName;
+                        for (int i = 0; i < arguments.size(); i++) {
+                            invocation[i + 2] = arguments.get(i);
+                        }
+                        return toHostValue(entryPoint.execute(invocation));
+                    }
+                }
+            } finally {
+                currentThread.setContextClassLoader(previousLoader);
+            }
+        }
+    }
+
     private static int requireExitStatus(Value value) {
         if (value == null || value.isNull()) return 0;
         if (!value.fitsInInt()) {
