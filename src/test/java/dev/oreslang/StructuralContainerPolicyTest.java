@@ -117,6 +117,24 @@ final class StructuralContainerPolicyTest {
                      () -> map(new Types.Borrow(Primitive.STRING, false), Primitive.INT, true));
     }
 
+    @Test void malformedUnicodeLiteralCannotBecomeStableKeyOrReadonlyValue() {
+        var high = new Types.StringLiteral("\uD800");
+        var low = new Types.StringLiteral("\uDC00");
+        var validPair = new Types.StringLiteral("😀");
+        assertFalse(stableKey(high));
+        assertFalse(stableKey(low));
+        assertTrue(stableKey(validPair));
+        assertThrows(IllegalArgumentException.class,
+                () -> map(high, Primitive.INT, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> map(low, Primitive.INT, false));
+        assertThrows(IllegalArgumentException.class,
+                () -> list(high, true));
+        assertThrows(IllegalArgumentException.class,
+                () -> array(low, true));
+        assertTrue(admits(list(validPair, false), list(Primitive.STRING, true)));
+    }
+
     @Test void unresolvedTypesAndMutableAliasesAreNotReadonlySafe() {
         assertThrows(IllegalArgumentException.class,
                      () -> list(Types.Unknown.INSTANCE, true));
