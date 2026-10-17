@@ -99,17 +99,20 @@ final class SupervisorFailureRetentionTest {
                     n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.STOP),
                     r -> fail("failed process must not resolve directives"))) {
             var control = new SupervisorFailureControl(supervisor, group, pool, 2);
-            control.install(process::accept);
-            control.publish(notice(supervisor, group));
+            var terminal = notice(supervisor, group);
+            control.reserve(terminal.actorId());
+            control.installAsync(process::accept);
+            control.publish(terminal);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (control.failure().isEmpty() && System.nanoTime() < deadline)
                 Thread.sleep(2);
             assertTrue(control.failure().isPresent(),
                     "upstream lane must observe failed handoff");
             assertEquals(1, control.undelivered());
-            assertEquals(0, control.queued());
+            assertEquals(1, control.queued());
+            assertEquals(1, control.pendingSnapshot().size());
             assertEquals(1, process.undelivered());
-            assertEquals(0, process.queued());
+            assertEquals(1, process.queued());
             assertEquals(0, process.resolved());
             assertFalse(control.healthy());
             assertFalse(process.healthy());
