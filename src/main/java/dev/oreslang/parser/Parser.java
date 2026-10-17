@@ -1471,7 +1471,7 @@ public final class Parser {
                 throw error(previous(), "structural parameters are read-only borrowed views and cannot be 'mut'");
             }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable(), param.rest()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
