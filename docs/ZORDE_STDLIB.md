@@ -164,3 +164,88 @@ namespace to avoid cross-unit identity collisions.
 make `zorde.schema<T>()` an actual typed intrinsic, and connect generated
 schemas to stdlib codecs, actors and FFI. Importing arbitrary host plans or
 forging `Valid<T>` must never become a guest-language capability.
+
+## Architecture decision: Zod-style schema-first, with one canonical IR
+
+**Chosen direction:** A statically known Zorde schema is the authoritative
+definition of the validation rule. Oreslang derives the refined *output type*
+from that same rule. Existing `@Min/@Max/@Range/@MinLength/@MaxLength` and
+`with` syntax are alternative **frontends** that lower into the identical
+static schema IR. Runtime parsing executes that IR, not a separately maintained
+ad-hoc validator. Schema-first does **not** mean executing arbitrary userland
+validation functions at compile time.
+
+Proposed standard-library source API (currently **analysis-only** in the Java
+compiler's `ZordeSchemaGenerator.planSource`, not guest-executable):
+
+```ores
+namespace app;
+
+const PortSchema = Zorde.int().min(1).max(65535);
+type Port = Zorde.infer<PortSchema>;
+
+const NameSchema = Zorde.string().minLength(1).maxLength(32);
+type Name = Zorde.infer<NameSchema>;
+
+// Future guest runtime API once checked constructors and boundary lowering land:
+const result = PortSchema.safeParse(rawInput); // Result<Port, ConstraintError>
+```
+
+For comparison, these give the same **structural constraint semantics**:
+
+```ores
+@Range(min=1,max=65535) type PortA = int;
+type PortB = int with value >= 1 and value <= 65535;
+```
+
+The parser AST contains real `const` bindings and
+`Zorde.infer<SchemaConstant>` aliases. The experimental compiler planner now
+visits those declarations, statically folds **only** the built-in
+`Zorde.int()` / `Zorde.string()` scalar chains with signed literal bounds,
+and emits the same `StaticZordeSchema` -> `RefinementRules.Descriptor` and
+`InferredScalarType` used for annotations and `with`. Unrecognized calls,
+runtime values, user callbacks, rebindable schema definitions, shadowed Zorde
+intrinsics, incorrect base-property combinations, incompatible generics and
+contradictions fail closed. Ordinary `OresCompiler.parseAndTypeCheck` does not
+yet admit these types.
+
+**Core invariant:** `StaticSchema -> normalized ConstraintIR -> checked
+descriptor -> {static proof, runtime validation, generated type}`. There
+must never be independent interpretation of `gte/lte/ne` (or Unicode scalar
+length) in the type checker versus checked parsing. The Java host prototype
+shares one scalar metric and one interval-membership kernel. Native Oreslang
+Zorde and LLVM must implement the *same versioned descriptor contract* and pass
+the same fixtures before those backends admit executable refinements.
+
+### Type inference limits and nominal identity
+
+- `Zorde.infer<ConstSchema>` is a **compiler intrinsic type query**, not
+  a normal generic parameter that user code can implement or dynamically call.
+- Static schema resolution is closed-world: no arbitrary callbacks,
+  environment-dependent validation, async, mutation, reflection, or unchecked
+  `where`. Runtime-only schemas can validate dynamically but must **not**
+  fabricate a statically narrowed type.
+- `Schema<Input, Output>` must eventually track both sides. Pure validators
+  accept `int` or `string` as input and return a refined output; coercions and
+  transformations, if added, must declare their input and output types
+  separately and cannot bypass validation.
+- Structural schema inference does not manufacture a new nominal type.
+  `define newtype` or explicit compiler-verified branding is required for
+  nominal identity. Fingerprints use compiler-qualified type names.
+- Literal values known at compile time can be proved/rejected using the same
+  descriptor; dynamic values require `Result<T,ConstraintError>`.
+  Direct casts, aliasing/mutation, FFI, serialization or actor DATA must not
+  mint `T` without the same check.
+- The current dynamic `ZordeValueSchema` and `ValidValue` facade is not yet
+  proof-carrying typestate: some payloads retain mutable aliases. Production
+  typed parsing requires immutable scalar payloads and deep freeze/ownership
+  transfer for mutable collections.
+
+### Implementation status and remaining release gate
+
+The Java AST planner and static schema DSL exist and are exercised on
+source-exact components with a funded CI carrier. Guest codegen for
+`Zorde.infer`, `schema<T>()`, `T.try_from()` and `safeParse` is not
+enabled yet. Source-first real `Parser.parse` JUnit testing and native Zorde
+wire-decoding tests are required before claiming complete integration. LLVM
+continues to reject unsupported refinements rather than erasing validation.
