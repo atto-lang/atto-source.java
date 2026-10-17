@@ -245,6 +245,50 @@ class DispatcherTests(unittest.TestCase):
             raise AssertionError("unexpected API route: " + method + " " + route)
         return api, calls
 
+    def test_exact_ref_cleanup_requires_our_commit(self):
+        doc = receipt()
+        branch = mod.payload_branch(doc)
+        with patch.object(mod.pub, "gh_api", return_value={
+                 "ref": "refs/heads/" + branch,
+                 "object": {"sha": J, "type": "commit"}}), \
+             patch.object(mod.pub, "gh_api_no_content") as remove_ref, \
+             patch.object(mod, "matching_payload_refs", return_value=[]):
+            mod.delete_payload_ref_if_exact(doc, J)
+        self.assertEqual(remove_ref.call_count, 1)
+
+    def test_exact_ref_cleanup_refuses_moved_branch(self):
+        doc = receipt()
+        branch = mod.payload_branch(doc)
+        with patch.object(mod.pub, "gh_api", return_value={
+                 "ref": "refs/heads/" + branch,
+                 "object": {"sha": I, "type": "commit"}}), \
+             patch.object(mod.pub, "gh_api_no_content",
+                          side_effect=AssertionError("must not remove moved ref")):
+            with self.assertRaisesRegex(mod.Denied, "ref moved"):
+                mod.delete_payload_ref_if_exact(doc, J)
+
+    def test_final_authorization_failure_cleans_payload_ref(self):
+        doc = receipt()
+        files = [("hello.ores", b"x", "100644")]
+        api, _calls = self.successful_api(doc)
+        states = []
+        def authorize(_receipt, absent):
+            states.append(absent)
+            if absent is False:
+                raise mod.Denied("revoked after ref creation")
+        with patch.object(mod.pub, "source_tree_sha", return_value=B), \
+             patch.object(mod.pub, "prepare_source_tree_batches",
+                          return_value=[[("hello.ores", b"x", "100644", None)]]), \
+             patch.object(mod.pub, "require_private_ci_api_budget"), \
+             patch.object(mod.pub, "gh_api", side_effect=api), \
+             patch.object(mod.pub, "gh_api_no_content") as remove_ref, \
+             patch.object(mod, "matching_payload_refs", return_value=[]), \
+             patch.object(mod.pub, "nested_sha",
+                          side_effect=lambda value, key: value[key]["sha"]):
+            with self.assertRaisesRegex(mod.Denied, "revoked after ref creation"):
+                mod.write_payload(files, doc, authorize=authorize)
+        self.assertFalse(states[-1])
+        self.assertEqual(remove_ref.call_count, 1)
     def test_successful_payload_rechecks_authority_before_every_write(self):
         doc = receipt()
         files = [("hello.ores", b"x", "100644")]
