@@ -116,6 +116,24 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void inferredGenericConstructorUsesSelectedArity() throws Exception {
+        String source = """
+                define class Holder<T> as
+                  val T value;
+                  constructor(T initial) { self.value = initial; return; }
+                  constructor(T initial, int offset) { self.value = initial; return; }
+                  pub get(): T { return self.value; }
+                end
+                pub routine main(): void {
+                  val holder = new Holder<>(42, 1);
+                  stdio.stdout.write(holder.get());
+                  return;
+                }
+                """;
+        assertEquals("42", run(source));
+    }
+
+    @Test
     void missingConstructorArityRejectsRatherThanUsingSyntheticFields() {
         Exception failure = assertThrows(Exception.class, () -> run("""
                 define class Sample as
