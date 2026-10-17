@@ -2716,9 +2716,21 @@ public final class OwnershipChecker {
         Ast.TypeRef capabilitySafeType = source == null
                 ? narrowedType
                 : overlayReadonlyCapabilities(source.type, narrowedType);
-        ValueKind kind = source == null ? kindOfType(capabilitySafeType) : source.kind;
+        ValueKind narrowedKind = kindOfType(capabilitySafeType);
+
+        // A successful runtime refinement may prove that an opaque/move-only
+        // handle is actually a Copy scalar. That proof is sufficient to copy
+        // the value on this edge; retaining the opaque root would incorrectly
+        // make a proven int/string/bool behave move-only. Non-Copy refinements
+        // must remain rooted so narrowing can never shed ownership/capability
+        // obligations from the original value.
+        ValueKind kind = narrowedKind == ValueKind.COPY
+                ? ValueKind.COPY
+                : source == null ? narrowedKind : source.kind;
         VarState alias = new VarState(capabilitySafeType, false, kind, Origin.LOCAL);
-        alias.aliasSource = source == null ? null : ownershipRoot(source);
+        alias.aliasSource = source == null || kind == ValueKind.COPY
+                ? null
+                : ownershipRoot(source);
         destination.define(name, alias);
     }
 
