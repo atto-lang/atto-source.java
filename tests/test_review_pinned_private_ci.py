@@ -343,6 +343,12 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "carrier_pr", self.write("wrong-repo.json",
                 self.pr("other/repo", 7, CARRIER_HEAD))))
 
+    def test_legacy_publisher_pr_1123_denied(self):
+        def mutate(fx):
+            fx["publisher_pr"] = self.write("legacy-publisher.json",
+                self.pr(MOD.SOURCE_REPO, 1123, PUBLISHER_HEAD))
+        self.assertDenied(mutate)
+
     def test_resume_marker_wrong_reviewer_denied(self):
         self.assertDenied(lambda fx: fx.__setitem__(
             "incident_comments", self.write("incident-wrong.json", [
