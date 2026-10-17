@@ -1,14 +1,20 @@
 # Review-pinned external admission for private CI
 
-Status: **authorization-only candidate fallback; no export is implemented or authorized.**
+Status: **review-pinned dispatcher candidate implemented; export remains disabled and unauthorized.**
 
-The read-only verifier is implemented and hardened. The source-writing
-dispatcher described below is **not yet implemented or wired to
-`scripts/publish-private-ci-source.py`**. That existing publisher enforces the
-older protected-main model and must not be treated as the review-pinned
-dispatcher. A valid review-pinned receipt therefore remains non-executable
-authorization evidence until a separately reviewed dispatcher integrates the
-receipt with the existing fail-closed Git-object writer.
+The read-only verifier and a separate source-writing dispatcher are now
+implemented. `scripts/dispatch-review-pinned-private-ci.py` consumes only the
+canonical schema-v2 receipt, rebuilds that receipt from fresh GitHub API state,
+and rechecks revocable authorization plus destination privacy before each
+source-bearing Git-object/ref write. It deliberately does **not** call or weaken
+the older protected-main entry point in `scripts/publish-private-ci-source.py`;
+it reuses only that module's bounded source traversal, Git-tree construction,
+strict GitHub API transport, rate-budget and destination-identity helpers.
+
+This implementation is still a review candidate, not permission to transfer
+source. The independent reviewer policy is disabled, the incident resume gate
+is absent, and exact-head source-side validation has not executed on a trusted
+runner.
 
 This mode exists because the current GitHub plan does not provide branch
 protection or repository rulesets for these private repositories. It does not
@@ -84,10 +90,14 @@ CI.
 
 ## Payload construction
 
-**Not yet implemented.** These are mandatory requirements for the future
-review-pinned dispatcher, not evidence that a writer currently exists.
+The candidate dispatcher implements the following fail-closed construction.
+Its presence does not activate the route: a stale/malformed receipt, changed PR
+head/review, revoked incident authorization, reviewer-permission change,
+destination identity/privacy change, existing payload branch, dirty local
+checkout, source-tree mismatch, changed carrier workflow/policy blob, or
+carrier parent containing pre-existing payload paths all deny publication.
 
-The dispatcher must create a **new** branch only if
+The dispatcher creates a **new** branch only if
 `ci/oreslang-<source-tree-sha>` does not already exist. Reuse, force-update or
 branch-name substitution is denied.
 
@@ -170,9 +180,8 @@ without weakening any exact-head checks.
 
 This fallback becomes usable only after:
 
-- a reviewed dispatcher is implemented that consumes the canonical receipt
-  and invokes the bounded Git-object writer without falling back to mutable or
-  protected-branch assumptions;
+- the dispatcher and its source-free adversarial suite execute successfully on
+  a trusted runner and receive genuinely independent exact-head review;
 - all four exact-head independent approvals exist;
 - incident #22 has the explicit independent resume comment;
 - the carrier workflow/security changes themselves have been independently
