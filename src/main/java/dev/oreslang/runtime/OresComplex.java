@@ -2,7 +2,6 @@ package dev.oreslang.runtime;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.util.List;
 
 /**
  * Immutable binary64 complex scalar used by the guest runtime.
@@ -15,7 +14,7 @@ import java.util.List;
  * DATA boundaries after ordinary quota admission.</p>
  */
 public record OresComplex(double real, double imaginary)
-        implements OresMutex.SharedState {
+        implements ImmutableGuestValue {
 
     public static final OresComplex ZERO = new OresComplex(0.0, 0.0);
     public static final OresComplex ONE = new OresComplex(1.0, 0.0);
@@ -81,11 +80,6 @@ public record OresComplex(double real, double imaginary)
     /** Conservative language-level quota cost, not a JVM object-layout claim. */
     public long logicalBytes() {
         return 32L;
-    }
-
-    @Override
-    public Iterable<?> sharedStateChildren() {
-        return List.of();
     }
 
     @Override

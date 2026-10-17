@@ -212,3 +212,19 @@ promotion boundary and BigInt/Decimal fail-closed rule are available at the
 runtime-value boundary as well as through the evaluator. This is the reusable
 foundation for the reviewed Matrix/Vector forward-port; it does not by itself
 admit matrix serialization or native/GPU matrix parity.
+
+
+## Java finite Matrix/Vector complex128 reference core
+
+A stacked runtime-only forward-port now replaces #120's naïve complex matrix
+cross-products with the frozen finite contract's actual rule: every complex
+dot product is accumulated as exact dyadics across the full inner dimension,
+then each real/imaginary output component is rounded once to binary64.
+`ImmutableGuestValue` is restored as a sealed actor-DATA trust boundary for
+`OresComplex`, `OresMatrix`, and `OresVector`; ActorRuntime quota
+accounting uses each audited value's explicit logical footprint. Matrix
+exceptional NaN/Infinity accumulation remains fail-closed until separately
+versioned, and BigInt/Decimal dense values do not implicitly narrow to f64.
+This slice is runtime foundation only: source Matrix/Vector syntax, solve/SVD,
+serialization, GPU/BLAS acceleration and cross-backend execution remain
+separate gates.

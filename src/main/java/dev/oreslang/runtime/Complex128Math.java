@@ -60,6 +60,82 @@ public final class Complex128Math {
                 roundDyadic(exactImaginary, negativeZeroHint(imaginaryResult)));
     }
 
+    /**
+     * Exact finite complex dot product. Each binary64 input is decoded to its
+     * exact dyadic value, the complete dot product is accumulated without
+     * intermediate rounding, and each output component is rounded once.
+     *
+     * <p>This is the finite Matrix&lt;complex128&gt; reference primitive. Matrix
+     * exceptional-value accumulation remains fail-closed until its versioned
+     * NaN/Infinity policy is frozen.</p>
+     */
+    public static Value dotProduct(
+            double[] leftReal,
+            double[] leftImaginary,
+            double[] rightReal,
+            double[] rightImaginary) {
+        if (leftReal == null || rightReal == null) {
+            throw new IllegalArgumentException("complex128 dot product requires real planes");
+        }
+        int count = leftReal.length;
+        if (count == 0 || rightReal.length != count
+                || (leftImaginary != null && leftImaginary.length != count)
+                || (rightImaginary != null && rightImaginary.length != count)) {
+            throw new IllegalArgumentException("complex128 dot product plane lengths must match and be nonzero");
+        }
+        return dotProduct(
+                leftReal, leftImaginary, 0, 1,
+                rightReal, rightImaginary, 0, 1, count);
+    }
+
+    static Value dotProduct(
+            double[] leftReal,
+            double[] leftImaginary,
+            int leftOffset,
+            int leftStride,
+            double[] rightReal,
+            double[] rightImaginary,
+            int rightOffset,
+            int rightStride,
+            int count) {
+        if (leftReal == null || rightReal == null || count <= 0
+                || leftStride <= 0 || rightStride <= 0
+                || leftOffset < 0 || rightOffset < 0) {
+            throw new IllegalArgumentException("invalid complex128 dot-product planes");
+        }
+        long leftLast = (long) leftOffset + (long) (count - 1) * leftStride;
+        long rightLast = (long) rightOffset + (long) (count - 1) * rightStride;
+        if (leftLast >= leftReal.length || rightLast >= rightReal.length
+                || (leftImaginary != null && leftLast >= leftImaginary.length)
+                || (rightImaginary != null && rightLast >= rightImaginary.length)) {
+            throw new IllegalArgumentException("complex128 dot-product view exceeds backing plane");
+        }
+
+        Dyadic exactReal = new Dyadic(BigInteger.ZERO, 0);
+        Dyadic exactImaginary = new Dyadic(BigInteger.ZERO, 0);
+        for (int i = 0; i < count; i++) {
+            int li = leftOffset + i * leftStride;
+            int ri = rightOffset + i * rightStride;
+            double ar = leftReal[li];
+            double ai = leftImaginary == null ? 0.0 : leftImaginary[li];
+            double br = rightReal[ri];
+            double bi = rightImaginary == null ? 0.0 : rightImaginary[ri];
+            if (!allFinite(ar, ai, br, bi)) {
+                throw new IllegalArgumentException(
+                        "complex128 matrix dot product requires finite values until exceptional accumulation semantics are frozen");
+            }
+            Dyadic a = fromFiniteDouble(ar);
+            Dyadic b = fromFiniteDouble(ai);
+            Dyadic c = fromFiniteDouble(br);
+            Dyadic d = fromFiniteDouble(bi);
+            exactReal = add(exactReal, add(multiply(a, c), negate(multiply(b, d))));
+            exactImaginary = add(exactImaginary, add(multiply(a, d), multiply(b, c)));
+        }
+        return new Value(
+                roundDyadic(exactReal, false),
+                roundDyadic(exactImaginary, false));
+    }
+
     public static Value divide(double ar, double ai, double br, double bi) {
         if (allFinite(ar, ai, br, bi) && (br != 0.0 || bi != 0.0)) {
             return divideExactFinite(ar, ai, br, bi);
