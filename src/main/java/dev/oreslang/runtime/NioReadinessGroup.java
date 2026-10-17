@@ -49,6 +49,13 @@ public final class NioReadinessGroup implements AutoCloseable {
     // Runnable::run must never deliver subscribers on the SELECTOR stack.
     private static final ThreadLocal<Boolean> ON_REACTOR = new ThreadLocal<>();
 
+    /** True only on the selector thread, not on the one-shot bootstrap
+     * submitter or a runtime carrier delivering a terminal notification.
+     */
+    static boolean onReactorThread() {
+        return Boolean.TRUE.equals(ON_REACTOR.get());
+    }
+
     private final Object lifecycle = new Object();
     private final int maxReactors;
     private final int maxPending;
