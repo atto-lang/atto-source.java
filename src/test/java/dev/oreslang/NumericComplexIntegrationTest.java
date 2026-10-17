@@ -112,16 +112,21 @@ final class NumericComplexIntegrationTest {
 
     @Test
     void declaredComplexReturnUsesTheSameExactPromotionBoundary() {
-        assertTrue(evaluatesTrue("""
-                fnc exactPositive(): complex {
-                  return 9007199254740992;
-                }
-                fnc exactNegative(): complex {
-                  return -9007199254740992;
-                }
-                return exactPositive() eq (9007199254740992.0 + 0i)
-                    && exactNegative() eq (-9007199254740992.0 + 0i);
-                """));
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub fnc exactPositive(): complex {
+                      return 9007199254740992;
+                    }
+                    pub fnc exactNegative(): complex {
+                      return -9007199254740992;
+                    }
+                    pub routine main(): bool {
+                      return exactPositive() eq (9007199254740992.0 + 0i)
+                          && exactNegative() eq (-9007199254740992.0 + 0i);
+                    }
+                    """).asBoolean());
+        }
 
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false).build()) {
