@@ -22,6 +22,7 @@ public final class CoreLog {
     public static final int ACTOR_TERMINAL_FAILURE = 6;
     public static final int ACTOR_CANCELLED = 7;
     public static final int SUPERVISOR_RESTART_SUPPRESSED = 8;
+    public static final int SUPERVISOR_CONTROL_FAILED = 9;
 
     private static final String[] NAMES = {
         "unused",
@@ -32,7 +33,8 @@ public final class CoreLog {
         "actor.watchdog.overrun",
         "actor.terminal.failure",
         "actor.cancelled",
-        "supervisor.restart.suppressed"
+        "supervisor.restart.suppressed",
+        "supervisor.control.failed"
     };
     private static final int DEFAULT_CAPACITY = 8192;
 
