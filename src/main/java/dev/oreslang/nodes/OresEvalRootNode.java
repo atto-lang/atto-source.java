@@ -5985,6 +5985,7 @@ public final class OresEvalRootNode extends RootNode {
             return env.lookup("Integer") == Env.MISSING
                     && !modules.containsKey("Integer")
                     && findClass("Integer") == null
+                    && findTypeAlias("Integer") == null
                     && !hasFunctionFamily("Integer")
                     && !namedImports.containsKey("Integer")
                     && !namespaceImports.containsKey("Integer")
@@ -5999,6 +6000,7 @@ public final class OresEvalRootNode extends RootNode {
             return env.lookup("Double") == Env.MISSING
                     && !modules.containsKey("Double")
                     && findClass("Double") == null
+                    && findTypeAlias("Double") == null
                     && !hasFunctionFamily("Double")
                     && !namedImports.containsKey("Double")
                     && !namespaceImports.containsKey("Double")
