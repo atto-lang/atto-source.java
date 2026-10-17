@@ -529,6 +529,62 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void constructorMayCaptureSelfInInvocationScopedBorrowedCallback() throws Exception {
+        String output = run("""
+                fnc invoke_now(borrow (() => void) cb): void {
+                  cb();
+                  return;
+                }
+
+                define class Sample as
+                  let int dummy_var: 1;
+
+                  constructor(self, int foo, ((borrow (() => void) cb) => void) runner) {
+                    runner(|| -> {
+                      self.dummy_var = 1 + foo;
+                      return;
+                    });
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  invoke_now(|| -> {
+                    stdio.stdout.write("ok");
+                    return;
+                  });
+                  return;
+                }
+                """);
+        assertEquals("ok", output);
+    }
+
+    @Test
+    void borrowedCallbackCannotEstablishBlankValInitialization() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                define class Sample as
+                  val int value;
+
+                  constructor(self, ((borrow (() => void) cb) => void) runner) {
+                    runner(|| -> {
+                      self.value = 42;
+                      return;
+                    });
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  return;
+                }
+                """));
+        String message = String.valueOf(failure)
+                + " " + String.valueOf(failure.getCause());
+        assertTrue(message.contains("directly in a constructor statement")
+                || message.contains("initialize field 'value'"));
+    }
+
+    @Test
     void actorsRejectClassConstructors() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
