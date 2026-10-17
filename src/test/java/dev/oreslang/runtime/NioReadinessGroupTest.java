@@ -1070,6 +1070,59 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void unexpectedExecutorSubmissionFailureDoesNotLoseCompletion()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var submissions = new java.util.concurrent.atomic.AtomicInteger();
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor unstable = task -> {
+            if (submissions.getAndIncrement() == 0)
+                throw new IllegalStateException("unexpected host submission failure");
+            task.run();
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(unstable);
+            publish.invoke(group, (Runnable) callbacks::incrementAndGet);
+            assertEquals(0, callbacks.get());
+            assertEquals(1, group.stagedNotificationCount());
+            group.retryStagedNotifications();
+            assertEquals(1, callbacks.get());
+            assertEquals(0, group.stagedNotificationCount());
+        }
+    }
+
+    @Test void unexpectedExceptionAfterTaskAcceptedStillDeliversExactlyOnce()
+            throws Exception {
+        var publish = NioReadinessGroup.class.getDeclaredMethod(
+                "dispatchNotification", Runnable.class);
+        publish.setAccessible(true);
+        var queued = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+        var accepted = new java.util.concurrent.atomic.AtomicBoolean();
+        var callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.Executor unstable = task -> {
+            queued.add(task);
+            if (accepted.compareAndSet(false, true))
+                throw new IllegalStateException("accepted then failed");
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(unstable);
+            publish.invoke(group, (Runnable) callbacks::incrementAndGet);
+            assertEquals(1, group.stagedNotificationCount());
+            group.retryStagedNotifications();
+            assertEquals(2, queued.size());
+            Runnable first = queued.poll();
+            Runnable duplicate = queued.poll();
+            assertNotNull(first);
+            assertNotNull(duplicate);
+            duplicate.run();
+            first.run();
+            assertEquals(1, callbacks.get());
+            assertEquals(0, group.stagedNotificationCount());
+        }
+    }
+
     @Test void invalidLimitsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(0, 10, 8));
         assertThrows(IllegalArgumentException.class, () -> new NioReadinessGroup(5, 10, 8));
