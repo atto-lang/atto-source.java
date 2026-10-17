@@ -42,6 +42,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "number": number,
             "state": "open",
             "merged": False,
+            "draft": False,
             "head": {"sha": head, "repo": {"full_name": repo}},
             "base": {"repo": {"full_name": repo}},
         }
@@ -70,7 +71,16 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 self.reviews(CARRIER_HEAD, rid=14)),
             "incident_comments": self.write("incident.json", [{
                 "id": 99,
-                "body": "PRIVATE_CI_RESUME_APPROVED exact reviewed recovery gate",
+                "body": (
+                    MOD.RESUME_MARKER
+                    + " publisher=" + PUBLISHER_HEAD
+                    + " destination=" + DEST_HEAD
+                    + " snapshot=" + SNAP_HEAD
+                    + " carrier=" + CARRIER_HEAD
+                    + " source_commit=" + SOURCE_COMMIT
+                    + " source_tree=" + SOURCE_TREE
+                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
+                ),
                 "user": {"login": "ORESoftware"},
             }]),
             "source_commit": self.write("source-commit.json", {
@@ -155,6 +165,21 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             fx["publisher_pr"] = self.write("publisher-pr-closed.json", p)
         self.assertDenied(mutate)
 
+    def test_draft_security_pr_denied(self):
+        def mutate(fx):
+            p = self.pr(MOD.SOURCE_REPO, 1092, DEST_HEAD)
+            p["draft"] = True
+            fx["destination_pr"] = self.write("destination-pr-draft.json", p)
+        self.assertDenied(mutate)
+
+    def test_later_changes_requested_revokes_exact_head_approval(self):
+        def mutate(fx):
+            fx["publisher_reviews"] = self.write(
+                "publisher-reviews-revoked.json",
+                self.reviews(PUBLISHER_HEAD, state="APPROVED", rid=10)
+                + self.reviews(PUBLISHER_HEAD, state="CHANGES_REQUESTED", rid=11))
+        self.assertDenied(mutate)
+
     def test_wrong_pr_repository_denied(self):
         def mutate(fx):
             fx["carrier_pr"] = self.write("carrier-pr-wrong.json",
@@ -164,7 +189,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def test_resume_marker_must_be_independent(self):
         def mutate(fx):
             fx["incident_comments"] = self.write("incident-self.json", [{
-                "id": 99, "body": MOD.RESUME_MARKER,
+                "id": 99, "body": MOD.RESUME_MARKER + " unbound",
                 "user": {"login": "the1mills"},
             }])
         self.assertDenied(mutate)
@@ -172,9 +197,44 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
     def test_duplicate_resume_approvals_denied(self):
         def mutate(fx):
             fx["incident_comments"] = self.write("incident-dupe.json", [
-                {"id": 99, "body": MOD.RESUME_MARKER, "user": {"login": "ORESoftware"}},
-                {"id": 100, "body": MOD.RESUME_MARKER, "user": {"login": "ORESoftware"}},
+                {"id": 99, "body": (
+                    MOD.RESUME_MARKER + " publisher=" + PUBLISHER_HEAD
+                    + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
+                    + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
+                    + " source_tree=" + SOURCE_TREE
+                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
+                 "user": {"login": "ORESoftware"}},
+                {"id": 100, "body": (
+                    MOD.RESUME_MARKER + " publisher=" + PUBLISHER_HEAD
+                    + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
+                    + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
+                    + " source_tree=" + SOURCE_TREE
+                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)),
+                 "user": {"login": "ORESoftware"}},
             ])
+        self.assertDenied(mutate)
+
+    def test_unbound_resume_marker_denied(self):
+        def mutate(fx):
+            fx["incident_comments"] = self.write("incident-unbound.json", [{
+                "id": 99, "body": MOD.RESUME_MARKER + " generic",
+                "user": {"login": "ORESoftware"},
+            }])
+        self.assertDenied(mutate)
+
+    def test_resume_bound_to_old_head_denied(self):
+        def mutate(fx):
+            fx["incident_comments"] = self.write("incident-old-head.json", [{
+                "id": 99,
+                "body": (
+                    MOD.RESUME_MARKER + " publisher=" + ("a" * 40)
+                    + " destination=" + DEST_HEAD + " snapshot=" + SNAP_HEAD
+                    + " carrier=" + CARRIER_HEAD + " source_commit=" + SOURCE_COMMIT
+                    + " source_tree=" + SOURCE_TREE
+                    + " carrier_repo_id=" + str(MOD.CARRIER_REPO_ID)
+                ),
+                "user": {"login": "ORESoftware"},
+            }])
         self.assertDenied(mutate)
 
     def test_source_tree_mismatch_denied(self):
