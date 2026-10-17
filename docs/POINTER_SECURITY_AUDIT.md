@@ -55,7 +55,7 @@ Additional Java changes on this draft branch:
 
 **Residual risk:** The Java wrapper's `public OresPointer(Object)` and `public Object target()` remain host-visible. Execution-domain fencing and the capability denylist are defense in depth, **not** a complete provenance, allocator-generation, recursive host-graph, or borrow-lease proof. Trusted or hostile host code can still retain aliases to an accepted raw referent; production host interop needs a capability-scoped API with explicit provenance and lifetime enforcement.
 
-**Verification boundary:** Targeted isolated Java 21 constructor smoke compiled and executed against representative runtime-type stubs. This is *not* a full Graal/Java 25 build, not an actor integration test, and not a zero-allocation benchmark. The new JUnit/LLVM matrices are checked in but have not been executed successfully in current source-repo CI.
+**Verification boundary (2026-10-17):** The Maven-relevant tree at source commit `7c6cc43fec69dfb60a8607de5c95e0ef39129b70` was mirrored without cross-org credentials into private carrier `scintilla-run-test/gleam-runner-conformance`; a 240-blob manifest was verified before execution. GitHub Actions run `39046926058` passed focused pointer/actor tests, three repeated cross-domain pointer stress rounds, the full 1,304-test Maven suite, and `mvn -Dores.runtime.carriers=native verify` on GraalVM JDK 25. This is strong JVM/native-carrier lifecycle evidence, but it is still not a zero-allocation benchmark, native-image proof, allocator-generation proof, or cross-backend certification.
 # Transport follow-up, 2026-10-15
 
 Local `Channel<Pointer<T>>` is distinct from actor mailbox transport. The
