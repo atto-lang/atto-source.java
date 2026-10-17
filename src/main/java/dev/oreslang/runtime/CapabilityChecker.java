@@ -33,9 +33,12 @@ public final class CapabilityChecker {
     private final Set<Object> typeExpansionStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final PermissionCheckMode permissionCheckMode;
+    private final RuntimePermissions runtimePermissions;
 
-    private CapabilityChecker(Ast.Program program, PermissionCheckMode permissionCheckMode) {
+    private CapabilityChecker(Ast.Program program, PermissionCheckMode permissionCheckMode,
+            RuntimePermissions runtimePermissions) {
         this.permissionCheckMode = permissionCheckMode;
+        this.runtimePermissions = runtimePermissions;
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (imported.wildcard()) {
@@ -71,7 +74,21 @@ public final class CapabilityChecker {
             Ast.Program program,
             IsolatePolicy policy,
             PermissionCheckMode permissionCheckMode) {
-        new CapabilityChecker(program, permissionCheckMode).checkProgram(program, policy);
+        check(program, policy, permissionCheckMode, null);
+    }
+
+    /**
+     * Optional host-provided scoped policy for definite, literal-resource
+     * compile-time diagnostics. Dynamic targets are checked at the real I/O
+     * boundary and do not become compile-time grants.
+     */
+    public static void check(
+            Ast.Program program,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode,
+            RuntimePermissions runtimePermissions) {
+        new CapabilityChecker(program, permissionCheckMode, runtimePermissions)
+                .checkProgram(program, policy);
     }
 
     private static <T> void index(
@@ -426,6 +443,7 @@ public final class CapabilityChecker {
                 }
             }
             if (target != null) {
+                checkLiteralHostPermission(target, c.arguments());
                 Ast.FunctionDecl fn = findFunction(target);
                 if (fn != null) checkReferencedFunction(fn, policy);
             }
@@ -509,6 +527,43 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
+        }
+    }
+
+    /**
+     * Reject definitely unauthorized literal host resources before guest code
+     * executes. Only known built-in APIs are inspected; unknown/dynamic values
+     * remain subject to the unconditional runtime boundary checks.
+     */
+    private void checkLiteralHostPermission(String target, List<Ast.Expr> arguments) {
+        if (permissionCheckMode != PermissionCheckMode.COMPILE
+                || runtimePermissions == null || arguments.isEmpty()
+                || !(arguments.get(0) instanceof Ast.LiteralExpr literal)
+                || !(literal.value() instanceof String first)) return;
+
+        RuntimePermissions.Permission permission;
+        String resource = first;
+        switch (target) {
+            case "env.get", "env.has" -> permission = RuntimePermissions.Permission.ENV;
+            case "fs.read_text", "fs.exists", "fs.list_dir", "fs.is_dir",
+                    "fs.is_symlink" -> permission = RuntimePermissions.Permission.READ;
+            case "fs.write_text", "fs.write_text_atomic", "fs.append_text" ->
+                    permission = RuntimePermissions.Permission.WRITE;
+            case "network.connect" -> {
+                permission = RuntimePermissions.Permission.NET;
+                if (arguments.size() < 2
+                        || !(arguments.get(1) instanceof Ast.LiteralExpr portExpr)
+                        || !(portExpr.value() instanceof Number portValue)) return;
+                long port = portValue.longValue();
+                if (port < 1 || port > 65535
+                        || portValue.doubleValue() != (double) port) return;
+                resource = first + ":" + port;
+            }
+            default -> { return; }
+        }
+        if (!runtimePermissions.allows(permission, resource)) {
+            throw new SecurityException("Oreslang compile-time permission denied: "
+                    + permission.cliName() + " required by " + target);
         }
     }
 
