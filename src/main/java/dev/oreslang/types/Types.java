@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Any, UnknownValue, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -108,7 +108,72 @@ public final class Types {
         public Not { Objects.requireNonNull(excluded, "excluded type"); }
     }
 
-    public enum Unknown implements Type { INSTANCE }
+    /** A verified Oreslang value whose concrete static type is hidden. */
+    public enum Any implements Type {
+        INSTANCE;
+        @Override public String toString() { return "any"; }
+    }
+
+    /** An opaque/unverified value that requires validation before typed use. */
+    public enum UnknownValue implements Type {
+        INSTANCE;
+        @Override public String toString() { return "unknown"; }
+    }
+
+    /** INTERNAL compiler inference sentinel; never the source-level unknown type. */
+    public enum Unknown implements Type {
+        INSTANCE;
+        @Override public String toString() { return "<incomplete compiler inference>"; }
+    }
+
+    private static boolean safelyHideConcreteType(Type type) {
+        if (type == Primitive.VOID || type == Primitive.NULL
+                || type == Unknown.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof Generic || type instanceof Not
+                || type instanceof Borrow || type instanceof SelfType
+                || type instanceof ClassNamespace) return false;
+        if (type instanceof ListType list) return safelyHideConcreteType(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Union union) return union.options().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Record record) return record.members().values().stream().allMatch(Types::safelyHideConcreteType);
+        if (type instanceof Function function) {
+            return function.parameters().stream().allMatch(Types::safelyHideConcreteType)
+                    && safelyHideConcreteType(function.result());
+        }
+        if (type instanceof Named named) {
+            String leaf = named.name();
+            int qualifier = leaf.lastIndexOf('.');
+            if (qualifier >= 0) leaf = leaf.substring(qualifier + 1);
+            if (switch (leaf) {
+                case "ActorRef", "ActorMail", "ActorOutput", "ActorOutputStream",
+                     "Channel", "SelectCase", "SelectSet", "SelectResult",
+                     "Mutex", "MutexGuard", "SharedMutex", "Future",
+                     "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
+                     "TcpConnection", "HttpExchange", "HttpServer", "HttpHandler",
+                     "File", "Socket" -> true;
+                default -> false;
+            }) return false;
+            return named.arguments().stream().allMatch(Types::safelyHideConcreteType);
+        }
+        return true;
+    }
+
+    public static boolean containsOpaqueTop(Type type) {
+        if (type == Any.INSTANCE || type == UnknownValue.INSTANCE) return true;
+        if (type instanceof Not not) return containsOpaqueTop(not.excluded());
+        if (type instanceof SelfType self) return containsOpaqueTop(self.bound());
+        if (type instanceof Borrow borrow) return containsOpaqueTop(borrow.target());
+        if (type instanceof ListType list) return containsOpaqueTop(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsOpaqueTop);
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(Types::containsOpaqueTop)
+                    || containsOpaqueTop(fn.result());
+        }
+        return false;
+    }
 
     public static Type notOf(Type type) {
         Objects.requireNonNull(type, "type");
@@ -124,6 +189,8 @@ public final class Types {
      */
     public static boolean areProvablyDisjoint(Type first, Type second) {
         if (first == Unknown.INSTANCE || second == Unknown.INSTANCE
+                || first == Any.INSTANCE || second == Any.INSTANCE
+                || first == UnknownValue.INSTANCE || second == UnknownValue.INSTANCE
                 || first instanceof Generic || second instanceof Generic) return false;
         if (first.equals(second)) return false;
         if (first instanceof Union union) {
@@ -170,7 +237,8 @@ public final class Types {
     }
 
     private static boolean containsUncertainType(Type type) {
-        if (type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type == Unknown.INSTANCE || type == Any.INSTANCE || type == UnknownValue.INSTANCE
+                || type instanceof Generic) return true;
         if (type instanceof Union union) return union.options().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Not not) return containsUncertainType(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
@@ -193,11 +261,21 @@ public final class Types {
             if (from instanceof Not source) return source.excluded().equals(negative.excluded());
             return areProvablyDisjoint(from, negative.excluded());
         }
-        if (from instanceof Not) return to == Unknown.INSTANCE;
+        if (from instanceof Not) return false;
         if (from instanceof BoolLiteral && to == Primitive.BOOL) return true;
-        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
-        if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
+        // Source unknown is an opaque destination. It cannot prove any stronger
+        // contract without an explicit runtime validator/type guard.
+        if (to == UnknownValue.INSTANCE) return safelyHideConcreteType(from) || from == Any.INSTANCE;
+        if (from == UnknownValue.INSTANCE) return false;
+        // Source any is a verified top value, not permission for unchecked use.
+        if (to == Any.INSTANCE) return safelyHideConcreteType(from);
+        if (from == Any.INSTANCE) return false;
+        // Internal incomplete inference is expected-only; it must never prove
+        // that an unresolved value satisfies a concrete source type.
+        if (from == Unknown.INSTANCE) return false;
+        if (to == Unknown.INSTANCE) return true;
+        if (to instanceof Generic || from instanceof Generic) return false;
         if (from instanceof SelfType source) {
             if (to instanceof SelfType target) {
                 return isAssignable(source.bound(), target.bound())
@@ -289,6 +367,8 @@ public final class Types {
         java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
         for (Type type : types) {
             if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
+            if (type == UnknownValue.INSTANCE) return UnknownValue.INSTANCE;
+            if (type == Any.INSTANCE) return Any.INSTANCE;
             if (type instanceof Union union) {
                 for (Type option : union.options()) if (!flattened.contains(option)) flattened.add(option);
             } else if (!flattened.contains(type)) flattened.add(type);
