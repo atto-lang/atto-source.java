@@ -15,9 +15,12 @@ final class VmNioTcpListenerTest {
         OresVM vm = OresVM.create(Runnable::run);
         try (var first = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 4, 16);
              var second = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 4, 16)) {
-            assertEquals(1, vm.nioReactorCount());
+            assertEquals(0, vm.nioReactorCount(),
+                    "opening listeners alone must not start a selector thread");
             var firstAccept = first.acceptAsync();
             var secondAccept = second.acceptAsync();
+            assertEquals(1, vm.nioReactorCount(),
+                    "first accepted readiness watch lazily starts reactor #0");
             try (var client1 = new Socket(InetAddress.getByName("127.0.0.1"), first.localPort());
                  var client2 = new Socket(InetAddress.getByName("127.0.0.1"), second.localPort())) {
                 client1.setSoTimeout(3000);
