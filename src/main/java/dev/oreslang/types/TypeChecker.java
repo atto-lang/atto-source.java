@@ -1730,6 +1730,7 @@ public final class TypeChecker {
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
                                 "MutexGuard", "Mutex", "SharedMutex", "Channel",
+                                "TrapResult", "TrapError", "RecoverySignal", "Error",
                                 "Generator", "AsyncGenerator", "Iterator", "AsyncIterator",
                                 "IteratorResult", "Fnc", "Function").contains(name)
                         || findClass(name) != null || findInterface(name) != null
@@ -8539,7 +8540,15 @@ public final class TypeChecker {
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
         Set<String> result = new HashSet<>();
-        for (String name : names) if (!result.add(name)) throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+        for (String name : names) {
+            if (Set.of("TrapResult", "TrapError", "RecoverySignal", "Error").contains(name)) {
+                throw new IllegalArgumentException(
+                        "'" + name + "' is compiler-owned and cannot be used as a generic parameter in " + owner);
+            }
+            if (!result.add(name)) {
+                throw new IllegalArgumentException("duplicate generic '" + name + "' in " + owner);
+            }
+        }
         return result;
     }
 
