@@ -5454,7 +5454,7 @@ public final class ActorRuntime implements AutoCloseable {
         int frameBudget = Math.max(32, refs.size() * 4);
         ActorPipelineCorrelatedMailboxRouter<Object> router =
                 new ActorPipelineCorrelatedMailboxRouter<>(
-                        this, plan, bindings, generation, frameBudget);
+                        this, plan, bindings, generation, frameBudget, true);
         return new ActorStream(router, "stage-0", refs);
     }
 
