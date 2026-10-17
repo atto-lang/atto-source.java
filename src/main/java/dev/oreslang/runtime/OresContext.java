@@ -506,6 +506,7 @@ public final class OresContext implements AutoCloseable {
         // IO or CONTROL destruction from a guest/physical scheduler carrier.
         if (OresScheduler.current() != null
                 || OresVM.onControlCarrier()
+                || OresVM.onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
