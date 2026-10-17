@@ -25,11 +25,15 @@ Future notification drains, with explicit capacity denial. Internal producer
 cancellation notifications cannot settle an exported Future before its
 cancellation CAS. Permission checks and context teardown still gate listener
 and connection ownership. The full `OresContext` now binds terminal
-notifications to its already-budgeted PRIVATE actor-dispatcher carrier domain,
-before the first readiness watch. Slow synchronous Future subscribers remain
-off SELECTOR and CONTROL **without dedicated NIO completion workers**. The
-standalone `OresVM`/`NioReadinessGroup` host API still retains its transitional
-lazy 0..2 completion pool for compatibility.
+notifications to its already-budgeted PRIVATE actor-dispatcher carrier domain
+before the first readiness watch. Pending I/O alone still starts no actor
+carrier. When the first terminal notification becomes runnable, one short-lived
+lazy NIO bootstrap submitter may start solely to submit a no-op through the cold
+bound executor off the SELECTOR stack; it never runs the completion callback,
+then retires after handoff. Slow synchronous Future subscribers remain off
+SELECTOR and CONTROL and execute on the bound actor carrier. The standalone
+`OresVM`/`NioReadinessGroup` host API still retains its transitional lazy
+0..2 completion pool for compatibility.
 
 The `OresVM` substrate now cold-starts with **zero VM-owned threads**:
 zero readiness reactors, zero CONTROL carriers, and zero completion carriers.
@@ -60,10 +64,14 @@ selector are superseded by this section.
 - Java full-context NIO now uses scheduler-targeted host notification delivery:
   `NioReadinessGroup.bindVmCompletionExecutor()` is a one-shot
   pre-admission binding to `ActorRuntime.executeHostIoCompletion()`. The
-  actor dispatcher is already part of runtime carrier accounting; no
-  additional NIO completion worker is created on the full-context path.
-  Notification reservations are bounded. Under a full actor ready queue,
-  deliveries remain staged until an actor turn or host completion retires.
+  actor dispatcher is already part of runtime carrier accounting. A cold
+  bound executor is bootstrapped only after a terminal notification is
+  runnable, using one short-lived lazy submitter so native/JVM carrier startup
+  cannot block the selector. That helper submits only a no-op, never the real
+  completion callback, and retires after successful handoff. Pending I/O alone
+  does not start it. Notification reservations are bounded. Under a full actor
+  ready queue, deliveries remain staged until an actor turn or host completion
+  retires.
 - `OresContext.close()` now closes and drains the VM NIO readiness domain
   **before** calling `ActorRuntime.close()`; otherwise a bound notification
   might wait forever on workers already shut down.
