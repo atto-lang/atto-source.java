@@ -1928,6 +1928,12 @@ public final class OwnershipChecker {
                     }
                 }
                 checkArgument(argument, param, scope, callable, parameterIndex + 1);
+                if (constructionLoanOwner != null) {
+                    beginPersistentBorrow(constructionLoanOwner, true);
+                    activeLoans.add(new CallArgumentLoan(
+                            ownershipRoot(constructionLoanOwner), true));
+                    invocationLoans.put(ownershipRoot(constructionLoanOwner), true);
+                }
                 if (loanOwner != null) {
                     // Borrowed arguments remain live until the call completes,
                     // including forwarded incoming &mut parameters. Their
