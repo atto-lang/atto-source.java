@@ -75,14 +75,18 @@ public final class ActorPipelineRouteSessionSmoke {
         // Exercise ACTUAL reverse hop frame transitions, not just
         // informational ReturnPath lists. Both fan-in branches keep the same
         // flow but travel back through their own immutable worker path.
-        var returns = new ActorPipelineRouteSession(plan, 11, 5);
+        var returns = new ActorPipelineRouteSession(plan, 11, 6);
         var start = returns.ingress("source");
         var fork = returns.forwardAll(start);
         var sinkA = returns.forward(fork.get(0));
         var sinkB = returns.forward(fork.get(1));
         check(returns.outstanding() == 5, "fan-in route quota incorrect");
+        // Selection creates a pending correlation candidate. Only the
+        // successfully published destination consumes the source frame.
         var workerA = returns.returnOneHop(sinkA);
+        ActorPipelineRouteSession.retireDelivered(sinkA);
         var workerB = returns.returnOneHop(sinkB);
+        ActorPipelineRouteSession.retireDelivered(sinkB);
         check(workerA.receiver().equals("worker-a")
                         && workerB.receiver().equals("worker-b"),
                 "reverse fan-in guessed the wrong worker branch");
@@ -94,7 +98,9 @@ public final class ActorPipelineRouteSessionSmoke {
         reject(() -> returns.forward(workerA),
                 "reverse mail re-entered forward DAG selection");
         var responseA = returns.returnOneHop(workerA);
+        ActorPipelineRouteSession.retireDelivered(workerA);
         var responseB = returns.returnOneHop(workerB);
+        ActorPipelineRouteSession.retireDelivered(workerB);
         check(responseA.receiver().equals("source")
                         && responseB.receiver().equals("source"),
                 "reverse branch did not reach authenticated origin");
