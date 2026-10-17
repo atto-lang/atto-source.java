@@ -712,7 +712,14 @@ final class NioReadinessGroupTest {
                 first.sink().write(java.nio.ByteBuffer.wrap(new byte[] {1}));
                 second.sink().write(java.nio.ByteBuffer.wrap(new byte[] {2}));
                 assertTrue(rejectedReactorInline.await(3, TimeUnit.SECONDS),
-                        "both inline selector deliveries must fail closed");
+                        "inline selector delivery must fail closed");
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (group.stagedNotificationCount() < 2
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(1);
+                }
+                assertEquals(2, group.stagedNotificationCount(),
+                        "both reactor notifications must remain staged before host retry");
                 assertFalse(a.isDone(), "reactor must not settle arbitrary subscribers");
                 assertFalse(b.isDone(), "reactor must not settle arbitrary subscribers");
 
