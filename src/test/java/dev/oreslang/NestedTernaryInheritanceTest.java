@@ -231,6 +231,32 @@ final class NestedTernaryInheritanceTest {
     }
 
     @Test
+    void scalarGuardsDoNotRemoveBorrowContracts() {
+        reject("""
+                pub fnc bad(borrow any v): int {
+                    return Integer.is_int(v) ? v : 0;
+                }
+                """);
+        reject("""
+                pub fnc bad(borrow unknown v): float {
+                    return Double.is_double(v) ? v : 0.0;
+                }
+                """);
+    }
+
+    @Test
+    void scalarGuardsCanAcceptAlreadyTypedImmutableValues() {
+        accept("""
+                pub fnc foo(int v): int {
+                    return Integer.is_int(v) ? v : 0;
+                }
+                pub fnc bar(float v): float {
+                    return Double.is_double(v) ? v : 0.0;
+                }
+                """);
+    }
+
+    @Test
     void noMissingTopLevelElseOrInvalidInheritancePosition() {
         reject("pub fnc bad(): int { return true ? 1; }");
         reject("pub fnc bad(): int { return true ? 1 : (false ? 2); }");
