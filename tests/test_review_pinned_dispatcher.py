@@ -26,7 +26,8 @@ def receipt():
 
 class DispatcherTest(unittest.TestCase):
     def test_valid_receipt_shape(self):
-        self.assertIs(MOD.validate_receipt(receipt()), receipt()) if False else MOD.validate_receipt(receipt())
+        r=receipt()
+        self.assertIs(MOD.validate_receipt(r),r)
 
     def test_closed_publisher_1198_receipt_denied(self):
         r=receipt(); r["publisher_policy_pr"]=1198
@@ -62,6 +63,26 @@ class DispatcherTest(unittest.TestCase):
             MOD.api_list=lambda route:[{"ref":"refs/heads/ci/oreslang-"+"2"*40+"-other"}]
             self.assertEqual(MOD.branch_absent(receipt()),"ci/oreslang-"+"2"*40)
         finally: MOD.api_list=old
+
+    def test_wrapped_github_base64_is_accepted(self):
+        import base64, hashlib
+        raw=b"hello world"
+        encoded=base64.b64encode(raw).decode()
+        wrapped=encoded[:4]+"\n"+encoded[4:]
+        sha=hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+        out,got=MOD.decode_contents_api_file(
+            {"type":"file","encoding":"base64","content":wrapped,"size":len(raw),"sha":sha},
+            "wrapped",1024)
+        self.assertEqual(out,raw); self.assertEqual(got,sha)
+
+    def test_non_crlf_base64_whitespace_is_denied(self):
+        import base64, hashlib
+        raw=b"hello"; encoded=base64.b64encode(raw).decode()+"\t"
+        sha=hashlib.sha1(b"blob "+str(len(raw)).encode()+b"\0"+raw).hexdigest()
+        with self.assertRaises(MOD.Denied):
+            MOD.decode_contents_api_file(
+              {"type":"file","encoding":"base64","content":encoded,"size":len(raw),"sha":sha},
+              "bad-space",1024)
 
     def test_content_file_recomputes_git_blob_hash(self):
         old=MOD.PUB.gh_api
@@ -128,7 +149,7 @@ class DispatcherTest(unittest.TestCase):
             refreshes=[0]; writes=[]
             try:
                 MOD.branch_absent=lambda x:"ci/oreslang-"+x["source_tree_sha"]
-                def refresh(_):
+                def refresh(_,require_new_ref=False):
                     refreshes[0]+=1
                     if refreshes[0]>=2: raise MOD.Denied("revoked")
                     return "a"*40
@@ -158,7 +179,7 @@ class DispatcherTest(unittest.TestCase):
             refreshes=[0]; root_payload=[]
             try:
                 MOD.branch_absent=lambda x:"ci/oreslang-"+x["source_tree_sha"]
-                def refresh(_):
+                def refresh(_,require_new_ref=False):
                     refreshes[0]+=1
                     if refreshes[0]>=4: raise MOD.Denied("stop-before-commit")
                     return "a"*40
