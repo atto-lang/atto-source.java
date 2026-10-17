@@ -43,6 +43,11 @@ public final class DopOwnedRegionStandaloneCheck {
         check(weakField.get(token) instanceof WeakReference<?>, "token weak provenance");
         var weak = (WeakReference<?>) weakField.get(token);
         check(weak.get() == state, "weak reference points to actual owned state");
+        Field ownerRefField = token.getClass().getDeclaredField("currentOwner");
+        ownerRefField.setAccessible(true);
+        check(ownerRefField.get(token) instanceof WeakReference<?>, "token weak owner handle");
+        check(((WeakReference<?>) ownerRefField.get(token)).get() == owner,
+                "fresh token bound to initial owner");
         for (Field field : token.getClass().getDeclaredFields()) {
             check(field.getType() != state.getClass(), "token strongly pins native State");
         }
@@ -54,6 +59,8 @@ public final class DopOwnedRegionStandaloneCheck {
         }
         var successor = owner.take();
         check(successor.regionToken() == token, "move changed allocation identity");
+        check(((WeakReference<?>) ownerRefField.get(token)).get() == successor,
+                "moved-from owner still listed as current");
         check(successor.regionRoot().sameRoot(root), "root alias lost under take");
         owner.close();
         check(token.isLive(), "moved-from close retired owner");
