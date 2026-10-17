@@ -173,23 +173,27 @@ final class RuntimePointerTest {
                 callLoanFailure.getMessage());
     }
 
-    @Test void localChannelTakeExecutesWithBorrowedReceiverAccess() throws Exception {
+    @Test void genericChannelCannotTransportPointerWithoutDomainProof() {
         String code = BOX + """
                 pub routine main(): void {
                   val Channel<Pointer<Box>> messages = Channel.new<Pointer<Box>>(1);
                   const p = rt ref new Box();
                   writech messages, rt take p;
-                  const received = readch messages;
-                  const view = rt deref received;
-                  stdio.stdout.write(view.value);
                   return;
                 }
                 """;
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (Context context = Context.newBuilder("ores").allowAllAccess(true).out(out).build()) {
-            context.eval("ores", code);
-        }
-        assertEquals("7", out.toString(StandardCharsets.UTF_8));
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(code)));
+        assertTrue(failure.getMessage().contains("domain-bound local channel"),
+                failure.getMessage());
+
+        var runtimeChannel =
+                new dev.oreslang.runtime.ChannelRuntime.Channel<dev.oreslang.runtime.OresPointer>(1);
+        var runtimePointer = new dev.oreslang.runtime.OresPointer(new Object());
+        var runtimeFailure = assertThrows(IllegalArgumentException.class,
+                () -> runtimeChannel.tryWrite(runtimePointer));
+        assertTrue(runtimeFailure.getMessage().contains("domain-bound local channel"),
+                runtimeFailure.getMessage());
     }
 
     @Test void namedAndFreshTargetsHaveCheckedRoundTrips() {
