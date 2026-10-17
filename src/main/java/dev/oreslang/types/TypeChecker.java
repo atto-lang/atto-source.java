@@ -123,7 +123,9 @@ public final class TypeChecker {
     }
 
     public static TypeCheckResult checkTypesWithDiagnostics(Ast.Program program) {
+        dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(program);
         program = AnnotationExpander.expand(program);
+        dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(program);
         ReturnCleanupChecker.check(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -144,7 +146,9 @@ public final class TypeChecker {
         if (linkedClasses == null || linkedAliases == null) {
             throw new IllegalArgumentException("linked public classes/aliases cannot be null");
         }
+        dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(program);
         program = AnnotationExpander.expand(program);
+        dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
