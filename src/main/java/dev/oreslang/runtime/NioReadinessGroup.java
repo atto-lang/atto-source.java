@@ -190,7 +190,15 @@ public final class NioReadinessGroup implements AutoCloseable {
             // Only cancelled watches need rechecking. Outstanding Future
             // admission bounds this queue: each Future cancels at most once.
             this.future = new OresFuture<>(() -> true, () -> {
+                // Shutdown retires all admitted watches. A concurrent late
+                // cancel must not publish a stale watch after the reactor's
+                // final cancellation-queue clear.
+                if (retired.get() || reactor.stopping.get()) return;
                 reactor.cancellations.add(this);
+                if (retired.get() || reactor.stopping.get()) {
+                    reactor.cancellations.remove(this);
+                    return;
+                }
                 reactor.selector.wakeup();
             });
         }
