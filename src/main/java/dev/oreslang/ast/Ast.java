@@ -1123,6 +1123,9 @@ public final class Ast {
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(Param::rest)) {
+                throw new IllegalArgumentException("rest parameters in lambdas are not yet supported");
+            }
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
             if ((expressionBody == null) == (blockBody == null)) {
                 throw new IllegalArgumentException(
