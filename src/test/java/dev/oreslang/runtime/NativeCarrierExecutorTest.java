@@ -13,6 +13,28 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class NativeCarrierExecutorTest {
 
     @Test
+    void firstAdmissionPublishesEveryNativeCarrierBeforeExecuteReturns() throws Exception {
+        String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+
+        for (int round = 0; round < 48; round++) {
+            NativeCarrierExecutor executor =
+                    new NativeCarrierExecutor(3, 3, 8, "ores-native-publish-");
+            try {
+                assertEquals(0, executor.getStartedCarrierCount());
+                executor.execute(() -> { });
+                assertEquals(3, executor.getStartedCarrierCount(),
+                        "nativeStart must not return before every pthread publishes its Java carrier identity");
+            } finally {
+                executor.shutdownNow();
+                assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
+                        "published native carriers must leave their Java loops during shutdown");
+                assertEquals(0, executor.getStartedCarrierCount());
+            }
+        }
+    }
+
+    @Test
     void manyLogicalTurnsMultiplexOntoOnePthreadCarrier() throws Exception {
         String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
         assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
