@@ -88,6 +88,22 @@ final class LambdaReturnAndTupleSyntaxTest {
     }
 
     @Test
+    void unrelatedOrErasedTupleCastsFailClosed() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val notATuple = 7 as tuple[int];
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val incompatible = tuple(7) as Tuple[bool];
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void ternaryBodyIsNotConsumedByReturnAnnotation() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc f(): void {

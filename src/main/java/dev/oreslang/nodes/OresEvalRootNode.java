@@ -8331,6 +8331,14 @@ public final class OresEvalRootNode extends RootNode {
                 return structuralRecordMatches(value, target);
             }
             String name = target.name();
+            if (name.equals("Tuple") && target.arguments().size() == 1
+                    && target.arguments().getFirst().isSequenceShape()) {
+                // Type checking admits only statically proven compatible
+                // finite Tuple[...] casts. Runtime still validates every
+                // element so 'as' retains checked-cast behavior.
+                return oresTypeMatches(value,
+                        Ast.TypeRef.tupleType(target.arguments().getFirst().arguments()));
+            }
             if (name.equals("int") || name.equals("i8") || name.equals("i16") || name.equals("i32")
                     || name.equals("i64") || name.equals("u8") || name.equals("u16")
                     || name.equals("u32") || name.equals("u64") || name.equals("uint")

@@ -2216,9 +2216,26 @@ public final class TypeChecker {
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.CastExpr cast) {
-            requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
+            // A tuple-shape cast is allowed only when both sides are fully
+            // statically known and shape compatible. It is not a dynamic
+            // generic downcast, so no erased type argument is being guessed.
+            if (target instanceof Tuple) {
+                if (cast.mode() == Ast.CastMode.OPTIONAL
+                        || !(source instanceof Tuple)) {
+                    throw new IllegalArgumentException(
+                            "tuple casts require a statically known tuple source and a checked 'as' shape");
+                }
+                if (!runtimeCheckableTupleCastShape(cast.targetType())) {
+                    throw new IllegalArgumentException(
+                            "tuple cast target requires explicit finite, non-repeating element types");
+                }
+                requireReadonlyCapabilityPreserved(source, target, "tuple cast");
+                requireAssignable(source, target, "tuple cast");
+                return overlayReadonlyCapabilities(source, target);
+            }
+            requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
             if (!typesMayOverlap(source, target)) {
                 throw new IllegalArgumentException("impossible cast: " + source + " cannot be cast to " + target);
             }
@@ -3885,6 +3902,29 @@ public final class TypeChecker {
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    private boolean runtimeCheckableTupleCastShape(Ast.TypeRef target) {
+        List<Ast.TypeRef> elements;
+        if (target.isTupleType()) {
+            elements = target.arguments();
+        } else if (target.name().equals("Tuple")
+                && target.arguments().size() == 1
+                && target.arguments().getFirst().isSequenceShape()) {
+            elements = target.arguments().getFirst().arguments();
+        } else {
+            return false;
+        }
+        for (Ast.TypeRef element : elements) {
+            if (element.isRepeatExact() || element.isRepeatMany()
+                    || element.isSequenceShape() || element.isBorrow()) return false;
+            if (element.isTupleType() || element.name().equals("Tuple")) {
+                if (!runtimeCheckableTupleCastShape(element)) return false;
+            } else if (!element.arguments().isEmpty() || element.isRecordType()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private Type channelElementType(Type channel, String where) {
