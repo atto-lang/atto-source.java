@@ -76,8 +76,17 @@ Existing rules remain:
 4. `./` and `../` imports resolve relative to the importing source file.
 5. Absolute filesystem imports resolve directly to the named path.
 6. Bare paths search `source.roots`, then `source.import_paths`,
-   then `ORESLANG_PATH` in order. Unresolved bare paths retain the
-   existing package-resolver boundary.
+   then colon-separated `ORES_PATHS`, then host-delimited `ORESLANG_PATH`.
+   Omitted `source.roots` defaults to `["."]`, but explicit `roots = []`
+   never silently adds the project directory.
+   Dot-prefixed bare paths such as `.hidden/helper` use the same search
+   order, while only `./` and `../` are importer-relative.
+
+The narrower `+/` implementation in this PR does **not** implement
+verified zed-pkg alias contexts. Until the full package resolution and
+source ownership rules from Java #1050 are reconciled, an explicit `pkg:`
+import fails closed instead of silently resolving as a bare filesystem name.
+The retired `@/` root marker also fails closed.
 
 Existing import targets are recorded during source-closure collection and
 used again during static and runtime linking; execution must not reselect
@@ -105,6 +114,19 @@ import namespace or a second project-root marker.
 
 Precedence: `--project-root` > `ORES_PROJECT_ROOT` > nearest manifest
 found by source-relative upward discovery.
+
+## ORES_PATHS and ORESLANG_PATH
+
+`ORES_PATHS` is the canonical colon-delimited ambient bare-import search
+list on all platforms, and is searched **before** the legacy
+`ORESLANG_PATH`. Both are searched after project `source.roots` and
+`source.import_paths`. Empty components in either list are ignored,
+rather than granting implicit CWD. Duplicate directories keep the first
+precedence position. Path strings with spaces are preserved verbatim.
+
+```bash
+export ORES_PATHS="/opt/oreslang/plugins:$HOME/.oreslang/extra"
+```
 
 ## ORESLANG_PATH
 
