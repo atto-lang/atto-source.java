@@ -727,10 +727,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "index protocol method '" + klass.name() + "." + method.name() + "' must be an instance method");
         }
-        if (method.async() || method.suspends() || method.generator()) {
+        if (method.async() || method.suspends()) {
             throw new IllegalArgumentException(
                     "index protocol method '" + klass.name() + "." + method.name()
-                            + "' must be synchronous and non-generator");
+                            + "' must be synchronous and non-suspending");
         }
         if (method.parameters().stream().anyMatch(param ->
                 param.structural() || param.type().isBorrow())) {
@@ -6272,9 +6272,9 @@ public final class TypeChecker {
         if (target == null) return null;
 
         Ast.MethodDecl method = target.method();
-        if (method.async() || method.suspends() || method.generator()) {
+        if (method.async() || method.suspends()) {
             throw new IllegalArgumentException(
-                    "[" + symbol + "] must be synchronous and non-generator");
+                    "[" + symbol + "] must be synchronous and non-suspending");
         }
         Ast.ClassDecl owner = target.owner();
         requireClassMemberVisible(method.visibility(), owner, "method", method.name());
