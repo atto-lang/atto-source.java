@@ -74,7 +74,10 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         return loopback(port, backlog, maxConnections, maxPending, ForkJoinPool.commonPool());
     }
 
-    public static NativeNioFutureReactor loopback(int port, int backlog,
+    // Internal-only overload: the caller must provide a non-inline bounded
+    // scheduler. OresContext uses the VM's CONTROL executor; arbitrary guest
+    // code cannot substitute a direct/caller-runs executor.
+    static NativeNioFutureReactor loopback(int port, int backlog,
             int maxConnections, int maxPending, Executor completionCpuExecutor) throws IOException {
         java.util.Objects.requireNonNull(completionCpuExecutor, "completionCpuExecutor");
         if (port < 0 || port > 65535 || backlog <= 0 || backlog > 65535
@@ -249,6 +252,14 @@ public final class NativeNioFutureReactor implements AutoCloseable {
                 // or waking guest continuations inline would stall all sockets.
                 try {
                     completionCpuExecutor.execute(() -> {
+                        // Defensive fail-closed check even for an incorrectly
+                        // wired package-private/caller-runs host executor.
+                        // Never box guest arrays on the selector thread.
+                        if (Thread.currentThread() == thread) {
+                            exported.failFromRuntime(new IllegalStateException(
+                                    "TCP guest mapping executor ran inline on NIO reactor"));
+                            return;
+                        }
                         if (exported.isDone()) return;
                         if (failure != null) {
                             exported.failFromRuntime(failure);
