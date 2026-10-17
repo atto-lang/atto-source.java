@@ -440,6 +440,10 @@ public final class OwnershipChecker {
                 }
                 ValueInfo channel = checkExpr(arm.channel(), scope, false);
                 Ast.TypeRef element = channelElementType(channel.type);
+                if (containsPointerCapability(element)) {
+                    throw error("generic Channel<T>/select cannot transport Pointer<T>; "
+                            + "pointer handoff requires a domain-bound local channel capability");
+                }
                 elementTypes.add(element);
                 if (arm.operation() == Ast.ChannelOperation.WRITE) {
                     // Blocking/immediate select can conditionally move only the winning
@@ -451,6 +455,9 @@ public final class OwnershipChecker {
                             selected.mode() == Ast.WaitMode.NONBLOCKING);
                     if (containsMutexGuardType(payload.type)) {
                         throw error("writech cannot transport MutexGuard");
+                    }
+                    if (containsPointerCapability(payload.type)) {
+                        throw error("writech cannot transport Pointer<T> through a generic MPMC channel");
                     }
                     if (isBorrowValue(payload)) {
                         throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
@@ -484,6 +491,9 @@ public final class OwnershipChecker {
                     ValueInfo outgoing = checkExpr(arm.value(), armScope, true);
                     if (containsMutexGuardType(outgoing.type)) {
                         throw error("writech cannot transport MutexGuard");
+                    }
+                    if (containsPointerCapability(outgoing.type)) {
+                        throw error("writech cannot transport Pointer<T> through a generic MPMC channel");
                     }
                 } else if (arm.operation() == Ast.ChannelOperation.READ
                         && arm.bindingName() != null) {
@@ -1050,6 +1060,10 @@ public final class OwnershipChecker {
             }
             ValueInfo channel = checkExpr(channelOp.channel(), scope, false);
             Ast.TypeRef element = channelElementType(channel.type);
+            if (containsPointerCapability(element)) {
+                throw error("generic Channel<T> cannot transport Pointer<T>; "
+                        + "pointer handoff requires a domain-bound local channel capability");
+            }
 
             if (channelOp.operation() == Ast.ChannelOperation.WRITE) {
                 // Channel enqueue/registration takes ownership of move-only payloads.
@@ -1058,6 +1072,9 @@ public final class OwnershipChecker {
                 ValueInfo payload = checkExpr(channelOp.value(), scope, true);
                 if (containsMutexGuardType(payload.type)) {
                     throw error("writech cannot transport MutexGuard");
+                }
+                if (containsPointerCapability(payload.type)) {
+                    throw error("writech cannot transport Pointer<T> through a generic MPMC channel");
                 }
                 if (isBorrowValue(payload)) {
                     throw error("writech cannot transport a borrowed reference; channel payloads must own/copy/share their data");
