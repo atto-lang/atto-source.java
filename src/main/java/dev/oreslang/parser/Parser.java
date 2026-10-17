@@ -1589,6 +1589,9 @@ public final class Parser {
             args.add(parseSequenceShapeDimension());
             consume(RBRACKET, "expected ']' after sequence type shape");
         }
+        // The explicit tuple type constructor accepts the lower-case spelling
+        // too; preserve Tuple[...] as the canonical type name for compatibility.
+        if (name.equals("tuple")) name = "Tuple";
         return new Ast.TypeRef(name, args, infer);
     }
 
@@ -3628,12 +3631,9 @@ public final class Parser {
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
-            if (match(COMMA)) {
-                List<Ast.Expr> items = new ArrayList<>();
-                items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
-                consume(RPAREN, "expected ')' after tuple");
-                return new Ast.TupleExpr(items);
+            if (check(COMMA)) {
+                throw error(peek(),
+                        "parentheses only group expressions; tuple values require explicit tuple(...)");
             }
             consume(RPAREN, "expected ')' after expression");
             return first;
@@ -3698,8 +3698,9 @@ public final class Parser {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
+        Ast.TypeRef returnType = match(COLON) ? parseTypeRef() : null;
         consume(ARROW, "expected '->' after lambda parameters");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, returnType);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
@@ -3719,19 +3720,21 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
+        Ast.TypeRef returnType = match(COLON) ? parseTypeRef() : null;
         consume(ARROW, "lambdas use the slim arrow '->'");
-        return parseLambdaBody(params, nonLexical);
+        return parseLambdaBody(params, nonLexical, returnType);
     }
 
-    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical) {
+    private Ast.LambdaExpr parseLambdaBody(List<Ast.Param> params, boolean nonLexical,
+                                            Ast.TypeRef returnType) {
         // Only an immediate '{' denotes the statement-block form. Everything
         // else starts a normal expression body. This is intentionally lexical:
         // future prefix expressions such as `struct{...}{...}` must remain
         // expression bodies rather than being confused with a lambda block.
         if (check(LBRACE)) {
-            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+            return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, returnType);
         }
-        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical);
+        return new Ast.LambdaExpr(params, parseExpression(), null, nonLexical, returnType);
     }
 
     private boolean looksLikeLambda() {
@@ -3766,7 +3769,24 @@ public final class Parser {
             if (type == LPAREN) depth++;
             else if (type == RPAREN) {
                 depth--;
-                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+                if (depth == 0) {
+                    if (i + 1 >= tokens.size()) return false;
+                    if (tokens.get(i + 1).type() == ARROW) return true;
+                    if (tokens.get(i + 1).type() != COLON) return false;
+                    // Parenthesized lambda: (int n): ReturnType -> body.
+                    // Only look ahead to the executable slim arrow; type-level
+                    // function arrows are FAT_ARROW and do not terminate it.
+                    int nested = 0;
+                    for (int j = i + 2; j < tokens.size(); j++) {
+                        Token.Type look = tokens.get(j).type();
+                        if (look == LPAREN || look == LBRACKET || look == LBRACE || look == LT) nested++;
+                        else if (look == RPAREN || look == RBRACKET || look == RBRACE || look == GT) nested--;
+                        if (nested == 0 && look == ARROW) return true;
+                        if (nested < 0 || (nested == 0
+                                && (look == SEMICOLON || look == EQUAL || look == EOF))) return false;
+                    }
+                    return false;
+                }
             }
         }
         return false;

@@ -3851,11 +3851,28 @@ public final class TypeChecker {
             currentConstructorOwner = null;
             Type result;
             try {
+                Type declaredResult = lambda.returnType() == null
+                        ? null : resolve(lambda.returnType(), generics, self);
                 if (lambda.expressionBody() != null) {
-                    result = typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
+                    Type actualResult = declaredResult == null
+                            ? typeOf(lambda.expressionBody(), lambdaEnv, generics, self)
+                            : typeOfAgainstExpected(lambda.expressionBody(), declaredResult,
+                                    lambdaEnv, generics, self);
+                    if (declaredResult != null) {
+                        requireReadonlyCapabilityPreserved(
+                                actualResult, declaredResult, "lambda expression return");
+                        requireAssignable(actualResult, declaredResult, "lambda expression return");
+                    }
+                    result = declaredResult == null ? actualResult : declaredResult;
                 } else {
-                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-                    result = Unknown.INSTANCE;
+                    Type expectedResult = declaredResult == null ? Unknown.INSTANCE : declaredResult;
+                    checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expectedResult, self);
+                    if (declaredResult != null && declaredResult != Primitive.VOID
+                            && !definitelyReturns(lambda.blockBody())) {
+                        throw new IllegalArgumentException(
+                                "non-void block lambda must explicitly return on every path");
+                    }
+                    result = expectedResult;
                 }
             } finally {
                 // Lambda bodies are checked now but execute later. Never let
@@ -4562,6 +4579,9 @@ public final class TypeChecker {
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         defineImplicitArguments(lambdaEnv, lambdaArgumentTypes);
+        Type declaredResult = lambda.returnType() == null
+                ? expected.result() : resolve(lambda.returnType(), generics, self);
+        requireAssignable(declaredResult, expected.result(), "lambda declared return");
         Ast.ClassDecl previousClassOwner = currentClassOwner;
         Ast.ClassDecl previousConstructorOwner = currentConstructorOwner;
         if (nonLexical) currentClassOwner = null;
@@ -4569,21 +4589,21 @@ public final class TypeChecker {
         try {
             if (lambda.expressionBody() != null) {
                 Type actual = typeOfAgainstExpected(
-                        lambda.expressionBody(), expected.result(), lambdaEnv, generics, self);
+                        lambda.expressionBody(), declaredResult, lambdaEnv, generics, self);
                 requireReadonlyCapabilityPreserved(
                         actual,
-                        expected.result(),
+                        declaredResult,
                         "lambda expression body");
-                requireAssignable(actual, expected.result(), "lambda expression body");
+                requireAssignable(actual, declaredResult, "lambda expression body");
             } else {
-                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+                checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, declaredResult, self);
             }
         } finally {
             currentClassOwner = previousClassOwner;
             currentConstructorOwner = previousConstructorOwner;
         }
         if (lambda.blockBody() != null
-                && expected.result() != Primitive.VOID
+                && declaredResult != Primitive.VOID
                 && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void block lambda must explicitly return on every path");
         }

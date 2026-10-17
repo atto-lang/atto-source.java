@@ -1857,3 +1857,43 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 `@FromJson("key")` is a compiler annotation for typed class fields. It expands before type/ownership checking into public typed getters/setters; no JVM reflection or guest-code macro execution is involved. The field must have an explicit type and mutable storage. The name-first shorthand `field_name: Type` is mutable only when annotated with `@FromJson`; otherwise it is an immutable `val` field.
 
 Generated setters still require a mutable owner at the call site. Duplicate/blank keys, immutable annotated fields, accessor collisions, annotations on module bindings/callables, and annotations on actor state all fail closed. JSON wire keys participate in incremental ABI fingerprints.
+
+
+## Typed lambdas and explicit tuple literals
+
+A lambda may declare its result type between its parameter list and the
+executable slim arrow. The annotation is part of the callable contract, **not**
+a cast of the expression:
+
+```ores
+type Mapper = (int) => int;
+fnc example(): void {
+  val Mapper a = |int n|: int -> 3 * n;
+  val Mapper b = |int n| -> (n * 3) as int;
+  val c = |int n|: int -> { return n * 3; };
+  val d = ||: int -> 42;
+  val e = (int n): int -> n * 3;
+  return;
+}
+```
+
+A bare `(expression)` always groups one expression. The `as T` operator is
+a checked type cast on its expression, never a return-type declaration. For
+example, `(n * 3) as int` is a scalar `int`, not a tuple.
+
+Tuple values require an explicit `tuple(...)` constructor (one element is a
+one-element tuple; a trailing comma is not needed). The canonical static type
+spelling remains `Tuple[T1, T2, ...]`; lower-case `tuple[T1, T2, ...]` is
+also accepted as a synonym in type position:
+
+```ores
+val single = tuple(3);
+val typed = tuple(3) as Tuple[int];
+val typedLower = tuple(3) as tuple[int];
+val pair = tuple(3, "hi");
+```
+
+Legacy comma-based bare tuple literals such as `(3, "hi")` are rejected in
+expression position. Tuple patterns and destructuring syntax remain distinct
+constructs and are not affected. The explicit syntax avoids confusing
+parenthesis grouping, function argument lists, and tuple construction.
