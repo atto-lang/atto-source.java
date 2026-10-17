@@ -14,6 +14,63 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void vmCompletionQueueSaturationRetriesWithoutBlockingSelector() throws Exception {
+        // One CONTROL worker and one queued CONTROL turn intentionally occupy
+        // all bounded executor capacity. A readiness notification must remain
+        // reserved, then drain when a carrier finishes; no caller-runs policy.
+        var executor = new AdaptiveCarrierExecutor(1, 1, 1,
+                work -> Thread.ofPlatform().daemon(true)
+                        .name("nio-control-test").unstarted(work));
+        assertEquals(1, executor.prestartAllCoreThreads());
+        var blockerEntered = new java.util.concurrent.CountDownLatch(1);
+        var unblock = new java.util.concurrent.CountDownLatch(1);
+        var blockerFinished = new java.util.concurrent.CountDownLatch(1);
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8, executor)) {
+            executor.onTaskCompleted(group::retryStagedNotifications);
+            assertTrue(group.usesVmCompletionCarriers());
+            pipe.source().configureBlocking(false);
+            executor.execute(() -> {
+                blockerEntered.countDown();
+                try { unblock.await(3, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                finally { blockerFinished.countDown(); }
+            });
+            assertTrue(blockerEntered.await(2, TimeUnit.SECONDS));
+            var queuedTurn = new java.util.concurrent.CountDownLatch(1);
+            executor.execute(queuedTurn::countDown);
+            var ready = group.watch(pipe.source(), SelectionKey.OP_READ);
+            var callbackThread = new java.util.concurrent.CompletableFuture<String>();
+            ready.whenCompleteRuntime((bits, failure) -> {
+                if (failure != null) callbackThread.completeExceptionally(failure);
+                else callbackThread.complete(Thread.currentThread().getName());
+            });
+            assertEquals(1, pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[]{13})));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (group.pendingCount() != 0 && System.nanoTime() < deadline)
+                Thread.sleep(1); // host test only
+            assertEquals(0, group.pendingCount(), "selector must retire readiness under CONTROL saturation");
+            assertEquals(1, group.pendingNotifications(), "completion remains reserved");
+            assertFalse(ready.isDone(), "subscriber must not run on selector as fallback");
+            group.close();
+            assertFalse(group.awaitStopped(30, TimeUnit.MILLISECONDS),
+                    "shutdown must not declare quiescence while CONTROL is saturated");
+            unblock.countDown();
+            assertTrue(blockerFinished.await(2, TimeUnit.SECONDS));
+            assertTrue(queuedTurn.await(2, TimeUnit.SECONDS));
+            assertTrue((ready.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertEquals("nio-control-test", callbackThread.get(3, TimeUnit.SECONDS));
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        } finally {
+            unblock.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS));
+            pipe.source().close();
+            pipe.sink().close();
+        }
+    }
+
     @Test void selectorStopLatchFollowsCompletionDrainFence() throws Exception {
         // Inspect the internal publication order directly. A stopped reactor
         // must not expose selector quiescence before it fences further
