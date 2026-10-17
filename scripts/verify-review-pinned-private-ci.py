@@ -25,7 +25,7 @@ CARRIER_REPO = "sagitta-stack/sagitta-infra"
 CARRIER_REPO_ID = 1357615104
 DISALLOWED_REVIEWER_IDS = frozenset({11139560, 2148448})
 EXPECTED_PRS = {
-    "publisher": (SOURCE_REPO, 1198),
+    "publisher": (SOURCE_REPO, 1217),
     "destination": (SOURCE_REPO, 1092),
     "snapshot": (SOURCE_REPO, 1189),
     "carrier": (CARRIER_REPO, 7),
@@ -341,7 +341,7 @@ def main():
         "independent_reviewer_policy_blob_sha": reviewer_policy_blob,
         "independent_reviewer_source_permission": source_permission,
         "independent_reviewer_carrier_permission": carrier_permission,
-        "publisher_policy_pr": 1198,
+        "publisher_policy_pr": 1217,
         "publisher_policy_head_sha": heads["publisher"],
         "publisher_review_id": review_ids["publisher"],
         "destination_approval_pr": 1092,
