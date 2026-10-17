@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -165,6 +166,114 @@ final class ActorFfmArenaCurrentIntegrationTest {
                     "last lifetime-only lease must trigger deterministic FFM reclaim");
             assertEquals(0L, memory.usedBytes());
             assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
+    void sourceContinuationPinsArenaAcrossSuspendAndReleasesOnSettlement() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var taskRef = new AtomicReference<OresFuture<Integer>>();
+        var sourceGate = new OresFuture<Integer>();
+        var entered = new CountDownLatch(1);
+        var resumed = new CountDownLatch(1);
+        var turns = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arenaRef.set(arena);
+                arena.allocatePersistent(77L);
+                taskRef.set(runtime.startActorTask(resume -> {
+                    int step = turns.getAndIncrement();
+                    if (step == 0) {
+                        entered.countDown();
+                        return OresScheduler.await(sourceGate);
+                    }
+                    assertEquals(1, step);
+                    assertEquals(9, resume.value());
+                    resumed.countDown();
+                    return OresScheduler.done(10);
+                }));
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("start");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(1, arenaRef.get().outstandingExternalLeases(),
+                    "suspended source continuation must hold lifetime-only arena authority");
+
+            sourceGate.completeFromRuntime(9);
+            assertTrue(resumed.await(5, TimeUnit.SECONDS));
+            assertEquals(10, taskRef.get().get(5, TimeUnit.SECONDS));
+            assertEquals(0, arenaRef.get().outstandingExternalLeases(),
+                    "terminal source task must release its arena lifetime lease exactly once");
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(arenaRef.get().physicallyClosed());
+        }
+    }
+
+    @Test
+    void stoppedLexicalCleanupRetainsArenaLeaseUntilCleanupSettles() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var taskRef = new AtomicReference<OresFuture<Integer>>();
+        var sourceGate = new OresFuture<Integer>();
+        var cleanupGate = new OresFuture<Integer>();
+        var originalEntered = new CountDownLatch(1);
+        var cleanupEntered = new CountDownLatch(1);
+        var turns = new AtomicInteger();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arenaRef.set(arena);
+                arena.allocatePersistent(123L);
+                taskRef.set(runtime.startActorTask(
+                        (OresScheduler.CleanupAwareTask<Integer>) resume -> {
+                            int step = turns.getAndIncrement();
+                            if (step == 0) {
+                                originalEntered.countDown();
+                                return OresScheduler.await(sourceGate);
+                            }
+                            if (step == 1) {
+                                assertTrue(OresScheduler.currentTaskInCleanup());
+                                cleanupEntered.countDown();
+                                return OresScheduler.await(cleanupGate);
+                            }
+                            assertEquals(2, step);
+                            assertTrue(OresScheduler.currentTaskInCleanup());
+                            assertEquals(47, resume.value());
+                            return OresScheduler.done(1);
+                        }));
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("start");
+            assertTrue(originalEntered.await(5, TimeUnit.SECONDS));
+            assertEquals(1, arenaRef.get().outstandingExternalLeases());
+
+            assertTrue(actor.cancel());
+            assertTrue(cleanupEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(actor.done().isDone(),
+                    "actor finalization must wait for admitted lexical cleanup");
+            assertEquals(1, arenaRef.get().outstandingExternalLeases(),
+                    "cleanup await must retain the same lifetime-only arena lease");
+
+            cleanupGate.completeFromRuntime(47);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(taskRef.get().isCancelled());
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(3, turns.get());
+
+            sourceGate.completeFromRuntime(99);
+            assertEquals(3, turns.get(),
+                    "late producer completion cannot replay source after STOP");
         }
     }
 
