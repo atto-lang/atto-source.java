@@ -72,6 +72,45 @@ final class NumericComplexIntegrationTest {
     }
 
     @Test
+    void complexIntegralVariablePromotionAlsoRequiresExactBinary64RangeAtRuntime() {
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false).build()) {
+            PolyglotException failure = assertThrows(
+                    PolyglotException.class,
+                    () -> context.eval(OresLanguage.ID, """
+                            pub routine main(): complex {
+                              val int value = 9007199254740993;
+                              return value + 1i;
+                            }
+                            """));
+            assertTrue(failure.getMessage().contains("exact binary64 range"),
+                    failure::toString);
+        }
+    }
+
+    @Test
+    void complexOrderingAndRemainderAreRejectedStatically() {
+        for (String body : new String[] {
+                "return (1.0 + 2.0i) < (3.0 + 4.0i);",
+                "return (1.0 + 2.0i) % (3.0 + 4.0i);"
+        }) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, """
+                                pub routine main(): bool {
+                                  %s
+                                }
+                                """.formatted(body)));
+                assertTrue(failure.getMessage().contains("complex ordering")
+                                || failure.getMessage().contains("complex remainder"),
+                        failure::toString);
+            }
+        }
+    }
+
+    @Test
     void complexDivisionRetainsRepresentableSubnormalScaleCrossComponent() {
         // Corresponds to the fixed regression in numeric complex issue #1042.
         // This is a targeted oracle case, NOT proof of correctly rounded
