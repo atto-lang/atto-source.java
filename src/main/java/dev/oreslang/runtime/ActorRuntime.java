@@ -2609,6 +2609,74 @@ public final class ActorRuntime implements AutoCloseable {
             return worker;
         }
 
+        private void requireTerminalControlHealthyLocked() {
+            Throwable failure = terminalControlFailure.get();
+            if (failure != null) {
+                throw new IllegalStateException(
+                        "ActorGroup terminal CONTROL ledger failed", failure);
+            }
+        }
+
+        private SupervisorTerminalLedger.Kind terminalKind(ActorRef<?> worker) {
+            ActorHealthSnapshot health = worker.terminalHealth;
+            if (health == null) {
+                throw new IllegalStateException(
+                        "managed worker completed without terminal health snapshot");
+            }
+            return switch (health.terminalClass()) {
+                case NONE -> SupervisorTerminalLedger.Kind.GRACEFUL;
+                case CANCELLED -> SupervisorTerminalLedger.Kind.CANCELLED;
+                case QUOTA_EXCEEDED ->
+                        SupervisorTerminalLedger.Kind.QUOTA_EXCEEDED;
+                case FAILURE -> worker.readySucceeded
+                        ? SupervisorTerminalLedger.Kind.FAILURE
+                        : SupervisorTerminalLedger.Kind.STARTUP_FAILED;
+            };
+        }
+
+        private void managedWorkerTerminated(ActorRef<?> worker) {
+            synchronized (authorityLock) {
+                SupervisorTerminalLedger.Reservation reservation =
+                        terminalReservations.get(worker.id());
+                if (reservation == null) return;
+                try {
+                    terminalLedger.publish(reservation, terminalKind(worker));
+                    terminalReservations.remove(worker.id(), reservation);
+                } catch (RuntimeException | Error failure) {
+                    terminalControlFailure.compareAndSet(null, failure);
+                    CoreLog.record(
+                            CoreLog.Level.ERROR,
+                            CoreLog.SUPERVISOR_CONTROL_FAILED,
+                            worker.generation());
+                }
+            }
+        }
+
+        /**
+         * Host/supervisor-only view of the oldest terminal receipt. Reading is
+         * replayable; only explicit acknowledgement releases child capacity.
+         */
+        public Optional<SupervisorTerminalLedger.Receipt> peekTerminalReceipt() {
+            requireSupervisorContext("inspect supervisor terminal CONTROL");
+            return terminalLedger.peek();
+        }
+
+        public void acknowledgeTerminalReceipt(
+                SupervisorTerminalLedger.Receipt receipt) {
+            requireSupervisorContext("acknowledge supervisor terminal CONTROL");
+            terminalLedger.ack(receipt);
+        }
+
+        public SupervisorTerminalLedger.Stats terminalControlStats() {
+            requireSupervisorContext("inspect supervisor terminal CONTROL");
+            return terminalLedger.stats();
+        }
+
+        public boolean terminalControlHealthy() {
+            requireSupervisorContext("inspect supervisor terminal CONTROL");
+            return terminalControlFailure.get() == null;
+        }
+
         /**
          * Spawn, then register the worker before any readiness/mailbox work is
          * scheduled. A registration failure cancels the newly spawned actor.
