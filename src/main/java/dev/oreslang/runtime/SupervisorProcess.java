@@ -205,6 +205,7 @@ public final class SupervisorProcess implements AutoCloseable {
             callbackActive = false;
             scheduleLocked();
         }
+        current.acknowledgement.complete(null);
     }
 
     private void failLocked(Throwable error) {
