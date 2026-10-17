@@ -863,12 +863,12 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
     void exactCandidateActorReportAndMetadataGateCannotBeDropped() throws Exception {
         String yaml = Files.readString(Path.of(
                 ".github/workflows/private-exact-candidate-validation.yml"));
-        String triggers = between(yaml, "\\non:\\n", "\\npermissions:");
+        String triggers = between(yaml, "\non:\n", "\npermissions:");
         assertTrue(triggers.contains("  workflow_dispatch:"));
         assertFalse(triggers.contains("  push:"), "untrusted push must not trigger a runner");
         assertFalse(triggers.contains("  pull_request:"),
                 "untrusted PR must not trigger a source-local runner");
-        assertTrue(yaml.contains("\\npermissions:\\n  contents: read\\n"));
+        assertTrue(yaml.contains("\npermissions:\n  contents: read\n"));
         assertTrue(yaml.contains("group: private-oreslang-isolated-validation"));
         assertFalse(yaml.contains("secrets."));
         assertFalse(yaml.contains("|| 'ubuntu-24.04'"));
@@ -887,7 +887,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 jobProperty(approved, "runs-on"));
         assertEquals(2L, java.util.regex.Pattern.compile(
                 "(?m)^  [a-z][a-z0-9-]*:$").matcher(yaml.substring(
-                        yaml.indexOf("\\njobs:") + 6)).results().count());
+                        yaml.indexOf("\njobs:") + 6)).results().count());
 
         String[] phases = {
                 "Verify approvals before any candidate source checkout",
@@ -923,15 +923,15 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
             assertTrue(full.contains(name), "full Maven suite may omit actor test: " + name);
         }
         for (String guard : new String[] {
-                "TEST-", "report.is_symlink()", "root.findall(\\\"testcase\\\")",
-                "root.get(\\\"tests\\\"", "failures", "errors", "skipped",
+                "TEST-", "report.is_symlink()", "root.findall(\"testcase\")",
+                "root.get(\"tests\"", "failures", "errors", "skipped",
                 "flakyFailure", "flakyError", "rerunFailure", "rerunError" }) {
             assertTrue(proof.contains(guard), "untrusted report guard removed: " + guard);
         }
         assertTrue(approved.contains(
                 "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"));
-        assertTrue(approved.contains("\\"verified_execution_claim\\": False"));
-        assertTrue(approved.contains("\\"native_guest_parity_certified\\": False"));
+        assertTrue(approved.contains("\"verified_execution_claim\": False"));
+        assertTrue(approved.contains("\"native_guest_parity_certified\": False"));
         assertTrue(approved.contains("source_or_binaries_in_artifact"));
     }
 
