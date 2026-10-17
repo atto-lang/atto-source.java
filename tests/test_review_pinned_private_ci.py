@@ -54,7 +54,6 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                    reviewer_id=REVIEWER_ID, user_type="User"):
         return {
             "permission": permission,
-            "created_at": created,
             "user": {"login": login, "id": reviewer_id, "type": user_type},
         }
 
@@ -87,6 +86,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                        marker=None, created="2026-10-17T20:00:00Z"):
         return {
             "id": cid,
+            "created_at": created,
             "body": (
                 (MOD.RESUME_MARKER if marker is None else marker)
                 + " publisher=" + publisher
