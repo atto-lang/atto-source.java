@@ -191,6 +191,13 @@ final class TrapOptionSemanticsTest {
                           return;
                         }
                         """));
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc forge(): void {
+                          const TrapResult<int> invalid = [Some([1]), None] as TrapResult<int>;
+                          return;
+                        }
+                        """));
     }
 
     @Test
