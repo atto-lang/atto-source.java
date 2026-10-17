@@ -18,7 +18,7 @@
 | `Or` / `BooleanOps.Or` | 2 or more `bool` | one `Array<bool>` or list; empty reduces to `false` | scalar arguments left-to-right with short-circuit |
 | `Xor` / `BooleanOps.Xor` | **exactly 2 `bool`** | one `Array<bool>` or list; existing parity reduction retained for compatibility | both scalar arguments evaluated exactly once, in order; no short-circuit |
 
-The legacy `Xor(array)` reducer computes odd parity for any array length, including empty (`false`). It is a *distinct one-argument aggregate overload*; it does not authorize `Xor(a, b, c)`. A future migration may introduce an explicit `XorParity`/parity reducer before retiring that aggregate overload; do not silently change its result, and do not remove it without an API migration plan.
+The legacy `Xor(array)` reducer computes odd parity for any array length, including empty (`false`). It is a *distinct one-argument aggregate overload*; it does not authorize `Xor(a, b, c)`. The packaged Oreslang `std/core` module now owns equivalent `all_bool(Array<bool>)`, `any_bool(Array<bool>)`, and `xor_parity_bool(Array<bool>)` reducer loops. Public one-argument builtins still retain their compatibility surface while linker/bootstrap work is completed; parity tests must prove builtin results equal the source reducers before the Java aggregate fallback is removed. A future migration may introduce an explicit `XorParity`/parity reducer before retiring that aggregate overload; do not silently change its result, and do not remove it without an API migration plan.
 
 Calls have no generic call-site type parameters. Scalar parameters must type-check as `bool`; array/list contents must type-check as `bool`. Namespace qualification does not change built-in semantics. User-defined callables with the same name or a user-defined `BooleanOps` module retain normal shadowing/overloading rules, rather than being rewritten as intrinsics.
 
@@ -59,6 +59,19 @@ pub fnc main(): void {
   stdio.println(false and [true][99]);                 // false; no invalid index access
 }
 ```
+
+## Lowering architecture
+
+Scalar calls do not need variadic source functions. After name resolution and type checking:
+
+- `And(a, b, c, ...)` lowers to a left-associated `&&` tree.
+- `Or(a, b, c, ...)` lowers to a left-associated `||` tree.
+- `Xor(a, b)` lowers to `a ^^ b`.
+- Scalar `Xor` with any arity other than two is rejected before lowering.
+- User-defined functions/modules named `And`, `Or`, `Xor`, or `BooleanOps` are never rewritten.
+- Aggregate one-argument calls are the remaining bootstrap path. Their semantic implementation now exists in packaged Oreslang source; the final step is to route the builtin aggregate surface to those linked source functions without introducing a shadowable implicit user binding.
+
+Rest/variadic parameters should therefore be designed independently for general language use; Boolean scalar builtins are not a justification for weakening name+arity overload identity or adding a special variadic exception.
 
 ## Backend conformance gates
 
