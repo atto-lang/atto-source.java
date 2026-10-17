@@ -414,6 +414,60 @@ final class StructuralContainerSourceParityTest {
     }
 
     @Test
+    void collectionBoundMethodsCannotEscapeOwnershipChecks() {
+        IllegalArgumentException mapPut = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          let mut Map<string,int> values = new Map<string,int>();
+                          val putter = values.put;
+                          putter("x", 1);
+                          return;
+                        }
+                        """)));
+        assertTrue(mapPut.getMessage().contains("direct-call-only"),
+                mapPut::getMessage);
+
+        IllegalArgumentException mapGet = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          let mut Map<string,List<int>> values = new Map<string,List<int>>();
+                          val getter = values.get;
+                          getter("x");
+                          return;
+                        }
+                        """)));
+        assertTrue(mapGet.getMessage().contains("direct-call-only"),
+                mapGet::getMessage);
+
+        IllegalArgumentException structuralGet = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(structural Map<string,int> values): void {
+                          val getter = values.get;
+                          getter("x");
+                          return;
+                        }
+                        """)));
+        assertTrue(structuralGet.getMessage().contains("direct-call-only"),
+                structuralGet::getMessage);
+
+        IllegalArgumentException listMutation = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(): void {
+                          let mut List<int> values = new List<int>();
+                          val adder = values.add;
+                          adder(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(listMutation.getMessage().contains("direct-call-only"),
+                listMutation::getMessage);
+    }
+
+    @Test
     void contractRejectsShapeOnlyOverloadAndDynamicSpread() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app

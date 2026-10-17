@@ -3383,6 +3383,11 @@ public final class TypeChecker {
                     default -> throw new IllegalArgumentException("unknown string member '" + member.member() + "'");
                 };
             }
+            if (collectionMember instanceof Function) {
+                throw new IllegalArgumentException(
+                        "collection methods are direct-call-only; use an explicit lambda "
+                                + "so receiver ownership and capture authority remain visible");
+            }
             if (collectionMember != null) return collectionMember;
             if (sumReceiver instanceof ListType || sumReceiver instanceof Tuple
                     || sumReceiver instanceof MapType
