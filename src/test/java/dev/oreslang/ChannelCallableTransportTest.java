@@ -58,6 +58,28 @@ final class ChannelCallableTransportTest {
     }
 
     @Test
+    void channelPayloadsRejectRuntimeCapabilitiesTransitively() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Future<int>> pending): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Channel<int>> nested): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Option<Future<int>>> nested): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class CapabilityBox as
+                  val Channel<int> input;
+                end
+                fnc bad(Channel<CapabilityBox> nested): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Mutex<int>> locked): void { return; }
+                """)));
+    }
+
+    @Test
     void localCallbacksAndOrdinaryDataChannelsRemainLegal() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc apply(Fnc<int, int> callback, int value): int {
