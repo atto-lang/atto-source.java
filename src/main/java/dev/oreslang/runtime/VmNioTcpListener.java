@@ -67,7 +67,10 @@ public final class VmNioTcpListener implements AutoCloseable {
     }
 
     public boolean isTerminated() {
-        synchronized (gate) { return closed; }
+        synchronized (gate) {
+            return closed && admittedOperations == 0
+                    && pendingAccept == null && connections.isEmpty();
+        }
     }
 
     int pendingOperations() {
