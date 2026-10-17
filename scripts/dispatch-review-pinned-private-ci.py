@@ -157,8 +157,9 @@ def require_incident_closed():
         stamp = dt.datetime.fromisoformat(closed_at.replace("Z", "+00:00"))
     except ValueError as exc:
         raise Denied("private-source exposure incident lacks valid closure time") from exc
-    if stamp.tzinfo is None or stamp.utcoffset() is None:
-        raise Denied("private-source exposure incident closure time is not UTC-aware")
+    if (stamp.tzinfo is None or stamp.utcoffset() is None
+            or stamp.utcoffset() != dt.timedelta(0)):
+        raise Denied("private-source exposure incident closure time is not UTC")
     return closed_at
 
 def write_temp(root, name, raw):
@@ -306,11 +307,9 @@ def load_receipt(path):
     if not raw or len(raw) > 64 * 1024 or raw.startswith(b"\xef\xbb\xbf"):
         raise Denied("invalid review-pinned receipt bytes")
     try:
-        receipt = json.loads(raw.decode("utf-8"), object_pairs_hook=VERIFY.unique_object)
+        receipt = strict_json(raw.decode("utf-8"), dict)
     except (UnicodeError, ValueError, RecursionError) as exc:
         raise Denied("invalid review-pinned receipt") from exc
-    if type(receipt) is not dict:
-        raise Denied("review-pinned receipt must be a JSON object")
     # A live recomputation below is the canonical schema check.  Reject obvious
     # version confusion before any GitHub write or source traversal.
     if receipt.get("schema") != 2:
@@ -553,6 +552,8 @@ def publish_review_pinned(receipt, source_checkout, branch):
         f"repos/{repository}/git/refs", method="POST",
         payload={"ref": "refs/heads/" + branch, "sha": commit_sha})
     if (created_ref.get("ref") != "refs/heads/" + branch
+            or not isinstance(created_ref.get("object"), dict)
+            or created_ref["object"].get("type") != "commit"
             or PUB.nested_sha(created_ref, "object") != commit_sha):
         raise Denied("created immutable private-CI ref mismatch")
 
@@ -561,6 +562,8 @@ def publish_review_pinned(receipt, source_checkout, branch):
     # workflow_dispatch: the exact reviewed carrier workflow is push-only.
     ref = PUB.gh_api(f"repos/{repository}/git/ref/heads/{branch}")
     if (ref.get("ref") != "refs/heads/" + branch
+            or not isinstance(ref.get("object"), dict)
+            or ref["object"].get("type") != "commit"
             or PUB.nested_sha(ref, "object") != commit_sha):
         raise Denied("immutable private-CI ref readback mismatch")
 
@@ -594,11 +597,13 @@ def publish_review_pinned(receipt, source_checkout, branch):
         raise Denied("payload root tree does not contain exact approved entries")
 
     blob = PUB.gh_api(f"repos/{repository}/git/blobs/{provenance_sha}")
-    if blob.get("encoding") != "base64" or blob.get("sha") != provenance_sha:
+    encoded = blob.get("content")
+    if (blob.get("encoding") != "base64" or blob.get("sha") != provenance_sha
+            or not isinstance(encoded, str) or len(encoded) > 128 * 1024):
         raise Denied("provenance blob readback malformed")
     try:
         readback = base64.b64decode(
-            "".join(str(blob.get("content") or "").splitlines()), validate=True)
+            "".join(encoded.splitlines()), validate=True)
     except ValueError as exc:
         raise Denied("provenance blob readback is not valid base64") from exc
     if readback != provenance:
