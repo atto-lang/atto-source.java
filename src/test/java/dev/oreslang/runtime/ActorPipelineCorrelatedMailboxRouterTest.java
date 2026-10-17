@@ -36,6 +36,68 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void mailboxEnforcesBoundRouteReceiverWithoutConsumingCredits() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var seen = new AtomicInteger();
+            var received = new CountDownLatch(1);
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("authorized", value);
+                seen.incrementAndGet();
+                received.countDown();
+            });
+            var workerA = runtime.<String>spawnShared(() -> (value, actor) -> {
+                throw new AssertionError("misrouted DATA reached worker-a");
+            });
+            var workerB = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var isolated = runtime.<String>spawnPrivateTrusted(
+                    context -> (value, actor) -> {
+                        throw new AssertionError("SHARED route leaked into private actor");
+                    });
+            var plan = fanInGraph();
+            var ids = Map.of(
+                    "source", source.id(),
+                    "worker-a", workerA.id(),
+                    "worker-b", workerB.id(),
+                    "sink", sink.id());
+            var bound = new ActorPipelineRouteSession(plan, 31, 4, ids);
+            var root = bound.ingress("source");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(workerA, "misroute", root),
+                    "valid frame cannot be attached to a different actor's mailbox");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(isolated, "misroute", root),
+                    "private actor cannot receive VM-owned SHARED route metadata");
+            assertEquals(1, bound.outstanding(),
+                    "wrong-recipient validation must not consume live frame");
+            var unbound = new ActorPipelineRouteSession(plan, 31, 4);
+            var fake = unbound.ingress("source");
+            assertThrows(SecurityException.class,
+                    () -> runtime.sendWithPipelineFrame(source, "misroute", fake),
+                    "selector-only route frame must never be published as DATA");
+            assertEquals(1, unbound.outstanding());
+            runtime.sendWithPipelineFrame(source, "authorized", root);
+            assertTrue(received.await(5, TimeUnit.SECONDS));
+            source.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(1, seen.get(), "rejected envelopes must not enter the mailbox");
+            assertEquals(0, bound.outstanding(),
+                    "authorized receive must retire VM frame");
+            ActorPipelineRouteSession.retireDelivered(fake);
+            assertEquals(0, unbound.outstanding());
+            source.stop();
+            workerA.stop();
+            workerB.stop();
+            sink.stop();
+            isolated.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            workerA.getDone().get(5, TimeUnit.SECONDS);
+            workerB.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+            isolated.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void realMailboxFanoutAndFanInPreserveOneFlowAndIndependentBranchIdentities()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
