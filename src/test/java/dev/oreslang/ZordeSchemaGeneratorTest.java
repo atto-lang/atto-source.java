@@ -94,6 +94,22 @@ final class ZordeSchemaGeneratorTest {
                 "@MinLength(1) define newtype Username(string);"));
     }
 
+    @Test void nominalWithoutBoundsRetainsTypeAndFullDomain() {
+        var string = ZordeSchemaGenerator.planSource(
+                "namespace app; define newtype Bare(string);");
+        var integer = ZordeSchemaGenerator.planSource(
+                "namespace app; define newtype Bare(int);");
+        var name = string.schema("app.Bare");
+        var number = integer.schema("app.Bare");
+        assertEquals(0L, name.min());
+        assertEquals(Long.MIN_VALUE, number.min());
+        assertNotEquals(name.fingerprint(), number.fingerprint());
+        assertTrue(string.tryFrom("app.Bare", "").ok());
+        assertFalse(string.tryFrom("app.Bare", String.valueOf((char)0xDC00)).ok());
+        assertTrue(integer.tryFrom("app.Bare", Long.MIN_VALUE).ok());
+        assertFalse(integer.tryFrom("app.Bare", java.math.BigInteger.TEN).ok());
+    }
+
     @Test void planIsImmutableDeterministicallyOrderedAndModuleQualified() {
         var plan = ZordeSchemaGenerator.planSource(
                 "namespace app; type Z = int with value gte 0; "
