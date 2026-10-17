@@ -41,7 +41,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Array", "List", "Vector", "Matrix", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
@@ -1714,7 +1714,7 @@ public final class TypeChecker {
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
-                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "Tuple", "Array", "List", "Vector", "Matrix", "Slice",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -2276,6 +2276,8 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            Type matrixResult = matrixBinaryType(binary.operator(), deref(left), deref(right));
+            if (matrixResult != null) return matrixResult;
             boolean decimalComplexMix =
                     (left == Primitive.DECIMAL && right == Primitive.COMPLEX)
                     || (left == Primitive.COMPLEX && right == Primitive.DECIMAL);
@@ -2425,6 +2427,16 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr builtin
+                    && builtin.name().equals("matrix")
+                    && env.lookup("matrix") == null
+                    && !hasFunctionFamily("matrix")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(
+                            "matrix literal constructor does not accept call-site type arguments");
+                }
+                return matrixConstructorType(call.arguments(), env, generics, self);
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -2865,6 +2877,31 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "unknown ActorOutputStream callable member '"
                                     + member.member() + "'");
+                }
+
+                Type matrixBuiltin = builtinMatrixMember(receiver, member.member());
+                if (matrixBuiltin != null) {
+                    if (!(matrixBuiltin instanceof Function builtin)) {
+                        throw new IllegalArgumentException(
+                                "Matrix." + member.member() + " is a property and is not callable");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "Matrix." + member.member() + " does not accept call-site type arguments");
+                    }
+                    if (builtin.parameters().size() != call.arguments().size()) {
+                        throw new IllegalArgumentException(
+                                "Matrix." + member.member() + " call arity mismatch");
+                    }
+                    for (int i = 0; i < builtin.parameters().size(); i++) {
+                        Type actualArgument =
+                                typeOf(call.arguments().get(i), env, generics, self);
+                        requireAssignable(
+                                actualArgument,
+                                builtin.parameters().get(i),
+                                "Matrix." + member.member() + " argument " + (i + 1));
+                    }
+                    return builtin.result();
                 }
 
                 Type collectionBuiltin = builtinCollectionMember(receiver, member.member());
@@ -3320,6 +3357,13 @@ public final class TypeChecker {
             if (httpMember != null) return httpMember;
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type matrixMember = builtinMatrixMember(sumReceiver, member.member());
+            if (matrixMember != null) return matrixMember;
+            if (sumReceiver instanceof Named matrixType
+                    && matrixType.name().equals("Matrix")) {
+                throw new IllegalArgumentException(
+                        "unknown Matrix member '" + member.member() + "'");
+            }
             if (sumReceiver instanceof Named actorRef
                     && actorRef.name().equals("ActorRef")) {
                 actorClassForRef(actorRef);
@@ -6315,6 +6359,133 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
+    private Type matrixConstructorType(
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (arguments.size() != 1 || !(arguments.getFirst() instanceof Ast.ListExpr rows)
+                || rows.elements().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "matrix[[...], ...] requires one non-empty list of non-empty rows");
+        }
+
+        Integer columns = null;
+        Type element = null;
+        for (int r = 0; r < rows.elements().size(); r++) {
+            if (!(rows.elements().get(r) instanceof Ast.ListExpr row) || row.elements().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "matrix row " + r + " must be a non-empty list");
+            }
+            if (columns == null) columns = row.elements().size();
+            else if (columns != row.elements().size()) {
+                throw new IllegalArgumentException(
+                        "matrix literal must be rectangular; row " + r + " has "
+                                + row.elements().size() + " column(s), expected " + columns);
+            }
+            for (Ast.Expr cell : row.elements()) {
+                Type cellType = deref(typeOf(cell, env, generics, self));
+                Type promoted = denseMatrixElement(cellType, "matrix literal");
+                element = element == null ? promoted : denseMatrixJoin(element, promoted);
+            }
+        }
+        return new Named("Matrix", List.of(element));
+    }
+
+    private Type matrixBinaryType(String operator, Type left, Type right) {
+        Named leftMatrix = left instanceof Named named && named.name().equals("Matrix")
+                ? named : null;
+        Named rightMatrix = right instanceof Named named && named.name().equals("Matrix")
+                ? named : null;
+        if (leftMatrix == null && rightMatrix == null) return null;
+
+        if (leftMatrix != null && leftMatrix.arguments().size() != 1
+                || rightMatrix != null && rightMatrix.arguments().size() != 1) {
+            throw new IllegalArgumentException("Matrix<T> requires exactly one element type");
+        }
+
+        return switch (operator) {
+            case "@" -> {
+                if (leftMatrix == null || rightMatrix == null) {
+                    throw new IllegalArgumentException(
+                            "operator '@' currently requires Matrix<T> operands");
+                }
+                yield new Named("Matrix", List.of(denseMatrixJoin(
+                        leftMatrix.arguments().getFirst(),
+                        rightMatrix.arguments().getFirst())));
+            }
+            case "+", "-" -> {
+                if (leftMatrix == null || rightMatrix == null) {
+                    throw new IllegalArgumentException(
+                            "matrix " + (operator.equals("+") ? "addition" : "subtraction")
+                                    + " requires Matrix<T> operands");
+                }
+                yield new Named("Matrix", List.of(denseMatrixJoin(
+                        leftMatrix.arguments().getFirst(),
+                        rightMatrix.arguments().getFirst())));
+            }
+            case "*" -> {
+                if (leftMatrix != null && rightMatrix != null) {
+                    throw new IllegalArgumentException(
+                            "matrix multiplication uses '@'; '*' is scalar scaling");
+                }
+                Named matrix = leftMatrix != null ? leftMatrix : rightMatrix;
+                Type scalar = leftMatrix != null ? right : left;
+                yield new Named("Matrix", List.of(denseMatrixJoin(
+                        matrix.arguments().getFirst(),
+                        denseMatrixElement(scalar, "matrix scalar multiplication"))));
+            }
+            case "/" -> {
+                if (leftMatrix == null || rightMatrix != null) {
+                    throw new IllegalArgumentException(
+                            "matrix division requires Matrix<T> / scalar");
+                }
+                yield new Named("Matrix", List.of(denseMatrixJoin(
+                        leftMatrix.arguments().getFirst(),
+                        denseMatrixElement(right, "matrix scalar division"))));
+            }
+            default -> null;
+        };
+    }
+
+    private Type denseMatrixElement(Type source, String where) {
+        if (source == Primitive.COMPLEX) return Primitive.COMPLEX;
+        if (source == Primitive.FLOAT || source == Primitive.INT) return Primitive.FLOAT;
+        if (source == Primitive.DECIMAL) {
+            throw new IllegalArgumentException(
+                    where + " cannot implicitly narrow Decimal into binary64 matrix storage");
+        }
+        throw new IllegalArgumentException(
+                where + " requires int/float/complex binary64-compatible values");
+    }
+
+    private Type denseMatrixJoin(Type left, Type right) {
+        left = denseMatrixElement(left, "matrix element");
+        right = denseMatrixElement(right, "matrix element");
+        return left == Primitive.COMPLEX || right == Primitive.COMPLEX
+                ? Primitive.COMPLEX
+                : Primitive.FLOAT;
+    }
+
+    private Type builtinMatrixMember(Type receiver, String member) {
+        receiver = deref(receiver);
+        if (!(receiver instanceof Named matrix)
+                || !matrix.name().equals("Matrix")
+                || matrix.arguments().size() != 1) {
+            return null;
+        }
+        Type element = denseMatrixElement(matrix.arguments().getFirst(), "Matrix<T>");
+        Type same = new Named("Matrix", List.of(element));
+        return switch (member) {
+            case "rows", "cols" -> Primitive.INT;
+            case "transpose", "hermitian" -> new Function(List.of(), same);
+            case "get" -> new Function(List.of(Primitive.INT, Primitive.INT), element);
+            case "trace" -> new Function(List.of(), element);
+            case "norm" -> new Function(List.of(), Primitive.FLOAT);
+            default -> null;
+        };
+    }
+
     private void requireInteger(Type type, String where) {
         if (type != Primitive.INT) throw new IllegalArgumentException(where + " must be an integer type");
     }
@@ -8080,6 +8251,16 @@ public final class TypeChecker {
                 yield new Named("$builtin$Symbol", List.of());
             }
             case "void" -> Primitive.VOID;
+            case "Matrix" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1
+                        || ref.arguments().getFirst().isSequenceShape()
+                        || ref.arguments().getFirst().isNamedParameter()) {
+                    throw new IllegalArgumentException(
+                            "Matrix requires exactly one explicit scalar element type");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                yield new Named("Matrix", List.of(denseMatrixElement(element, "Matrix<T>")));
+            }
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null

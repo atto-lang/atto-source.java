@@ -17,6 +17,7 @@ import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.NativeHttp;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresComplex;
+import dev.oreslang.runtime.OresMatrix;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 import dev.oreslang.runtime.OresFuture;
@@ -6126,6 +6127,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("matrix")) return (Invokable) args -> {
+                    requireOne(args, "matrix");
+                    if (!(args.getFirst() instanceof List<?> rows)) {
+                        throw new IllegalArgumentException(
+                                "matrix[[...], ...] expects a list of rows");
+                    }
+                    return OresMatrix.fromRows(rows);
+                };
                 if (name.name().equals("Channel")) return new ChannelFactory();
                 if (name.name().equals("SelectCase")) return new SelectCaseFactory();
                 if (name.name().equals("SelectSet")) return new SelectSetFactory(this);
@@ -6541,6 +6550,41 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name, Env env) {
+            if (receiver instanceof OresMatrix matrix) {
+                return switch (name) {
+                    case "rows" -> (long) matrix.rows();
+                    case "cols" -> (long) matrix.cols();
+                    case "transpose" -> (Invokable) args -> {
+                        requireZero(args, "Matrix.transpose");
+                        return matrix.transpose();
+                    };
+                    case "hermitian" -> (Invokable) args -> {
+                        requireZero(args, "Matrix.hermitian");
+                        return matrix.hermitian();
+                    };
+                    case "get" -> (Invokable) args -> {
+                        if (args.size() != 2
+                                || !(args.get(0) instanceof Number row)
+                                || !(args.get(1) instanceof Number column)) {
+                            throw new IllegalArgumentException(
+                                    "Matrix.get(row, col) expects two integer indexes");
+                        }
+                        return matrix.get(
+                                Math.toIntExact(row.longValue()),
+                                Math.toIntExact(column.longValue()));
+                    };
+                    case "trace" -> (Invokable) args -> {
+                        requireZero(args, "Matrix.trace");
+                        return matrix.trace();
+                    };
+                    case "norm" -> (Invokable) args -> {
+                        requireZero(args, "Matrix.norm");
+                        return matrix.norm();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown Matrix member " + name);
+                };
+            }
             if (receiver instanceof String text) {
                 if (name.equals("split_literal")) {
                     return (Invokable) args -> {
@@ -8459,6 +8503,7 @@ public final class OresEvalRootNode extends RootNode {
             return switch (op) {
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
                 case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
+                case "@" -> matrixMultiply(left, right);
                 case "eq", "==" -> valueEquals(left, right);
                 case "neq", "!=" -> !valueEquals(left, right);
                 case "is" -> identityEquals(left, right);
@@ -8666,6 +8711,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object numeric(Object left, Object right, char op) {
+            if (left instanceof OresMatrix matrix) {
+                return switch (op) {
+                    case '+' -> matrix.add(requireMatrix(right, "matrix addition"));
+                    case '-' -> matrix.subtract(requireMatrix(right, "matrix subtraction"));
+                    case '*' -> isMatrixScalar(right)
+                            ? matrix.scale(right)
+                            : throw new IllegalArgumentException(
+                                    "matrix multiplication uses '@'; '*' is scalar scaling");
+                    case '/' -> isMatrixScalar(right)
+                            ? matrix.divide(right)
+                            : throw new IllegalArgumentException(
+                                    "matrix division requires a numeric scalar");
+                    default -> throw new IllegalArgumentException(
+                            "operator " + op + " is not supported for matrices");
+                };
+            }
+            if (right instanceof OresMatrix matrix) {
+                if (op == '*' && isMatrixScalar(left)) return matrix.scale(left);
+                throw new IllegalArgumentException(
+                        "operator " + op + " is not supported for scalar/matrix operands");
+            }
             if (left instanceof OresComplex || right instanceof OresComplex) {
                 OresComplex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
@@ -8681,6 +8747,23 @@ public final class OresEvalRootNode extends RootNode {
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+        }
+
+        private Object matrixMultiply(Object left, Object right) {
+            if (!(left instanceof OresMatrix a) || !(right instanceof OresMatrix b)) {
+                throw new IllegalArgumentException(
+                        "operator '@' currently requires Matrix operands");
+            }
+            return a.matmul(b);
+        }
+
+        private OresMatrix requireMatrix(Object value, String operation) {
+            if (value instanceof OresMatrix matrix) return matrix;
+            throw new IllegalArgumentException(operation + " requires a Matrix operand");
+        }
+
+        private boolean isMatrixScalar(Object value) {
+            return value instanceof Number || value instanceof OresComplex;
         }
 
         private long integralLong(Object value) {

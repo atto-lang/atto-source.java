@@ -228,3 +228,20 @@ versioned, and BigInt/Decimal dense values do not implicitly narrow to f64.
 This slice is runtime foundation only: source Matrix/Vector syntax, solve/SVD,
 serialization, GPU/BLAS acceleration and cross-backend execution remain
 separate gates.
+
+
+## Java matrix source surface (no Vector<T> semantic collision)
+
+A stacked source-language slice now exposes only the finite dense-matrix
+operations backed by the exact runtime reference core: `matrix[[...]]`,
+`Matrix<float|complex>`, `@`, scalar `*` / `/`, matrix `+` / `-`,
+and `rows`, `cols`, `get`, `transpose`, `hermitian`, `trace`,
+and `norm`. Ragged literals and Decimal-backed dense matrices fail closed.
+
+The existing source spelling `Vector<T>` remains the generic sequence
+collection. It is **not** repurposed for linear algebra by this slice. The
+runtime `OresVector` remains available as an internal exact-math building
+block, but a source-visible dense-vector name/compatibility migration must be
+versioned separately so existing collection code cannot silently change
+meaning. Matrix actor-mail serialization also remains compiler-gated despite
+the runtime value being immutable; no portable DATA codec has been certified.

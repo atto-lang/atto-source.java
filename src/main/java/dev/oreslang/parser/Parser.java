@@ -3226,7 +3226,7 @@ public final class Parser {
 
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseUnary();
-        while (match(STAR, SLASH, PERCENT)) {
+        while (match(STAR, SLASH, PERCENT, AT)) {
             String op = previous().lexeme();
             expr = new Ast.BinaryExpr(op, expr, parseUnary());
         }
@@ -3584,6 +3584,17 @@ public final class Parser {
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
+        // Dense linear-algebra literals are contextual so ordinary identifiers
+        // remain available. Vector<T> already denotes the generic sequence
+        // collection today; do not overload vector[...] until that migration is
+        // designed explicitly.
+        if (check(IDENT) && peek().lexeme().equals("matrix") && checkNext(LBRACKET)) {
+            advance();
+            consume(LBRACKET, "expected '[' after matrix");
+            List<Ast.Expr> rows = parseArgumentsUntil(RBRACKET);
+            consume(RBRACKET, "expected ']' after matrix literal");
+            return new Ast.CallExpr(new Ast.NameExpr("matrix"), List.of(new Ast.ListExpr(rows)));
+        }
         // loop/block are contextual statement keywords: parseStatement only
         // consumes them when followed by '{'. In every expression position they
         // remain valid references to same-named callables, including first-class
