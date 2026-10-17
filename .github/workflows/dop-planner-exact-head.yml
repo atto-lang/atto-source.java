@@ -1,0 +1,49 @@
+name: DOP planner exact-head verification
+
+on:
+  push:
+    branches:
+      - feat/dop-region-dependency-v1-20261015
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/DopRegionSchedule.java'
+      - 'src/test/java/dev/oreslang/runtime/DopRegionSchedule*.java'
+      - 'scripts/dop-planner/**'
+      - 'scripts/test-dop-planner-standalone.sh'
+      - '.github/workflows/dop-planner-exact-head.yml'
+      - 'pom.xml'
+
+permissions:
+  contents: read
+
+jobs:
+  exact-planner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout pinned source repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Assert exact PR commit and repository origin
+        shell: bash
+        env:
+          EXPECTED: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          test "$(git remote get-url origin | sed -E 's#^https://github.com/##; s#\.git$##')" = 'ores-truffle-oreslang/oreslang-source.java'
+      - name: Install pinned Java 21
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Exact planner standalone oracle
+        run: bash scripts/test-dop-planner-standalone.sh
+      - name: Full Maven integration for planner JUnit cases
+        run: mvn -B -ntp -Dtest=DopRegionScheduleTest,DopRegionScheduleRandomizedTest -DfailIfNoTests=true test
+      - name: Record exact tree
+        run: |
+          printf 'SOURCE_HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'SOURCE_TREE=%s\n' "$(git rev-parse HEAD^{tree})"
