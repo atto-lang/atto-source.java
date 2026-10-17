@@ -101,6 +101,21 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void complexDivisionFallsBackForLargeNonzeroCancellationError() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val complex quotient =
+                          (0.9999999947592926 + 1.0000000008845844i)
+                            / (0.9999999973991033 + 1.0000000035243972i);
+                      return quotient
+                          eq (0.9999999973601883 - 1.0466270614337854e-15i);
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void complexMultiplicationAvoidsOverflowCancellationAndPrematureUnderflow() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
