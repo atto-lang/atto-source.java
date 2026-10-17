@@ -5243,6 +5243,45 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void executeRecoverStatement(Ast.RecoverStmt recovered, Env env) {
+            Throwable pendingFailure = null;
+            try {
+                try {
+                    executeBlock(recovered.body(), env, true);
+                } catch (RuntimeException failure) {
+                    if (!isRecoverSignal(failure)) throw failure;
+                    Env caught = new Env(env);
+                    caught.define(
+                            recovered.signalName(),
+                            recoverySignal(failure),
+                            Ast.BindingKind.VAL);
+                    // The active recover frame handles only the signal from its
+                    // body. A new raise/panic in the handler escapes to an outer frame.
+                    executeBlock(recovered.catchBody(), caught, true);
+                }
+            } catch (RuntimeException | Error failure) {
+                pendingFailure = failure;
+                throw failure;
+            } finally {
+                try {
+                    executeBlock(recovered.finallyBody(), env, true);
+                } catch (RuntimeException | Error cleanupFailure) {
+                    if (pendingFailure != null
+                            && (isUnmaskableFailure(pendingFailure)
+                                    || cleanupFailure instanceof ProcessExitSignal)) {
+                        if (pendingFailure != cleanupFailure) {
+                            pendingFailure.addSuppressed(cleanupFailure);
+                        }
+                    } else {
+                        if (pendingFailure != null && pendingFailure != cleanupFailure) {
+                            cleanupFailure.addSuppressed(pendingFailure);
+                        }
+                        throw cleanupFailure;
+                    }
+                }
+            }
+        }
+
         private void executeStatement(
                 Ast.Stmt stmt,
                 Env env,
