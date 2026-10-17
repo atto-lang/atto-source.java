@@ -237,6 +237,7 @@ public final class ActorRuntime implements AutoCloseable {
             long cancelledTerminations,
             long failedTerminations,
             long supervisionEventsDropped,
+            long lifecyclePublicationFailures,
             long watchdogOverruns,
             long watchdogNoticesDropped) {
         public ActorRuntimeStats {
@@ -248,6 +249,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || cancelledTerminations < 0
                     || failedTerminations < 0
                     || supervisionEventsDropped < 0
+                    || lifecyclePublicationFailures < 0
                     || watchdogOverruns < 0
                     || watchdogNoticesDropped < 0) {
                 throw new IllegalArgumentException("actor runtime stats cannot be negative");
@@ -586,6 +588,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong failedTerminations = new AtomicLong();
     private final AtomicLong supervisionEventSequence = new AtomicLong();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
+    private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
     private final AtomicInteger supervisionEventsQueued = new AtomicInteger();
     private final ConcurrentLinkedQueue<ActorTerminationEvent> supervisionEvents =
             new ConcurrentLinkedQueue<>();
@@ -754,6 +757,7 @@ public final class ActorRuntime implements AutoCloseable {
                 cancelledTerminations.get(),
                 failedTerminations.get(),
                 supervisionEventsDropped.get(),
+                lifecyclePublicationFailures.get(),
                 watchdogOverruns.get(),
                 watchdogNoticesDropped.get());
     }
@@ -1573,6 +1577,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (isDone()) actorOutputStreams.remove(this);
             });
             return result;
+        }
+
+        private Runnable closeDeferred(Throwable cause) {
+            return channel.closeDeferred(cause);
         }
 
         private void close(Throwable cause) {
