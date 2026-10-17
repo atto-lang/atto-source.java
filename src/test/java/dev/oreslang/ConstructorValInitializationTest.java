@@ -1,9 +1,14 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.ConstructorFlowState;
+import dev.oreslang.types.ConstructorValInitialization;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -179,4 +184,81 @@ final class ConstructorValInitializationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> OwnershipChecker.check(Parser.parse(source)));
     }
+
+    @Test
+    void intervalJoinPreservesMustAndMayInformation() {
+        ConstructorFlowState blank = ConstructorFlowState.blank(Set.of("count"));
+        ConstructorFlowState written = blank.write("count");
+        ConstructorFlowState joined = blank.join(written);
+
+        assertEquals(0, joined.count("count").min());
+        assertEquals(1, joined.count("count").max());
+        assertFalse(joined.count("count").definitelyInitialized());
+        assertTrue(joined.count("count").maybeInitialized());
+
+        ConstructorFlowState twice = written.write("count");
+        assertEquals(ConstructorFlowState.MANY, twice.count("count").max());
+        assertTrue(twice.count("count").mayBeMultiple());
+    }
+
+    @Test
+    void exhaustiveCatchAllMatchMayInitializeBlankVal() {
+        accepted("""
+                define class Counter as
+                    val int count;
+                    constructor(int n) {
+                        do match n over {
+                            on 0 {
+                                self.count = 1;
+                            }
+                            on _ {
+                                self.count = n;
+                            }
+                        }
+                        return;
+                    }
+                end
+                """);
+    }
+
+    @Test
+    void constructorFlowDoesNotAssumeNonExhaustiveMatchRunsAnArm() {
+        Ast.Program program = Parser.parse("""
+                define class Counter as
+                    val int count;
+                    constructor(int n) {
+                        do match n over {
+                            on 0 {
+                                self.count = 1;
+                            }
+                        }
+                    }
+                end
+                """);
+        Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConstructorValInitialization.check(klass));
+        assertTrue(failure.getMessage().contains("did not initialize field 'count'"),
+                failure::getMessage);
+    }
+
+    @Test
+    void constructorFlowRejectsAwaitAcrossConstructionRegion() {
+        Ast.Program program = Parser.parse("""
+                define class Counter as
+                    val int count;
+                    constructor() {
+                        self.count = await pending;
+                    }
+                end
+                """);
+        Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ConstructorValInitialization.check(klass));
+        assertTrue(failure.getMessage().contains("cannot suspend through await"),
+                failure::getMessage);
+    }
+
 }
