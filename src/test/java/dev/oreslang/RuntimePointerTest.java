@@ -490,6 +490,31 @@ final class RuntimePointerTest {
         check("const Fnc<Box, void> f = |Box view| -> { return; }; const p = rt ref new Box(); f((rt deref p) as Box); const moved = rt take p;");
     }
 
+    @Test void structuralCallPreservesInlineMutableDerefExclusivity() {
+        String prefix = BOX + """
+                define interface Shape
+                  value: int;
+                end
+                fnc inspect_two(structural Shape first, structural Shape second): int {
+                  return first.value + second.value;
+                }
+                """;
+
+        var failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(prefix + """
+                        fnc bad(): void {
+                          let mut Pointer<Box> p = rt ref new Box();
+                          const int n = inspect_two(
+                              (rt deref mut p) as Box,
+                              (rt deref p) as Box);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("mutable borrow")
+                        || failure.getMessage().contains("mutably borrowed"),
+                failure.getMessage());
+    }
+
     @Test void symbolicPointerAndBorrowSyntaxIsRejected() {
         for (String expression : new String[] {"&box", "&mut box", "*box"}) {
             var e = assertThrows(IllegalArgumentException.class, () -> Parser.parse(BOX + "fnc bad(): void { const p = " + expression + "; return; }"));
