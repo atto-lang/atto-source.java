@@ -1650,10 +1650,9 @@ public final class OresEvalRootNode extends RootNode {
                         member.receiver(), seen);
             }
             if (expr instanceof Ast.IndexExpr index) {
-                return expressionContainsPotentialSuspension(
-                                index.receiver(), seen)
-                        || expressionContainsPotentialSuspension(
-                                index.index(), seen);
+                if (expressionContainsPotentialSuspension(index.receiver(), seen)) return true;
+                return index.indices().stream()
+                        .anyMatch(item -> expressionContainsPotentialSuspension(item, seen));
             }
             if (expr instanceof Ast.NewExpr created) {
                 return created.arguments().stream().anyMatch(
@@ -3457,30 +3456,22 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
-                                evalSuspendableExpr(
+                                evalSuspendableArguments(
                                         t,
-                                        index.index(),
+                                        index.indices(),
                                         env,
-                                        (t2, key, failure2) -> {
+                                        (t2, keys, failure2) -> {
                                             if (failure2 != null) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure2);
+                                                continuation.accept(t2, null, failure2);
                                                 return;
                                             }
                                             try {
                                                 continuation.accept(
                                                         t2,
-                                                        indexValue(
-                                                                receiver,
-                                                                key),
+                                                        indexValue(receiver, keys, env),
                                                         null);
                                             } catch (RuntimeException | Error failure3) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure3);
+                                                continuation.accept(t2, null, failure3);
                                             }
                                         });
                             });
@@ -3495,6 +3486,37 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
+                                    return;
+                                }
+                                if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                                    evalSuspendableExpr(
+                                            t,
+                                            indexed.receiver(),
+                                            env,
+                                            (t2, receiver, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                    return;
+                                                }
+                                                evalSuspendableArguments(
+                                                    t2,
+                                                    indexed.indices(),
+                                                    env,
+                                                    (t3, keys, failure3) -> {
+                                                        if (failure3 != null) {
+                                                            continuation.accept(t3, null, failure3);
+                                                            return;
+                                                        }
+                                                        try {
+                                                            continuation.accept(
+                                                                    t3,
+                                                                    indexSetValue(receiver, keys, value, env),
+                                                                    null);
+                                                        } catch (RuntimeException | Error failure4) {
+                                                            continuation.accept(t3, null, failure4);
+                                                        }
+                                                    });
+                                            });
                                     return;
                                 }
                                 try {
@@ -4459,7 +4481,31 @@ public final class OresEvalRootNode extends RootNode {
             return Math.toIntExact(((Number) value).longValue());
         }
 
-        private Object indexValue(Object receiver, Object index) {
+        private Object indexValue(Object receiver, List<?> indices, Env env) {
+            if (receiver instanceof OresObject object) {
+                Ast.MethodDecl method = findMethod(
+                        object.klass,
+                        CallableSelector.instance("Symbol.index", indices.size()));
+                if (method == null) {
+                    throw new IllegalArgumentException(
+                            "value has no [Symbol.index] with index arity " + indices.size());
+                }
+                object.owner.requireClassMemberVisible(
+                        method.visibility(),
+                        object.owner.declaringClass(method),
+                        env == null ? null : env.accessClass(),
+                        "method",
+                        method.name());
+                return callMethod(object, method, indices);
+            }
+            if (indices.size() != 1) {
+                throw new IllegalArgumentException(
+                        "built-in indexing requires exactly one index; got " + indices.size());
+            }
+            return builtinIndexValue(receiver, indices.getFirst());
+        }
+
+        private Object builtinIndexValue(Object receiver, Object index) {
             if (receiver instanceof Map<?, ?> map) {
                 if (!(index instanceof String || index instanceof dev.oreslang.runtime.OresSymbol)) {
                     throw new IllegalArgumentException(
@@ -4480,8 +4526,42 @@ public final class OresEvalRootNode extends RootNode {
             int i = sequenceIndex(index);
             if (receiver instanceof List<?> list) return list.get(i);
             if (receiver instanceof Object[] array) return array[i];
+            throw new IllegalArgumentException("value is not indexable");
+        }
+
+        private Object indexSetValue(Object receiver, List<?> indices, Object value, Env env) {
+            if (receiver instanceof OresObject object) {
+                Ast.MethodDecl method = findMethod(
+                        object.klass,
+                        CallableSelector.instance("Symbol.indexSet", indices.size() + 1));
+                if (method == null) {
+                    throw new IllegalArgumentException(
+                            "value has no [Symbol.indexSet] with index arity " + indices.size());
+                }
+                object.owner.requireClassMemberVisible(
+                        method.visibility(),
+                        object.owner.declaringClass(method),
+                        env == null ? null : env.accessClass(),
+                        "method",
+                        method.name());
+                List<Object> args = new ArrayList<>(indices.size() + 1);
+                args.addAll(indices);
+                args.add(value);
+                callMethod(object, method, args);
+                return value;
+            }
+            if (indices.size() != 1) {
+                throw new IllegalArgumentException(
+                        "built-in indexed assignment requires exactly one index; got " + indices.size());
+            }
+            if (receiver instanceof List<?> raw) {
+                @SuppressWarnings("unchecked")
+                List<Object> list = (List<Object>) raw;
+                list.set(sequenceIndex(indices.getFirst()), value);
+                return value;
+            }
             throw new IllegalArgumentException(
-                    "value is not indexable");
+                    "indexed assignment requires a mutable array/list or [Symbol.indexSet] protocol");
         }
 
         private Object unaryValue(String operator, Object value) {
@@ -4540,15 +4620,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (target instanceof Ast.IndexExpr index) {
                 Object receiver = eval(index.receiver(), env);
-                Object key = eval(index.index(), env);
-                if (receiver instanceof List<?> raw) {
-                    @SuppressWarnings("unchecked")
-                    List<Object> list = (List<Object>) raw;
-                    list.set(sequenceIndex(key), value);
-                    return value;
-                }
-                throw new IllegalArgumentException(
-                        "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
+                List<Object> keys = new ArrayList<>(index.arity());
+                for (Ast.Expr operand : index.indices()) keys.add(eval(operand, env));
+                return indexSetValue(receiver, keys, value, env);
             }
             throw new IllegalArgumentException(
                     "unsupported assignment target");
@@ -6369,7 +6443,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env);
             if (expr instanceof Ast.IndexExpr indexed) {
-                return indexValue(eval(indexed.receiver(), env), eval(indexed.index(), env));
+                Object receiver = eval(indexed.receiver(), env);
+                List<Object> keys = new ArrayList<>(indexed.arity());
+                for (Ast.Expr index : indexed.indices()) keys.add(eval(index, env));
+                return indexValue(receiver, keys, env);
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Array")
