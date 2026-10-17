@@ -50,6 +50,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.remote_source_commit = D
         self.remote_source_tree = None
         self.route_calls = []
+        self.dispatch_calls = []
+        self.carrier_workflow_shas = ["f" * 40] * 300
         self.source_identity = ["ores-truffle-oreslang/oreslang-source.java"] * 100
         self.source_ids = [1400792274] * 100
         self.source_private = [True] * 100
@@ -88,6 +90,10 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                                return_value=A)
         self.publisher_checkout.start()
         self.addCleanup(self.publisher_checkout.stop)
+        self.dispatcher = patch.object(
+            pub, "gh_api_no_content", side_effect=self.fake_dispatch)
+        self.dispatcher.start()
+        self.addCleanup(self.dispatcher.stop)
 
     def set_reviewed_snapshot(self, commit=D, tree=None, destination_id=123):
         if tree is None:
@@ -97,6 +103,9 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.snapshot_sha = hashlib.sha1(
             b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
         ).hexdigest()
+
+    def fake_dispatch(self, route, method="POST", payload=None):
+        self.dispatch_calls.append((method, route, payload))
 
     def fake_api(self, route, method="GET", payload=None):
         self.route_calls.append((method, route, payload))
@@ -192,6 +201,11 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == "repos/trusted/ci/collaborators/ORESoftware/permission":
             return {"permission": self.carrier_security_permission,
                     "user": {"login": "ORESoftware", "type": "User"}}
+        if route == (
+                "repos/trusted/ci/contents/.github/workflows/"
+                + pub.CARRIER_VALIDATION_WORKFLOW + "?ref=main"):
+            return {"type": "file", "size": 4096,
+                    "sha": self.carrier_workflow_shas.pop(0)}
         mapping = {
             "repos/trusted/ci/git/commits/"+A: {"sha": A, "tree": {"sha": B}},
             "repos/trusted/ci/git/commits": {"sha": C},
@@ -215,6 +229,33 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             branch = "ci/oreslang-" + self.expected_tree
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_success_dispatches_protected_main_validation_for_exact_commit(self):
+        commit, count = self.publish()
+        self.assertEqual((commit, count), (C, 1))
+        self.assertEqual(len(self.dispatch_calls), 1)
+        method, route, payload = self.dispatch_calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            route,
+            "repos/trusted/ci/actions/workflows/"
+            + pub.CARRIER_VALIDATION_WORKFLOW + "/dispatches")
+        self.assertEqual(payload, {
+            "ref": "main",
+            "inputs": {
+                "carrier_commit_sha": C,
+                "carrier_base_sha": A,
+                "source_commit_sha": D,
+                "source_tree_sha": self.expected_tree,
+            },
+        })
+
+    def test_carrier_validation_workflow_change_denies_before_dispatch(self):
+        self.carrier_workflow_shas = ["f" * 40, "0" * 40] + ["f" * 40] * 300
+        with self.assertRaisesRegex(
+                pub.Denied, "validation workflow changed during transfer"):
+            self.publish()
+        self.assertEqual(self.dispatch_calls, [])
 
     def test_zero_or_unavailable_open_flags_deny_before_policy_or_source_io(self):
         # Some platform shims expose a flag name with value 0, silently
