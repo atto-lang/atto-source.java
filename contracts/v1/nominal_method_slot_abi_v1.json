@@ -434,7 +434,6 @@
       ]
     },
     {
-      "id": "blank-owner",
       "owner": "   ",
       "domain": "DYNAMIC",
       "name": "choose",
@@ -443,10 +442,10 @@
           "kind": "ENUM",
           "id": "root::Color"
         }
-      ]
+      ],
+      "id": "blank-owner"
     },
     {
-      "id": "blank-name",
       "owner": "root.Picker",
       "domain": "DYNAMIC",
       "name": "   ",
@@ -455,7 +454,8 @@
           "kind": "ENUM",
           "id": "root::Color"
         }
-      ]
+      ],
+      "id": "blank-name"
     }
   ],
   "normalization": [
