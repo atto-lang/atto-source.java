@@ -29,12 +29,12 @@ pool has **zero resident workers at cold start** and can grow to at most two
 only after readiness actually settles work. Slow synchronous Future subscribers
 therefore remain off SELECTOR and CONTROL without adding cold-start threads.
 
-The `OresVM` substrate now cold-starts with **one VM-owned thread**:
-one readiness selector, zero CONTROL carriers, and zero completion carriers.
-This claim is deliberately scoped to `OresVM`. A full `OresContext`
-still constructs `ActorRuntime`, whose current native/affine actor dispatcher
-path can preallocate carrier resources; full-context one-thread cold startup is
-a separate migration gate.
+The `OresVM` substrate now cold-starts with **zero VM-owned threads**:
+zero readiness reactors, zero CONTROL carriers, and zero completion carriers.
+The first accepted readiness watch lazily starts reactor #0. This claim is
+deliberately scoped to `OresVM`; a full `OresContext` still constructs
+`ActorRuntime`, whose native/affine actor dispatcher paths have separate
+lazy-start/parity gates.
 
 Tests staged on the Java branch include `VmNioTcpListenerTest` for two
 listeners sharing a selector, echo, cancellation, ownership and closed
@@ -52,7 +52,7 @@ selector are superseded by this section.
 - `AdaptiveCarrierExecutor` now supports a zero-resident minimum. Normal `OresVM` throughput startup uses CONTROL min=0/max=20; the first independently runnable CONTROL turn creates a carrier. A host may explicitly configure a nonzero warm minimum, which is prestarted before admission.
 - The Java-only fallback actor dispatcher can use `AdaptiveCarrierExecutor` when `ores.actor.affinity=none`, honoring `ores.actor.dispatch.max.parallelism`. Pinned/soft-affine lanes and native pthread dispatchers **remain fixed-size** pending placement/JNI rework. A carrier pool cap is not an actor's per-actor physical limit.
 - The experimental loopback TCP `NativeNioFutureReactor` from #790 has been forward-ported along with `std/net`, evaluator/typechecker entries, `OresContext` capability/owner checks, and guest/JUnit tests. It still creates a **dedicated reactor for each listener**, capped at four listeners per context. It does not yet consume the shared selector manager.
-- `NioReadinessGroup` is an independent host-only generic selectable-channel substrate, one thread initially and an optional four-thread upper bound. It is not yet used by guest `std/net`, TCP reactor or `OresVM`; one-reaction-per-process remains the **target**, not the shipping behavior.
+- `NioReadinessGroup` is the VM-owned generic selectable-channel substrate. It now constructs with zero reactor threads and lazily starts reactor #0 on the first accepted watch, with an optional four-reactor upper bound. The staged `VmNioTcpListener` path uses this shared manager; older `NativeNioFutureReactor` compatibility paths still require consolidation/removal.
 - Reactor work quanta are capped (128 commands/readiness events per turn); listener close quiescence is published before guest close Future completion. Arbitrary `OresFuture` subscriber work and buffer conversion on a poller need a stricter no-guest/no-slow-callback audit.
 - `NioOnlyPolicy` introduces `ores.runtime.io.mode=nio-only`. This profile rejects `AsyncNativeIo` legacy offload and `NativeHttp.listen` before work begins; the current default remains `legacy-compat` to keep preexisting FS/HTTP tests running until genuinely nonblocking replacements exist. **Default NIO-only parity is not implemented**; no claim that Java blocking I/O is entirely eliminated.
 - Actor physical credits remain **host-only**; `ActorRuntime.ActorCell` still single-flight and opt-in max=3 source actor execution is not available.
@@ -60,7 +60,7 @@ selector are superseded by this section.
 
 ## Findings from Java main (2026-10-16)
 
-- The staged `OresVM` branch now defaults to zero resident CONTROL carriers and one readiness selector. The root scheduler admits work to CONTROL (or an explicitly supplied root admission executor), creating carriers only for runnable demand. This does not yet imply zero actor carriers for the enclosing `OresContext`, because `ActorRuntime` affinity/native dispatchers require separate lazy-start work.
+- The staged `OresVM` branch now defaults to zero resident CONTROL carriers and zero readiness threads. The root scheduler admits work to CONTROL (or an explicitly supplied root admission executor), creating carriers only for runnable demand; the first accepted NIO watch separately starts reactor #0. This does not yet imply zero actor carriers for every enclosing `OresContext` path.
 - `ActorRuntime.ActorCell` permits one physical carrier, one active turn and one shared mutable `activeMail`/source continuation slot. `sourceScheduler()` uses a mailbox-backed single-flight scheduler. Merely changing a thread-count setting cannot make this concurrent.
 - `newActorDispatcher` constructs fixed-size lane executors or a fixed-core JVM fallback. Adaptive 2-to-20 growth has **not** been implemented; changing `ores.actor.affinity=lane` also requires a lane-aware growth algorithm.
 - The legacy `AsyncNativeIo` uses offloaded blocking socket operations and `NativeHttp` uses the JDK HTTP server and streams. These **do not qualify** for the new strict NIO-only runtime policy. They must be replaced, disabled in a strict-NIO profile, or reported explicitly as legacy incompatibilities; virtual-thread offloading is not an acceptable substitute.
@@ -75,15 +75,16 @@ selector are superseded by this section.
                                 | task-specific continuation
      kernel readiness           |
             |                   |                         independent actor pools
-    NIO manager (min 1)         +------------------------> PRIVATE / SHARED / UNTRUSTED
-      reactors <= 4                                       target min 0 per domain
+    NIO manager (min 0)         +------------------------> PRIVATE / SHARED / UNTRUSTED
+      reactors 0..4                                        target min 0 per domain
             |                                                       ^
-            +--> lazy completion (0..2) -> Future -> scheduler-----+
+            +--> transitional completion (0..2) -> Future -> scheduler
+                canonical target: direct bounded record handoff, 0 workers
 ```
 
 - A reactor waits in `Selector.select()`, performs bounded nonblocking socket operations, and publishes immutable completion records. It cannot execute guest closures, host stream conversions that invoke arbitrary code, or unbounded `OresFuture` subscriber chains.
 - A producer registers its request without blocking a CONTROL or actor carrier. `await` suspends a logical task and releases the carrier. Completing five pending reads does not start five OS threads; only *independent runnable turns* justify worker expansion.
-- A manager initially owns one reactor, default max four. Add reactors only on sustained readiness-processing utilization/queue latency with idle CPU, not because `select()` is sleeping. New channels can be assigned to a less-loaded reactor. Channel migration requires a separate generation-fenced protocol.
+- A manager initially owns zero reactor threads, default max four. The first valid watch starts reactor #0. Add further reactors only on sustained readiness-processing utilization/queue latency with idle CPU, not because `select()` is sleeping or because many descriptors are registered. Channel migration requires a separate generation-fenced protocol.
 - Pool growth is independently driven by runnable demand. Exhaustion must have bounded queue admission, backpressure and explicit rejection. A Java `ThreadPoolExecutor` with a large `ArrayBlockingQueue` normally does not expand beyond its core count until the queue fills; customize admission instead of assuming it behaves as desired.
 - Keep I/O waiting isolated. No `Future.get()`, `join()`, blocking `Socket` streams, blocking I/O FFI, `AsynchronousFileChannel` provider thread offloads, or hidden blocking fallback on actor/CONTROL carriers or in a strict NIO-only backend.
 
@@ -108,7 +109,7 @@ Three limits are independent:
 
 ## Tests and release gates
 
-- Startup: one OresVM readiness reactor, zero resident CONTROL/completion carriers, and no actor carriers caused by the VM substrate. Five and 10,000 outstanding idle sockets must not cause linear thread creation. Full OresContext actor-dispatcher cold-start is a separate gate until native/affine pools are made lazy.
+- Startup: zero OresVM readiness reactors, zero resident CONTROL/completion carriers, and no actor carriers caused by the VM substrate. Invalid I/O admission stays at zero; the first valid watch starts exactly one reactor. Five and 10,000 outstanding idle sockets must not cause linear thread creation. Full OresContext actor-dispatcher cold-start remains a separate gate.
 - Reactor: concurrent socket accept/read/write, partial writes, EOF/half-close, cancel vs completion vs close, fd reuse/generation fencing, reactor saturation, fairness, queue-full backpressure, idle/active reactor growth and shutdown.
 - Future: producer callback runs on reactor only for bounded host processing; Oreslang resumption executes on owning scheduler; no inline reentrancy and no guest code on reactor.
 - Pool: correct dynamic thread 0→1→N growth under independent runnable demand; fixed bounds and idle retirement; no growth merely because 1,000 reads are pending. Separate CONTROL progress under saturated PRIVATE/UNTRUSTED pools.
