@@ -4931,6 +4931,14 @@ public final class TypeChecker {
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
+            // Repeating the same verified check along an && chain must not
+            // redeclare the already refined local. Keep genuinely conflicting
+            // pattern bindings rejected rather than implicitly shadowing them.
+            if (test.value() instanceof Ast.NameExpr tested
+                    && tested.name().equals(test.binding())
+                    && destination.bindings.containsKey(test.binding())) {
+                return;
+            }
             // Same-name flow binding is safe only when the tested local is not
             // reassignable. A mutable local could change between validation
             // and use, particularly across callbacks or suspension.
