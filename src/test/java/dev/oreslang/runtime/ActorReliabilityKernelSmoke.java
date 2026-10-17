@@ -48,12 +48,19 @@ public final class ActorReliabilityKernelSmoke {
         yes(overload.admit(40, false) == ActorReliabilityKernel.OverloadGate.Admission.ACCEPT, "recover low");
 
         var backoff = new ActorReliabilityKernel.BackoffPolicy(10, 1_000);
-        for (int i = 0; i < 20; i++) {
+        for (int i = 1; i <= 20; i++) {
             long a = backoff.delayNanos(i, 42);
             long b = backoff.delayNanos(i, 42);
             yes(a == b, "backoff replay must be deterministic");
-            yes(a >= 1 && a <= 1_000, "backoff bounded");
+            yes(a >= 10 && a <= 1_000, "backoff bounded by configured floor/cap");
         }
+
+        var groupClock = new AtomicLong(10);
+        var groupBudget = new ActorReliabilityKernel.RestartBudget(
+                4, 100, 50, groupClock::get);
+        yes(groupBudget.tryAcquire(4).admitted(), "whole group fits");
+        groupClock.set(110);
+        yes(!groupBudget.tryAcquire().admitted(), "cutoff entries still count");
 
 
         var concurrentClock = new AtomicLong(1_000);
