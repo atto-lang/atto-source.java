@@ -36,7 +36,7 @@ public final class RefinementSyntax {
         // must follow the preexisting compiler path unchanged.
         if (annotations.isEmpty() && suffix.isEmpty() && !nominal) return null;
         for (Ast.Annotation annotation : annotations) {
-            if (!Set.of("Size", "Length", "NotEmpty").contains(annotation.name())) {
+            if (!Set.of("Size", "Length", "NotEmpty", "MinLength", "MaxLength", "Min", "Max", "Range").contains(annotation.name())) {
                 bad("@" + annotation.name()
                         + " on type alias would be silently discarded; unsupported constraint annotation");
             }
@@ -49,6 +49,33 @@ public final class RefinementSyntax {
                     if (!annotation.arguments().isEmpty()) bad("@NotEmpty takes no arguments");
                     if (!expected.equals("length")) bad("@NotEmpty requires string");
                     bounds.add(new Ast.RefinementBound("length", "gt", 0));
+                }
+                case "MinLength", "MaxLength" -> {
+                    if (!expected.equals("length")) bad("@" + annotation.name() + " requires string");
+                    long bound = positionalBound(annotation);
+                    bounds.add(new Ast.RefinementBound("length",
+                            annotation.name().equals("MinLength") ? "gte" : "lte", bound));
+                }
+                case "Min", "Max" -> {
+                    if (!expected.equals("value")) bad("@" + annotation.name() + " requires int");
+                    long bound = positionalBound(annotation);
+                    bounds.add(new Ast.RefinementBound("value",
+                            annotation.name().equals("Min") ? "gte" : "lte", bound));
+                }
+                case "Range" -> {
+                    if (!expected.equals("value")) bad("@Range requires int");
+                    if (annotation.arguments().isEmpty()) bad("@Range requires min and/or max");
+                    Set<String> seen = new HashSet<>();
+                    for (Ast.TypeRef argument : annotation.arguments()) {
+                        if (!argument.isNamedParameter() || !argument.namedParameterValue().isIntLiteral())
+                            bad("@Range requires named integer min/max bounds");
+                        String key = argument.namedParameterName();
+                        if (!Set.of("min", "max").contains(key)) bad("@Range supports only min/max");
+                        if (!seen.add(key)) bad("duplicate @Range bound " + key);
+                        bounds.add(new Ast.RefinementBound("value",
+                                key.equals("min") ? "gte" : "lte",
+                                argument.namedParameterValue().intLiteralValue()));
+                    }
                 }
                 case "Size", "Length" -> {
                     if (!expected.equals("length")) bad("@" + annotation.name() + " requires string");
@@ -124,6 +151,13 @@ public final class RefinementSyntax {
         verifyBounds(base, bounds);
         if (bounds.isEmpty() && where == null && !nominal) return null;
         return new Ast.RefinementSpec(bounds, where, nominal);
+    }
+
+    private static long positionalBound(Ast.Annotation annotation) {
+        if (annotation.arguments().size() != 1 || !annotation.arguments().getFirst().isIntLiteral()) {
+            bad("@" + annotation.name() + " requires exactly one constant integer argument");
+        }
+        return annotation.arguments().getFirst().intLiteralValue();
     }
 
     private static String property(Ast.TypeRef base) {
