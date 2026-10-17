@@ -109,4 +109,15 @@ final class RefinementRulesTest {
         assertThrows(UnsupportedOperationException.class,
                 () -> RefinementRules.tryFrom(where.name(),where.target(),where.refinement(),"ok"));
     }
+
+    @Test void identicalWhereSourceIsNotAnImplicationProof() {
+        Ast.TypeAliasDecl a = alias("type A = string where it.trim().length > 0;");
+        Ast.TypeAliasDecl b = alias("type B = string where it.trim().length > 0;");
+        assertFalse(RefinementRules.entails(
+                a.name(), a.target(), a.refinement(),
+                b.name(), b.target(), b.refinement()));
+        assertFalse(RefinementRules.entails(
+                a.name(), a.target(), a.refinement(),
+                a.name(), a.target(), a.refinement()));
+    }
 }
