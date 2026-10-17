@@ -70,14 +70,14 @@ final class TrapFailurePolicyTest {
         assertFalse(TrapFailurePolicy.isTrappable(chain, GuestPanic.class));
     }
 
-    @Test void explicitGuestCatchCanRecoverDenialAndTimeout() {
+    @Test void explicitGuestCatchCanRecoverDenialButNotRuntimeTimeout() {
         assertTrue(TrapFailurePolicy.isGuestCatchable(
                 new SecurityException("denied"), GuestPanic.class));
         assertTrue(TrapFailurePolicy.isGuestCatchable(
                 new CompletionException(new SecurityException("wrapped denial")),
                 GuestPanic.class));
-        assertTrue(TrapFailurePolicy.isGuestCatchable(
-                new CompletionException(new TimeoutException("request timed out")),
+        assertFalse(TrapFailurePolicy.isGuestCatchable(
+                new CompletionException(new TimeoutException("runtime deadline")),
                 GuestPanic.class));
         assertFalse(TrapFailurePolicy.isTrappable(
                 new CompletionException(new SecurityException("wrapped denial")),
@@ -89,6 +89,7 @@ final class TrapFailurePolicyTest {
                 new CancellationException("cancelled"),
                 new RejectedExecutionException("scheduler closed"),
                 new InterruptedException("interrupted"),
+                new TimeoutException("runtime deadline"),
                 new AssertionError("host failure"),
                 new GuestPanic()
         }) {
