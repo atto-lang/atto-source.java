@@ -199,6 +199,40 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueHidingIsOneWayAndCannotEraseLoansOrCapabilities() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc hideInt(int value): any {
+                  return value;
+                }
+
+                pub fnc hideVerified(any value): unknown {
+                  return value;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(&int value): any {
+                          return value;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(Channel<int> channel): any {
+                          return channel;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub async fnc bad(List<any> values): void {
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
     void opaqueUnionNormalizationDoesNotEraseBorrowOrCapabilityEvidence() {
         var any = dev.oreslang.types.Types.Any.INSTANCE;
         var opaque = dev.oreslang.types.Types.UnknownValue.INSTANCE;
