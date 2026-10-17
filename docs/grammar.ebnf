@@ -275,6 +275,9 @@ loop_body       = block | "do" { statement } "done" ;
 expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
+(* ?: is right-associative. Its condition is statically bool; evaluation executes
+   the condition once and exactly one branch. Runtime type predicates may refine
+   only the selected branch when the compiler can prove the tested binding stable. *)
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "eq" | "neq" | "!eq" | "==" | "!=" | "is" ) comparison } ;
 comparison      = additive
@@ -361,7 +364,9 @@ type_atom       = borrow_type
                 | STRING_LITERAL
                 | "self"
                 | "void"
-                | "null" ;
+                | "null"
+                | "any"
+                | "unknown" ;
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
