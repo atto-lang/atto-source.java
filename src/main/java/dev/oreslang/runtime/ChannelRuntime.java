@@ -184,6 +184,11 @@ public final class ChannelRuntime {
             Objects.requireNonNull(
                     value,
                     "Oreslang channels cannot carry null; use Option<T>");
+            if (value instanceof OresPointer) {
+                throw new IllegalArgumentException(
+                        "generic MPMC channels cannot carry Pointer<T>; "
+                                + "pointer handoff requires a domain-bound local channel capability");
+            }
         }
 
         private ChannelClosedException closedFailure() {
