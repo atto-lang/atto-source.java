@@ -24,10 +24,12 @@ byte-array and an empty array on EOF. Each listener enforces its own bounded
 Future notification drains, with explicit capacity denial. Internal producer
 cancellation notifications cannot settle an exported Future before its
 cancellation CAS. Permission checks and context teardown still gate listener
-and connection ownership. NIO completion isolation is now demand-driven: its bounded host-completion
-pool has **zero resident workers at cold start** and can grow to at most two
-only after readiness actually settles work. Slow synchronous Future subscribers
-therefore remain off SELECTOR and CONTROL without adding cold-start threads.
+and connection ownership. The full `OresContext` now binds terminal
+notifications to its already-budgeted PRIVATE actor-dispatcher carrier domain,
+before the first readiness watch. Slow synchronous Future subscribers remain
+off SELECTOR and CONTROL **without dedicated NIO completion workers**. The
+standalone `OresVM`/`NioReadinessGroup` host API still retains its transitional
+lazy 0..2 completion pool for compatibility.
 
 The `OresVM` substrate now cold-starts with **zero VM-owned threads**:
 zero readiness reactors, zero CONTROL carriers, and zero completion carriers.
@@ -52,6 +54,33 @@ tests, partial-write/cancel/STOP races, and thread accounting are verified.
 The historical October 16 notes below describe the earlier staged state;
 in particular, statements that guest `std/net` still uses a per-listener
 selector are superseded by this section.
+
+## October 17 follow-up: bounded VM carrier admission and shutdown fence
+
+- Java full-context NIO now uses scheduler-targeted host notification delivery:
+  `NioReadinessGroup.bindVmCompletionExecutor()` is a one-shot
+  pre-admission binding to `ActorRuntime.executeHostIoCompletion()`. The
+  actor dispatcher is already part of runtime carrier accounting; no
+  additional NIO completion worker is created on the full-context path.
+  Notification reservations are bounded. Under a full actor ready queue,
+  deliveries remain staged until an actor turn or host completion retires.
+- `OresContext.close()` now closes and drains the VM NIO readiness domain
+  **before** calling `ActorRuntime.close()`; otherwise a bound notification
+  might wait forever on workers already shut down.
+- The optional `-Dores.runtime.carriers.global.max=N` property accepts
+  4..256. It enforces a static upper bound over ordinary CONTROL + actor
+  carriers: CONTROL reserve=1, and each of PRIVATE, SHARED, UNTRUSTED gets
+  `floor((N-1)/3)`. This includes native-affinity lane capacity and caps
+  Java non-affine growth. CONTROL can therefore still start while every
+  actor-domain quota is occupied.
+- This is **not** a dynamic, work-conserving global permit scheduler: idle
+  domain quotas cannot yet be borrowed. By default (property absent), legacy
+  independent per-domain limits remain. Reactors and explicit user-owned
+  `OresScheduler(N)` threads are excluded from this execution-carrier cap.
+- A direct byte-identical `OresCarrierBudget` source blob was compiled
+  locally with JDK 21, and 261 positive/negative budget smoke cases passed.
+  Source-repository JDK25/Graal CI still cannot execute runner steps; the
+  complete new runtime integration and NIO tests remain unqualified.
 
 ## Implementation status on this draft branch (October 16)
 
