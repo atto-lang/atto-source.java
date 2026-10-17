@@ -5,9 +5,10 @@ A passing contract check proves the fixture and capability declarations agree,
 NOT that the backend has implemented persistent maps or passed runtime tests.
 """
 import json
+import math
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 import sys
 
 EXPECTED_IDS = frozenset(["hamt-path-copy","hamt-delete","hamt-aa-bb","hamt-high-hash-bits","hamt-collision-over-64","hamt-nested-root","hamt-array-input","hamt-mutable-map-input","hamt-foreign-reference","hamt-numeric-subclass","hamt-null-value","hamt-clear-empty","hamt-remove-missing","hamt-remove-if-predicate","hamt-shared-mailbox","hamt-private-mailbox","hamt-untrusted-mailbox","hamt-duplicate-send-quota","hamt-drain-credit-release","hamt-depth-257","hamt-node-budget","pure-actor-single-reducer","pure-actor-no-suspend","pure-actor-no-ambient-io","pure-actor-command-effects","persistent-source-syntax","persistent-vector","edn-wire-shortcut","typed-map-mutating-adapter"])
@@ -42,9 +43,17 @@ def validate_raw(raw):
         raise ContractError("invalid or oversized persistent contract")
     if raw.startswith(b"\xef\xbb\xbf"):
         raise ContractError("BOM forbidden")
+    def finite_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise ContractError("non-finite JSON float or exponent overflow")
+        return value
     try:
         data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs,
-                          parse_constant=_bad_constant)
+                          parse_constant=_bad_constant, parse_float=finite_float)
+    except ContractError:
+        # Preserve the explicit non-finite-number denial reason.
+        raise
     except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise ContractError("invalid canonical UTF-8 JSON") from exc
     validate(data)
@@ -108,29 +117,33 @@ def validate(doc):
 
 
 def read_bounded_contract(path):
-    """Read an identity-pinned regular file; deny symlink/hardlink/FIFO swaps.
-
-    The initial stat alone is not authority: verify the opened descriptor,
-    verify it did not change while reading, then recheck the path binding.
-    """
+    """Reject nonregular, hardlinked, raced and oversized JSON before decoding."""
     path = Path(path)
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_nlink",
+              "st_mtime_ns", "st_ctime_ns")
     def same_file(a, b):
-        return all(getattr(a, name) == getattr(b, name) for name in (
-            "st_dev", "st_ino", "st_mode", "st_size", "st_nlink",
-            "st_mtime_ns", "st_ctime_ns"
-        ))
+        return all(getattr(a, key) == getattr(b, key) for key in fields)
     try:
-        # Retain the explicit symlink denial for platforms without O_NOFOLLOW.
-        if path.is_symlink():
-            raise ContractError("persistent contract must be a unique regular file")
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise ContractError("persistent contract must be a unique regular file")
         if not 0 < before.st_size <= 64 * 1024:
-            raise ContractError("empty or oversized persistent contract")
-        flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
-        with os.fdopen(os.open(path, flags), "rb") as stream:
+            raise ContractError("invalid or oversized persistent contract")
+        # Missing or aliased secure-open flags must not silently degrade to
+        # following symlinks or blocking indefinitely on a raced FIFO.
+        nonblock = getattr(os, "O_NONBLOCK", None)
+        nofollow = getattr(os, "O_NOFOLLOW", None)
+        if (type(nonblock) is not int or type(nofollow) is not int
+                or nonblock <= 0 or nofollow <= 0 or nonblock & nofollow):
+            raise ContractError("secure no-follow/nonblocking flags unavailable or aliased")
+        flags = os.O_RDONLY | nonblock | nofollow | getattr(os, "O_BINARY", 0)
+        fd = os.open(path, flags)
+        try:
+            stream = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with stream:
             opened = os.fstat(stream.fileno())
             if not stat.S_ISREG(opened.st_mode) or not same_file(before, opened):
                 raise ContractError("persistent contract changed before read")
@@ -141,7 +154,7 @@ def read_bounded_contract(path):
         if not same_file(after, path.lstat()):
             raise ContractError("persistent contract path changed during read")
     except OSError as exc:
-        raise ContractError("cannot read persistent contract") from exc
+        raise ContractError("persistent contract unavailable or unsafe") from exc
     return validate_raw(data)
 
 
