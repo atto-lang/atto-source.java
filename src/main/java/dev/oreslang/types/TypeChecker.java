@@ -41,6 +41,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
+            "any", "unknown", "Any", "Unknown",
             "Symbol", "Array", "List", "Vector", "Slice",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
@@ -2187,11 +2188,13 @@ public final class TypeChecker {
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
-            requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
+            requireAssignable(typeOfCondition(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
             Map<Env.Binding, Set<String>> afterCondition = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
-            Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            Env trueEnv = new Env(env);
+            defineConditionBindings(conditional.condition(), trueEnv, env, generics, self);
+            Type left = typeOf(conditional.whenTrue(), trueEnv, generics, self);
             Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
@@ -2382,6 +2385,16 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (isBuiltinIntegerPredicate(call, env)) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("Integer.is_int does not accept call-site type arguments");
+                }
+                if (call.arguments().size() != 1 || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    throw new IllegalArgumentException("Integer.is_int expects exactly one value");
+                }
+                typeOf(call.arguments().getFirst(), env, generics, self);
+                return Primitive.BOOL;
+            }
             if (isBuiltinStdoutCall(call, "log", env)) {
                 if (call.typeArgumentsPresent()) {
                     throw new IllegalArgumentException("stdio.stdout.log does not accept call-site type arguments");
@@ -3900,8 +3913,8 @@ public final class TypeChecker {
                     where + " cannot transport borrowed payloads, including nested fields: "
                             + "channel storage may outlive their owners");
         }
-        if (element == Unknown.INSTANCE) {
-            throw new IllegalArgumentException(where + " requires a statically resolved channel payload type");
+        if (element == Unknown.INSTANCE || Types.containsOpaqueTop(element)) {
+            throw new IllegalArgumentException(where + " requires a statically resolved, non-opaque channel payload type");
         }
     }
 
@@ -4879,6 +4892,10 @@ public final class TypeChecker {
             boolean returnPosition,
             String where) {
         if (returnPosition && type == Primitive.VOID) return;
+        if (Types.containsOpaqueTop(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot cross an async task boundary as any/unknown; validate/narrow it first");
+        }
         // A typed channel handle is an Ores-owned synchronized transport, not
         // an actor/mailbox capability. Async tasks may receive the handle when
         // its payload is concrete, owned and task-safe. Actor boundaries retain
@@ -4904,7 +4921,8 @@ public final class TypeChecker {
         if (type == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
         }
-        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof SelfType
+        if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE || type == Types.UnknownValue.INSTANCE
+                || type instanceof Generic || type instanceof SelfType
                 || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) {
             throw new IllegalArgumentException(
                     where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
@@ -5077,6 +5095,18 @@ public final class TypeChecker {
         }
     }
 
+    private boolean isBuiltinIntegerPredicate(Ast.CallExpr call, Env env) {
+        if (!(call.callee() instanceof Ast.MemberExpr member)
+                || !member.member().equals("is_int")
+                || !(member.receiver() instanceof Ast.NameExpr namespace)
+                || !namespace.name().equals("Integer")) return false;
+        // Builtins never steal a user binding/class/module/import namespace.
+        return env.lookup("Integer") == null
+                && !modules.containsKey("Integer")
+                && findClass("Integer") == null
+                && !importedValues.contains("Integer");
+    }
+
     private Type typeOfCondition(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             requireAssignable(typeOfCondition(binary.left(), env, generics, self), Primitive.BOOL, "logical operand");
@@ -5090,6 +5120,19 @@ public final class TypeChecker {
 
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
+        if (condition instanceof Ast.CallExpr call && isBuiltinIntegerPredicate(call, sourceEnv)
+                && call.arguments().size() == 1
+                && call.arguments().getFirst() instanceof Ast.NameExpr name) {
+            Env.Binding binding = sourceEnv.lookup(name.name());
+            // Only immutable/stable bindings are narrowed. Rebindable locations
+            // retain their declared type so mutation cannot invalidate the proof.
+            if (binding != null && binding.kind() != Ast.BindingKind.LET
+                    && !binding.hasUninitializedFields()
+                    && typesMayOverlap(deref(binding.type()), Primitive.INT)) {
+                destination.define(name.name(), Primitive.INT, binding.kind());
+            }
+            return;
+        }
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
@@ -5758,6 +5801,8 @@ public final class TypeChecker {
      */
     private boolean typesMayOverlap(Type a, Type b) {
         if (a == Unknown.INSTANCE || b == Unknown.INSTANCE
+                || a == Types.Any.INSTANCE || b == Types.Any.INSTANCE
+                || a == Types.UnknownValue.INSTANCE || b == Types.UnknownValue.INSTANCE
                 || a instanceof Generic || b instanceof Generic) return true;
         if (a instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(option, b));
         if (b instanceof Union union) return union.options().stream().anyMatch(option -> typesMayOverlap(a, option));
@@ -7234,10 +7279,6 @@ public final class TypeChecker {
             throw new IllegalArgumentException(label
                     + " has unsupported named/inferred syntax in its default type");
         }
-        if (ref.name().equals("Unknown") || ref.name().equals("Any")) {
-            throw new IllegalArgumentException(label
-                    + " cannot default to Any/Unknown until safe opaque/dynamic semantics are integrated");
-        }
         if (declared.contains(ref.name()) && !previous.contains(ref.name())) {
             throw new IllegalArgumentException(label
                     + " has a forward or self-referential generic default '" + ref.name() + "'");
@@ -7476,7 +7517,7 @@ public final class TypeChecker {
     }
 
     private boolean containsUnknown(Type type) {
-        if (type == Unknown.INSTANCE) return true;
+        if (type == Unknown.INSTANCE || type == Types.Any.INSTANCE || type == Types.UnknownValue.INSTANCE) return true;
         if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
@@ -7840,6 +7881,18 @@ public final class TypeChecker {
         if (ref.isBoolLiteral()) return new Types.BoolLiteral(ref.boolLiteralValue());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
+        if (ref.name().equals("any") || ref.name().equals("Any")) {
+            if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException("any does not accept type arguments");
+            }
+            return Types.Any.INSTANCE;
+        }
+        if (ref.name().equals("unknown") || ref.name().equals("Unknown")) {
+            if (!ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException("unknown does not accept type arguments");
+            }
+            return Types.UnknownValue.INSTANCE;
+        }
         if (ref.name().equals("self")) {
             if (self == null) {
                 throw new IllegalArgumentException(
@@ -8109,6 +8162,14 @@ public final class TypeChecker {
         // A negative constraint requires positive evidence that values are disjoint.
         // The generic/Unknown and dynamic compatibility paths below are not evidence.
         if (expected instanceof Types.Not) return Types.isAssignable(actual, expected);
+        // Source-level opaque top types are not the compiler's inference hole.
+        // Keep their directionality explicit before structural/nominal rules.
+        if (actual == Types.Any.INSTANCE || actual == Types.UnknownValue.INSTANCE
+                || expected == Types.Any.INSTANCE || expected == Types.UnknownValue.INSTANCE) {
+            return Types.isAssignable(actual, expected);
+        }
+        // Unresolved compiler values may flow only into another unresolved slot.
+        if (actual == Unknown.INSTANCE && expected != Unknown.INSTANCE) return false;
         if (expected instanceof SelfType expectedSelf) {
             if (!(actual instanceof SelfType actualSelf)) return false;
             return assignable(actualSelf.bound(), expectedSelf.bound())
