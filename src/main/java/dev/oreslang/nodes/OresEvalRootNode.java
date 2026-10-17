@@ -5981,48 +5981,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(name + " does not accept call-site type arguments");
             }
             List<Ast.Expr> arguments = call.arguments();
-
-            if (arguments.size() == 1) {
-                Object aggregate = eval(arguments.getFirst(), env);
-                if (aggregate instanceof List<?> list) return foldBooleanValues(name, list);
-                if (aggregate instanceof Object[] array) {
-                    return foldBooleanValues(name, java.util.Arrays.asList(array));
-                }
-                throw new IllegalArgumentException(name + " arity 1 selects the List<bool> overload");
+            if (arguments.size() != 1) {
+                throw new IllegalStateException(
+                        "scalar " + name + " must be lowered to logical AST before evaluation");
             }
 
-            if (arguments.size() < 2 || (name.equals("Xor") && arguments.size() != 2)) {
-                throw new IllegalArgumentException(
-                        name.equals("Xor")
-                                ? "Xor expects exactly two bool arguments (or one List<bool> parity-reduction argument)"
-                                : name + " expects either one List<bool> argument or at least two bool arguments");
+            Object aggregate = eval(arguments.getFirst(), env);
+            if (aggregate instanceof List<?> list) return foldBooleanValues(name, list);
+            if (aggregate instanceof Object[] array) {
+                return foldBooleanValues(name, java.util.Arrays.asList(array));
             }
-            return evalBooleanExpressions(name, arguments, env);
-        }
-
-        private boolean evalBooleanExpressions(String name, List<Ast.Expr> expressions, Env env) {
-            return switch (name) {
-                case "And" -> {
-                    for (Ast.Expr expression : expressions) {
-                        if (!booleanIntrinsicValue(name, eval(expression, env))) yield false;
-                    }
-                    yield true;
-                }
-                case "Or" -> {
-                    for (Ast.Expr expression : expressions) {
-                        if (booleanIntrinsicValue(name, eval(expression, env))) yield true;
-                    }
-                    yield false;
-                }
-                case "Xor" -> {
-                    boolean parity = false;
-                    for (Ast.Expr expression : expressions) {
-                        parity ^= booleanIntrinsicValue(name, eval(expression, env));
-                    }
-                    yield parity;
-                }
-                default -> throw new IllegalStateException("unknown boolean intrinsic " + name);
-            };
+            throw new IllegalArgumentException(name + " arity 1 selects the List<bool> overload");
         }
 
         private boolean foldBooleanValues(String name, Iterable<?> values) {
