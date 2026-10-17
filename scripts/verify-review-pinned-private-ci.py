@@ -87,10 +87,30 @@ def exact_approval(reviews, head):
         raise Denied("invalid approval review ID")
     return review_id
 
-def parse_snapshot_entry(snapshot_file):
-    text = Path(snapshot_file).read_text(encoding="utf-8")
-    rows = [line.strip() for line in text.splitlines()
+def active_rows(path):
+    text = Path(path).read_text(encoding="utf-8")
+    return [line.strip() for line in text.splitlines()
             if line.strip() and not line.lstrip().startswith("#")]
+
+def parse_destination_entry(destination_file):
+    rows = active_rows(destination_file)
+    if len(rows) != 1:
+        raise Denied("destination approval must contain exactly one active entry")
+    parts = rows[0].split()
+    if len(parts) != 2:
+        raise Denied("invalid destination approval entry")
+    if parts[0] != CARRIER_REPO:
+        raise Denied("destination approval repository mismatch")
+    try:
+        destination_id = int(parts[1])
+    except ValueError as exc:
+        raise Denied("invalid destination approval repository ID") from exc
+    if destination_id != CARRIER_REPO_ID:
+        raise Denied("destination approval repository ID mismatch")
+    return destination_id
+
+def parse_snapshot_entry(snapshot_file):
+    rows = active_rows(snapshot_file)
     if len(rows) != 1:
         raise Denied("snapshot approval must contain exactly one active tuple")
     parts = rows[0].split()
@@ -114,6 +134,7 @@ def main():
     ap.add_argument("--incident-comments", required=True)
     ap.add_argument("--source-commit", required=True)
     ap.add_argument("--destination-repo", required=True)
+    ap.add_argument("--destination-ledger", required=True)
     ap.add_argument("--carrier-workflow", required=True)
     ap.add_argument("--snapshot-ledger", required=True)
     args = ap.parse_args()
@@ -143,6 +164,7 @@ def main():
     if len(resume) != 1:
         raise Denied("require exactly one independent incident resume approval")
 
+    parse_destination_entry(args.destination_ledger)
     source_commit, source_tree = parse_snapshot_entry(args.snapshot_ledger)
     commit = load_json(args.source_commit)
     if require_sha(commit.get("sha"), "source commit metadata") != source_commit:
