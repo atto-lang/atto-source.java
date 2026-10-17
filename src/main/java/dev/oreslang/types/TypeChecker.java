@@ -241,16 +241,26 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectErasedBuiltinTypeRedeclaration(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectErasedBuiltinTypeRedeclaration(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectErasedBuiltinTypeRedeclaration(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                     typeAliasOwners.put(alias, module.name());
                 }
             }
+        }
+    }
+
+    private static void rejectErasedBuiltinTypeRedeclaration(String name, String kind) {
+        if (name.equals("Any") || name.equals("AnyCallable")) {
+            throw new IllegalArgumentException(
+                    kind + " '" + name + "' conflicts with compiler-builtin erased type " + name);
         }
     }
 
@@ -3376,6 +3386,11 @@ public final class TypeChecker {
             if (sumReceiver instanceof Function) {
                 throw new IllegalArgumentException("unknown function member '" + member.member()
                         + "'; invoke directly or spread a statically known tuple with f(...args)");
+            }
+            if (sumReceiver == Any.INSTANCE || sumReceiver == AnyCallable.INSTANCE) {
+                throw new IllegalArgumentException(
+                        (sumReceiver == AnyCallable.INSTANCE ? "AnyCallable" : "Any")
+                                + " is erased and has no statically known members");
             }
             Type collectionMember = builtinCollectionMember(sumReceiver, member.member());
             if (isStringLike(sumReceiver)) {
