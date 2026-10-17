@@ -192,13 +192,17 @@ public final class SharedUntrustedIsolatePool implements AutoCloseable {
         }
         try {
             engine.close(true);
-            // No second Engine may be admitted until this native isolate
-            // has actually retired; failed close keeps the singleton fenced.
-            ISOLATE_SLOT.set(false);
-        } catch (RuntimeException error) {
-            if (failure == null) failure = error;
-            else failure.addSuppressed(error);
+        } catch (RuntimeException | Error error) {
+            if (failure == null) {
+                failure = new IllegalStateException(
+                        "untrusted Engine close could not be confirmed");
+            }
         }
+        // A successful Engine.close alone is not sufficient: one failed
+        // Context close leaves its native/guest lifetime unproven. The
+        // process-global slot must remain denied until ALL close fences
+        // were confirmed, otherwise a second isolate can be admitted.
         if (failure != null) throw failure;
+        ISOLATE_SLOT.set(false);
     }
 }
