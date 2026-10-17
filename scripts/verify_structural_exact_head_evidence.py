@@ -181,7 +181,17 @@ def self_test():
                        capture_output=True, check=True, timeout=10)
         (checkout / "README.md").write_text("synthetic only\\n".replace("\\n", "\n"),
                                             encoding="utf-8")
-        subprocess.run(["git", "-C", str(checkout), "add", "README.md"],
+        # These are synthetic placeholder files, not Oreslang source or the
+        # executable verifier. They let the self-test cover blob pinning.
+        workflow_fixture = checkout / ".github/workflows/structural-exact-head-guest.yml"
+        verifier_fixture = checkout / "scripts/verify_structural_exact_head_evidence.py"
+        workflow_fixture.parent.mkdir(parents=True)
+        verifier_fixture.parent.mkdir(parents=True)
+        workflow_fixture.write_text("name: synthetic-only\\n".replace("\\n", "\n"),
+                                    encoding="utf-8")
+        verifier_fixture.write_text("# synthetic-only verifier placeholder\\n".replace("\\n", "\n"),
+                                    encoding="utf-8")
+        subprocess.run(["git", "-C", str(checkout), "add", "."],
                        capture_output=True, check=True, timeout=10)
         subprocess.run([
             "git", "-C", str(checkout), "-c", "user.name=CI harness",
@@ -199,6 +209,19 @@ def self_test():
         provenance.write_text(json.dumps(actual), encoding="utf-8")
         require(inspect(reports, provenance, checkout)["tests_total"] == len(SUITES),
                 "exact synthetic HEAD/tree was not accepted")
+        # Exercise the exact-head workflow/verifier blob checks with a
+        # synthetic Git repository and simulated Actions environment only.
+        mock_ci = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "ores-truffle-oreslang/oreslang-source.java",
+            "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_EVENT_NAME": "pull_request",
+        }
+        with patch.dict(os.environ, mock_ci):
+            verified = inspect(reports, provenance, checkout, require_ci=True)
+            require(verified["tests_total"] == len(SUITES)
+                    and len(verified["pinned_source_blobs"]) == 2,
+                    "synthetic workflow/verifier Git blob attestation failed")
         # A real Git HEAD/tree match is not sufficient if compiler scripts
         # overwrite a tracked source file before the JUnit report is emitted.
         tracked = checkout / "README.md"
