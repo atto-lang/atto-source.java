@@ -50,6 +50,8 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp -q dependency:build-classpath -Dmdep.outputFile=target/conformance-classpath.txt
+      - name: Self-test fail-closed Option-pattern evidence harness (synthetic only)
+        run: python3 -m unittest discover -s scripts -p test_option_pattern_contract.py -v
       - name: Verify Option-pattern reference admission (no runtime parity claim)
         run: |
           python3 scripts/check_option_pattern_contract.py --backend graal \
