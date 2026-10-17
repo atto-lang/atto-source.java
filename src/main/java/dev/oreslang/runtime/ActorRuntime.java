@@ -6866,7 +6866,7 @@ public final class ActorRuntime implements AutoCloseable {
         private long lastProcessedUserMessageSequence = -1L;
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
-        private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
+        private final ArrayDeque<DrainWaiter> pendingDrains = new ArrayDeque<>();
         private ActorInboxMail<M> activeMail;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
@@ -7066,7 +7066,12 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!shutdownBarrier && pendingDrains.size() >= MAX_PENDING_DRAIN_WAITERS)
                     return OresFuture.failed(new ActorResourceExhaustedException(ref.id()));
                 OresFuture<Void> result = new OresFuture<>(() -> false, () -> { });
-                pendingDrains.add(new DrainWaiter(target, result));
+                DrainWaiter prior = pendingDrains.peekLast();
+                if (prior != null && prior.sequence() > target) {
+                    throw new IllegalStateException(
+                            "actor drain targets must be monotonically registered");
+                }
+                pendingDrains.addLast(new DrainWaiter(target, result));
                 return result;
             }
         }
@@ -7079,13 +7084,12 @@ public final class ActorRuntime implements AutoCloseable {
                             "nonsequential actor message completion for " + ref.id());
                 }
                 lastProcessedUserMessageSequence = sequence;
-                for (int i = pendingDrains.size() - 1; i >= 0; --i) {
-                    DrainWaiter waiter = pendingDrains.get(i);
-                    if (waiter.sequence() <= sequence) {
-                        pendingDrains.remove(i);
-                        if (completed == null) completed = new ArrayList<>();
-                        completed.add(waiter.completion());
-                    }
+                for (;;) {
+                    DrainWaiter waiter = pendingDrains.peekFirst();
+                    if (waiter == null || waiter.sequence() > sequence) break;
+                    pendingDrains.removeFirst();
+                    if (completed == null) completed = new ArrayList<>();
+                    completed.add(waiter.completion());
                 }
             }
             // No allocation occurs in the common path with no drain observers.
