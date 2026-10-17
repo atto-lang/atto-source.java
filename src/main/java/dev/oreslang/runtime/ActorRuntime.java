@@ -340,6 +340,7 @@ public final class ActorRuntime implements AutoCloseable {
             boolean watchdogPreemptionRequested,
             long sharedMailboxBytes,
             long outputBytes,
+            long mailboxRejections,
             int childCount,
             Optional<ActorId> parentId,
             Optional<ActorGroupId> managedByGroup,
@@ -355,6 +356,7 @@ public final class ActorRuntime implements AutoCloseable {
                     || activeTurns < 0
                     || sharedMailboxBytes < 0
                     || outputBytes < 0
+                    || mailboxRejections < 0
                     || childCount < 0) {
                 throw new IllegalArgumentException("invalid actor health counters");
             }
@@ -659,6 +661,7 @@ public final class ActorRuntime implements AutoCloseable {
                     lease != null && lease.preemptionRequested(),
                     cell.sharedMailboxBytes.get(),
                     cell.outputBytes.get(),
+                    cell.mailboxRejections.get(),
                     cell.children.size(),
                     cell.parent == null
                             ? Optional.empty()
@@ -5088,10 +5091,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
             if (!cell.reserveMailboxSlot()) {
-                CoreLog.record(
-                        CoreLog.Level.WARN,
-                        CoreLog.ACTOR_MAILBOX_REJECTED,
-                        ref.generation());
+                cell.recordMailboxRejection();
                 throw new ActorMailboxFullException(ref.id());
             }
         }
@@ -5188,10 +5188,7 @@ public final class ActorRuntime implements AutoCloseable {
                     envelope = MessageEnvelope.message(
                             prepared, release, sender, sequence);
                     if (!cell.mailbox.tryWrite(envelope)) {
-                        CoreLog.record(
-                                CoreLog.Level.WARN,
-                                CoreLog.ACTOR_MAILBOX_REJECTED,
-                                ref.generation());
+                        cell.recordMailboxRejection();
                         throw new ActorMailboxFullException(ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
@@ -6800,6 +6797,8 @@ public final class ActorRuntime implements AutoCloseable {
         private volatile boolean forceKillFenced;
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final AtomicLong outputBytes = new AtomicLong();
+        /** Exact rejection count; log emission is sampled to avoid telemetry storms. */
+        private final AtomicLong mailboxRejections = new AtomicLong();
         private long nextOutputSequence;
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
@@ -6901,6 +6900,26 @@ public final class ActorRuntime implements AutoCloseable {
                             Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
                     ? Integer.MAX_VALUE
                     : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+        }
+
+        private void recordMailboxRejection() {
+            long current;
+            long next;
+            do {
+                current = mailboxRejections.get();
+                if (current == Long.MAX_VALUE) return;
+                next = current + 1L;
+            } while (!mailboxRejections.compareAndSet(current, next));
+
+            // Overload telemetry must not itself crowd out unrelated incident
+            // evidence. Exact totals remain in ActorHealthSnapshot; the flight
+            // recorder gets exponentially sparse samples.
+            if ((next & (next - 1L)) == 0L) {
+                CoreLog.record(
+                        CoreLog.Level.WARN,
+                        CoreLog.ACTOR_MAILBOX_REJECTED,
+                        ref.generation());
+            }
         }
 
         /**
