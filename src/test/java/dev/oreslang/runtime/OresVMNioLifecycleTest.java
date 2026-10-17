@@ -91,7 +91,8 @@ final class OresVMNioLifecycleTest {
 
     @Test void completionWorkerCannotJoinItsOwnReactorOrControlPool() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
-        try (var pipe = Pipe.open()) {
+        var pipe = Pipe.open();
+        try (var source = pipe.source(); var sink = pipe.sink()) {
             pipe.source().configureBlocking(false);
             pipe.sink().configureBlocking(false);
             var pending = vm.nioReadiness().watch(pipe.source(), SelectionKey.OP_READ);
@@ -124,7 +125,8 @@ final class OresVMNioLifecycleTest {
     @Test void vmCloseRetiresReadinessAndRejectsNewRegistrations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var nio = vm.nioReadiness();
-        try (var pipe = Pipe.open()) {
+        var pipe = Pipe.open();
+        try (var source = pipe.source(); var sink = pipe.sink()) {
             pipe.source().configureBlocking(false);
             var pending = nio.watch(pipe.source(), SelectionKey.OP_READ);
             assertFalse(pending.isDone());
