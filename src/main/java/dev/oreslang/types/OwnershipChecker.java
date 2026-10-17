@@ -2437,6 +2437,12 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                scanExpr(thrown.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.RaiseStmt raised) {
+                scanExpr(raised.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.PanicStmt panicked) {
+                scanExpr(panicked.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.YieldStmt yielded) {
                 scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
@@ -2472,6 +2478,12 @@ public final class OwnershipChecker {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 Set<String> caught = new HashSet<>(blockLocals);
                 caught.add(s.errorName());
+                scanStatements(s.catchBody(), caught, outer, recursiveBinding, captures);
+                scanStatements(s.finallyBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.RecoverStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                Set<String> caught = new HashSet<>(blockLocals);
+                caught.add(s.signalName());
                 scanStatements(s.catchBody(), caught, outer, recursiveBinding, captures);
                 scanStatements(s.finallyBody(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.SelectStmt s) {
