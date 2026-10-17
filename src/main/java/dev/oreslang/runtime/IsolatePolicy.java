@@ -164,6 +164,18 @@ public record IsolatePolicy(
             Set<String> allowedHostClasses,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
+        return restrictedContextBuilder(
+                profile, allowedHostClasses, permissions, permissions, permissionCheckMode);
+    }
+
+    public Context.Builder restrictedContextBuilder(
+            ExecutionProfile profile,
+            Set<String> allowedHostClasses,
+            RuntimePermissions buildCeiling,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode) {
+        java.util.Objects.requireNonNull(buildCeiling, "buildCeiling");
+        java.util.Objects.requireNonNull(permissions, "permissions");
         NativeBuildMode.requireCompatible(profile);
         Set<String> hostClasses = Set.copyOf(allowedHostClasses);
         if (!hostClasses.isEmpty()) {
@@ -195,7 +207,8 @@ public record IsolatePolicy(
                 .in(new ByteArrayInputStream(new byte[0]))
                 .out(new ByteArrayOutputStream())
                 .err(new ByteArrayOutputStream())
-                .arguments(OresLanguage.ID, applicationArguments(profile, permissions, permissionCheckMode));
+                .arguments(OresLanguage.ID,
+                        applicationArguments(profile, buildCeiling, permissions, permissionCheckMode));
 
         /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
@@ -437,6 +450,16 @@ public record IsolatePolicy(
             ExecutionProfile profile,
             RuntimePermissions permissions,
             PermissionCheckMode permissionCheckMode) {
+        return applicationArguments(profile, permissions, permissions, permissionCheckMode);
+    }
+
+    public String[] applicationArguments(
+            ExecutionProfile profile,
+            RuntimePermissions buildCeiling,
+            RuntimePermissions permissions,
+            PermissionCheckMode permissionCheckMode) {
+        java.util.Objects.requireNonNull(buildCeiling, "buildCeiling");
+        java.util.Objects.requireNonNull(permissions, "permissions");
         String caps = capabilities.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
         java.util.ArrayList<String> args = new java.util.ArrayList<>(java.util.List.of(
                 "--ores-capabilities=" + caps,
@@ -447,6 +470,7 @@ public record IsolatePolicy(
                 "--ores-execution-mode=" + profile.mode().name(),
                 "--ores-platform=" + profile.platform().name(),
                 "--ores-permission-check=" + permissionCheckMode.name().toLowerCase(Locale.ROOT)));
+        args.addAll(java.util.List.of(buildCeiling.buildCeilingApplicationArguments()));
         args.addAll(java.util.List.of(permissions.applicationArguments()));
         return args.toArray(String[]::new);
     }
