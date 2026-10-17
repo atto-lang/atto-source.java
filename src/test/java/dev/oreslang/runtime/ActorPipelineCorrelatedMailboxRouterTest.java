@@ -114,6 +114,9 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 if (!"fan-in".equals(value)) unexpectedPayload.incrementAndGet();
                 observed.add(binding.get().currentCorrelation());
+                // A rejected null payload cannot consume a one-shot path.
+                assertThrows(NullPointerException.class,
+                        () -> binding.get().backward(null));
                 binding.get().backward("ack");
                 delivered.countDown();
             });
