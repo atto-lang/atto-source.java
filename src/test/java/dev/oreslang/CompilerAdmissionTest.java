@@ -22,6 +22,25 @@ final class CompilerAdmissionTest {
             """;
 
     @Test
+    void opaqueTernaryAndRefinementSurviveExecutableBuildAdmission() {
+        assertDoesNotThrow(() -> OresCompiler.compileForBuild("""
+                fnc normalize(any value): int {
+                  return Integer.is_int(value) ? value : 0;
+                }
+
+                fnc bounded(any value): bool {
+                  return value is type int n && n > 0 && n < 10;
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(normalize(7));
+                  stdio.stdout.write(bounded(7));
+                  return;
+                }
+                """, BuildOptions.executable()));
+    }
+
+    @Test
     void typeAnalysisAndExecutableAdmissionHaveSeparateResponsibilities() {
         assertDoesNotThrow(() -> TypeChecker.checkTypes(Parser.parse(INVALID_OWNERSHIP)));
         assertThrows(IllegalArgumentException.class,
