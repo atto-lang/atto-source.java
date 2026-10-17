@@ -1101,9 +1101,36 @@ public final class ActorRuntime implements AutoCloseable {
      * routed DATA turn. It is carried only beside the mailbox envelope and
      * is never serialized into ActorMail<T> or exposed as a guest value.
      */
+    /**
+     * Immutable source projection of one non-transactional fan-out branch.
+     * The detailed host exception remains inside the router; guest code gets
+     * bounded scalar evidence only.
+     */
+    public record ActorRouteReceipt(
+            long edgeIndex,
+            String target,
+            long flowId,
+            long routeId,
+            boolean admitted,
+            String error) {
+        public ActorRouteReceipt {
+            Objects.requireNonNull(target, "route receipt target");
+            Objects.requireNonNull(error, "route receipt error");
+            if (edgeIndex < 0 || flowId <= 0 || routeId <= 0) {
+                throw new IllegalArgumentException(
+                        "route receipt identifiers must be nonnegative/positive");
+            }
+            if (admitted == !error.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "route receipt error must be empty exactly on success");
+            }
+        }
+    }
+
     interface PipelineTurnAuthority {
         boolean authenticates(ActorPipelineRouteSession.MailFrame frame);
         void routeForward(Object value);
+        List<ActorRouteReceipt> routeForwardAll(Object value);
         void routeForwardRoundRobin(Object value);
         void routeForwardTo(String target, Object value);
         void routeForwardByKey(String key, Object value);
@@ -3819,6 +3846,12 @@ public final class ActorRuntime implements AutoCloseable {
     public void routeCurrentPipelineForward(Object value) {
         currentPipelineTurnAuthority().routeForward(Objects.requireNonNull(
                 value, "pipeline payload"));
+    }
+
+    /** Compiler bridge for sealed source self.forward_all(value). */
+    public List<ActorRouteReceipt> routeCurrentPipelineForwardAll(Object value) {
+        return currentPipelineTurnAuthority().routeForwardAll(
+                Objects.requireNonNull(value, "pipeline payload"));
     }
 
     /** Compiler bridge for sealed source self.forward_round_robin(value). */
