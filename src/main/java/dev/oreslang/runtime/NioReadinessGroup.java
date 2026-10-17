@@ -45,6 +45,10 @@ public final class NioReadinessGroup implements AutoCloseable {
     private static final int DEFAULT_MAX_PENDING = 8192;
     private static final int DEFAULT_COMMAND_CAPACITY = 1024;
 
+    // Host-supplied Executors are not assumed to be asynchronous.
+    // Runnable::run must never deliver subscribers on the SELECTOR stack.
+    private static final ThreadLocal<Boolean> ON_REACTOR = new ThreadLocal<>();
+
     private final Object lifecycle = new Object();
     private final int maxReactors;
     private final int maxPending;
@@ -194,16 +198,26 @@ public final class NioReadinessGroup implements AutoCloseable {
         if (target == null) target = completionExecutor;
         synchronized (notificationDispatch) {
             for (int i = 0; i < 128; ++i) {
-                Runnable next = stagedNotifications.peekFirst();
+                // Claim before invoking an arbitrary Executor: an inline
+                // completion may re-enter this method, and replaying an
+                // unclaimed head can release one notification twice.
+                Runnable next = stagedNotifications.pollFirst();
                 if (next == null) return;
                 try {
-                    target.execute(() -> OresVM.runAsNioWorker(next));
+                    target.execute(() -> {
+                        if (Boolean.TRUE.equals(ON_REACTOR.get()))
+                            throw new RejectedExecutionException(
+                                    "NIO completion callback cannot execute on reactor thread");
+                        OresVM.runAsNioWorker(next);
+                    });
                 } catch (RejectedExecutionException full) {
-                    // Keep the accepted reservation until a CONTROL task
-                    // completes and its afterExecute hook retries delivery.
+                    // Rejections do not transfer ownership. Requeue at the
+                    // front and retry after an actor carrier frees capacity.
+                    // An inline executor is rejected on SELECTOR, not allowed
+                    // to run terminal subscribers in reactor context.
+                    stagedNotifications.addFirst(next);
                     return;
                 }
-                stagedNotifications.removeFirst();
             }
         }
     }
@@ -704,7 +718,11 @@ public final class NioReadinessGroup implements AutoCloseable {
             commands = new ArrayBlockingQueue<>(commandCapacity);
             thread = Thread.ofPlatform().daemon(true)
                     .name("ores-nio-reactor-" + index)
-                    .unstarted(() -> OresVM.runAsNioWorker(this));
+                    .unstarted(() -> OresVM.runAsNioWorker(() -> {
+                        ON_REACTOR.set(Boolean.TRUE);
+                        try { Reactor.this.run(); }
+                        finally { ON_REACTOR.remove(); }
+                    }));
         }
         void start() { thread.start(); }
         // Only for a reactor whose Thread.start() failed. Never called after
