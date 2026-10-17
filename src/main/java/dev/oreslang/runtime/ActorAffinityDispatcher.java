@@ -18,6 +18,7 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     private final int[] cpus;
     private final Semaphore queueSlots;
     private final AtomicInteger nextLane = new AtomicInteger();
+    private final AtomicInteger nextHostLane = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorAffinityDispatcher(int parallelism, int capacity, int[] cpus,
@@ -37,6 +38,36 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
     }
 
     int reserveLane() { return Math.floorMod(nextLane.getAndIncrement(), lanes.size()); }
+
+    /** Host-only NIO notifications may not cause a new native lane bootstrap
+     * from a SELECTOR thread. First bootstrap targets lane zero and is
+     * performed by the off-reactor admission helper. Subsequent notifications
+     * prefer already-live lanes, so JNI publication/Thread.start for a cold
+     * affinity lane is never part of normal selector notification delivery.
+     *
+     * This does NOT invoke guest actor receive and does not weaken per-actor
+     * lane placement. A saturated warm lane rejects via bounded queue slots;
+     * the NIO manager retains its accepted notification for a later retry.
+     */
+    void executeHostOnWarmLane(Runnable notification) {
+        Objects.requireNonNull(notification, "notification");
+        int count = lanes.size();
+        int start = Math.floorMod(nextHostLane.getAndIncrement(), count);
+        for (int offset = 0; offset < count; ++offset) {
+            int index = (start + offset) % count;
+            ExecutorService lane = lanes.get(index);
+            if (lane instanceof NativeCarrierExecutor nativeLane
+                    && nativeLane.getStartedCarrierCount() > 0
+                    || lane instanceof java.util.concurrent.ThreadPoolExecutor pool
+                    && pool.getPoolSize() > 0) {
+                executeOnLane(index, notification);
+                return;
+            }
+        }
+        // Deterministic cold lane avoids bootstrapping a different native
+        // pthread on each queued completion during the first admission burst.
+        executeOnLane(0, notification);
+    }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
     int startedCarrierCount() {
