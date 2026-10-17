@@ -1747,11 +1747,23 @@ public final class OwnershipChecker {
             int parameterCount = callableType.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
                 for (int i = 0; i < call.arguments().size(); i++) {
-                    ValueInfo argument = checkExpr(call.arguments().get(i), scope, false);
+                    Ast.Expr argumentExpr = call.arguments().get(i);
+                    Ast.TypeRef parameterType = callableType.arguments().get(i);
+                    ValueInfo argument;
+                    if (argumentExpr instanceof Ast.LambdaExpr lambda
+                            && isBorrowedCallable(parameterType)
+                            && !parameterType.mutableBorrow()) {
+                        argument = checkLambda(
+                                lambda, scope, null,
+                                false, false, initializingClass != null);
+                    } else {
+                        argument = checkExpr(argumentExpr, scope, false);
+                    }
                     if (containsMutexGuardType(argument.type)) {
                         throw error("guard-bearing values cannot cross a first-class Fnc call boundary");
                     }
-                    if (argument.kind == ValueKind.MUT_BORROW) {
+                    if (argument.kind == ValueKind.MUT_BORROW
+                            && !parameterType.isBorrow()) {
                         throw error("ordinary Fnc<T,...> parameters are read-only call borrows; use an explicit mutable callable contract when that surface lands");
                     }
                 }
