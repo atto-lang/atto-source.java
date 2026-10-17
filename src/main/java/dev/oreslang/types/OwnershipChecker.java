@@ -2479,7 +2479,9 @@ public final class OwnershipChecker {
         }
         if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
             defineConditionAliases(binary.left(), destination, source);
-            defineConditionAliases(binary.right(), destination, source);
+            // The right edge executes only after the left edge succeeds, so it
+            // must resolve from the already-refined scope just like TypeChecker.
+            defineConditionAliases(binary.right(), destination, destination);
         }
     }
 
