@@ -28,6 +28,8 @@ public final class OresProjectConfig {
     public static final String MANIFEST_NAME = ".ores.pkg.toml";
     public static final String LEGACY_MANIFEST_NAME = ".oreslangc.cfg.toml";
     public static final String ENV_PROJECT_ROOT = "ORES_PROJECT_ROOT";
+    // Canonical cross-backend search path: colon-separated even on Windows.
+    public static final String ENV_ORES_PATHS = "ORES_PATHS";
     public static final String ENV_ORESLANG_PATH = "ORESLANG_PATH";
     public static final String SCHEMA_VERSION = "1";
 
@@ -133,8 +135,10 @@ public final class OresProjectConfig {
         String rootText = defaultString(toml.getString("project.root"), ".");
         Path projectRoot = resolvePath(manifestDir, rootText);
 
+        // Omitted roots defaults to "."; an explicit [] MUST remain empty.
+        // Empty roots are often used to deny implicit bare-source imports.
         List<String> sourceRootValues = stringArray(toml, "source.roots");
-        if (sourceRootValues.isEmpty()) sourceRootValues = List.of(".");
+        if (toml.get("source.roots") == null) sourceRootValues = List.of(".");
         List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
         List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
 
@@ -298,23 +302,26 @@ public final class OresProjectConfig {
     }
 
     private static List<Path> parseEnvironmentPaths(Map<String, String> environment) {
-        String raw = environment.get(ENV_ORESLANG_PATH);
-        if (raw == null || raw.isBlank()) return List.of();
-
         LinkedHashSet<Path> paths = new LinkedHashSet<>();
-        String[] parts = raw.split(java.util.regex.Pattern.quote(File.pathSeparator), -1);
+        // Project source.roots and import_paths always precede both ambient
+        // search lists; duplicate directories keep the first occurrence.
+        addEnvironmentPaths(paths, environment.get(ENV_ORES_PATHS), ":");
+        addEnvironmentPaths(paths, environment.get(ENV_ORESLANG_PATH), File.pathSeparator);
+        return List.copyOf(paths);
+    }
+
+    private static void addEnvironmentPaths(
+            LinkedHashSet<Path> paths, String raw, String separator) {
+        if (raw == null || raw.isEmpty()) return;
         Path cwd = Path.of("").toAbsolutePath().normalize();
-        for (String part : parts) {
-            String trimmed = part.trim();
-            // Unlike PATH, an empty entry never means the current directory.
-            // That avoids accidental dependency injection via leading/trailing
-            // separators or "::".
-            if (trimmed.isEmpty()) continue;
-            Path path = Path.of(trimmed);
+        for (String entry : raw.split(java.util.regex.Pattern.quote(separator), -1)) {
+            // Unlike POSIX PATH, empty entries do not grant implicit CWD.
+            // Preserve spaces in nonempty directory names verbatim.
+            if (entry.isEmpty()) continue;
+            Path path = Path.of(entry);
             if (!path.isAbsolute()) path = cwd.resolve(path);
             paths.add(path.toAbsolutePath().normalize());
         }
-        return List.copyOf(paths);
     }
 
     private static List<Path> resolvePaths(Path base, List<String> values) {
