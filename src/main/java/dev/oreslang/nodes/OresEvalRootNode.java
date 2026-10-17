@@ -4330,10 +4330,86 @@ public final class OresEvalRootNode extends RootNode {
             };
         }
 
-        /** Runtime defense in depth for both synchronous and suspended
-         * guest method dispatch. The type checker already seals these names,
-         * but a dynamic/aliased member must never become an ordinary callable
-         * actor field or method while typed pipeline lowering is disabled. */
+        private boolean directActorSelf(Ast.MemberExpr member) {
+            return member.receiver() instanceof Ast.NameExpr selfName
+                    && selfName.name().equals("self");
+        }
+
+        /**
+         * Lower only direct self.* calls whose runtime semantics already have
+         * an authenticated routed-mail implementation. The actual authority is
+         * scheduler-owned envelope metadata in ActorRuntime; no route frame or
+         * router object is exposed to guest code.
+         */
+        private Invocation prepareAuthenticatedPipelineRouting(
+                Ast.MemberExpr member, OresObject object, List<Object> args) {
+            if (object.klass.actorKind() == Ast.ActorKind.NONE || !directActorSelf(member)) {
+                return null;
+            }
+            var runtime = object.owner.context.actors();
+            return switch (member.member()) {
+                case "forward" -> {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.forward expects exactly one value");
+                    }
+                    yield object.owner.invokableInvocation(ignored -> {
+                        runtime.routeCurrentPipelineForward(args.getFirst());
+                        return null;
+                    }, List.of());
+                }
+                case "forward_round_robin" -> {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.forward_round_robin expects exactly one value");
+                    }
+                    yield object.owner.invokableInvocation(ignored -> {
+                        runtime.routeCurrentPipelineForwardRoundRobin(args.getFirst());
+                        return null;
+                    }, List.of());
+                }
+                case "forward_to" -> {
+                    if (args.size() != 2) {
+                        throw new IllegalArgumentException(
+                                "self.forward_to expects a string target and one value");
+                    }
+                    String target = requireString(args.getFirst(), "self.forward_to target");
+                    yield object.owner.invokableInvocation(ignored -> {
+                        runtime.routeCurrentPipelineForwardTo(target, args.get(1));
+                        return null;
+                    }, List.of());
+                }
+                case "forward_by_key" -> {
+                    if (args.size() != 2) {
+                        throw new IllegalArgumentException(
+                                "self.forward_by_key expects a string key and one value");
+                    }
+                    String key = requireString(args.getFirst(), "self.forward_by_key key");
+                    yield object.owner.invokableInvocation(ignored -> {
+                        runtime.routeCurrentPipelineForwardByKey(key, args.get(1));
+                        return null;
+                    }, List.of());
+                }
+                case "backward" -> {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.backward expects exactly one value");
+                    }
+                    yield object.owner.invokableInvocation(ignored -> {
+                        runtime.routeCurrentPipelineBackward(args.getFirst());
+                        return null;
+                    }, List.of());
+                }
+                // Partial fan-out cannot hide per-edge admission results, and
+                // reply cannot skip the compiler-owned reverse-path semantics.
+                case "forward_all", "reply" -> null;
+                default -> null;
+            };
+        }
+
+        /** Runtime defense in depth for synchronous/suspended dispatch.
+         * Dynamic aliases and method references never become routing authority;
+         * unsupported sealed intrinsics also remain fail-closed. */
         private void requireCompiledPipelineRouting(OresObject object, String member) {
             if (object.klass.actorKind() == Ast.ActorKind.NONE) return;
             switch (member) {
@@ -4356,6 +4432,9 @@ public final class OresEvalRootNode extends RootNode {
                     (Ast.MemberExpr) call.callee();
 
             if (receiver instanceof OresObject object) {
+                Invocation pipeline = prepareAuthenticatedPipelineRouting(
+                        member, object, args);
+                if (pipeline != null) return pipeline;
                 requireCompiledPipelineRouting(object, member.member());
                 if (object.klass.actorKind() != Ast.ActorKind.NONE
                         && member.member().equals("end")) {
@@ -5804,6 +5883,9 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = evaluateArguments(call.arguments(), env);
 
                 if (receiver instanceof OresObject object) {
+                    Invocation pipeline = prepareAuthenticatedPipelineRouting(
+                            methodCall, object, args);
+                    if (pipeline != null) return pipeline;
                     requireCompiledPipelineRouting(object, methodCall.member());
                     if (object.klass.actorKind() != Ast.ActorKind.NONE
                             && methodCall.member().equals("end")) {
