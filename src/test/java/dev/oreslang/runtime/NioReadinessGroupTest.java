@@ -14,6 +14,28 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void selectorStopLatchFollowsCompletionDrainFence() throws Exception {
+        // Inspect the internal publication order directly. A stopped reactor
+        // must not expose selector quiescence before it fences further
+        // completion task admission and requests executor shutdown.
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            var reactors = NioReadinessGroup.class.getDeclaredField("reactors");
+            reactors.setAccessible(true);
+            Object reactor = ((java.util.List<?>) reactors.get(group)).getFirst();
+            var stop = reactor.getClass().getDeclaredField("stopped");
+            stop.setAccessible(true);
+            var stopped = (java.util.concurrent.CountDownLatch) stop.get(reactor);
+            var completion = NioReadinessGroup.class.getDeclaredField("completionExecutor");
+            completion.setAccessible(true);
+            var executor = (java.util.concurrent.ThreadPoolExecutor) completion.get(group);
+            group.close();
+            assertTrue(stopped.await(3, TimeUnit.SECONDS));
+            assertTrue(executor.isShutdown(),
+                    "completion executor shutdown must precede reactor stop-latch publication");
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void slowFutureSubscribersNeverRunOnSelectorAndBackpressureIsBounded() throws Exception {
         // A runtime completion subscriber is allowed to be adversarial host
         // code; it must not pin the selector or grow the completion queue.
