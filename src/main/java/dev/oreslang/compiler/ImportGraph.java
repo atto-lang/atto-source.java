@@ -37,6 +37,21 @@ final class ImportGraph {
         ImportRules.validate(imported);
         if (ImportRules.isJavaPath(imported.path())) return null;
 
+        // Import-resolution maps are compiler inputs, not permission to
+        // reinterpret malformed or retired root prefixes. Validate those
+        // spellings before accepting even an already-mapped target.
+        String specifier = imported.path();
+        if (specifier.startsWith("@/") || specifier.startsWith("@\\"))
+            throw new IllegalArgumentException("retired @/ import prefix: " + specifier);
+        if (specifier.startsWith("+")) {
+            if (!specifier.startsWith("+/") || specifier.indexOf('\\') >= 0 ||
+                    java.util.Arrays.stream(specifier.substring(2).split("/", -1))
+                            .anyMatch(segment -> segment.isEmpty()
+                                    || segment.equals(".") || segment.equals(".."))) {
+                throw new IllegalArgumentException("noncanonical +/ source import: " + specifier);
+            }
+        }
+
         String normalizedUnitId = normalizeUnitId(unitId);
         String resolved = importResolutions
                 .getOrDefault(normalizedUnitId, Map.of())
