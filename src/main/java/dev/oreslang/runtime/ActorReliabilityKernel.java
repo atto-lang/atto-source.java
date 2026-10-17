@@ -67,7 +67,7 @@ final class ActorReliabilityKernel {
             long value) {
         Event {
             if (sequence < 0) throw new IllegalArgumentException("sequence must be nonnegative");
-            if (monotonicNanos < 0) throw new IllegalArgumentException("monotonic time must be nonnegative");
+            // System.nanoTime() has an arbitrary origin and may be negative.
             Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(actor, "actor");
             Objects.requireNonNull(fault, "fault");
@@ -77,6 +77,8 @@ final class ActorReliabilityKernel {
     record Snapshot(
             long nextSequence,
             long overwrittenEvents,
+            long droppedObserverEvents,
+            long clockRegressions,
             List<Event> recentEvents,
             Map<EventKind, Long> counters) {
         Snapshot {
@@ -92,7 +94,11 @@ final class ActorReliabilityKernel {
     private final long[] counters = new long[EventKind.values().length];
     private long nextSequence;
     private long overwritten;
-    private long lastTimestamp = -1L;
+    private long droppedObserverEvents;
+    private long clockRegressions;
+    private long lastTimestamp;
+    private boolean hasTimestamp;
+    private boolean sequenceExhausted;
 
     ActorReliabilityKernel(int capacity, LongSupplier monotonicNanos) {
         if (capacity < 1 || capacity > 65_536)
@@ -111,19 +117,38 @@ final class ActorReliabilityKernel {
         Objects.requireNonNull(actor, "actor");
         Objects.requireNonNull(fault, "fault");
         synchronized (lock) {
-            // Sample while holding the serialization lock. Sampling before the
-            // lock lets two correct monotonic reads be committed out of order.
-            long now = monotonicNanos.getAsLong();
-            if (now < 0) throw new IllegalStateException("monotonic clock returned a negative value");
-            if (lastTimestamp >= 0 && now < lastTimestamp)
-                throw new IllegalStateException("monotonic clock regressed");
+            // Telemetry is observational: a bad clock or exhausted sequence
+            // must not change actor/GenServer correctness.
+            final long now;
+            try {
+                now = monotonicNanos.getAsLong();
+            } catch (RuntimeException | Error observerFailure) {
+                droppedObserverEvents = saturatingIncrement(droppedObserverEvents);
+                return;
+            }
+
+            // nanoTime-style clocks may be negative. Subtraction is the
+            // overflow-safe ordering rule for intervals < 2^63 ticks.
+            if (hasTimestamp && now - lastTimestamp < 0) {
+                clockRegressions = saturatingIncrement(clockRegressions);
+                droppedObserverEvents = saturatingIncrement(droppedObserverEvents);
+                return;
+            }
+            hasTimestamp = true;
             lastTimestamp = now;
+
+            if (sequenceExhausted) {
+                droppedObserverEvents = saturatingIncrement(droppedObserverEvents);
+                return;
+            }
             long sequence = nextSequence;
-            nextSequence = Math.addExact(nextSequence, 1L);
-            counters[kind.ordinal()] = Math.addExact(counters[kind.ordinal()], 1L);
+            if (nextSequence == Long.MAX_VALUE) sequenceExhausted = true;
+            else nextSequence++;
+
+            counters[kind.ordinal()] = saturatingIncrement(counters[kind.ordinal()]);
             if (recent.size() == capacity) {
                 recent.removeFirst();
-                overwritten = Math.addExact(overwritten, 1L);
+                overwritten = saturatingIncrement(overwritten);
             }
             recent.addLast(new Event(sequence, now, kind, actor, fault, value));
         }
@@ -137,6 +162,8 @@ final class ActorReliabilityKernel {
             return new Snapshot(
                     nextSequence,
                     overwritten,
+                    droppedObserverEvents,
+                    clockRegressions,
                     new ArrayList<>(recent),
                     counts);
         }
@@ -181,16 +208,27 @@ final class ActorReliabilityKernel {
         }
 
         synchronized Decision tryAcquire() {
+            return tryAcquire(1);
+        }
+
+        synchronized Decision tryAcquire(int requestedRestarts) {
+            if (requestedRestarts < 1) {
+                throw new IllegalArgumentException(
+                        "requestedRestarts must be positive");
+            }
             long now = checkedNow();
             evictExpired(now);
             if (now < blockedUntil)
                 return new Decision(false, blockedUntil - now, size);
-            if (size >= maxRestarts) {
+            if (requestedRestarts > maxRestarts
+                    || size > maxRestarts - requestedRestarts) {
                 blockedUntil = saturatingAdd(now, quarantineNanos);
                 return new Decision(false, quarantineNanos, size);
             }
-            accepted[(start + size) % accepted.length] = now;
-            size++;
+            for (int i = 0; i < requestedRestarts; ++i) {
+                accepted[(start + size) % accepted.length] = now;
+                size++;
+            }
             return new Decision(true, 0L, size);
         }
 
@@ -214,7 +252,7 @@ final class ActorReliabilityKernel {
             while (size > 0) {
                 long then = accepted[start];
                 long age = now - then;
-                if (age < 0 || age < windowNanos) break;
+                if (age < 0 || age <= windowNanos) break;
                 start = (start + 1) % accepted.length;
                 size--;
             }
@@ -276,16 +314,20 @@ final class ActorReliabilityKernel {
         }
 
         long delayNanos(int attempt, long stableSalt) {
-            if (attempt < 0) throw new IllegalArgumentException("attempt must be nonnegative");
-            long cap = baseNanos;
-            for (int i = 0; i < attempt && cap < maxNanos; i++) {
-                cap = cap > maxNanos / 2 ? maxNanos : Math.min(maxNanos, cap * 2);
+            if (attempt < 1) throw new IllegalArgumentException("attempt must be positive");
+            long delay = baseNanos;
+            for (int i = 1; i < attempt && delay < maxNanos; i++) {
+                delay = delay > maxNanos / 2
+                        ? maxNanos
+                        : Math.min(maxNanos, delay * 2);
             }
-            long floor = Math.max(1L, cap / 2);
-            long span = cap - floor + 1L;
-            long mixed = mix64(stableSalt ^ (0x9E3779B97F4A7C15L * (attempt + 1L)));
-            long offset = Long.remainderUnsigned(mixed, span);
-            return floor + offset;
+            long remaining = maxNanos - delay;
+            long spreadCap = Math.min(delay >>> 3, remaining);
+            if (spreadCap == 0) return delay;
+            long mixed = mix64(stableSalt
+                    ^ (0x9E3779B97F4A7C15L * attempt));
+            long offset = Long.remainderUnsigned(mixed, spreadCap + 1L);
+            return delay + offset;
         }
 
         private static long mix64(long z) {
@@ -293,5 +335,9 @@ final class ActorReliabilityKernel {
             z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
             return z ^ (z >>> 31);
         }
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
     }
 }
