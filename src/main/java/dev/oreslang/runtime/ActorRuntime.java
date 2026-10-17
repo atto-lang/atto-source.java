@@ -443,6 +443,10 @@ public final class ActorRuntime implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final ControlDispatcher controlDispatcher;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    // A bounded actor-carrier queue is also the host NIO notification lane:
+    // accepted completion records never allocate a dedicated NIO worker or
+    // run arbitrary Future subscribers on CONTROL/selector threads.
+    private volatile Runnable nioCompletionCapacityHook = () -> { };
 
     /**
      * Host/isolate boundary hook. Returning true means the execution domain
@@ -544,6 +548,29 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /** Context bootstrap installs this before admitting guest NIO work.
+     * A completed actor turn must retry staged notifications when its
+     * bounded dispatcher queue was previously full.
+     */
+    void bindNioCompletionCapacityHook(Runnable hook) {
+        Objects.requireNonNull(hook, "hook");
+        if (closed.get()) throw new IllegalStateException("actor runtime closed");
+        nioCompletionCapacityHook = hook;
+    }
+
+    /** Host-only notification delivery. This is never a CONTROL turn or
+     * actor mailbox receive; it shares existing VM actor-carrier capacity.
+     * The source Future's runtime waiter contract prohibits guest callbacks.
+     */
+    void executeHostIoCompletion(Runnable notification) {
+        Objects.requireNonNull(notification, "notification");
+        if (closed.get()) throw new RejectedExecutionException("actor runtime closed");
+        privateDispatcher.execute(() -> {
+            try { notification.run(); }
+            finally { nioCompletionCapacityHook.run(); }
+        });
+    }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
     public long watchdogOverruns() {
@@ -7199,7 +7226,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             try {
                 ExecutorService dispatcher = dispatcherFor(kind);
-                Runnable dispatch = () -> runBatch(dispatchTicket);
+                Runnable dispatch = () -> {
+                    try { runBatch(dispatchTicket); }
+                    finally { nioCompletionCapacityHook.run(); }
+                };
                 if (dispatcher instanceof ActorAffinityDispatcher lanes) {
                     lanes.executeOnLane(dispatchLane, dispatch);
                 } else {
