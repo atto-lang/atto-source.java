@@ -163,7 +163,9 @@ public final class NioReadinessGroup implements AutoCloseable {
         Objects.requireNonNull(executor, "executor");
         synchronized (lifecycle) {
             if (closed || boundCompletionExecutor != null || !reactors.isEmpty()
-                    || pending.get() != 0 || notificationReservations.get() != 0)
+                    || pending.get() != 0 || notificationReservations.get() != 0
+                    || !acceptLeases.isEmpty() || !readLeases.isEmpty()
+                    || !writeLeases.isEmpty())
                 throw new IllegalStateException(
                         "NIO completion scheduler must be bound before first I/O admission");
             boundCompletionExecutor = executor;
