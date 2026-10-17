@@ -5312,6 +5312,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (pipelineFrame != null) {
+            // Independent from the graph router and envelope authority pair:
+            // a valid route token cannot be affixed to another actor's mail.
+            // Validate BEFORE reserving a mailbox slot or copying DATA.
+            if (cell.kind != ActorKind.SHARED)
+                throw new SecurityException(
+                        "routed DATA requires a SHARED mailbox recipient");
+            ActorPipelineRouteSession.requireMailboxRecipient(
+                    pipelineFrame, ref.id());
+        }
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
