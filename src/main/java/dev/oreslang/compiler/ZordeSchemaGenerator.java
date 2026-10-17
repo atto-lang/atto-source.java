@@ -301,12 +301,25 @@ public final class ZordeSchemaGenerator {
             String prefix = (namespace == null ? "" : namespace + ".")
                     + (moduleName.equals(Parser.ROOT_MODULE) ? "" : moduleName + ".");
             Map<String, Ast.FieldDecl> schemaBindings = new LinkedHashMap<>();
+            boolean shadowsZorde = false;
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FieldDecl field
-                        && field.initializer() != null && field.bindingKind() == Ast.BindingKind.CONST) {
-                    if (schemaBindings.putIfAbsent(field.name(), field) != null)
+                if (declaration instanceof Ast.FieldDecl field) {
+                    if (field.name().equals("Zorde")) shadowsZorde = true;
+                    if (field.initializer() != null && field.bindingKind() == Ast.BindingKind.CONST
+                            && schemaBindings.putIfAbsent(field.name(), field) != null)
                         throw new IllegalArgumentException("duplicate Zorde source binding " + field.name());
+                } else if (declaration instanceof Ast.TypeAliasDecl alias
+                        && alias.name().equals("Zorde")) {
+                    shadowsZorde = true;
+                } else if (declaration instanceof Ast.FunctionDecl function
+                        && function.name().equals("Zorde")) {
+                    shadowsZorde = true;
                 }
+            }
+            if (shadowsZorde && module.declarations().stream()
+                    .anyMatch(d -> d instanceof Ast.TypeAliasDecl alias && isInferredSchemaAlias(alias))) {
+                throw new IllegalArgumentException(
+                        "core Zorde schema intrinsic cannot be shadowed by a source declaration");
             }
             for (Ast.Decl declaration : module.declarations()) {
                 if (!(declaration instanceof Ast.TypeAliasDecl alias)
