@@ -2099,7 +2099,7 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorGroupId owningGroup = cell.managedByGroup.get();
                 if (owningGroup == null) {
                     if (!cell.children.isEmpty()) {
-                        supervisorControl.releaseReservation(worker.id());
+                        if (newControlReservation) supervisorControl.releaseReservation(worker.id());
                         throw new IllegalStateException(
                                 "cannot adopt unmanaged worker with live descendants");
                     }
