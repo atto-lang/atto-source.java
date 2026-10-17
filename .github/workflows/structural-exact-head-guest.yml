@@ -44,11 +44,20 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: Verify case-level evidence verifier rejects forged reports
+        run: python3 scripts/verify_structural_exact_head_evidence.py --self-test
       - name: Execute real parser, readonly, ownership and guest regressions
         run: |
           mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest test
-      - name: Verify case-level evidence verifier rejects forged reports
-        run: python3 scripts/verify_structural_exact_head_evidence.py --self-test
+      - name: Recheck immutable Git HEAD and clean tracked tree after Maven
+        shell: bash
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet HEAD --
+          git diff --cached --quiet HEAD --
       - name: Bind JUnit testcase evidence to the checked-out source revision
         run: |
           python3 scripts/verify_structural_exact_head_evidence.py \
