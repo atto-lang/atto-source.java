@@ -454,6 +454,8 @@ struct TrapError {
 }
 ```
 
+The first interpreter slice currently exposes only immutable `kind` and `message` fields (with `kind` represented as a string). Cause chains, stack/source locations, typed `TrapErrorKind`, and host-message redaction are still implementation work; do not infer those fields are already available merely because they are part of the target contract.
+
 Initial trappable categories may include:
 
 ```text
