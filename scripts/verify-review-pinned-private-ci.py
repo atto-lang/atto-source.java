@@ -23,6 +23,7 @@ SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPO_ID = 1400792274
 CARRIER_REPO = "sagitta-stack/sagitta-infra"
 CARRIER_REPO_ID = 1357615104
+DISALLOWED_REVIEWER_IDS = frozenset({11139560, 2148448})
 EXPECTED_PRS = {
     "publisher": (SOURCE_REPO, 1123),
     "destination": (SOURCE_REPO, 1092),
@@ -68,7 +69,8 @@ def reviewer_policy(path):
     blocked = value.get("disallowedReviewerIds")
     if (type(blocked) is not list or not blocked
             or any(type(item) is not int or item <= 0 for item in blocked)
-            or len(set(blocked)) != len(blocked)):
+            or len(set(blocked)) != len(blocked)
+            or set(blocked) != DISALLOWED_REVIEWER_IDS):
         raise Denied("invalid disallowed reviewer IDs")
     if value.get("enabled") is not True:
         raise Denied("independent reviewer is not configured")
@@ -288,6 +290,14 @@ def main():
         b"blob " + str(len(workflow_raw)).encode("ascii") + b"\0" + workflow_raw
     ).hexdigest()
 
+    reviewer_policy_raw = Path(args.reviewer_policy).read_bytes()
+    if not reviewer_policy_raw or len(reviewer_policy_raw) > 64 * 1024:
+        raise Denied("invalid reviewer policy bytes")
+    reviewer_policy_blob = hashlib.sha1(
+        b"blob " + str(len(reviewer_policy_raw)).encode("ascii")
+        + b"\0" + reviewer_policy_raw
+    ).hexdigest()
+
     receipt = {
         "schema": 2,
         "source_repository": SOURCE_REPO,
@@ -300,6 +310,7 @@ def main():
         "carrier_workflow_blob_sha": workflow_blob,
         "independent_reviewer_login": reviewer[0],
         "independent_reviewer_id": reviewer[1],
+        "independent_reviewer_policy_blob_sha": reviewer_policy_blob,
         "independent_reviewer_source_permission": source_permission,
         "independent_reviewer_carrier_permission": carrier_permission,
         "publisher_policy_pr": 1123,

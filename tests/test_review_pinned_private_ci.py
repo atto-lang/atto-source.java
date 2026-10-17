@@ -114,7 +114,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "destination_reviews": self.write("destination-reviews.json",
                 self.reviews(DEST_HEAD, rid=12)),
             "snapshot_pr": self.write("snapshot-pr.json",
-                self.pr(MOD.SOURCE_REPO, 1173, SNAP_HEAD)),
+                self.pr(MOD.SOURCE_REPO, 1189, SNAP_HEAD)),
             "snapshot_reviews": self.write("snapshot-reviews.json",
                 self.reviews(SNAP_HEAD, rid=13)),
             "carrier_pr": self.write("carrier-pr.json",
@@ -174,6 +174,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         self.assertEqual(receipt["carrier_review_id"], 14)
         self.assertEqual(receipt["independent_reviewer_login"], REVIEWER_LOGIN)
         self.assertEqual(receipt["independent_reviewer_id"], REVIEWER_ID)
+        self.assertRegex(receipt["independent_reviewer_policy_blob_sha"], r"^[0-9a-f]{40}$")
         self.assertEqual(receipt["independent_reviewer_source_permission"], "write")
         self.assertEqual(receipt["independent_reviewer_carrier_permission"], "maintain")
 
@@ -196,6 +197,16 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         self.assertDenied(lambda fx: fx.__setitem__(
             "reviewer_policy", self.write("dupe-block.json",
                 self.policy(blocked=[11139560, 11139560]))))
+
+    def test_missing_operator_id_from_denylist_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("missing-operator.json",
+                self.policy(blocked=[11139560]))))
+
+    def test_extra_reviewer_id_in_denylist_denied(self):
+        self.assertDenied(lambda fx: fx.__setitem__(
+            "reviewer_policy", self.write("extra-block.json",
+                self.policy(blocked=[11139560, 2148448, 9000002]))))
 
     def test_operator_account_oresoftware_denied(self):
         self.assertDenied(lambda fx: fx.__setitem__(
