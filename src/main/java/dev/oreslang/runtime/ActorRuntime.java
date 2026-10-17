@@ -228,6 +228,37 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Per-ref retained terminal metadata. Unlike the bounded global journal,
+     * this is the authoritative immutable post-mortem attached to the actor
+     * capability itself and therefore cannot be evicted by unrelated churn.
+     */
+    public record ActorTerminalState(
+            ActorId actorId,
+            long generation,
+            ActorKind actorKind,
+            Optional<ActorId> parentId,
+            ActorTerminationKind terminationKind,
+            long acceptedUserMessages,
+            long processedUserMessages,
+            int abandonedUserMessages,
+            int abandonedContinuations,
+            String failureType) {
+        public ActorTerminalState {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(actorKind, "actorKind");
+            parentId = parentId == null ? Optional.empty() : parentId;
+            Objects.requireNonNull(parentId, "parentId");
+            Objects.requireNonNull(terminationKind, "terminationKind");
+            if (acceptedUserMessages < 0 || processedUserMessages < 0
+                    || processedUserMessages > acceptedUserMessages
+                    || abandonedUserMessages < 0 || abandonedContinuations < 0) {
+                throw new IllegalArgumentException("invalid actor terminal counters");
+            }
+            failureType = failureType == null ? "" : failureType;
+        }
+    }
+
     /** Internal payload published into the bounded ordered MPSC journal. */
     private record ActorTerminationPayload(
             ActorId actorId,
@@ -934,33 +965,25 @@ public final class ActorRuntime implements AutoCloseable {
      * finalization path.
      */
     private void recordTerminationEvent(
-            ActorCell<?> cell,
-            Throwable failure,
-            long acceptedUserMessages,
-            long processedUserMessages,
-            int abandonedUserMessages,
-            int abandonedContinuations) {
-        ActorTerminationKind kind = classifyTermination(failure);
+            ActorTerminalState terminal) {
+        ActorTerminationKind kind = terminal.terminationKind();
         switch (kind) {
             case NORMAL -> normalTerminations.incrementAndGet();
             case CANCELLED -> cancelledTerminations.incrementAndGet();
             case FAILED -> failedTerminations.incrementAndGet();
         }
 
-        String failureType = failure == null ? "" : failure.getClass().getName();
         ActorTerminationPayload payload = new ActorTerminationPayload(
-                cell.ref.id(),
-                cell.ref.generation(),
-                cell.kind,
-                cell.parent == null
-                        ? Optional.empty()
-                        : Optional.of(cell.parent.ref.id()),
+                terminal.actorId(),
+                terminal.generation(),
+                terminal.actorKind(),
+                terminal.parentId(),
                 kind,
-                acceptedUserMessages,
-                processedUserMessages,
-                abandonedUserMessages,
-                abandonedContinuations,
-                failureType,
+                terminal.acceptedUserMessages(),
+                terminal.processedUserMessages(),
+                terminal.abandonedUserMessages(),
+                terminal.abandonedContinuations(),
+                terminal.failureType(),
                 "");
 
         long sequence;
@@ -2296,6 +2319,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final long generation;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final AtomicReference<ActorTerminalState> terminalState =
+                new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -2330,6 +2355,9 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+        public Optional<ActorTerminalState> terminalState() {
+            return Optional.ofNullable(terminalState.get());
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
