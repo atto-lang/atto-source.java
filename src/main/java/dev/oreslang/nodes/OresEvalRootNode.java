@@ -294,6 +294,16 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) indexFunction(module.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) {
+                        // The public AST can be constructed without Parser.
+                        // Never let an unchecked HIGH/MEDIUM enum reach guest
+                        // actor scheduling as if its physical limit were LOW.
+                        if (klass.actorKind() != Ast.ActorKind.NONE
+                                && klass.maxActorThreads() != Ast.MaxActorThreads.LOW) {
+                            throw new IllegalArgumentException(
+                                    "actor " + klass.name() + " requests "
+                                    + klass.maxActorThreads().value()
+                                    + " physical turns but per-turn state isolation is not enabled");
+                        }
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classModules.put(klass, module.name());
                         for (Ast.MethodDecl method : klass.methods()) methodOwners.put(method, klass);
