@@ -15,15 +15,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * VM-owned asynchronous root runtime.
  *
- * <p>The CONTROL pool is deliberately prestarted during VM construction. Guest
- * execution is not admitted until this barrier is complete, so the first
- * {@code main} turn can safely use Futures, timers, channel/select wakeups and
- * root continuations without lazily creating runtime infrastructure.</p>
+ * <p>The throughput profile boots with no resident CONTROL carrier. The
+ * selector is the only VM-owned thread until runnable CONTROL/actor work is
+ * admitted. An explicitly configured nonzero CONTROL minimum is a warm-start
+ * policy and is prestarted before guest admission.</p>
  */
 public final class OresVM implements AutoCloseable {
-    // Two prestarted CONTROL carriers + one NIO selector: three VM host
-    // threads before runnable actor demand or JVM implementation threads.
-    private static final int DEFAULT_CONTROL_PARALLELISM = 2;
+    // Throughput cold start: zero CONTROL carriers + one NIO selector.
+    // This counts OresVM-owned threads only, not JVM implementation threads.
+    private static final int DEFAULT_CONTROL_PARALLELISM = 0;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
     /** A host I/O mapping callback is not necessarily an OresScheduler turn.
      * Mark its owning CONTROL worker separately so external-host teardown
@@ -74,9 +74,9 @@ public final class OresVM implements AutoCloseable {
                     finally { ON_CONTROL_CARRIER.remove(); }
                 });
 
-        // CONTROL keeps its prestarted minimum so the root supervisor and
-        // Mailmen never depend on actor-carrier startup. Extra carriers are
-        // created only when independent runnable CONTROL turns contend.
+        // CONTROL is demand-driven in the default throughput profile. A
+        // configured nonzero minimum is an explicit warm-start policy. Extra
+        // carriers are created only when independent runnable CONTROL turns contend.
         int maximumControlParallelism = Integer.getInteger(
                 "ores.runtime.control.max.parallelism", 20);
         validateControlBounds(controlParallelism, maximumControlParallelism);
@@ -96,10 +96,9 @@ public final class OresVM implements AutoCloseable {
             // Pending watches do not create threads: NIO scaling is separate
             // from runnable CONTROL/actor carrier expansion.
             // Future subscribers may be host callbacks with unbounded latency.
-            // Never consume CONTROL carriers to deliver NIO completions: a
-            // blocked subscriber must not starve supervision or Mailmen.
-            // The readiness manager owns its separately bounded, prestarted
-            // completion domain, and VM close drains it before CONTROL.
+            // Never consume CONTROL carriers to deliver NIO completions: the
+            // readiness manager owns a separately bounded LAZY completion
+            // domain (0 resident workers, max 2) and VM close drains it first.
             this.nioReadiness = new NioReadinessGroup(4, 8192, 1024);
         } catch (IOException ioFailure) {
             rootScheduler.close();
@@ -113,9 +112,10 @@ public final class OresVM implements AutoCloseable {
     }
 
     static void validateControlBounds(int minimum, int maximum) {
-        if (minimum < 2 || minimum > 20 || maximum < minimum || maximum > 20)
+        if (minimum < 0 || minimum > 20
+                || maximum < 1 || maximum < minimum || maximum > 20)
             throw new IllegalArgumentException(
-                    "CONTROL carrier limits must satisfy 2 <= minimum <= maximum <= 20");
+                    "CONTROL carrier limits must satisfy 0 <= minimum <= maximum <= 20 and maximum >= 1");
     }
 
     static OresVM create(OresScheduler.TurnExecutor turnExecutor) {
@@ -132,8 +132,9 @@ public final class OresVM implements AutoCloseable {
     }
 
     /**
-     * VM bootstrap barrier. The STARTED state is visible only after every
-     * configured CONTROL core carrier has been successfully prestarted.
+     * VM bootstrap barrier. The default zero-minimum throughput profile starts
+     * no CONTROL carrier. If a host explicitly configures a nonzero warm
+     * minimum, those carriers are prestarted before STARTED becomes visible.
      */
     synchronized void startup() {
         if (startupState == StartupState.CLOSED) {
