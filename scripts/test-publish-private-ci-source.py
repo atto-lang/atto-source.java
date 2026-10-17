@@ -57,6 +57,14 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.source_private = [True] * 100
         self.source_visibility = ["private"] * 100
         self.source_protected = [True] * 100
+        self.incident_numbers = [22] * 300
+        self.incident_states = ["closed"] * 300
+        self.incident_reasons = ["completed"] * 300
+        self.incident_urls = ["https://api.github.com/" + pub.SOURCE_INCIDENT_ROUTE] * 300
+        self.incident_repository_urls = [
+            "https://api.github.com/repos/" + pub.SOURCE_INCIDENT_REPOSITORY
+        ] * 300
+        self.incident_closed_at = ["2026-10-17T17:00:00Z"] * 300
         self.source_main_shas = [A] * 100
         self.visibility = ["private"] * 100
         self.repository_ids = [123] * 100
@@ -120,6 +128,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_BRANCH_ROUTE:
             return dict(name="main", protected=self.source_protected.pop(0),
                         commit={"sha": self.source_main_shas.pop(0)})
+        if route == pub.SOURCE_INCIDENT_ROUTE:
+            return {
+                "url": self.incident_urls.pop(0),
+                "repository_url": self.incident_repository_urls.pop(0),
+                "number": self.incident_numbers.pop(0),
+                "state": self.incident_states.pop(0),
+                "state_reason": self.incident_reasons.pop(0),
+                "closed_at": self.incident_closed_at.pop(0),
+            }
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
                     "required_status_checks": {"strict": True,
@@ -230,6 +247,61 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             branch = "ci/oreslang-" + self.expected_tree
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
+
+    def test_open_incident_denies_before_private_source_read(self):
+        self.incident_states = ["open"] * 300
+        with patch.object(pub, "collect_source",
+                          side_effect=AssertionError("source read before containment")):
+            with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.assertEqual(self.dispatch_calls, [])
+
+    def test_incident_metadata_must_be_completed_and_exactly_identified(self):
+        substitutions = (
+            ("incident_numbers", True),
+            ("incident_numbers", 23),
+            ("incident_states", "open"),
+            ("incident_states", "unknown"),
+            ("incident_reasons", "not_planned"),
+            ("incident_reasons", None),
+            ("incident_urls", "https://api.github.com/repos/foreign/issues/22"),
+            ("incident_repository_urls", "https://api.github.com/repos/foreign"),
+            ("incident_closed_at", None),
+            ("incident_closed_at", "2026-10-17T17:00:00+00:00"),
+        )
+        expected = {
+            "incident_numbers": 22,
+            "incident_states": "closed",
+            "incident_reasons": "completed",
+            "incident_urls": "https://api.github.com/" + pub.SOURCE_INCIDENT_ROUTE,
+            "incident_repository_urls":
+                "https://api.github.com/repos/" + pub.SOURCE_INCIDENT_REPOSITORY,
+            "incident_closed_at": "2026-10-17T17:00:00Z",
+        }
+        for name, value in substitutions:
+            with self.subTest(field=name, value=value):
+                for key, default in expected.items():
+                    setattr(self, key, [default] * 300)
+                setattr(self, name, [value] * 300)
+                self.route_calls.clear()
+                with patch.object(pub, "collect_source",
+                                  side_effect=AssertionError("source read before containment")):
+                    with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+                        self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        for key, default in expected.items():
+            setattr(self, key, [default] * 300)
+
+    def test_incident_reopened_between_writes_blocks_next_git_post(self):
+        # Initial policy + first binary-blob write pass. Reopening the
+        # incident before the next Git tree POST must abort the publication.
+        self.incident_states = ["closed", "closed", "open"] + ["open"] * 297
+        with self.assertRaisesRegex(pub.Denied, "incident #22 remains unresolved"):
+            self.publish()
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertEqual(self.dispatch_calls, [])
 
     def test_success_dispatches_protected_main_validation_for_exact_commit(self):
         commit, count = self.publish()
@@ -600,7 +672,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     api.assert_called_once_with("rate_limit")
 
     def test_core_api_budget_denies_before_creating_git_objects(self):
-        for remaining in (0, 100, 183, 184, None, "15000", True, -1):
+        for remaining in (0, 100, 183, 184, 185, None, "15000", True, -1):
             with self.subTest(remaining=remaining):
                 self.route_calls.clear()
                 self.api_core_remaining = remaining
@@ -610,8 +682,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.api_core_remaining = 15000
 
     def test_core_api_budget_at_exact_reserve_allows_synthetic_upload(self):
-        # One source file: 25 * 1 + 160 == 185 API requests reserved.
-        self.api_core_remaining = 185
+        # One source file: 26 * 1 + 160 == 186 API requests reserved.
+        self.api_core_remaining = 186
         self.publish()
         self.assertTrue(any(method == "POST" for method, _, _ in self.route_calls))
 
