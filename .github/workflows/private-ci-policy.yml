@@ -89,3 +89,9 @@ jobs:
               commit_tree[commit] = tree
           print("private CI issuer + source policy: PASS")
           PY
+      - name: Execute review-pinned source-free security suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I tests/test_review_pinned_private_ci.py -v
+          python3 -I tests/test_review_pinned_dispatcher.py -v
