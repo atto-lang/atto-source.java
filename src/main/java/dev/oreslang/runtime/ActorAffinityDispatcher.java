@@ -118,6 +118,8 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
             ExecutorService executor = lanes.get(lane);
             if (noBootstrap && executor instanceof NativeCarrierExecutor nativeLane)
                 nativeLane.executeWithoutBootstrap(task);
+            else if (noBootstrap && executor instanceof AdaptiveCarrierExecutor javaLane)
+                javaLane.executeWithoutCarrierGrowth(task);
             else
                 executor.execute(task);
         } catch (RuntimeException | Error failure) {
