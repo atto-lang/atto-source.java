@@ -120,5 +120,179 @@ class DispatcherUnitTest(unittest.TestCase):
                     receipt(),Path("."),"ci/oreslang-"+"f"*40)
             collect.assert_not_called()
 
+
+class DispatcherWriterTest(unittest.TestCase):
+    def harness(self, live=None, bad_parent=False, bad_provenance=False):
+        value=receipt()
+        files=[("hello.txt",b"hello\n","100644")]
+        calls=[]
+        counters={"live":0,"repo":0,"branch":0,"carrier":0}
+        provenance=MOD.canonical_provenance(value)
+        provenance_sha=MOD.git_blob_sha(provenance)
+        root_tree="9"*40
+        payload_commit="a"*40
+
+        def live_receipt():
+            counters["live"]+=1
+            return value if live is None else live(counters["live"])
+
+        def checked_repo(repository,expected_id=None):
+            counters["repo"]+=1
+            return {"id":MOD.VERIFY.CARRIER_REPO_ID,
+                    "full_name":MOD.VERIFY.CARRIER_REPO,
+                    "private":True,"visibility":"private",
+                    "archived":False,"disabled":False}
+
+        def absent(repository,branch):
+            counters["branch"]+=1
+
+        def carrier_parent(_receipt):
+            counters["carrier"]+=1
+            return "b"*40
+
+        def fake_git_output(root,*args):
+            if args[:2]==("rev-parse","--verify") and args[2]=="HEAD":
+                return PUB_HEAD
+            if args and args[0]=="status":
+                return ""
+            raise AssertionError(args)
+
+        def fake_api(route,method="GET",payload=None):
+            calls.append((route,method,payload))
+            if method=="POST" and route.endswith("/git/trees"):
+                paths=[item.get("path") for item in payload.get("tree",[])]
+                return {"sha":root_tree if MOD.PUB.PREFIX in paths else SOURCE_TREE}
+            if method=="POST" and route.endswith("/git/blobs"):
+                raw=base64.b64decode(payload["content"])
+                return {"sha":MOD.git_blob_sha(raw)}
+            if method=="POST" and route.endswith("/git/commits"):
+                parents=([{"sha":CARRIER_HEAD},{"sha":"c"*40}]
+                         if bad_parent else [{"sha":CARRIER_HEAD}])
+                return {"sha":payload_commit,
+                        "tree":{"sha":root_tree},"parents":parents}
+            if method=="POST" and route.endswith("/git/refs"):
+                return {"ref":"refs/heads/"+BRANCH,
+                        "object":{"sha":payload_commit}}
+            if method=="GET" and "/git/ref/heads/" in route:
+                return {"ref":"refs/heads/"+BRANCH,
+                        "object":{"sha":payload_commit,"type":"commit"}}
+            if method=="GET" and route.endswith("/git/commits/"+payload_commit):
+                return {"sha":payload_commit,"tree":{"sha":root_tree},
+                        "parents":[{"sha":CARRIER_HEAD}]}
+            if method=="GET" and route.endswith("/git/trees/"+root_tree):
+                return {"sha":root_tree,"truncated":False,"tree":[
+                    {"path":MOD.PUB.PREFIX,"type":"tree","mode":"040000",
+                     "sha":SOURCE_TREE},
+                    {"path":MOD.PROVENANCE_PATH,"type":"blob","mode":"100644",
+                     "sha":provenance_sha}]}
+            if method=="GET" and route.endswith("/git/blobs/"+provenance_sha):
+                raw=b"{}\n" if bad_provenance else provenance
+                return {"sha":provenance_sha,"encoding":"base64",
+                        "content":base64.b64encode(raw).decode("ascii")}
+            raise AssertionError((route,method,payload))
+
+        patches=[
+            mock.patch.object(MOD,"canonical_receipt_from_live",
+                              side_effect=live_receipt),
+            mock.patch.object(MOD.PUB,"checked_repo",side_effect=checked_repo),
+            mock.patch.object(MOD,"require_branch_absent",side_effect=absent),
+            mock.patch.object(MOD,"verify_carrier_parent",
+                              side_effect=carrier_parent),
+            mock.patch.object(MOD,"git_output",side_effect=fake_git_output),
+            mock.patch.object(MOD,"require_clean_checkout",
+                              return_value=Path("/source")),
+            mock.patch.object(MOD.PUB,"collect_source",return_value=files),
+            mock.patch.object(MOD.PUB,"source_tree_sha",
+                              return_value=SOURCE_TREE),
+            mock.patch.object(MOD.PUB,"prepare_source_tree_batches",
+                              return_value=[[("hello.txt",b"hello\n",
+                                             "100644","hello\n")]]),
+            mock.patch.object(MOD.PUB,"require_private_ci_api_budget"),
+            mock.patch.object(MOD.PUB,"gh_api",side_effect=fake_api),
+        ]
+        return value,calls,counters,patches
+
+    def execute(self,**kwargs):
+        value,calls,counters,patches=self.harness(**kwargs)
+        try:
+            for patch in patches: patch.start()
+            result=MOD.publish_review_pinned(value,Path("/source"),BRANCH)
+            return result,calls,counters
+        finally:
+            for patch in reversed(patches): patch.stop()
+
+    def test_success_is_one_parent_and_never_dispatches(self):
+        (commit,count),calls,counters=self.execute()
+        self.assertEqual(count,1)
+        self.assertEqual(commit,"a"*40)
+        commit_posts=[payload for route,method,payload in calls
+                      if method=="POST" and route.endswith("/git/commits")]
+        self.assertEqual(commit_posts[0]["parents"],[CARRIER_HEAD])
+        self.assertFalse(any("dispatches" in route for route,_,_ in calls))
+        self.assertGreaterEqual(counters["live"],7)
+
+    def test_root_tree_changes_only_source_and_provenance(self):
+        _result,calls,_counters=self.execute()
+        roots=[payload for route,method,payload in calls
+               if method=="POST" and route.endswith("/git/trees")
+               and any(item.get("path")==MOD.PUB.PREFIX
+                       for item in payload.get("tree",[]))]
+        self.assertEqual(len(roots),1)
+        self.assertEqual([item["path"] for item in roots[0]["tree"]],
+                         [MOD.PUB.PREFIX,MOD.PROVENANCE_PATH])
+
+    def test_created_two_parent_commit_is_denied(self):
+        value,_calls,_counters,patches=self.harness(bad_parent=True)
+        try:
+            for patch in patches: patch.start()
+            with self.assertRaises(MOD.Denied):
+                MOD.publish_review_pinned(value,Path("/source"),BRANCH)
+        finally:
+            for patch in reversed(patches): patch.stop()
+
+    def test_provenance_readback_mismatch_is_denied(self):
+        value,_calls,_counters,patches=self.harness(bad_provenance=True)
+        try:
+            for patch in patches: patch.start()
+            with self.assertRaises(MOD.Denied):
+                MOD.publish_review_pinned(value,Path("/source"),BRANCH)
+        finally:
+            for patch in reversed(patches): patch.stop()
+
+    def test_revocation_mid_transfer_stops_before_ref(self):
+        stale=receipt(); stale["incident_resume_comment_id"]=100
+        def live(n):
+            return receipt() if n<4 else stale
+        value,calls,_counters,patches=self.harness(live=live)
+        try:
+            for patch in patches: patch.start()
+            with self.assertRaises(MOD.Denied):
+                MOD.publish_review_pinned(value,Path("/source"),BRANCH)
+        finally:
+            for patch in reversed(patches): patch.stop()
+        self.assertFalse(any(method=="POST" and route.endswith("/git/refs")
+                             for route,method,_ in calls))
+
+    def test_source_tree_mismatch_stops_all_writes(self):
+        value,calls,_counters,patches=self.harness()
+        patches[7]=mock.patch.object(MOD.PUB,"source_tree_sha",
+                                     return_value="f"*40)
+        try:
+            for patch in patches: patch.start()
+            with self.assertRaises(MOD.Denied):
+                MOD.publish_review_pinned(value,Path("/source"),BRANCH)
+        finally:
+            for patch in reversed(patches): patch.stop()
+        self.assertFalse(any(method=="POST" for _,method,_ in calls))
+
+    def test_dirty_dispatcher_checkout_is_denied(self):
+        with mock.patch.object(
+                MOD,"git_output",
+                side_effect=[PUB_HEAD,
+                             " M scripts/dispatch-review-pinned-private-ci.py"]):
+            with self.assertRaises(MOD.Denied):
+                MOD.publish_review_pinned(receipt(),Path("/source"),BRANCH)
+
+
 if __name__=="__main__":
     unittest.main()
