@@ -31,8 +31,8 @@ final class RefinementSyntaxGateTest {
 
     @Test void sizeRangeAndNotEmptyArePreserved() {
         Ast.TypeAliasDecl named = alias("@Size(min=1,max=32) type Username = string;");
-        assertEquals(List.of(new Ast.RefinementBound("length", "ge", 1),
-                             new Ast.RefinementBound("length", "le", 32)),
+        assertEquals(List.of(new Ast.RefinementBound("length", "gte", 1),
+                             new Ast.RefinementBound("length", "lte", 32)),
                 named.refinement().bounds());
         Ast.TypeAliasDecl nonEmpty = alias("@NotEmpty type NonEmpty = string;");
         assertEquals(List.of(new Ast.RefinementBound("length", "gt", 0)),
@@ -45,16 +45,16 @@ final class RefinementSyntaxGateTest {
         Ast.TypeAliasDecl symbols = alias(
                 "type Port = int with value >= 1 and value <= 65535;");
         assertEquals(keywords.refinement().bounds(), symbols.refinement().bounds());
-        assertEquals(List.of(new Ast.RefinementBound("value", "ge", 1),
-                             new Ast.RefinementBound("value", "le", 65535)), keywords.refinement().bounds());
+        assertEquals(List.of(new Ast.RefinementBound("value", "gte", 1),
+                             new Ast.RefinementBound("value", "lte", 65535)), keywords.refinement().bounds());
 
         Ast.TypeAliasDecl pctKeywords = alias(
                 "type Percentage = int with value gte 0 and value lte 100;");
         Ast.TypeAliasDecl pctSymbols = alias(
                 "type Percentage = int with value >= 0 and value <= 100;");
         assertEquals(pctKeywords.refinement().bounds(), pctSymbols.refinement().bounds());
-        assertEquals(List.of(new Ast.RefinementBound("value", "ge", 0),
-                             new Ast.RefinementBound("value", "le", 100)), pctKeywords.refinement().bounds());
+        assertEquals(List.of(new Ast.RefinementBound("value", "gte", 0),
+                             new Ast.RefinementBound("value", "lte", 100)), pctKeywords.refinement().bounds());
     }
 
     @Test void newtypeRetainsNominalMarker() {
