@@ -685,6 +685,52 @@ declarations are rejected even when their parameter types differ. An overloaded
 callable family cannot be extracted as an untyped first-class function value;
 a direct call supplies the arity needed to select a slot.
 
+## Conditional expressions and opaque top types
+
+Oreslang has a right-associative conditional expression:
+
+```ores
+pub fnc choose(bool ready, bool fallback): int {
+  return ready ? 1 : fallback ? 2 : 3;
+}
+```
+
+The condition must be statically `bool`. It is evaluated once, and exactly one
+branch is evaluated. `?:` binds more weakly than logical operators and more
+strongly than assignment. Branches are checked under their own flow facts, so a
+trusted runtime predicate may narrow a stable immutable binding only inside the
+branch where that predicate is true.
+
+`any` and `unknown` are reserved, type-only keywords. `any` means a valid
+Oreslang value whose concrete static type has been hidden. `unknown` is an
+opaque/unverified value and cannot silently flow to `any` or a concrete type.
+Neither grants unchecked member access, invocation, arithmetic, transport, or
+ownership erasure. Legacy source spellings `Any` and `Unknown` remain
+compatibility aliases while code migrates to the lowercase keywords.
+
+For runtime integer admission, use the trusted built-in predicate:
+
+```ores
+pub fnc normalize(any value): int {
+  return Integer.is_int(value) ? value : 0;
+}
+```
+
+The compiler recognizes the built-in `Integer.is_int` by provenance, not by
+ordinary method-name matching. A user module, function, class, import, or local
+binding named `Integer` cannot forge the narrowing fact. Mutable bindings are
+not narrowed because reassignment can invalidate the proof.
+
+`typeof` is not a dynamic runtime test. In the current grammar it belongs to
+type syntax, including callable type queries such as
+`typeof fnc(int) => bool`. Source such as `typeof value == int` is therefore
+invalid; runtime admission must use a reifiable type predicate/test.
+
+The runtime predicate implementation uses ordinary Oreslang runtime value tags
+(or their backend-equivalent representation) and does not require reflective
+class loading or a JIT, so the contract is compatible with closed-world AOT
+lowering.
+
 ## Option, Result, and null
 
 Oreslang does **not** have ambient nullable references. A bare `null` value is a compile-time error, and `null` is not a standalone variable/parameter/return type.
