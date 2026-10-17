@@ -549,6 +549,24 @@ public final class CapabilityChecker {
                     "fs.is_symlink" -> permission = RuntimePermissions.Permission.READ;
             case "fs.write_text", "fs.write_text_atomic", "fs.append_text" ->
                     permission = RuntimePermissions.Permission.WRITE;
+            case "http.get_text", "http.post_text" -> {
+                permission = RuntimePermissions.Permission.NET;
+                // HTTP literals authorize the request origin's effective port,
+                // not the whole URL; redirects/DNS still require transport
+                // enforcement and are never approved by this static pass.
+                final java.net.URI uri;
+                try { uri = java.net.URI.create(first); }
+                catch (IllegalArgumentException invalid) { return; }
+                String scheme = uri.getScheme();
+                if (scheme == null
+                        || !(scheme.equalsIgnoreCase("http")
+                                || scheme.equalsIgnoreCase("https"))
+                        || uri.getHost() == null || uri.getUserInfo() != null) return;
+                int port = uri.getPort();
+                if (port == -1) port = scheme.equalsIgnoreCase("https") ? 443 : 80;
+                if (port < 1 || port > 65535) return;
+                resource = uri.getHost().toLowerCase(java.util.Locale.ROOT) + ":" + port;
+            }
             case "network.connect" -> {
                 permission = RuntimePermissions.Permission.NET;
                 if (arguments.size() < 2
