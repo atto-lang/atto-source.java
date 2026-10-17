@@ -271,3 +271,41 @@ The reactive helper library currently returns observables from `take`,
 not a `Selectable<T>` registration. LLVM's documented stream contract
 explicitly lacks full source-level Channel/Observable parity. These are
 implementation blockers, **not** features to mark as passing.
+
+## NIO readiness versus atomic selectable network operations
+
+Java NIO `Selector` is an implementation of kernel readiness polling, **not**
+the Oreslang `select` keyword. A selector thread must never execute guest
+continuations, arbitrary Future callbacks, or block awaiting actor-carrier
+admission. `when await future` observes a Future's terminal outcome; losing
+this arm detaches its waiter and does **not** cancel or undo the producer.
+
+In particular, an already-started `connection.readBytesAsync()`,
+`writeBytesAsync()`, or `listener.acceptAsync()` may consume bytes, commit
+writes, or accept a socket even if another source-level arm wins. It is
+incorrect to treat a Future wrapping these eager operations as a lazy,
+rollback-safe `Selectable<T>` socket operation.
+
+The future network operation adapter must be an opaque, domain-local,
+**lazy** `SelectOperation<T>` descriptor. Admission validates ownership,
+incarnation, bounds, capabilities and quota without starting the kernel I/O.
+The readiness reactor may report eligibility, but cannot choose a source arm.
+The shared selection coordinator arbitrates one winner and issues a
+single-use commit authority. Only the winning socket operation may perform
+read/write/accept; losing candidates release readiness watches and leases
+without consuming data or cancelling independent producer Futures.
+
+Kernel readiness is a hint, not a promise: after winner reservation, a
+nonblocking syscall may return EAGAIN/zero. Re-arm the winning operation,
+retaining its single-winner identity; never choose a second source arm after
+side effects may have begun. Partial writes are irrevocable and must carry
+explicit committed-byte state across retries and cancellation. Close/EOF,
+fd reuse, descriptor ownership transfer and actor termination must be fenced
+by the operation's incarnation and terminal publication barrier.
+
+Until these semantics have exact-tree native and guest-level tests, source
+lowering of `when socket.read()`, `when socket.write(...)`, or
+`when listener.accept()` as atomic selectable operations must **fail
+closed**. The existing `when await future` remains legal and keeps its
+observation-only semantics. No extra per-socket, per-select, or per-actor
+thread may be created. See issue #1169 and Java integration PR #1168.
