@@ -4572,7 +4572,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "Map<K,V> constructor takes no positional arguments; use put(key, value)");
                 }
-                return new OresMap();
+                return new OresMap(normalizeRuntimeMapType(created.type()));
             }
             if (created.type().name().equals("DynamicStruct")) {
                 throw new IllegalArgumentException(
@@ -6393,7 +6393,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException(
                                 "Map<K,V> constructor takes no positional arguments; use put(key, value)");
                     }
-                    return new OresMap();
+                    return new OresMap(normalizeRuntimeMapType(created.type()));
                 }
                 if (created.type().name().equals("DynamicStruct")) {
                     throw new IllegalArgumentException(
@@ -7144,6 +7144,11 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "put" -> (Invokable) args -> {
                         requireTwo(args, "Map.put");
+                        if (!mapRuntimeValueMatches(args.get(1), map.valueType())) {
+                            throw new IllegalArgumentException(
+                                    "Map.put value does not match declared runtime value type "
+                                            + map.valueType());
+                        }
                         map.put(args.get(0), args.get(1));
                         return null;
                     };
@@ -8550,6 +8555,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (left instanceof OresMap || right instanceof OresMap) {
                 if (!(left instanceof OresMap a) || !(right instanceof OresMap b)) return false;
+                if (!a.mapType().equals(b.mapType())) return false;
                 if (a.entries.size() != b.entries.size()) return false;
                 if (comparisonPairSeen(left, right, seen)) return true;
                 for (Map.Entry<OresMap.StableKey, Object> entry : a.entries.entrySet()) {
@@ -8813,7 +8819,8 @@ public final class OresEvalRootNode extends RootNode {
                 return shaped;
             }
             if (declared.name().equals("Map")) {
-                if (!(value instanceof OresMap)) {
+                if (!(value instanceof OresMap map)
+                        || !map.mapType().equals(normalizeRuntimeMapType(declared))) {
                     throw returnTypeMismatch(callable, declared, value);
                 }
                 return value;
@@ -8845,6 +8852,137 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             return value;
+        }
+
+        private Ast.TypeRef normalizeRuntimeMapType(Ast.TypeRef mapType) {
+            Ast.TypeRef normalized = normalizeRuntimeTypeRef(
+                    mapType, new LinkedHashSet<>());
+            if (!normalized.name().equals("Map") || normalized.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "runtime Map provenance requires exactly Map<K,V>; got " + mapType);
+            }
+            Ast.TypeRef key = normalized.arguments().get(0);
+            if (!(key.name().equals("string")
+                    || key.name().equals("int")
+                    || key.name().equals("bool")
+                    || key.isStringLiteral()
+                    || key.isBoolLiteral())) {
+                throw new IllegalArgumentException(
+                        "runtime Map key type must normalize to string/int/bool; got " + key);
+            }
+            return normalized;
+        }
+
+        private Ast.TypeRef normalizeRuntimeTypeRef(
+                Ast.TypeRef type,
+                Set<Ast.TypeAliasDecl> resolving) {
+            Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+            if (alias != null) {
+                if (alias.genericParameters().size() != type.arguments().size()) {
+                    throw new IllegalArgumentException(
+                            "type alias '" + alias.name() + "' expects "
+                                    + alias.genericParameters().size()
+                                    + " type argument(s), got "
+                                    + type.arguments().size());
+                }
+                if (!resolving.add(alias)) {
+                    throw new IllegalArgumentException(
+                            "type alias cycle involving '" + alias.name() + "'");
+                }
+                try {
+                    Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                    for (int i = 0; i < alias.genericParameters().size(); i++) {
+                        substitutions.put(
+                                alias.genericParameters().get(i),
+                                type.arguments().get(i));
+                    }
+                    return normalizeRuntimeTypeRef(
+                            substituteReturnType(alias.target(), substitutions),
+                            resolving);
+                } finally {
+                    resolving.remove(alias);
+                }
+            }
+
+            String canonical = switch (type.name()) {
+                case "String" -> "string";
+                case "Bool", "boolean" -> "bool";
+                case "i8", "i16", "i32", "i64",
+                        "u8", "u16", "u32", "u64",
+                        "uint", "bigint" -> "int";
+                case "f32", "f64" -> "float";
+                case "complex64", "complex128" -> "complex";
+                default -> type.name();
+            };
+            if (type.arguments().isEmpty()) {
+                return canonical.equals(type.name())
+                        ? type
+                        : new Ast.TypeRef(canonical, List.of(), type.inferArguments());
+            }
+            return new Ast.TypeRef(
+                    canonical,
+                    type.arguments().stream()
+                            .map(argument ->
+                                    normalizeRuntimeTypeRef(
+                                            argument,
+                                            new LinkedHashSet<>(resolving)))
+                            .toList(),
+                    type.inferArguments());
+        }
+
+        private boolean mapRuntimeValueMatches(Object value, Ast.TypeRef declared) {
+            Ast.TypeRef type = normalizeRuntimeTypeRef(
+                    declared, new LinkedHashSet<>());
+            if (type.isStringLiteral()) {
+                return value instanceof String text
+                        && text.equals(type.stringLiteralValue());
+            }
+            if (type.isBoolLiteral()) {
+                return value instanceof Boolean flag
+                        && flag == type.boolLiteralValue();
+            }
+            if (type.isRecordType()) {
+                return structuralRecordMatches(value, type);
+            }
+
+            if (type.name().equals("Option") && type.arguments().size() == 1) {
+                if (!(value instanceof OptionValue option)) return false;
+                return !option.present()
+                        || mapRuntimeValueMatches(
+                                option.value(), type.arguments().getFirst());
+            }
+            if (type.name().equals("Result") && type.arguments().size() == 2) {
+                if (!(value instanceof ResultValue result)) return false;
+                Ast.TypeRef arm = type.arguments().get(result.ok() ? 0 : 1);
+                return mapRuntimeValueMatches(result.value(), arm);
+            }
+            if ((type.name().equals("Array") || type.name().equals("List"))
+                    && type.arguments().size() == 1) {
+                if (!(value instanceof List<?> list)) return false;
+                for (Object item : list) {
+                    if (!mapRuntimeValueMatches(
+                            item, type.arguments().getFirst())) return false;
+                }
+                return true;
+            }
+            if (type.name().equals("Map") && type.arguments().size() == 2) {
+                return value instanceof OresMap map
+                        && map.mapType().equals(normalizeRuntimeMapType(type));
+            }
+
+            if (type.name().equals("$infer$")
+                    || (findClass(type.name()) == null
+                        && findInterface(type.name()) == null
+                        && findTypeAlias(type.name()) == null
+                        && !java.util.Set.of(
+                                "int", "float", "decimal", "complex",
+                                "string", "bool", "void").contains(type.name()))) {
+                // Generic value parameters are statically checked but are not
+                // reified by the current evaluator. Preserve their provenance
+                // token without manufacturing a false runtime predicate.
+                return true;
+            }
+            return oresTypeMatches(value, type);
         }
 
         private Ast.TypeRef substituteReturnType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
@@ -9278,19 +9416,33 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresMap implements Iterable<List<Object>> {
+        private final Ast.TypeRef mapType;
         private final LinkedHashMap<StableKey, Object> entries = new LinkedHashMap<>();
 
+        private OresMap(Ast.TypeRef mapType) {
+            if (mapType == null
+                    || !mapType.name().equals("Map")
+                    || mapType.arguments().size() != 2) {
+                throw new IllegalArgumentException(
+                        "OresMap requires normalized Map<K,V> runtime provenance");
+            }
+            this.mapType = mapType;
+        }
+
+        private Ast.TypeRef mapType() { return mapType; }
+        private Ast.TypeRef keyType() { return mapType.arguments().get(0); }
+        private Ast.TypeRef valueType() { return mapType.arguments().get(1); }
         private int size() { return entries.size(); }
 
         private OptionValue get(Object rawKey) {
-            StableKey key = StableKey.of(rawKey);
+            StableKey key = StableKey.of(rawKey, keyType());
             return entries.containsKey(key)
                     ? new OptionValue(true, entries.get(key))
                     : new OptionValue(false, null);
         }
 
         private void put(Object rawKey, Object value) {
-            entries.put(StableKey.of(rawKey), value);
+            entries.put(StableKey.of(rawKey, keyType()), value);
         }
 
         private Map<Object, Object> immutableSnapshot() {
@@ -9321,25 +9473,60 @@ public final class OresEvalRootNode extends RootNode {
                 this.guestValue = guestValue;
             }
 
-            private static StableKey of(Object value) {
-                if (value instanceof String || value instanceof Boolean) {
+            private static StableKey of(Object value, Ast.TypeRef keyType) {
+                if (keyType.isStringLiteral()) {
+                    if (!(value instanceof String text)
+                            || !text.equals(keyType.stringLiteralValue())) {
+                        throw keyMismatch(keyType, value);
+                    }
+                    return new StableKey(text, text);
+                }
+                if (keyType.isBoolLiteral()) {
+                    if (!(value instanceof Boolean flag)
+                            || flag != keyType.boolLiteralValue()) {
+                        throw keyMismatch(keyType, value);
+                    }
+                    return new StableKey(flag, flag);
+                }
+                if (keyType.name().equals("string")) {
+                    if (!(value instanceof String)) throw keyMismatch(keyType, value);
                     return new StableKey(value, value);
                 }
-                if (value instanceof Byte || value instanceof Short
-                        || value instanceof Integer || value instanceof Long) {
-                    return new StableKey(
-                            java.math.BigInteger.valueOf(((Number) value).longValue()),
-                            value);
+                if (keyType.name().equals("bool")) {
+                    if (!(value instanceof Boolean)) throw keyMismatch(keyType, value);
+                    return new StableKey(value, value);
                 }
-                if (value instanceof java.math.BigInteger integer) {
-                    return new StableKey(integer, value);
+                if (keyType.name().equals("int")) {
+                    if (!(value instanceof Byte
+                            || value instanceof Short
+                            || value instanceof Integer
+                            || value instanceof Long)) {
+                        throw keyMismatch(keyType, value);
+                    }
+                    long integer = ((Number) value).longValue();
+                    return new StableKey(
+                            java.math.BigInteger.valueOf(integer),
+                            integer);
                 }
                 throw new IllegalArgumentException(
-                        "Map key must be a string, int, or bool with stable hash/equality semantics");
+                        "unsupported runtime Map key contract " + keyType);
+            }
+
+            private static IllegalArgumentException keyMismatch(
+                    Ast.TypeRef keyType,
+                    Object value) {
+                return new IllegalArgumentException(
+                        "Map key does not match declared runtime key type "
+                                + keyType
+                                + "; got "
+                                + (value == null
+                                    ? "null"
+                                    : value.getClass().getName()));
             }
 
             @Override public boolean equals(Object other) {
-                return other instanceof StableKey key && canonical.equals(key.canonical);
+                return other instanceof StableKey key
+                        && canonical.equals(key.canonical);
             }
             @Override public int hashCode() { return canonical.hashCode(); }
         }

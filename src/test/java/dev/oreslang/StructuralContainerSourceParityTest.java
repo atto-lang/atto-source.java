@@ -297,6 +297,17 @@ final class StructuralContainerSourceParityTest {
         }
         assertEquals("2:7:true|a=7|b=9|11:12:true:true:false:2:8",
                 out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
+
+        var mapAlias = assertDoesNotThrow(
+                () -> TypeChecker.check(Parser.parse("""
+                        define type Scores = Map<string,int>
+                        fnc make(): Scores {
+                          let mut Map<String,i64> values = new Map<String,i64>();
+                          values.put("x", 1);
+                          return values;
+                        }
+                        """)));
+        assertDoesNotThrow(() -> OwnershipChecker.check(mapAlias));
     }
 
     @Test
@@ -396,14 +407,13 @@ final class StructuralContainerSourceParityTest {
                           let mut Map<string,List<int>> values = new Map<string,List<int>>();
                           let mut List<int> payload = new List<int>();
                           values.put("x", payload);
-                          payload.add(1);
                           return;
                         }
                         """)));
         IllegalArgumentException movedPayload = assertThrows(
                 IllegalArgumentException.class,
                 () -> OwnershipChecker.check(moveIntoMapProgram));
-        assertTrue(movedPayload.getMessage().contains("moved"),
+        assertTrue(movedPayload.getMessage().contains("requires copy-safe value type"),
                 movedPayload::getMessage);
 
         var moveOnlyLookupProgram = assertDoesNotThrow(

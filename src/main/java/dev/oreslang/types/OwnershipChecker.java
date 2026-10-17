@@ -1491,12 +1491,21 @@ public final class OwnershipChecker {
                                 scope,
                                 "collection method 'put'");
                         checkExpr(call.arguments().get(0), scope, false);
+                        if (containsBorrowType(valueType)) {
+                            throw error("Map.put cannot store borrowed value type " + valueType
+                                    + "; map entries require owned payloads");
+                        }
+                        if (!isCopyType(valueType)) {
+                            throw error("Map.put currently requires copy-safe value type " + valueType
+                                    + "; move-only map values stay fail-closed until take/replace/remove "
+                                    + "define ownership of overwritten entries");
+                        }
                         ValueInfo stored = checkExpr(call.arguments().get(1), scope, true);
                         if (isBorrowValue(stored)
                                 || containsBorrowType(stored.type)
                                 || stored.borrowSource != null) {
                             throw error("Map.put cannot store a borrowed value; "
-                                    + "map entries must own their payload until borrowed-entry lifetimes are modeled");
+                                    + "map entries must own their payload");
                         }
                         return new ValueInfo(
                                 Ast.TypeRef.simple("void"),
