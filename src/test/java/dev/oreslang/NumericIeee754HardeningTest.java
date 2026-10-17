@@ -146,6 +146,18 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void zeroComplexNumeratorOverTinyFiniteDivisorStaysZero() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      return (0.0i / 5e-324i) eq 0
+                        && ((0.0 + 0.0i) / (1e-300 + 1e-300i)) eq 0;
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void complexDivisionAvoidsIntermediateOverflowAndUnderflow() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
