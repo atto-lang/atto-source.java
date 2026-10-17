@@ -2281,14 +2281,29 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            Type left = typeOf(binary.left(), env, generics, self);
-            if (binary.operator().equals("&&") || binary.operator().equals("||")) {
+            Type left = binary.operator().equals("&&")
+                    ? typeOfCondition(binary.left(), env, generics, self)
+                    : typeOf(binary.left(), env, generics, self);
+            if (binary.operator().equals("&&")) {
+                requireAssignable(left, Primitive.BOOL, "logical operand");
+                Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
+                Env rightEnv = new Env(env);
+                defineConditionBindings(binary.left(), rightEnv, env, generics, self);
+                Type right = typeOfCondition(binary.right(), rightEnv, generics, self);
+                requireAssignable(right, Primitive.BOOL, "logical operand");
+                // RHS is short-circuited, so it cannot establish definite
+                // initialization for subsequent code. Refinement bindings are
+                // lexical to the successful left edge / RHS evaluation.
+                env.restoreInitialization(afterLeft);
+                return Primitive.BOOL;
+            }
+            if (binary.operator().equals("||")) {
                 requireAssignable(left, Primitive.BOOL, "logical operand");
                 Map<Env.Binding, Set<String>> afterLeft = env.initializationSnapshot();
                 Type right = typeOf(binary.right(), env, generics, self);
                 requireAssignable(right, Primitive.BOOL, "logical operand");
-                // RHS is short-circuited, so it cannot establish definite
-                // initialization for subsequent code.
+                // No negative refinement lattice exists yet, so || evaluates
+                // its RHS without positive bindings from the left operand.
                 env.restoreInitialization(afterLeft);
                 return Primitive.BOOL;
             }
