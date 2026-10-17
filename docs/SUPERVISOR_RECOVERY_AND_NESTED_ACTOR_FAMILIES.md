@@ -59,6 +59,63 @@ end
 
 Both B and C inherit A's managed group G. No implicit new supervisor or group; source message sending remains the only cross-actor invocation.
 
+## Java runtime hardening checkpoint (2026-10-17)
+
+The Java runtime now has an additional **host/supervisor observability plane**
+that is deliberately separate from actor mail and from the future source-level
+`on_panic/on_raise/on_throw` CONTROL callback contract:
+
+- every physically finalized actor increments one of three aggregate counters:
+  NORMAL, CANCELLED, or FAILED;
+- a bounded immutable `ActorTerminationEvent` journal records actor id,
+  generation, kind, parent lineage, accepted/processed user-message counts,
+  queued user/control work abandoned at finalization, and the terminal
+  exception *type name*;
+- the journal is diagnostic only. Lifecycle correctness never waits for it.
+  Capacity is reserved atomically and records are stored in a
+  `ConcurrentLinkedQueue`; a full/failed diagnostic publication increments
+  `supervisionEventsDropped` and actor teardown continues;
+- terminal publication intentionally does **not** call
+  `Throwable.getMessage()`, `Throwable.toString()`, guest formatting, or
+  arbitrary observer hooks while finalization owns actor state. Detailed
+  failure inspection stays on `ActorRef.failure()`;
+- host/supervisor-only `ActorSnapshot` exposes immutable scheduling/mailbox
+  counters without guest state: active turn/carrier flags, accepted/processed
+  sequences, queued user/continuation counts, child/pending-operation counts,
+  suspension/fence state, and bounded memory accounting;
+- `ActorRuntimeStats` adds accepted-message, mailbox-full,
+  continuation-admission, termination-classification, dropped-diagnostic and
+  watchdog counters. These are telemetry, never scheduling authority.
+
+This journal **does not implement the normative source supervisor event path**.
+A child panic is still required eventually to become one non-droppable typed
+CONTROL event admitted to its supervisor's exclusive logical lane. The
+diagnostic journal may drop under observer backpressure and therefore MUST NOT
+drive restart/escalation policy.
+
+### Continuation-vs-user-mail fairness
+
+Internal continuations retain priority, and a suspended source receive still
+owns actor state and therefore permits only its continuations. Outside a
+suspended receive, however, a self-replenishing continuation stream can no
+longer starve user mail forever: after at most **32 consecutive internal
+continuations**, a waiting user mailbox envelope is selected first. The burst
+counter survives carrier migration/batch boundaries and resets when user mail
+runs or actor teardown drains the lane.
+
+This complements the existing actor-level `throughput` quantum: the runtime
+now bounds both (a) how much one hot actor can execute before returning to the
+dispatcher and (b) how long internal control continuations can postpone an
+already-admitted ordinary message. Neither bound permits user mail to run while
+`sourceReceiveSuspended` is true.
+
+Checked-in adversarial tests cover mailbox-pressure snapshots, mailbox-full
+telemetry, normal/failed/cancelled terminal classification, parent/child
+terminal ordering, hostile Throwable formatting, a completely full diagnostic
+journal, exhausted diagnostic sequencing, child failure visibility while the
+parent user turn is blocked, active-failure vs queued-tail accounting, and a
+200-step self-replenishing continuation chain with dispatcher throughput=1.
+
 ## Required test matrix (both backends; fail closed until executable)
 
 1. A->B->C inherits exactly one managed lifecycle group, independently of group event-bus join membership.
