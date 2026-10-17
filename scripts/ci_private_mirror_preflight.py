@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -17,7 +18,7 @@ import urllib.request
 
 MAX_RESPONSE_BYTES = 131072
 MAX_TOKEN_LENGTH = 4096
-MAX_JSON_DEPTH = 64
+SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"\nMAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 4096
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z", re.ASCII)
 BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
@@ -67,6 +68,20 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise MirrorPreflightError("repository metadata redirect refused")
 
 
+def hardened_https_open():
+    """Ignore caller proxy/CA environment for authenticated GitHub metadata."""
+    try:
+        context = ssl.create_default_context(cafile=SYSTEM_CA_BUNDLE)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+    except (OSError, ssl.SSLError) as exc:
+        raise MirrorPreflightError("trusted system CA bundle unavailable") from exc
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=context),
+        NoRedirect(),
+    ).open
+
+
 def validate_repository_name(name):
     if not isinstance(name, str) or not REPOSITORY.fullmatch(name):
         raise MirrorPreflightError("invalid GitHub owner/repository")
@@ -108,7 +123,7 @@ def fetch_metadata(name, token, opener=None):
         },
         method="GET",
     )
-    handler = opener or urllib.request.build_opener(NoRedirect()).open
+    handler = opener or hardened_https_open()
     try:
         with handler(req, timeout=8) as response:
             if response.status != 200:
