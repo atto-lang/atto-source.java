@@ -83,7 +83,11 @@ public final class OresFutures {
                     OresFuture<?> current;
                     while ((current = pending.poll()) != null) {
                         if (result.isDone()) continue;
-                        if (!visited.add(current)) {
+                        // A producer may resolve to this *observer* rather
+                        // than to a previously visited producer. In that case
+                        // subscribing result to itself would never settle;
+                        // visited alone cannot detect the self-dependency.
+                        if (current == result || !visited.add(current)) {
                             result.failFromRuntime(new IllegalStateException(
                                     "cyclic nested Future completion"));
                             continue;
