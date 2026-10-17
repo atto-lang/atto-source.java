@@ -53,40 +53,74 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         Objects.requireNonNull(notification, "notification");
         int count = lanes.size();
         int start = Math.floorMod(nextHostLane.getAndIncrement(), count);
+        boolean reactor = NioReadinessGroup.onReactorThread();
         int best = -1;
         int bestLoad = Integer.MAX_VALUE;
         for (int offset = 0; offset < count; ++offset) {
             int index = (start + offset) % count;
-            ExecutorService lane = lanes.get(index);
-            // Query host-only counters. Do not invoke user code or JNI
-            // startup while choosing an execution lane.
-            int load;
-            if (lane instanceof NativeCarrierExecutor nativeLane) {
-                if (!nativeLane.readyForNoBootstrapAdmission()) continue;
-                load = nativeLane.getActiveCount() + nativeLane.getQueueSize();
-            } else if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
-                if (pool.getPoolSize() == 0) continue;
-                load = pool.getActiveCount() + pool.getQueue().size();
-            } else {
-                continue;
-            }
+            int load = verifiedWarmHostLoad(lanes.get(index), reactor);
+            if (load < 0) continue;
             if (load < bestLoad) {
                 best = index;
                 bestLoad = load;
                 if (load == 0) break;
             }
         }
+
+        RejectedExecutionException lastRejection = null;
         if (best >= 0) {
-            executeOnLane(best, notification, true);
-            return;
+            try {
+                executeOnLane(best, notification, true);
+                return;
+            } catch (RejectedExecutionException rejected) {
+                lastRejection = rejected;
+            }
+
+            // Load is only a snapshot. The selected warm lane can race to a
+            // full queue or a contended no-growth admission lock after the
+            // scan. Do not strand runnable completion work while another
+            // verified warm lane can accept it now.
+            for (int offset = 0; offset < count; ++offset) {
+                int index = (start + offset) % count;
+                if (index == best || verifiedWarmHostLoad(lanes.get(index), reactor) < 0)
+                    continue;
+                try {
+                    executeOnLane(index, notification, true);
+                    return;
+                } catch (RejectedExecutionException rejected) {
+                    lastRejection = rejected;
+                }
+            }
         }
+
+        if (lastRejection != null) throw lastRejection;
+
         // The first completion is submitted by the off-selector bootstrap
-        // helper. If all native pools are still cold (or already retiring),
+        // helper. If every verified lane is still cold (or already retiring),
         // a selector must NEVER trigger nativeStart() or Thread.start().
-        if (NioReadinessGroup.onReactorThread())
+        if (reactor)
             throw new RejectedExecutionException(
                     "no fully started actor carrier available for reactor completion");
         executeOnLane(0, notification);
+    }
+
+    private static int verifiedWarmHostLoad(ExecutorService lane, boolean reactor) {
+        if (lane instanceof NativeCarrierExecutor nativeLane) {
+            if (!nativeLane.readyForNoBootstrapAdmission()) return -1;
+            return nativeLane.getActiveCount() + nativeLane.getQueueSize();
+        }
+        if (lane instanceof AdaptiveCarrierExecutor javaLane) {
+            if (javaLane.getPoolSize() == 0) return -1;
+            return javaLane.getActiveCount() + javaLane.getQueue().size();
+        }
+        if (lane instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+            // Generic pools are usable by the trusted off-reactor bootstrap,
+            // but cannot prove no ThreadFactory/inline callback behavior to a
+            // selector.
+            if (reactor || pool.getPoolSize() == 0) return -1;
+            return pool.getActiveCount() + pool.getQueue().size();
+        }
+        return -1;
     }
     int cpuForLane(int lane) { return cpus.length == 0 ? -1 : cpus[lane % cpus.length]; }
     boolean nativeCarriers() { return lanes.stream().allMatch(NativeCarrierExecutor.class::isInstance); }
