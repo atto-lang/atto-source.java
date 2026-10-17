@@ -518,13 +518,41 @@ public final class Ast {
         }
     }
 
+    /**
+     * Parsed refinement metadata is deliberately retained rather than erased into the
+     * target alias. Backends must reject unsupported metadata before execution.
+     * This is a front-end syntax milestone, NOT executable type soundness.
+     */
+    public record RefinementBound(String property, String comparator, long constant) {
+        public RefinementBound {
+            if (property == null || property.isBlank()) throw new IllegalArgumentException("missing refinement property");
+            if (!java.util.Set.of("eq", "ne", "gt", "ge", "lt", "le").contains(comparator)) {
+                throw new IllegalArgumentException("unsupported refinement comparator " + comparator);
+            }
+        }
+    }
+
+    public record RefinementSpec(List<RefinementBound> bounds, String whereExpression, boolean nominal) {
+        public RefinementSpec {
+            bounds = List.copyOf(bounds);
+            if (bounds.isEmpty() && (whereExpression == null || whereExpression.isBlank()) && !nominal) {
+                throw new IllegalArgumentException("empty refinement metadata");
+            }
+        }
+    }
+
     public record TypeAliasDecl(
-            String name, Visibility visibility, List<String> genericParameters, TypeRef target) implements Decl {
+            String name, Visibility visibility, List<String> genericParameters, TypeRef target,
+            RefinementSpec refinement) implements Decl {
         public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
+
+        public TypeAliasDecl(String name, Visibility visibility, List<String> genericParameters, TypeRef target) {
+            this(name, visibility, genericParameters, target, null);
+        }
 
         /** Existing AST producers without an explicit visibility are private by default. */
         public TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) {
-            this(name, Visibility.PRIVATE, genericParameters, target);
+            this(name, Visibility.PRIVATE, genericParameters, target, null);
         }
     }
 
