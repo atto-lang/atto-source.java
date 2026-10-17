@@ -230,4 +230,60 @@ final class DopGraphCpuIntegrationV1Test {
             assertEquals(0.0f, output.read(0, 0));
         }
     }
+
+    @Test
+    void zeroRowOwnedCpuGraphCompletesWithoutAccessingStorage() {
+        for (var kind : DataOrientedLayout.Kind.values()) {
+            var layout = new DataOrientedLayout.Plan(kind, 0, 3,
+                    Float.BYTES, 16, kind == DataOrientedLayout.Kind.AOSOA ? 4 : 1);
+            assertEquals(0L, layout.byteLength());
+            try (var input = new DopKernelIR.HostBuffer(layout);
+                 var output = new DopKernelIR.HostBuffer(layout)) {
+                var source = DopRegionSchedule.Access.rows(
+                        input.regionRoot(), 2, 0, 0, DopRegionSchedule.Mode.READ);
+                var destination = DopRegionSchedule.Access.rows(
+                        output.regionRoot(), 2, 0, 0, DopRegionSchedule.Mode.WRITE);
+                var jobs = new ArrayDeque<Runnable>();
+                var cpu = new DopKernelIR.Kernel(layout, DopKernelIR.Element.F32,
+                        DopKernelIR.Op.SCALE_BIAS, 2.0f, 1.0f);
+                var result = DopGraphCpuIntegrationV1.submit(
+                        cpu, input, output, source, destination, scalar(), jobs::add);
+                assertFalse(result.isDone(), "zero-row work still needs worker admission");
+                assertEquals(1, jobs.size());
+                jobs.removeFirst().run();
+                assertEquals(42L, result.join(), "independent host graph must still run");
+                assertThrows(IndexOutOfBoundsException.class, () -> output.read(0, 2));
+                assertTrue(destination.root().isLiveOwned());
+            }
+        }
+    }
+
+    @Test
+    void emptySliceOfPopulatedBufferDoesNotTouchOtherRows() {
+        for (var kind : DataOrientedLayout.Kind.values()) {
+            var layout = new DataOrientedLayout.Plan(kind, 3, 2,
+                    Float.BYTES, 16, kind == DataOrientedLayout.Kind.AOSOA ? 4 : 1);
+            try (var input = new DopKernelIR.HostBuffer(layout);
+                 var output = new DopKernelIR.HostBuffer(layout)) {
+                input.write(1, 0, 7.0f);
+                output.write(1, 0, 19.0f);
+                var source = DopRegionSchedule.Access.rows(
+                        input.regionRoot(), 0, 1, 0, DopRegionSchedule.Mode.READ);
+                var destination = DopRegionSchedule.Access.rows(
+                        output.regionRoot(), 0, 1, 0, DopRegionSchedule.Mode.WRITE);
+                var jobs = new ArrayDeque<Runnable>();
+                var cpu = new DopKernelIR.Kernel(layout, DopKernelIR.Element.F32,
+                        DopKernelIR.Op.SCALE_BIAS, 2.0f, 1.0f);
+                var result = DopGraphCpuIntegrationV1.submit(
+                        cpu, input, output, source, destination, scalar(), jobs::add);
+                assertEquals(1, jobs.size());
+                jobs.removeFirst().run();
+                assertEquals(42L, result.join());
+                assertEquals(19.0f, output.read(1, 0), "empty slice must not write");
+                assertEquals(0.0f, output.read(0, 0));
+                assertEquals(0.0f, output.read(2, 0));
+            }
+        }
+    }
+
 }
