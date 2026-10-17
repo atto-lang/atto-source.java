@@ -405,6 +405,9 @@ public final class Ast {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(Param::rest)) {
+                throw new IllegalArgumentException("interface rest parameters are not supported yet");
+            }
         }
 
         /** Compatibility constructor for nominal interface callable contracts. */
@@ -496,6 +499,9 @@ public final class Ast {
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+            if (parameters.stream().anyMatch(Param::rest)) {
+                throw new IllegalArgumentException("method rest parameters are not supported yet");
+            }
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
