@@ -338,7 +338,7 @@ final class TrapOptionSemanticsTest {
                   return;
                 }
                 """));
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 trap fnc value(): int { return 7; }
                 fnc hold(): void {
                   val TrapResult<int> result = value();
