@@ -62,6 +62,21 @@ final class NativeIoSymlinkBoundaryTest {
     }
 
     @Test
+    void guestReadTextRejectsOversizeFileWithoutStreamingIntoUnboundedHeap()
+            throws Exception {
+        Path large = directory.resolve("oversize-read-text");
+        // A sparse temp file avoids allocating an entire 16 MiB fixture
+        // while exercising the exact host I/O boundary and size guard.
+        try (var file = new java.io.RandomAccessFile(large.toFile(), "rw")) {
+            file.setLength((long) BoundedSourceReader.MAX_BYTES + 1);
+        }
+        IOException denied = assertThrows(IOException.class,
+                () -> NativeIo.readUtf8NoFollow(large));
+        assertTrue(denied.getMessage().contains("16 MiB"),
+                "fail closed with an explicit host-side payload limit");
+    }
+
+    @Test
     void strictUtf8DecodingDoesNotTurnMalformedBytesIntoReplacementCharacters()
             throws Exception {
         Path invalid = directory.resolve("invalid-utf8");
