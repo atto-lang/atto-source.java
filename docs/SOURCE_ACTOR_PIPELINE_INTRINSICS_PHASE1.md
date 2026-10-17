@@ -13,6 +13,7 @@ Only direct calls on lexical actor `self` are admitted, and only for SHARED
 actors:
 
 - `self.forward(value)`
+- `self.forward_all(value): List<ActorRouteReceipt>`
 - `self.forward_round_robin(value)`
 - `self.forward_to(target, value)`
 - `self.forward_by_key(key, value)`
@@ -34,9 +35,10 @@ Aliases and method references do not acquire routing authority. For example,
 Each authenticated inbound route frame is **one-shot**. A successful
 single-destination publication retires the source frame before guest code can
 route again. A selector/admission failure before publication leaves the frame
-live so code may handle the error or choose another valid route. Repeated
-`self.forward*` calls therefore cannot emulate the still-disabled
-`self.forward_all` surface or hide partial fan-out results.
+live so code may handle the error or choose another valid route. Repeated single-destination `self.forward*` calls therefore cannot emulate
+fan-out or hide partial branch results. `self.forward_all` is the only
+multi-destination intrinsic and consumes the same authenticated source frame
+once its batch attempt completes.
 
 ## Scheduler-owned authority
 
@@ -65,16 +67,35 @@ Every compiler bridge call first proves:
 An ordinary actor message, startup/cleanup code, host call, stale generation,
 foreign actor, alias or fabricated target cannot manufacture this authority.
 
+## Typed non-transactional fan-out receipts
+
+`self.forward_all(value)` returns one immutable `ActorRouteReceipt` per
+outbound edge, preserving graph order. Each receipt exposes:
+
+- `edge_index: int`
+- `target: string`
+- `flow_id: int`
+- `route_id: int`
+- `admitted: bool`
+- `error: Option<string>`
+
+Fan-out is deliberately non-transactional: an earlier branch may be admitted
+while a later branch rejects mailbox admission. Both the success and rejection
+receipt objects for **every** branch are allocated before the first
+irreversible mailbox send. The source projection therefore does not introduce
+a post-publication allocation that could erase evidence of partial success
+under memory pressure.
+
+The detailed host exception/cause remains runtime-internal; source receives a
+bounded scalar error description. `ActorRouteReceipt` is compiler-owned,
+immutable, non-sendable and non-shareable.
+
 ## Intentionally still fail-closed
 
-`self.forward_all(value)` is not enabled. Fan-out is non-transactional and
-must expose an Oreslang-level typed per-edge admission receipt vector rather
-than hide partial success behind `void`.
-
-Source-declared `transform pipe actor` / typed pipeline graph lowering also
-remains unavailable. Phase 1 therefore proves the intrinsic/runtime authority
-boundary for a supervisor-installed graph; it is not yet a complete
-source-only pipeline feature.
+Source-declared branching/fan-in topology lowering remains unavailable in this
+intrinsic-only phase. Phase 1 proves the intrinsic/runtime authority boundary
+for a supervisor-installed graph; it is not yet a complete source-only DAG
+feature.
 
 The Java host reference still uses one generic payload type across forward and
 reverse directions. Full source pipeline lowering must type forward and
@@ -92,8 +113,8 @@ backward ports separately and preserve Sendable/ownership rules.
    cannot call any routing intrinsic.
 4. GraalVM Native Image coverage and cancellation/STOP tests.
 5. LLVM parity before claiming cross-backend guest routing.
-6. Typed source graph/port lowering and a per-edge `forward_all` receipt ABI
-   before declaring the routing surface complete.
+6. Typed source graph/port lowering and cross-backend receipt parity before
+   declaring the routing surface complete.
 
 A zero-step GitHub Actions result is infrastructure evidence only and is not a
 compiler or runtime test result.
