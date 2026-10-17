@@ -15,13 +15,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * VM-owned asynchronous root runtime.
  *
- * <p>The throughput profile boots with no resident CONTROL carrier. The
- * selector is the only VM-owned thread until runnable CONTROL/actor work is
- * admitted. An explicitly configured nonzero CONTROL minimum is a warm-start
- * policy and is prestarted before guest admission.</p>
+ * <p>The normal throughput profile cold-starts with zero VM-owned OS threads:
+ * CONTROL carriers and the NIO reactor are both demand-driven. The first
+ * accepted readiness watch starts reactor #0; the first runnable CONTROL turn
+ * creates a carrier. An explicitly configured nonzero CONTROL minimum is a
+ * warm-start policy and is prestarted before guest admission.</p>
  */
 public final class OresVM implements AutoCloseable {
-    // Throughput cold start: zero CONTROL carriers + one NIO selector.
+    // Throughput cold start: zero CONTROL carriers + zero NIO reactors.
     // This counts OresVM-owned threads only, not JVM implementation threads.
     private static final int DEFAULT_CONTROL_PARALLELISM = 0;
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
@@ -56,7 +57,7 @@ public final class OresVM implements AutoCloseable {
 
     private final ThreadPoolExecutor controlExecutor;
     private final OresScheduler rootScheduler;
-    /** VM-owned selector domain: a single reactor starts before guest work. */
+    /** VM-owned selector domain: reactor #0 starts on first accepted watch. */
     private final NioReadinessGroup nioReadiness;
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile StartupState startupState = StartupState.NEW;
@@ -91,10 +92,10 @@ public final class OresVM implements AutoCloseable {
                 turnExecutor);
         try {
             startup();
-            // Selector creation may perform OS operations, so finish before
-            // publishing this VM to an OresContext or admitting guest turns.
-            // Pending watches do not create threads: NIO scaling is separate
-            // from runnable CONTROL/actor carrier expansion.
+            // Build the bounded readiness domain before publishing the VM,
+            // but deliberately open no Selector and start no reactor thread.
+            // First accepted I/O demand starts reactor #0; later NIO scaling
+            // remains separate from runnable CONTROL/actor carrier expansion.
             // Future subscribers may be host callbacks with unbounded latency.
             // Never consume CONTROL carriers to deliver NIO completions: the
             // readiness manager owns a separately bounded LAZY completion
@@ -183,6 +184,15 @@ public final class OresVM implements AutoCloseable {
     }
 
     int nioReactorCount() { return nioReadiness.reactorCount(); }
+
+    /** Test/host diagnostic for OresVM-owned runtime threads only. JVM GC,
+     * JIT/JVMCI and embedder threads are intentionally outside this census.
+     */
+    int ownedRuntimeThreadCount() {
+        return controlCarrierCount()
+                + nioReadiness.reactorCount()
+                + nioReadiness.completionCarrierCount();
+    }
 
     /** CPU-only NIO result conversion, never a guest turn or a selector task.
      * This bounded CONTROL pool cannot execute submitted work inline.
