@@ -109,3 +109,27 @@ GraalVM, or publisher test evidence.
   carrier) is open. Do not transfer private source to a new organization
   or mark this PR merge-ready without independent incident containment and
   CODEOWNER/admin review.
+
+## Exact-tree carrier branch hardening (2026-10-16)
+
+- Publisher `publish()` now rejects any destination branch not named exactly
+  `ci/oreslang-<lowercase 40-hex independently approved source Git tree SHA>`.
+  A generic branch, a different tree SHA, upper-case hash, shortened hash,
+  traversal suffix, or extra ref component is rejected before policy API reads,
+  private source reads, or Git writes. This is an additional provenance check,
+  **not** independent authorization to export source.
+- All existing mocked destination-ref and end-to-end publisher tests now derive
+  their branch from each test's actual expected tree (including cases that
+  mutate the expected fixture tree). The new negative test checks source-free
+  pre-policy failure for mismatches. The test module now declares **153 cases**;
+  the trusted source-local publisher workflow requires at least 153 and
+  replays the entire suite three times without skipped tests.
+- The independent, non-Oreslang-source GitHub-hosted capacity probe
+  [Scintilla run 38994844950](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/38994844950)
+  completed successfully, including 15 source-free exact-tree branch-name
+  assertions. This **does not run** the original publisher's 153 Python
+  regressions, does not prove Maven/Native Image, and does not authorize
+  any private cross-org Git tree transfer.
+- Production test gate remains blocked by unprotected source main, empty
+  destination and snapshot allowlists, missing independent reviewer sign-off
+  and zero-step source organization Actions runs. Do not mark ready or merge.
