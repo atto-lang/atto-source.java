@@ -233,7 +233,9 @@ public final class ExecutionRegionGraph {
                 case ADD_I64 -> {
                     if (s.left() < 0 || s.right() < 0 || s.left() >= i ||
                             s.right() >= i || !s.dependencies().contains(s.left()) ||
-                            !s.dependencies().contains(s.right()))
+                            !s.dependencies().contains(s.right()) ||
+                            !I64.equals(steps.get(s.left()).type()) ||
+                            !I64.equals(steps.get(s.right()).type()))
                         throw reject("malformed i64 operands");
                     values[i] = Math.addExact(values[s.left()], values[s.right()]);
                 }
