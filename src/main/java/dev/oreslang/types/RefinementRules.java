@@ -92,9 +92,10 @@ public final class RefinementRules {
                 return false;
         }
         // General where predicates have no implication proof until purity, a
-        // typed verifier and a restricted solver are integrated.
-        if (to.whereExpression() != null
-                && !Objects.equals(from.whereExpression(), to.whereExpression())) return false;
+        // typed verifier and a restricted solver are integrated. Identical
+        // source text is not proof: capture/binding context and effects are
+        // not part of this host-side representation yet.
+        if (from.whereExpression() != null || to.whereExpression() != null) return false;
         return normalize(fromType, from.bounds()).entails(normalize(toType, to.bounds()));
     }
 
