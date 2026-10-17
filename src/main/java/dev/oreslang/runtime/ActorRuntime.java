@@ -1096,6 +1096,19 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Opaque scheduler-owned capability for the currently authenticated
+     * routed DATA turn. It is carried only beside the mailbox envelope and
+     * is never serialized into ActorMail<T> or exposed as a guest value.
+     */
+    interface PipelineTurnAuthority {
+        void routeForward(Object value);
+        void routeForwardRoundRobin(Object value);
+        void routeForwardTo(String target, Object value);
+        void routeForwardByKey(String key, Object value);
+        void routeBackward(Object value);
+    }
+
     private record MessageEnvelope(
             Object value,
             Runnable release,
@@ -1103,18 +1116,24 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId sender,
             long sequence,
             ActorPipelineRouteSession.MailFrame pipelineFrame,
+            PipelineTurnAuthority pipelineAuthority,
             AtomicBoolean pipelineClaimed) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
                 long sequence,
-                ActorPipelineRouteSession.MailFrame pipelineFrame) {
+                ActorPipelineRouteSession.MailFrame pipelineFrame,
+                PipelineTurnAuthority pipelineAuthority) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
+            if ((pipelineFrame == null) != (pipelineAuthority == null)) {
+                throw new IllegalArgumentException(
+                        "pipeline frame and turn authority must be installed together");
+            }
             return new MessageEnvelope(value, release, null, sender, sequence,
-                    pipelineFrame, new AtomicBoolean());
+                    pipelineFrame, pipelineAuthority, new AtomicBoolean());
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -1123,7 +1142,7 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L, null, new AtomicBoolean());
+                    -1L, null, null, new AtomicBoolean());
         }
 
         private boolean isContinuation() {
@@ -1962,6 +1981,7 @@ public final class ActorRuntime implements AutoCloseable {
                     cell.sourceReceiveSuspended = false;
                     ActorPipelineRouteSession.retireDelivered(cell.activePipelineFrame);
                     cell.activePipelineFrame = null;
+                    activePipelineAuthority = null;
                     cell.activeMail = null;
                     cell.lifecycleLock.notifyAll();
                 }
@@ -1986,6 +2006,7 @@ public final class ActorRuntime implements AutoCloseable {
                         cell.sourceReceiveSuspended = false;
                         ActorPipelineRouteSession.retireDelivered(cell.activePipelineFrame);
                         cell.activePipelineFrame = null;
+                    activePipelineAuthority = null;
                         cell.activeMail = null;
                         failActor = true;
                     }
@@ -3770,6 +3791,52 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private PipelineTurnAuthority currentPipelineTurnAuthority() {
+        // Validate the scheduler-owned route frame first so an authority
+        // object can never be used as a stand-alone bearer capability.
+        currentPipelineRouteFrame();
+        ActorCell<?> cell = currentActor.get();
+        synchronized (cell.lifecycleLock) {
+            if (cell.activePipelineAuthority == null) {
+                throw new SecurityException(
+                        "current DATA receive has no authenticated pipeline turn authority");
+            }
+            return cell.activePipelineAuthority;
+        }
+    }
+
+    /** Compiler bridge for sealed source self.forward(value). */
+    public void routeCurrentPipelineForward(Object value) {
+        currentPipelineTurnAuthority().routeForward(Objects.requireNonNull(
+                value, "pipeline payload"));
+    }
+
+    /** Compiler bridge for sealed source self.forward_round_robin(value). */
+    public void routeCurrentPipelineForwardRoundRobin(Object value) {
+        currentPipelineTurnAuthority().routeForwardRoundRobin(Objects.requireNonNull(
+                value, "pipeline payload"));
+    }
+
+    /** Compiler bridge for sealed source self.forward_to(target, value). */
+    public void routeCurrentPipelineForwardTo(String target, Object value) {
+        currentPipelineTurnAuthority().routeForwardTo(
+                Objects.requireNonNull(target, "pipeline target"),
+                Objects.requireNonNull(value, "pipeline payload"));
+    }
+
+    /** Compiler bridge for sealed source self.forward_by_key(key, value). */
+    public void routeCurrentPipelineForwardByKey(String key, Object value) {
+        currentPipelineTurnAuthority().routeForwardByKey(
+                Objects.requireNonNull(key, "pipeline key"),
+                Objects.requireNonNull(value, "pipeline payload"));
+    }
+
+    /** Compiler bridge for sealed source self.backward(value). */
+    public void routeCurrentPipelineBackward(Object value) {
+        currentPipelineTurnAuthority().routeBackward(Objects.requireNonNull(
+                value, "pipeline payload"));
+    }
+
     void requirePipelineRegistrationHostAuthority() {
         requireSupervisorContext("register actor pipeline routing");
         if (OresScheduler.current() != null) {
@@ -5202,15 +5269,21 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public <M> void send(ActorRef<M> ref, M message) {
-        sendWithPipelineFrame(ref, message, null);
+        sendWithPipelineFrame(ref, message, null, null);
     }
 
-    /** Package-owned metadata lane: route frames never enter guest payloads.
-     * Only a validated host graph may install a frame on an actual mailbox. */
+    /** Package-owned metadata lane: route frames and their matching turn
+     * authority never enter guest payloads. Only a validated host graph may
+     * install this pair on an actual mailbox. */
     @SuppressWarnings("unchecked")
     <M> void sendWithPipelineFrame(
             ActorRef<M> ref, M message,
-            ActorPipelineRouteSession.MailFrame pipelineFrame) {
+            ActorPipelineRouteSession.MailFrame pipelineFrame,
+            PipelineTurnAuthority pipelineAuthority) {
+        if ((pipelineFrame == null) != (pipelineAuthority == null)) {
+            throw new IllegalArgumentException(
+                    "pipeline frame and turn authority must be installed together");
+        }
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -5324,7 +5397,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence, pipelineFrame);
+                            prepared, release, sender, sequence,
+                            pipelineFrame, pipelineAuthority);
                     if (!cell.mailbox.tryWrite(envelope)) {
                         throw new ActorMailboxFullException(ref.id());
                     }
@@ -6966,6 +7040,8 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorInboxMail<M> activeMail;
         /** Sealed VM metadata, never a component of user ActorInboxMail<M>. */
         private ActorPipelineRouteSession.MailFrame activePipelineFrame;
+        /** Matching opaque route authority for the exact active envelope. */
+        private PipelineTurnAuthority activePipelineAuthority;
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
@@ -7752,6 +7828,7 @@ public final class ActorRuntime implements AutoCloseable {
                             activeMail = mail;
                             activeEnvelope.claimPipelineFrame();
                             activePipelineFrame = activeEnvelope.pipelineFrame();
+                            activePipelineAuthority = activeEnvelope.pipelineAuthority();
                             try {
                                 if (codeExecutor != null) {
                                     if (codeActorState == null
@@ -7777,6 +7854,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 if (!sourceReceiveSuspended) {
                                     ActorPipelineRouteSession.retireDelivered(activePipelineFrame);
                                     activePipelineFrame = null;
+                                    activePipelineAuthority = null;
                                     activeMail = null;
                                 }
                             }
@@ -7869,6 +7947,7 @@ public final class ActorRuntime implements AutoCloseable {
             // here as well as the unclaimed queued envelopes drained above.
             ActorPipelineRouteSession.retireDelivered(activePipelineFrame);
             activePipelineFrame = null;
+                    activePipelineAuthority = null;
             activeMail = null;
         }
 
