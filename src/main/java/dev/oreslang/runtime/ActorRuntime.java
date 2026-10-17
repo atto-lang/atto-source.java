@@ -7380,6 +7380,16 @@ public final class ActorRuntime implements AutoCloseable {
             // Capture only bounded structural state before releasing source
             // actor state. ActorRef may outlive ActorCell for post-mortem use.
             ref.terminalHealth = snapshotHealthLocked(this);
+            if (terminalOutput != null) {
+                boolean cancelled =
+                        terminalOutput instanceof java.util.concurrent.CancellationException;
+                CoreLog.record(
+                        cancelled ? CoreLog.Level.INFO : CoreLog.Level.ERROR,
+                        cancelled
+                                ? CoreLog.ACTOR_CANCELLED
+                                : CoreLog.ACTOR_TERMINAL_FAILURE,
+                        ref.generation());
+            }
             codeActorState = null;
             try {
                 actorExitHook.accept(executionDomain);
@@ -7938,16 +7948,45 @@ public final class ActorRuntime implements AutoCloseable {
             terminateTree(cancellation, true);
         }
 
+        /**
+         * Terminal precedence is graceful < cancellation < failure. A real
+         * failure from already-running work or cleanup may upgrade a prior
+         * cancellation request before finalization; cancellation never masks
+         * or replaces an existing failure. Equal-priority causes retain the
+         * first claimed cause.
+         */
+        private boolean claimTerminalCause(Throwable cause) {
+            for (;;) {
+                Throwable current = ref.terminationCause.get();
+                if (current == null) {
+                    if (ref.terminationCause.compareAndSet(null, cause)) {
+                        return true;
+                    }
+                    continue;
+                }
+
+                boolean currentCancelled =
+                        current instanceof java.util.concurrent.CancellationException;
+                boolean nextCancelled =
+                        cause instanceof java.util.concurrent.CancellationException;
+                if (currentCancelled && !nextCancelled) {
+                    if (ref.terminationCause.compareAndSet(current, cause)) {
+                        return true;
+                    }
+                    continue;
+                }
+                return false;
+            }
+        }
+
         private void terminateTree(Throwable cause, boolean recordCause) {
             List<ActorCell<?>> descendants;
             List<OresFuture<?>> pending;
             List<DrainWaiter> failedDrainWaiters;
-            boolean wonTerminalCause = false;
             synchronized (lifecycleLock) {
                 if (finalized) return;
                 if (recordCause && cause != null) {
-                    wonTerminalCause =
-                            ref.terminationCause.compareAndSet(null, cause);
+                    claimTerminalCause(cause);
                 }
                 stopped.set(true);
                 sealing = true;
@@ -7965,17 +8004,6 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingOperations.clear();
                 finalizeStopLocked();
                 lifecycleLock.notifyAll();
-            }
-
-            if (wonTerminalCause) {
-                CoreLog.record(
-                        cause instanceof ActorCancelledException
-                                ? CoreLog.Level.INFO
-                                : CoreLog.Level.ERROR,
-                        cause instanceof ActorCancelledException
-                                ? CoreLog.ACTOR_CANCELLED
-                                : CoreLog.ACTOR_TERMINAL_FAILURE,
-                        ref.generation());
             }
 
             // Runtime Future callbacks can take other actor/lifecycle locks.
