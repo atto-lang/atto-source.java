@@ -2198,7 +2198,10 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!cell.managedByGroup.compareAndSet(id, null)) {
                     throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
                 }
-                cell.supervision.compareAndSet(supervisorControl, null);
+                if (!cell.supervision.compareAndSet(supervisorControl, null)) {
+                    throw new IllegalStateException("worker supervisor CONTROL owner changed unexpectedly");
+                }
+                supervisorControl.releaseReservation(worker.id());
                 managedWorkers.remove(worker.id(), worker);
                 return true;
             }
