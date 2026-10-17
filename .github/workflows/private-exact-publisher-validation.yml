@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
+          python3 -I -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py
       - name: Execute destination-policy fail-closed Bash suite
         shell: bash
         run: |
@@ -86,7 +86,7 @@ jobs:
           set -euo pipefail
           for round in 1 2 3; do
             echo "EXACT_PUBLISHER_REGRESSION_ROUND=$round"
-            python3 - <<'PY'
+            python3 -I - <<'PY'
           import importlib.util
           from pathlib import Path
           import unittest
@@ -99,7 +99,7 @@ jobs:
           spec.loader.exec_module(module)
           suite = unittest.defaultTestLoader.loadTestsFromModule(module)
           count = suite.countTestCases()
-          if count < 149:
+          if count < 150:
               raise SystemExit(f"Publisher suite unexpectedly shrank to {count} tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if (result.testsRun != count or not result.wasSuccessful()
