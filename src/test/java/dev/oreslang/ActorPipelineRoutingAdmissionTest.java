@@ -31,6 +31,21 @@ final class ActorPipelineRoutingAdmissionTest {
     }
 
     @Test
+    void isolatedActorCannotAcquireCorrelatedPipelineRouting() {
+        String program = """
+                define isoactor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward(mail.value);
+                  }
+                end
+                """;
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(error.getMessage().contains("requires a SHARED actor"), error.getMessage());
+    }
+
+    @Test
     void fanoutReceiptsAndFullPathReplyRemainFailClosed() {
         for (String method : new String[] {"forward_all", "reply"}) {
             String program = """
