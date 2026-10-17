@@ -38,7 +38,7 @@ public final class LambdaInvocationHost {
             String event) throws IOException {
         ExecutionProfile profile = ExecutionProfile.parse(
                 NativeBuildMode.defaultExecutionMode(), "server");
-        return invoke(entryFile, functionName, event, profile, System.getenv());
+        return invoke(entryFile, functionName, event, profile, Map.of());
     }
 
     public static InvocationResult invoke(
