@@ -62,4 +62,41 @@ final class OresPointerSafetyTest {
             executor.shutdownNow();
         }
     }
+    @Test
+    void pointerDomainFollowsLogicalSchedulerTaskAcrossCooperate() {
+        Object original = new Object();
+        java.util.concurrent.atomic.AtomicReference<OresPointer> pointer =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Object> taskDomain =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AtomicInteger pc = new AtomicInteger();
+
+        try (OresScheduler scheduler = new OresScheduler(2)) {
+            OresFuture<Object> completion = scheduler.start(resume -> {
+                Object currentTaskDomain = OresScheduler.currentTaskDomain();
+                assertNotNull(currentTaskDomain, "scheduler task must expose a logical domain");
+                assertSame(currentTaskDomain, ActorRuntime.currentExecutionDomain(),
+                        "pointer affinity must use logical task identity, not carrier thread identity");
+
+                int step = pc.getAndIncrement();
+                if (step == 0) {
+                    taskDomain.set(currentTaskDomain);
+                    pointer.set(new OresPointer(original));
+                    return OresScheduler.cooperate();
+                }
+
+                assertEquals(1, step, "task resumed more than once");
+                assertSame(taskDomain.get(), currentTaskDomain,
+                        "logical task domain changed across scheduler handoff");
+                assertSame(original, pointer.get().target(),
+                        "same logical task could not dereference after scheduler handoff");
+                assertSame(original, pointer.get().unref(),
+                        "same logical task could not consume pointer after scheduler handoff");
+                return OresScheduler.done(original);
+            });
+
+            assertSame(original, completion.join());
+        }
+    }
+
 }
