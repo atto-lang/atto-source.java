@@ -636,6 +636,64 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void inlineHostExecutorNeverRunsOnReactorOrReplaysReentrantCompletion()
+            throws Exception {
+        var rejectedReactorInline = new java.util.concurrent.CountDownLatch(2);
+        var firstCount = new java.util.concurrent.atomic.AtomicInteger();
+        var secondCount = new java.util.concurrent.atomic.AtomicInteger();
+        var callerOnly = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.Executor inline = task -> {
+            if (Thread.currentThread().getName().startsWith("ores-nio-reactor-"))
+                rejectedReactorInline.countDown();
+            task.run();
+        };
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(inline);
+            var first = java.nio.channels.Pipe.open();
+            var second = java.nio.channels.Pipe.open();
+            try {
+                first.source().configureBlocking(false);
+                second.source().configureBlocking(false);
+                OresFuture<Integer> a = group.watch(first.source(), SelectionKey.OP_READ);
+                OresFuture<Integer> b = group.watch(second.source(), SelectionKey.OP_READ);
+                a.whenCompleteRuntime((events, failure) -> {
+                    firstCount.incrementAndGet();
+                    callerOnly.compareAndSet(true,
+                            !Thread.currentThread().getName().startsWith("ores-nio-reactor-"));
+                    // Reentrant direct delivery must not replay the head.
+                    group.retryStagedNotifications();
+                });
+                b.whenCompleteRuntime((events, failure) -> {
+                    secondCount.incrementAndGet();
+                    callerOnly.compareAndSet(true,
+                            !Thread.currentThread().getName().startsWith("ores-nio-reactor-"));
+                });
+                first.sink().write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+                second.sink().write(java.nio.ByteBuffer.wrap(new byte[] {2}));
+                assertTrue(rejectedReactorInline.await(3, TimeUnit.SECONDS),
+                        "both inline selector deliveries must fail closed");
+                assertFalse(a.isDone(), "reactor must not settle arbitrary subscribers");
+                assertFalse(b.isDone(), "reactor must not settle arbitrary subscribers");
+
+                // An explicit trusted host thread may retry its own
+                // synchronous executor, and callbacks may reenter retry.
+                group.retryStagedNotifications();
+                assertEquals(1, firstCount.get());
+                assertEquals(1, secondCount.get());
+                assertTrue(callerOnly.get());
+                assertEquals(0, group.pendingNotifications(),
+                        "each accepted readiness reservation must drain once");
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            } finally {
+                first.source().close();
+                first.sink().close();
+                second.source().close();
+                second.sink().close();
+            }
+        }
+    }
+
     @Test void vmBoundCompletionsUseExistingExecutorAndNoNioWorkers() throws Exception {
         // The single explicit executor represents an actor carrier; the
         // NIO manager may not create any dedicated completion carrier.
