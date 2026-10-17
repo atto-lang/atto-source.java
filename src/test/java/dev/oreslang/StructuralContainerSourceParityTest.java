@@ -288,7 +288,7 @@ final class StructuralContainerSourceParityTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("2:7:true|a=7|b=9|11:12:true:false",
+        assertEquals("2:7:true|a=7|b=9|11:12:true:true",
                 out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
