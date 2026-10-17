@@ -12,17 +12,21 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 
 /**
- * Host-only integration of the checked route ledger and real ActorRuntime
- * mailboxes. Graph/actor bindings and ingress are installed by the supervisor;
- * guest actors never construct or deserialize MailFrame capabilities.
+ * Integration of the checked route ledger and real ActorRuntime mailboxes.
  *
- * Each successful forward enqueues the ordinary typed payload, while its
- * immutable route frame travels on the VM's separate envelope metadata lane.
- * A turn without a routed envelope cannot gain routing authority merely by
- * guessing the source or a connected actor name.
+ * <p>The default construction mode is host/supervisor-only and preserves the
+ * original no-scheduler registration rule. The compiler may opt into a
+ * separate source-root mode for a checked ActorStream topology; that mode
+ * still rejects actor turns, Mailman CONTROL turns, force-cancel hooks and
+ * foreign/non-SHARED actor bindings.</p>
  *
- * This is a trusted SHARED Java actor bridge, NOT source-level self.* lowering,
- * PRIVATE/UNTRUSTED transfer or a general-purpose guest capability.
+ * <p>Each successful hop enqueues the ordinary typed payload while its
+ * immutable route frame and matching turn authority travel on the VM's
+ * separate envelope metadata lane. Guest actors never construct, deserialize
+ * or select these capabilities. A turn without a routed envelope cannot gain
+ * routing authority by guessing an actor name or route identifier.</p>
+ *
+ * <p>PRIVATE/UNTRUSTED transfer remains unsupported.</p>
  */
 final class ActorPipelineCorrelatedMailboxRouter<M>
         implements ActorRuntime.PipelineTurnAuthority {
