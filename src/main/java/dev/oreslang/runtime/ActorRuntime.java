@@ -7584,15 +7584,28 @@ public final class ActorRuntime implements AutoCloseable {
                 } else {
                     dispatcher.execute(dispatch);
                 }
-            } catch (RejectedExecutionException rejected) {
+            } catch (RuntimeException | Error submissionFailure) {
                 synchronized (lifecycleLock) {
                     if (scheduledDispatchToken == dispatchTicket && !carrierActive) {
                         scheduledDispatchToken = null;
                         scheduled.set(false);
                     }
                 }
+                // Mail may already be published when scheduling fails. Always
+                // stop/drain this actor so accepted envelopes cannot remain
+                // stranded behind a stale scheduled=true bit. Normalize
+                // ordinary RuntimeException failures to rejection semantics;
+                // routed senders can then distinguish post-publication
+                // dispatch failure from failed mailbox admission.
                 stop();
-                if (!closed.get()) throw rejected;
+                if (closed.get()) return;
+                if (submissionFailure instanceof Error fatal) throw fatal;
+                if (submissionFailure instanceof RejectedExecutionException rejected) {
+                    throw rejected;
+                }
+                throw new RejectedExecutionException(
+                        "actor dispatcher failed to accept scheduling request for " + ref.id(),
+                        submissionFailure);
             }
         }
 
