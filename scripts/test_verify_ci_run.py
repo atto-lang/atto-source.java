@@ -80,7 +80,7 @@ class RunContract(unittest.TestCase):
             self.validate()
 
     def test_disguised_runner_housekeeping_cannot_count_as_execution(self):
-        for disguised in (" ", "\\t", "  Set up job ", "set UP job",
+        for disguised in (" ", "\t", "  Set up job ", "set UP job",
                           " POST Checkout", "pre Setup", " Complete job "):
             with self.subTest(step=disguised):
                 self.assertFalse(module.executable_step_name(disguised))
@@ -89,7 +89,7 @@ class RunContract(unittest.TestCase):
 
     def test_whitespace_only_step_name_denied_despite_real_test_step(self):
         page = self.prefix + "/actions/runs/17/jobs?filter=latest&per_page=100&page=1"
-        self.values[page]["jobs"][0]["steps"][0]["name"] = "  \\t  "
+        self.values[page]["jobs"][0]["steps"][0]["name"] = "  \t  "
         with self.assertRaisesRegex(module.Denied, "no name"):
             self.validate()
 

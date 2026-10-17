@@ -42,7 +42,7 @@ def executable_step_name(name):
     # Normalize padding and case before excluding housekeeping and pre/post.
     return (bool(normalized)
             and normalized not in {step.casefold() for step in HOUSEKEEPING_STEPS}
-            and re.match(r"^(pre|post)\\s", normalized) is None)
+            and re.match(r"^(pre|post)\s", normalized) is None)
 
 
 class Denied(ValueError):
