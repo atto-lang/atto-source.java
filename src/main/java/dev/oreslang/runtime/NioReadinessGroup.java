@@ -59,6 +59,8 @@ public final class NioReadinessGroup implements AutoCloseable {
     // A retired OP_READ key alone is not proof that its channel is free.
     private final IdentityHashMap<SocketChannel, OresFuture<byte[]>> readLeases =
             new IdentityHashMap<>();
+    private final IdentityHashMap<SocketChannel, OresFuture<Integer>> writeLeases =
+            new IdentityHashMap<>();
     private final AtomicInteger pending = new AtomicInteger();
     // Includes selector watches that have retired but whose terminal Future
     // callbacks are still queued or running. Protects against unbounded
@@ -145,6 +147,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     }
     int activeReadLeases() {
         synchronized (lifecycle) { return readLeases.size(); }
+    }
+    int activeWriteLeases() {
+        synchronized (lifecycle) { return writeLeases.size(); }
     }
     boolean usesVmCompletionCarriers() { return ownedCompletionExecutor == null; }
 
@@ -345,9 +350,9 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) {
             if (closed || !channel.isOpen())
                 return OresFuture.failed(new IOException("NIO TCP channel closed"));
-            if (readLeases.containsKey(channel))
+            if (readLeases.containsKey(channel) || writeLeases.containsKey(channel))
                 return OresFuture.failed(new IllegalStateException(
-                        "channel already has an outstanding TCP read"));
+                        "channel already has an outstanding TCP I/O operation"));
             readLeases.put(channel, received);
         }
 
@@ -427,6 +432,121 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
         new ReadPump().arm();
         return received;
+    }
+
+    /**
+     * Write an immutable snapshot of up to 64 KiB on the shared selector.
+     * Partial positive writes hold the kernel-operation claim until all bytes
+     * are sent: cancellation must not report success after any bytes have
+     * escaped. A zero-byte kernel attempt can be rearmed and cancelled.
+     *
+     * Read and write share exclusive channel admission, because the manager
+     * admits one readiness key per channel. This is an intentionally
+     * conservative host substrate until a duplex connection owner lands.
+     */
+    public OresFuture<Integer> writeAsync(SocketChannel channel, byte[] bytes) {
+        Objects.requireNonNull(channel, "channel");
+        if (bytes == null || bytes.length > 65536)
+            return OresFuture.failed(new IllegalArgumentException("invalid TCP write bound"));
+        if (channel.isBlocking())
+            throw new IllegalArgumentException("TCP channel must be nonblocking");
+        if (ownedCompletionExecutor == null)
+            return OresFuture.failed(new IllegalStateException(
+                    "TCP write requires dedicated NIO completion workers"));
+        if (bytes.length == 0) return OresFuture.completed(0);
+        byte[] snapshot = Arrays.copyOf(bytes, bytes.length);
+        ByteBuffer buffer = ByteBuffer.wrap(snapshot);
+        AtomicReference<OresFuture<Integer>> pendingWatch = new AtomicReference<>();
+        // 0 = cancellable before any kernel output, 1 = bytes committed or
+        // in progress, 2 = cancelled without output.
+        AtomicInteger kernelPhase = new AtomicInteger();
+        OresFuture<Integer> written = new OresFuture<>(
+                () -> kernelPhase.compareAndSet(0, 2),
+                () -> {
+                    OresFuture<Integer> pending = pendingWatch.getAndSet(null);
+                    if (pending != null) pending.cancel(false);
+                });
+        synchronized (lifecycle) {
+            if (closed || !channel.isOpen())
+                return OresFuture.failed(new IOException("NIO TCP channel closed"));
+            if (readLeases.containsKey(channel) || writeLeases.containsKey(channel))
+                return OresFuture.failed(new IllegalStateException(
+                        "channel already has an outstanding TCP I/O operation"));
+            writeLeases.put(channel, written);
+        }
+
+        final class WritePump {
+            final AtomicInteger inFlight = new AtomicInteger();
+
+            void releaseIfTerminal() {
+                if (!written.isDone() || inFlight.get() != 0) return;
+                synchronized (lifecycle) {
+                    if (inFlight.get() == 0 && writeLeases.get(channel) == written)
+                        writeLeases.remove(channel);
+                }
+            }
+
+            void arm() {
+                inFlight.incrementAndGet();
+                if (written.isDone()) {
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    return;
+                }
+                final OresFuture<Integer> readiness;
+                try {
+                    readiness = NioReadinessGroup.this.watch(channel, SelectionKey.OP_WRITE);
+                } catch (RuntimeException | Error problem) {
+                    written.failFromRuntime(problem);
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    if (problem instanceof VirtualMachineError fatal) throw fatal;
+                    if (problem instanceof ThreadDeath fatal) throw fatal;
+                    return;
+                }
+                pendingWatch.set(readiness);
+                readiness.whenCompleteRuntime((events, failure) -> {
+                    pendingWatch.compareAndSet(readiness, null);
+                    try {
+                        if (written.isDone()) return;
+                        if (failure != null) {
+                            written.failFromRuntime(failure);
+                            return;
+                        }
+                        if (!kernelPhase.compareAndSet(0, 1)
+                                && kernelPhase.get() != 1) return;
+                        try {
+                            if (channel.isBlocking())
+                                throw new IllegalStateException("TCP channel became blocking");
+                            int count = channel.write(buffer);
+                            if (buffer.hasRemaining()) {
+                                if (count == 0 && buffer.position() == 0) {
+                                    // No byte has escaped: revocation remains
+                                    // safe until the next kernel-write claim.
+                                    kernelPhase.compareAndSet(1, 0);
+                                }
+                                arm();
+                            } else {
+                                written.completeFromRuntime(snapshot.length);
+                            }
+                        } catch (IOException | RuntimeException | Error problem) {
+                            written.failFromRuntime(problem);
+                            if (problem instanceof VirtualMachineError fatal) throw fatal;
+                            if (problem instanceof ThreadDeath fatal) throw fatal;
+                        }
+                    } finally {
+                        inFlight.decrementAndGet();
+                        releaseIfTerminal();
+                    }
+                });
+                if (written.isDone()) {
+                    pendingWatch.compareAndSet(readiness, null);
+                    readiness.cancel(false);
+                }
+            }
+        }
+        new WritePump().arm();
+        return written;
     }
 
     /** Register one kernel-readiness notification without blocking a carrier. */
