@@ -924,7 +924,7 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) {
+        if ((check(IDENT) || check(EQ)) && checkNext(EQUAL)) {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
