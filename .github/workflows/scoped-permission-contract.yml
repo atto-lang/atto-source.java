@@ -19,6 +19,12 @@ on:
       - "src/test/java/dev/oreslang/runtime/NativeIoSymlinkBoundaryTest.java"
       - "src/test/java/dev/oreslang/runtime/NativeIoPinnedNetworkTest.java"
       - "src/test/java/dev/oreslang/launcher/DenoCliDefaultPermissionsTest.java"
+      - "src/test/java/dev/oreslang/launcher/Flags2EnvLauncherTest.java"
+      - "src/test/java/dev/oreslang/runtime/RuntimePermissionCeilingTest.java"
+      - ".cli-flags.toml"
+      - "scripts/with-flags2env.sh"
+      - "tests/test_flags2env_wrapper.py"
+      - "docs/CLI_FLAGS2ENV.md"
   workflow_dispatch:
 
 permissions:
@@ -67,8 +73,10 @@ jobs:
       - name: Execute guest CLI compile/runtime and real host I/O boundary regressions
         run: >
           mvn -B -ntp
-          '-Dtest=DenoCliDefaultPermissionsTest,ScopedCompileTimePermissionTest,NativeIoSymlinkBoundaryTest,NativeIoPinnedNetworkTest,NativeSocketBoundaryTest,ScopedPermissionInteropTest'
+          '-Dtest=DenoCliDefaultPermissionsTest,Flags2EnvLauncherTest,RuntimePermissionCeilingTest,ScopedCompileTimePermissionTest,NativeIoSymlinkBoundaryTest,NativeIoPinnedNetworkTest,NativeSocketBoundaryTest,ScopedPermissionInteropTest'
           test
+      - name: Exercise no-eval flags2env wrapper trust boundary
+        run: python3 tests/test_flags2env_wrapper.py --root .
       - name: Write exact-head source-free Java security test receipt
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
