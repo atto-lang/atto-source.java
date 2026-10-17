@@ -313,6 +313,29 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void raiseInsideRecoverHandlerSkipsThatSameRecoverFrame() throws Exception {
+        String source = """
+                pub fnc main(): void {
+                  recover {
+                    recover {
+                      raise new Error("inner");
+                    } catch (inner) {
+                      raise new Error("outer");
+                    }
+                  } catch (outer) {
+                    stdio.stdout.write(outer.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(outer.message);
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("raise:outer", run(source));
+    }
+
+    @Test
     void cleanupFailuresFollowPanicRaiseThrowPrecedence() throws Exception {
         String source = """
                 fnc cleanupThrow(): void { throw new Error("cleanup throw"); }
