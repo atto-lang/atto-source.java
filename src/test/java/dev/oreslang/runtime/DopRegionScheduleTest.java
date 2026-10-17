@@ -62,6 +62,26 @@ final class DopRegionScheduleTest {
                 () -> DopRegionSchedule.Access.rows(r, 0, 0, 1, DopRegionSchedule.Mode.REDUCE, "sum\f"));
         assertThrows(NullPointerException.class,
                 () -> new DopRegionSchedule.Task("bad", java.util.Arrays.asList((DopRegionSchedule.Access) null)));
+        // Internal control characters are forbidden too: labels reach diagnostics
+        // and must not inject extra lines, delimiters, or hidden task identities.
+        assertThrows(IllegalArgumentException.class,
+                () -> new DopRegionSchedule.Task("write\u0000read", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DopRegionSchedule.Task("write\nread", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DopRegionSchedule.Task("write\u007fread", List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
+                        DopRegionSchedule.Mode.REDUCE, "sum\u0000count"));
+        assertThrows(IllegalArgumentException.class,
+                () -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
+                        DopRegionSchedule.Mode.REDUCE, "sum\tcount"));
+        assertThrows(IllegalArgumentException.class,
+                () -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
+                        DopRegionSchedule.Mode.REDUCE, "sum\u007fcount"));
+        assertDoesNotThrow(() -> new DopRegionSchedule.Task("phase one", List.of()));
+        assertDoesNotThrow(() -> DopRegionSchedule.Access.rows(r, 0, 0, 1,
+                DopRegionSchedule.Mode.REDUCE, "sum_count"));
     }
 
 
