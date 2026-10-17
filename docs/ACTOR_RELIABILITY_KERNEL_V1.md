@@ -38,8 +38,14 @@ remain predictable under saturation.
 9. **Observability does not expose actor heaps.** `ActorHealthSnapshot` and
    `RuntimeHealthSnapshot` contain structural counters/flags only: no
    messages, guest state, exception text, frames, thread references or live
-   capabilities. Actor code cannot call these host/supervisor APIs.
-10. **Hot diagnostics stay bounded.** Core reliability events are fixed IDs
+   capabilities. Actor code cannot call these host/supervisor APIs. A small
+   terminal snapshot survives ActorCell retirement on the ActorRef for
+   post-mortem inspection; it retains no actor state.
+10. **Lifecycle and failure are orthogonal.** Health reports a stable lifecycle
+    phase (STARTING/IDLE/RUNNING/SUSPENDED/STOPPING/FINALIZING/TERMINATED) and
+    a separate terminal class (NONE/CANCELLED/QUOTA_EXCEEDED/FAILURE), avoiding
+    ambiguous string parsing.
+11. **Hot diagnostics stay bounded.** Core reliability events are fixed IDs
     plus one numeric value in the preallocated `CoreLog` recorder. Logging is
     off by default and does not format guest values on the event path.
 
@@ -87,10 +93,12 @@ The following remain explicit gates rather than assumed features:
 
 An operator should be able to answer these questions without pausing or
 inspecting an actor heap: Is it alive? Which incarnation? Is admission sealed?
-How many user/control messages are queued? Is a turn running? Is a source
-receive suspended? Has the watchdog requested cooperation? How much mailbox
-memory is reserved? Is cleanup active? Did the actor fail? What is the runtime
-aggregate memory/actor/watchdog state?
+How many user/control messages are queued? How many sends have been rejected?
+Is a turn running? Is a source receive suspended? Has the watchdog requested
+cooperation? How much mailbox memory is reserved? Is cleanup active? Was the
+terminal outcome cancellation, quota exhaustion, failure, or graceful stop?
+What is the runtime aggregate memory/actor/watchdog state? The same bounded
+structural terminal record remains available after the live ActorCell is gone.
 
 Those observations are diagnostics, not synchronization barriers. Correctness
 must never depend on a snapshot remaining current after it is returned.
