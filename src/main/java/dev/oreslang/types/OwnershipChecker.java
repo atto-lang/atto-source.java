@@ -2304,6 +2304,18 @@ public final class OwnershipChecker {
             String recursiveBinding,
             boolean allowActorSelfCapture,
             boolean deferredCleanup) {
+        return checkLambda(
+                lambda, outer, recursiveBinding,
+                allowActorSelfCapture, deferredCleanup, false);
+    }
+
+    private ValueInfo checkLambda(
+            Ast.LambdaExpr lambda,
+            Scope outer,
+            String recursiveBinding,
+            boolean allowActorSelfCapture,
+            boolean deferredCleanup,
+            boolean allowConstructionBorrowCapture) {
         boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
@@ -2352,9 +2364,10 @@ public final class OwnershipChecker {
         Ast.ClassDecl previousInitializingClass = initializingClass;
         loopDepth = 0;
         discardingSelectReturn = false;
-        // Closures may execute after the class constructor returns; their
-        // bodies cannot write fixed slots through the ctor-only exception.
-        initializingClass = null;
+        // Ordinary closures may execute after construction and therefore
+        // lose constructor authority. Invocation-scoped borrowed callables
+        // retain the construction context while their body is validated.
+        if (!allowConstructionBorrowCapture) initializingClass = null;
         try {
             if (lambda.expressionBody() != null) {
                 // An expression body has return-value ownership semantics even
