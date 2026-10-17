@@ -14,8 +14,8 @@ import re
 from pathlib import Path
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
-REVIEWER = "ORESoftware"
-REVIEWER_ID = 11139560
+REVIEWER_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+REQUIRED_REVIEWER_ASSOCIATION = "COLLABORATOR"
 SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPO_ID = 1400792274
 CARRIER_REPO = "sagitta-stack/sagitta-infra"
@@ -54,6 +54,26 @@ def require_sha(value, label):
         raise Denied("invalid SHA: " + label)
     return value
 
+def reviewer_policy(path):
+    value = load_json(path)
+    if (type(value) is not dict
+            or set(value) != {"schema", "enabled", "requiredAuthorAssociation", "reviewer"}
+            or value.get("schema") != 1
+            or value.get("requiredAuthorAssociation") != REQUIRED_REVIEWER_ASSOCIATION):
+        raise Denied("invalid independent reviewer policy")
+    if value.get("enabled") is not True:
+        raise Denied("independent reviewer is not configured")
+    reviewer = value.get("reviewer")
+    if (type(reviewer) is not dict
+            or set(reviewer) != {"login", "id"}
+            or type(reviewer.get("login")) is not str
+            or not REVIEWER_LOGIN.fullmatch(reviewer["login"])
+            or type(reviewer.get("id")) is not int
+            or reviewer["id"] <= 0):
+        raise Denied("invalid independent reviewer identity")
+    return reviewer["login"], reviewer["id"]
+
+
 def pr_head(pr, repo, number):
     if type(pr) is not dict:
         raise Denied("malformed PR metadata")
@@ -73,11 +93,19 @@ def pr_head(pr, repo, number):
         raise Denied("security PR unexpectedly merged")
     if pr.get("draft") is not False:
         raise Denied("security PR must be ready for review")
-    return require_sha((pr.get("head") or {}).get("sha"), "PR head")
+    author = pr.get("user") or {}
+    if (type(author.get("id")) is not int or author["id"] <= 0
+            or author.get("type") != "User"):
+        raise Denied("security PR author identity is unavailable")
+    return (require_sha((pr.get("head") or {}).get("sha"), "PR head"),
+            author["id"])
 
-def exact_approval(reviews, head):
+def exact_approval(reviews, head, reviewer, author_id):
     if type(reviews) is not list:
         raise Denied("malformed review list")
+    reviewer_login, reviewer_id = reviewer
+    if reviewer_id == author_id:
+        raise Denied("independent reviewer cannot be the PR author")
     exact = []
     for review in reviews:
         if type(review) is not dict:
@@ -86,20 +114,23 @@ def exact_approval(reviews, head):
         login = user.get("login")
         user_id = user.get("id")
         commit = review.get("commit_id")
-        if login != REVIEWER or user_id != REVIEWER_ID or commit != head:
+        if (login != reviewer_login or user_id != reviewer_id
+                or user.get("type") != "User"
+                or review.get("author_association") != REQUIRED_REVIEWER_ASSOCIATION
+                or commit != head):
             continue
         review_id = review.get("id")
         if type(review_id) is not int or review_id <= 0:
             raise Denied("invalid exact-head review ID")
         exact.append((review_id, str(review.get("state") or "").upper()))
     if not exact:
-        raise Denied("require independent exact-head review by @" + REVIEWER)
+        raise Denied("require configured outside-collaborator exact-head review")
     review_id, state = max(exact)
     if state != "APPROVED":
         raise Denied("latest independent exact-head review is not approved")
     return review_id
 
-def exact_resume_comment(incident, heads, source_commit, source_tree):
+def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
     if type(incident) is not list:
         raise Denied("malformed incident comments")
     expected = (
@@ -112,6 +143,7 @@ def exact_resume_comment(incident, heads, source_commit, source_tree):
         + " source_tree=" + source_tree
         + " carrier_repo_id=" + str(CARRIER_REPO_ID)
     )
+    reviewer_login, reviewer_id = reviewer
     matches = []
     for comment in incident:
         if type(comment) is not dict:
@@ -120,7 +152,10 @@ def exact_resume_comment(incident, heads, source_commit, source_tree):
         login = user.get("login")
         user_id = user.get("id")
         body = comment.get("body")
-        if login != REVIEWER or user_id != REVIEWER_ID or type(body) is not str:
+        if (login != reviewer_login or user_id != reviewer_id
+                or user.get("type") != "User"
+                or comment.get("author_association") != REQUIRED_REVIEWER_ASSOCIATION
+                or type(body) is not str):
             continue
         lines = [line.strip() for line in body.splitlines() if line.strip()]
         if expected in lines:
@@ -175,6 +210,7 @@ def main():
     for key in EXPECTED_PRS:
         ap.add_argument("--" + key + "-pr", required=True)
         ap.add_argument("--" + key + "-reviews", required=True)
+    ap.add_argument("--reviewer-policy", required=True)
     ap.add_argument("--incident-comments", required=True)
     ap.add_argument("--source-commit", required=True)
     ap.add_argument("--destination-repo", required=True)
@@ -183,19 +219,21 @@ def main():
     ap.add_argument("--snapshot-ledger", required=True)
     args = ap.parse_args()
 
+    reviewer = reviewer_policy(args.reviewer_policy)
     heads = {}
     review_ids = {}
     for key, (repo, number) in EXPECTED_PRS.items():
         pr = load_json(getattr(args, key + "_pr"))
         reviews = load_json(getattr(args, key + "_reviews"))
-        head = pr_head(pr, repo, number)
+        head, author_id = pr_head(pr, repo, number)
         heads[key] = head
-        review_ids[key] = exact_approval(reviews, head)
+        review_ids[key] = exact_approval(reviews, head, reviewer, author_id)
 
     parse_destination_entry(args.destination_ledger)
     source_commit, source_tree = parse_snapshot_entry(args.snapshot_ledger)
     incident = load_json(args.incident_comments)
-    resume_id = exact_resume_comment(incident, heads, source_commit, source_tree)
+    resume_id = exact_resume_comment(
+        incident, heads, source_commit, source_tree, reviewer)
     commit = load_json(args.source_commit)
     if require_sha(commit.get("sha"), "source commit metadata") != source_commit:
         raise Denied("source commit metadata mismatch")
