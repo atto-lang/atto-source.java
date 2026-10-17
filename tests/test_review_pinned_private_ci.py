@@ -165,6 +165,21 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         with self.assertRaises(MOD.Denied):
             self.run_fixture(fx)
 
+    def test_permission_fixture_matches_live_permission_contract(self):
+        value = self.permission("maintain")
+        self.assertEqual(value, {
+            "permission": "maintain",
+            "user": {
+                "login": REVIEWER_LOGIN,
+                "id": REVIEWER_ID,
+                "type": "User",
+            },
+        })
+        self.assertEqual(
+            MOD.live_permission(value, (REVIEWER_LOGIN, REVIEWER_ID, "write"), "write", "fixture"),
+            "maintain",
+        )
+
     def test_valid_exact_head_authority_emits_schema2_receipt(self):
         receipt = self.run_fixture(self.fixture())
         self.assertEqual(receipt["schema"], 2)
