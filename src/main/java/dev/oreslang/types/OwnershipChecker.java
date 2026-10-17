@@ -2027,6 +2027,14 @@ public final class OwnershipChecker {
         }
     }
 
+    private boolean isBorrowedCallable(Ast.TypeRef type) {
+        if (type == null || !type.isBorrow() || type.arguments().size() != 1) return false;
+        Ast.TypeRef target = type.borrowedTarget();
+        return !target.isBorrow()
+                && (target.name().equals("Fnc") || target.name().equals("Function"))
+                && !target.arguments().isEmpty();
+    }
+
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
         if (target instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
