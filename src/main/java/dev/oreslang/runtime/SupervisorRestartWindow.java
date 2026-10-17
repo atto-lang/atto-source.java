@@ -246,13 +246,16 @@ public final class SupervisorRestartWindow {
         if (delta < 0) {
             throw new IllegalArgumentException("monotonic clock moved backwards");
         }
-        lastRawNanos = rawNowNanos;
+        final long nextElapsed;
         try {
-            elapsedNanos = Math.addExact(elapsedNanos, delta);
+            nextElapsed = Math.addExact(elapsedNanos, delta);
         } catch (ArithmeticException exhausted) {
+            // A rejected clock sample must not commit its raw origin.
             throw new IllegalStateException("restart elapsed-time sequence exhausted", exhausted);
         }
-        return elapsedNanos;
+        lastRawNanos = rawNowNanos;
+        elapsedNanos = nextElapsed;
+        return nextElapsed;
     }
 
     private void expire(long nowNanos) {
