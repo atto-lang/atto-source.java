@@ -96,6 +96,28 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueTopNamesCannotBeShadowedOrUsedAsRuntimeTestTargets() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Any as
+                        end
+                        """)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Unknown = int;
+                        """)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): bool {
+                          return value is type any;
+                        }
+                        """)));
+    }
+
+    @Test
     void legacyCapitalizedSpellingsRemainCompatibleTypeAliases() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc a(Any v): int {
