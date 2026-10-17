@@ -152,6 +152,11 @@ NIO selector behind native bootstrap.
   host notifications; a selector with *no* fully started warm lane fails
   closed and retains its exact bounded notification in the readiness manager.
   Its first cold start remains the responsibility of the off-selector helper.
+  Even an already-warm generic `ExecutorService`/`ThreadPoolExecutor` is
+  rejected on a selector: only built-in native `executeWithoutBootstrap`
+  and adaptive JVM `executeWithoutCarrierGrowth` have a verifiable
+  no-growth admission contract. The generic host executor can still accept
+  that staged work when retried from a trusted external thread.
 - JVM `AdaptiveCarrierExecutor.executeWithoutCarrierGrowth()` likewise
   tries its admission lock rather than parking on another worker's startup.
   It forbids `ThreadFactory` growth for these notifications and returns a
