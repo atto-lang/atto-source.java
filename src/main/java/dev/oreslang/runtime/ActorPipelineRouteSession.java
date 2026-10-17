@@ -351,9 +351,14 @@ final class ActorPipelineRouteSession {
 
     private MailFrame newFrame(long flowId, List<String> path) {
         reserveRouteIds(1);
+        // Do not consume route identity until the frame has been published.
+        // IdentityHashMap.put may allocate and fail; an unpublished child must
+        // not advance the VM's routing ledger on that failure path.
+        long candidateRouteId = nextRouteId;
         MailFrame frame = new MailFrame(this, generation, flowId,
-                nextRouteId++, path);
+                candidateRouteId, path);
         active.put(frame, Boolean.TRUE);
+        nextRouteId = candidateRouteId + 1;
         return frame;
     }
 
