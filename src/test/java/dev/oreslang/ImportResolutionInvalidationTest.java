@@ -36,6 +36,10 @@ final class ImportResolutionInvalidationTest {
                   pub fnc two(): int { return 2; }
                 end
                 """);
+        sources.put("consumer.ores", """
+                import module Worker from "./worker.ores";
+                pub routine main(): void { return; }
+                """);
 
         Map<String, Map<String, String>> firstResolution = Map.of(
                 "worker.ores",
@@ -50,5 +54,7 @@ final class ImportResolutionInvalidationTest {
 
         assertTrue(second.rebuilt("worker.ores"),
                 "linker mapping changed even though the resolved dependency set stayed {api-a, api-b}");
+        assertTrue(second.rebuilt("consumer.ores"),
+                "a linked ABI identity change must invalidate the importer's reverse-dependency closure");
     }
 }
