@@ -27,7 +27,7 @@ DISALLOWED_REVIEWER_IDS = frozenset({11139560, 2148448})
 EXPECTED_PRS = {
     "publisher": (SOURCE_REPO, 1198),
     "destination": (SOURCE_REPO, 1092),
-    "snapshot": (SOURCE_REPO, 1189),
+    "snapshot": (SOURCE_REPO, 1197),
     "carrier": (CARRIER_REPO, 7),
 }
 RESUME_MARKER = "PRIVATE_CI_RESUME_APPROVED"
@@ -347,7 +347,7 @@ def main():
         "destination_approval_pr": 1092,
         "destination_approval_head_sha": heads["destination"],
         "destination_review_id": review_ids["destination"],
-        "snapshot_approval_pr": 1189,
+        "snapshot_approval_pr": 1197,
         "snapshot_approval_head_sha": heads["snapshot"],
         "snapshot_review_id": review_ids["snapshot"],
         "carrier_policy_pr": 7,
