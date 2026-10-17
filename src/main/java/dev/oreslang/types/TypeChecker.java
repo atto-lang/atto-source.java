@@ -234,8 +234,20 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.name().equals("ActorRouteReceipt")) {
+                throw new IllegalArgumentException(
+                        "ActorRouteReceipt is a reserved compiler-owned routing type");
+            }
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                String reservedRoutingType = null;
+                if (decl instanceof Ast.ClassDecl klass) reservedRoutingType = klass.name();
+                else if (decl instanceof Ast.InterfaceDecl iface) reservedRoutingType = iface.name();
+                else if (decl instanceof Ast.TypeAliasDecl alias) reservedRoutingType = alias.name();
+                if ("ActorRouteReceipt".equals(reservedRoutingType)) {
+                    throw new IllegalArgumentException(
+                            "ActorRouteReceipt is a reserved compiler-owned routing type");
+                }
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putFunction(module.name(), fn);
                 } else if (decl instanceof Ast.ClassDecl klass) {
