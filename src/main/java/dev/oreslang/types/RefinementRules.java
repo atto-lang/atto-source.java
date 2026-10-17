@@ -84,6 +84,12 @@ public final class RefinementRules {
                 default -> throw new IllegalArgumentException("unsupported comparison " + b.comparator());
             }
         }
+        // Exclusions outside the admissible interval have no semantic effect.
+        // Remove them so logically equivalent constraints share one schema
+        // identity and do not trigger an unimplemented Zorde exclusion path.
+        long lower = min;
+        long upper = max;
+        excluded.removeIf(n -> n < lower || n > upper);
         return new Interval(prop, min, max, excluded);
     }
 
