@@ -4267,6 +4267,9 @@ public final class ActorRuntime implements AutoCloseable {
                         failure.getMessage() == null ? "" : failure.getMessage()));
             }
         }
+        if (lane != null && failure == null) {
+            lane.releaseReservation(cell.ref.id());
+        }
         // Keep the actor discoverable until all runtime-owned teardown that is
         // part of its termination contract has completed. ActorRef.awaitTermination()
         // treats absence from this map as terminal, so removing the actor first
