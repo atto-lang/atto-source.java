@@ -1016,6 +1016,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "bb2302e138f4b36d68afd6ffa9280b24fa270d04",
                 "git hash-object scripts/check_option_pattern_contract.py",
                 "77a30027582d2496d5e7087a9a51a75c075496cd",
+                "git hash-object contracts/v1/java_probe.py",
+                "6ef4692b0d6c30e572d0f5520e2dd29ad68932cf",
                 "--backend graal", "--run-command",
                 "contracts/v1/java_probe.py",
                 "option-pattern-private-candidate.json" }) {
