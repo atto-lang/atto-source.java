@@ -100,7 +100,7 @@ public final class ZordeSchemaGenerator {
         if (schemas.putIfAbsent(qualifiedName, descriptor) != null)
             throw new IllegalArgumentException("duplicate generated Zorde schema " + qualifiedName);
         inferred.put(qualifiedName, new InferredScalarType(
-                qualifiedName, schema.baseType(), schema.refinement(nominal),
+                qualifiedName, schema.baseType(), descriptor.inferredRefinement(),
                 identity, descriptor.fingerprint()));
     }
 
