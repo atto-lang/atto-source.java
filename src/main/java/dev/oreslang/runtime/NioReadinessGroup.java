@@ -944,13 +944,18 @@ public final class NioReadinessGroup implements AutoCloseable {
                         releaseNotificationReservation();
                     }
                 });
-            } catch (RejectedExecutionException impossible) {
+            } catch (RuntimeException | Error publicationFailure) {
                 // A selector must NEVER call synchronous Future subscribers
-                // as a saturation fallback. Unexpected executor shutdown is
-                // an invariant failure, not permission to run guest callbacks.
+                // as a saturation fallback. Publication failure must also
+                // release the reservation before the reactor terminates;
+                // otherwise awaitStopped() can hang forever on observational
+                // infrastructure that never accepted the delivery.
                 releaseNotificationReservation();
+                if (publicationFailure instanceof VirtualMachineError fatal) throw fatal;
+                if (publicationFailure instanceof ThreadDeath fatal) throw fatal;
                 throw new IllegalStateException(
-                        "NIO completion executor terminated before reactor quiescence", impossible);
+                        "NIO completion publication failed before reactor quiescence",
+                        publicationFailure);
             }
         }
 
@@ -1032,6 +1037,11 @@ public final class NioReadinessGroup implements AutoCloseable {
                 }
                 stopped.countDown();
             }
+            // Fatal VM/thread failures are cleanup-triggering, not recoverable
+            // reactor errors. Preserve the runtime's fail-fast policy after
+            // every watch/reservation has been deterministically retired.
+            if (terminal instanceof VirtualMachineError fatal) throw fatal;
+            if (terminal instanceof ThreadDeath fatal) throw fatal;
         }
     }
 
