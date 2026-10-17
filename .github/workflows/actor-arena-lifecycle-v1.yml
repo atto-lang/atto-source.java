@@ -38,7 +38,7 @@ jobs:
           test "$(git hash-object contracts/v1/SHARED_ACTOR_ARENAS_V1.md)" = "b8491d7c22e118053479061727e95bbb62568a7e"
           test "$(git hash-object contracts/v1/actor_arena_lifecycle_v1.json)" = "5a3a200d2fd135736e44a3dde7ea29848208864e"
           test "$(git hash-object scripts/verify_actor_arena_lifecycle_v1.py)" = "2bd60075de7afd1542aa9fd1bbdba0b0fc688f30"
-          test "$(git hash-object scripts/test_actor_arena_lifecycle_v1.py)" = "3fa507649b340fe9249253bddb5dfc742e6d90ca"
+          test "$(git hash-object scripts/test_actor_arena_lifecycle_v1.py)" = "2c3627771b132f904097d36dd9aba03412ce83bd"
       - name: Execute 32 adversarial actor arena checks in three rounds
         shell: bash
         run: |
