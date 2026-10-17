@@ -34,6 +34,23 @@ public final class OresVM implements AutoCloseable {
         return Boolean.TRUE.equals(ON_CONTROL_CARRIER.get());
     }
 
+    /** The NIO selector and runtime completion domains may publish host
+     * Future notifications, but neither is an external VM teardown thread.
+     * A trusted callback must not synchronously join its own selector,
+     * completion pool, or the CONTROL dispatcher it may be waking.
+     */
+    private static final ThreadLocal<Boolean> ON_NIO_WORKER = new ThreadLocal<>();
+
+    static boolean onNioWorker() {
+        return Boolean.TRUE.equals(ON_NIO_WORKER.get());
+    }
+
+    static void runAsNioWorker(Runnable work) {
+        ON_NIO_WORKER.set(Boolean.TRUE);
+        try { work.run(); }
+        finally { ON_NIO_WORKER.remove(); }
+    }
+
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
     private final ThreadPoolExecutor controlExecutor;
@@ -207,6 +224,7 @@ public final class OresVM implements AutoCloseable {
         // their own scheduler or selector to terminate.
         if (OresScheduler.current() != null
                 || onControlCarrier()
+                || onNioWorker()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
