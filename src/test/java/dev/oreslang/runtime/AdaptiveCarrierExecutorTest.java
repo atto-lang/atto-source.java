@@ -101,6 +101,56 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void noGrowthAdmissionReusesWarmJvmCarrierWithoutStartingAnother() throws Exception {
+        var created = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) task ->
+                Thread.ofPlatform().daemon(true)
+                        .name("adaptive-no-growth-" + created.incrementAndGet()).unstarted(task);
+        try (var workers = new AdaptiveCarrierExecutor(1, 3, 8, factory)) {
+            assertEquals(1, workers.prestartAllCoreThreads());
+            assertEquals(1, workers.getPoolSize());
+
+            var occupied = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var later = new CountDownLatch(1);
+            workers.execute(() -> {
+                occupied.countDown();
+                try { release.await(5, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(occupied.await(2, TimeUnit.SECONDS));
+
+            workers.executeWithoutCarrierGrowth(later::countDown);
+            assertFalse(later.await(100, TimeUnit.MILLISECONDS),
+                    "no-growth admission must queue behind the warm carrier, not start another thread");
+            assertEquals(1, workers.getPoolSize());
+            assertEquals(1, workers.getLargestPoolSize());
+            assertEquals(1, workers.getCorePoolSize());
+
+            release.countDown();
+            assertTrue(later.await(2, TimeUnit.SECONDS));
+            assertEquals(1, created.get(),
+                    "reactor-safe admission must reuse the existing JVM carrier");
+        }
+    }
+
+    @Test void noGrowthAdmissionRejectsColdJvmPoolWithoutCreatingCarrier() {
+        var created = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) task -> {
+            created.incrementAndGet();
+            return Thread.ofPlatform().daemon(true).unstarted(task);
+        };
+        try (var workers = new AdaptiveCarrierExecutor(1, 3, 8, factory)) {
+            assertEquals(0, workers.getPoolSize());
+            assertThrows(RejectedExecutionException.class,
+                    () -> workers.executeWithoutCarrierGrowth(() -> {}));
+            assertEquals(0, created.get());
+            assertEquals(0, workers.getPoolSize());
+        }
+    }
+
     @Test void zeroMinimumStartsColdAndGrowsForRunnableWork() throws Exception {
         var created = new AtomicInteger();
         var factory = (java.util.concurrent.ThreadFactory) task ->
