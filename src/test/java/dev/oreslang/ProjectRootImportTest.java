@@ -395,4 +395,22 @@ final class ProjectRootImportTest {
         assertEquals(marker, omitted.resolveImport(importer, "only-here").orElseThrow());
     }
 
+    @Test
+    void unsupportedPackageAliasAndRetiredPrefixNeverBecomeBareImports() throws Exception {
+        Path root = makeProject("unverified-dependency");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        OresProjectConfig config = OresProjectConfig.discover(importer, Map.of());
+        for (String specifier : new String[] {
+                "pkg:math/src/answer", "@/lib/message"
+        }) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> config.resolveImport(importer, specifier), specifier);
+            assertTrue(failure.getMessage().contains(specifier), failure.getMessage());
+            Files.writeString(importer, "import fnc message from \"" + specifier +
+                    "\";\\npub fnc main(): void { return; }\\n");
+            assertThrows(IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.validate(importer), specifier);
+        }
+    }
+
 }
