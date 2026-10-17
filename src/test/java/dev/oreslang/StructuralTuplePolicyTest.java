@@ -92,6 +92,20 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void largeUnionFanoutIsRejectedBeforeProvingReadonlyCompatibility() {
+        var options = new java.util.ArrayList<dev.oreslang.types.Types.Type>();
+        for (int i = 0; i < 65; i++) {
+            options.add(new dev.oreslang.types.Types.StringLiteral("value" + i));
+        }
+        var tooMany = new dev.oreslang.types.Types.Union(options);
+        assertThrows(IllegalArgumentException.class, () -> new Slot(tooMany, true));
+        var bounded = new dev.oreslang.types.Types.Union(List.of(
+                new dev.oreslang.types.Types.StringLiteral("a"),
+                new dev.oreslang.types.Types.StringLiteral("b")));
+        assertDoesNotThrow(() -> new Slot(bounded, false));
+    }
+
+    @Test
     void nestedArraysAndFixedListsCannotMasqueradeAsReadonlyTupleSlots() {
         for (TupleKind kind : new TupleKind[] {
                 TupleKind.FIXED_ARRAY, TupleKind.FIXED_LIST
