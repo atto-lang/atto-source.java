@@ -811,6 +811,25 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void runtimeValidatedOpaqueStructuralViewReadsWithoutRegrantingMutation() throws Exception {
+        String output = run("""
+                fnc checked(any input): int {
+                  val unknown hidden = input;
+                  return hidden matches structural { amount: int } view
+                      ? view.amount : 0;
+                }
+
+                pub fnc main(): void {
+                  const value = infer struct{amount: 8};
+                  stdio.stdout.write(checked(value));
+                  stdio.stdout.write(checked("not a record"));
+                  return;
+                }
+                """);
+        assertEquals("80", output);
+    }
+
+    @Test
     void opaqueStructuralCastsAndNestedShapeTestsRemainFailClosed() {
         // Runtime structural type descriptors are not admitted as cast/is
         // targets yet. Do not mistake type-shape syntax for checked authority.
