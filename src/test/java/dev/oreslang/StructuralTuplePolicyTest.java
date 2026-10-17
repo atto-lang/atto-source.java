@@ -51,6 +51,27 @@ final class StructuralTuplePolicyTest {
     }
 
     @Test
+    void hiddenStructuralWidthTailCannotLaunderUnknownBorrowOrMutableCollections() {
+        var family = List.of(new Candidate("readonly-tuple", 1, STRUCTURAL));
+        for (var unsafe : List.of(
+                dev.oreslang.types.Types.Unknown.INSTANCE,
+                new dev.oreslang.types.Types.Generic("T"),
+                new dev.oreslang.types.Types.Borrow(Primitive.INT, true),
+                new Named("ActorRef", List.of(Primitive.INT)),
+                new Tuple(List.of(Primitive.INT), TupleKind.FIXED_ARRAY),
+                new Tuple(List.of(Primitive.INT), TupleKind.FIXED_LIST))) {
+            var supplied = tuple(Primitive.INT, Primitive.INT, Primitive.STRING, unsafe);
+            assertFalse(StructuralTuplePolicy.admits(STRUCTURAL, supplied),
+                    "hidden source slot must be checked: " + unsafe);
+            assertThrows(IllegalArgumentException.class,
+                    () -> StructuralTuplePolicy.selectExplicitTupleSpread(family, supplied),
+                    "tuple pack must reject unseen mutable/unknown source slots");
+        }
+        assertTrue(StructuralTuplePolicy.admits(STRUCTURAL,
+                tuple(Primitive.INT, Primitive.INT, Primitive.STRING, Primitive.BOOL)));
+    }
+
+    @Test
     void prohibitOptionalSlotsBeforeRequiredElements() {
         assertThrows(IllegalArgumentException.class, () -> new Shape(List.of(
                 new Slot(Primitive.INT, true), new Slot(Primitive.STRING, false)), true));
