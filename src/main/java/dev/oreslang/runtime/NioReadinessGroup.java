@@ -87,24 +87,21 @@ public final class NioReadinessGroup implements AutoCloseable {
     private final class NotificationDelivery implements Runnable {
         private final Runnable notification;
         private final AtomicBoolean claimed = new AtomicBoolean();
-        // Tracks ownership of one retry slot, including the window where a
-        // nonconforming executor accepted work before reporting rejection.
-        // Initially true because dispatchNotification enqueues this record.
+        // At most one retry copy of this delivery may be staged. Initially
+        // true because dispatchNotification appends the new record.
         private final AtomicBoolean queuedForRetry = new AtomicBoolean(true);
 
         NotificationDelivery(Runnable notification) {
             this.notification = notification;
         }
 
-        /** A rejection is not proof that an executor discarded the task.
-         * Requeue the SAME claim token, never a new notification wrapper.
-         * This also handles asynchronous attempts to run on a reactor.
+        /** Preserve the same claim token even if an Executor schedules a task
+         * and then rejects it, or asynchronously attempts delivery on SELECTOR.
          */
         void stageForRetry() {
             if (claimed.get() || !queuedForRetry.compareAndSet(false, true)) return;
             stagedNotifications.addFirst(this);
-            // A previously queued delivery may have claimed execution during
-            // addFirst. Do not retain a stale accepted notification indefinitely.
+            // A previously scheduled copy can claim while addFirst runs.
             if (claimed.get()) {
                 stagedNotifications.remove(this);
                 queuedForRetry.set(false);
@@ -112,16 +109,14 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
 
         @Override public void run() {
-            // Even if a hostile Executor swallows this exception, the failed
-            // selector invocation must leave its notification retryable.
+            // Host Executors may be synchronous and may swallow exceptions.
+            // The illegal selector attempt itself must restore retry ownership.
             if (Boolean.TRUE.equals(ON_REACTOR.get())) {
                 stageForRetry();
                 throw new RejectedExecutionException(
                         "NIO completion callback cannot execute on reactor thread");
             }
             if (!claimed.compareAndSet(false, true)) return;
-            // Remove a retry copy if the executor originally enqueued and
-            // then rejected, or tried to dispatch on a reactor asynchronously.
             if (queuedForRetry.getAndSet(false))
                 stagedNotifications.remove(this);
             OresVM.runAsNioWorker(notification);
@@ -130,10 +125,11 @@ public final class NioReadinessGroup implements AutoCloseable {
 
     private final ConcurrentLinkedDeque<NotificationDelivery> stagedNotifications =
             new ConcurrentLinkedDeque<>();
-    private final Object notificationDispatch = new Object();
-    // Guarded by notificationDispatch. The monitor itself is reentrant; an
-    // inline hostile executor must not recursively retry the same staged head.
-    private boolean notificationRetryActive;
+    // Do not hold a monitor while calling a user-supplied Executor: it may
+    // invoke a slow callback inline. A selector must never block behind that
+    // callback merely because another readiness record is published.
+    private final AtomicBoolean notificationDispatching = new AtomicBoolean();
+    private final AtomicBoolean notificationRetryRequested = new AtomicBoolean();
     private final Object notificationDrain = new Object();
     // A transient registration burst must not spin up extra selector threads.
     // Counter is protected by the lifecycle monitor.
@@ -255,36 +251,54 @@ public final class NioReadinessGroup implements AutoCloseable {
         Executor target = boundCompletionExecutor;
         if (target == null && ownedCompletionExecutor != null) return;
         if (target == null) target = completionExecutor;
-        synchronized (notificationDispatch) {
-            if (notificationRetryActive) return;
-            notificationRetryActive = true;
+
+        // Concurrent requests coalesce without parking the reactor behind a
+        // host callback. Inline, reentrant callbacks request another pass
+        // rather than recursively executing a nested 128-record batch.
+        notificationRetryRequested.set(true);
+        if (!notificationDispatching.compareAndSet(false, true)) return;
+        for (;;) {
+            boolean rejected = false;
             try {
-                for (int i = 0; i < 128; ++i) {
-                    // Claim before invoking an arbitrary Executor: an inline
-                    // completion may re-enter this method, and replaying an
-                    // unclaimed head can release one notification twice.
-                    NotificationDelivery next = stagedNotifications.pollFirst();
-                    if (next == null) return;
-                    next.queuedForRetry.set(false);
-                    if (next.claimed.get()) continue;
-                    try {
-                        target.execute(next);
-                        // A hostile inline executor may swallow the selector guard.
-                        // Do not immediately replay the same invalid head; leave it
-                        // staged for a trusted host/scheduler capacity retry.
-                        if (next.queuedForRetry.get()) return;
-                    } catch (RejectedExecutionException full) {
-                        // An executor may accept and THEN throw. A single claim
-                        // token makes retries harmless even if the original task
-                        // subsequently executes. It cannot lose an async selector
-                        // rejection just because the executor swallowed an error.
-                        next.stageForRetry();
-                        return;
+                int passes = 0;
+                do {
+                    notificationRetryRequested.set(false);
+                    for (int i = 0; i < 128; ++i) {
+                        NotificationDelivery next = stagedNotifications.pollFirst();
+                        if (next == null) break;
+                        next.queuedForRetry.set(false);
+                        if (next.claimed.get()) continue;
+                        try {
+                            target.execute(next);
+                            // An inline executor may swallow the selector
+                            // rejection. Stop retrying until a trusted host
+                            // or carrier hook supplies fresh capacity.
+                            if (next.queuedForRetry.get()) {
+                                rejected = true;
+                                break;
+                            }
+                        } catch (RejectedExecutionException full) {
+                            // Accept-then-reject is ambiguous: keep the
+                            // original single-claim token, never a fresh task.
+                            if (next.claimed.get()) continue;
+                            next.stageForRetry();
+                            rejected = true;
+                            break;
+                        }
                     }
-                }
+                    // At most 8192 records per draining invocation. A full
+                    // actor pool returns rejection, not an unbounded retry
+                    // loop on the selector; independent retry hooks provide
+                    // subsequent capacity notifications.
+                } while (!rejected && notificationRetryRequested.get()
+                        && ++passes < 64);
             } finally {
-                notificationRetryActive = false;
+                notificationDispatching.set(false);
             }
+            if (rejected || !notificationRetryRequested.getAndSet(false)) return;
+            // A request may have arrived after the final pass or just before
+            // the lease was released. Reacquire or leave it to the new owner.
+            if (!notificationDispatching.compareAndSet(false, true)) return;
         }
     }
 
