@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 # An approved destination must include its stable numeric GitHub repository ID.
@@ -34,6 +35,17 @@ CARRIER_VALIDATION_WORKFLOW = "private-oreslang-java-validation.yml"
 SOURCE_REPOSITORY = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPOSITORY_ID = 1400792274
 SOURCE_METADATA_ROUTE = "repos/" + SOURCE_REPOSITORY
+# GitHub incident closure is NECESSARY but not SUFFICIENT for source export.
+# Even a closed incident never replaces protected-branch review, exact
+# snapshot approval, destination privacy, or immutable-tree verification.
+SOURCE_INCIDENT_REPOSITORY = "ores-truffle-oreslang/oreslang-platform-conformance"
+SOURCE_INCIDENT_REPOSITORY_ID = 1413795502
+SOURCE_INCIDENT_ISSUE_ID = 5832921751
+SOURCE_INCIDENT_NUMBER = 22
+SOURCE_INCIDENT_METADATA_ROUTE = "repos/" + SOURCE_INCIDENT_REPOSITORY
+SOURCE_INCIDENT_ROUTE = (
+    SOURCE_INCIDENT_METADATA_ROUTE + "/issues/" + str(SOURCE_INCIDENT_NUMBER)
+)
 PROTECTED_BRANCH_ROUTE = SOURCE_METADATA_ROUTE + "/branches/main"
 PROTECTED_POLICY_ROUTE = (
     SOURCE_METADATA_ROUTE + "/contents/"
@@ -54,7 +66,9 @@ REQUIRED_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
     "/.github/private-ci-approved-repositories.txt",
     "/.github/private-ci-approved-source-snapshots.txt",
+    "/.github/private-ci-required-checks.json",
     "/.github/workflows/private-ci-mirror-preflight.yml",
+    "/.github/workflows/private-ci-policy.yml",
     "/.github/workflows/private-exact-candidate-validation.yml",
     "/.github/workflows/private-exact-main-validation.yml",
     "/.github/workflows/private-exact-publisher-validation.yml",
@@ -76,6 +90,12 @@ REQUIRED_CODEOWNER_PATHS = (
     "/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java",
 )
 REQUIRED_CODEOWNER = "@ORESoftware"
+# GitHub Actions is the sole accepted issuer for mandatory source/carrier checks.
+# These are a minimum: administrators may require additional trusted checks.
+GITHUB_ACTIONS_APP_ID = 15368
+SOURCE_POLICY_CHECK = "private-ci-policy"
+CARRIER_POLICY_CHECK = "carrier-policy"
+CARRIER_POLICY_PATH = ".github/private-ci-carrier-policy.json"
 
 PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
@@ -101,6 +121,39 @@ def safe_descriptor_flags_available():
 
 class Denied(RuntimeError):
     pass
+
+
+def require_pinned_actions_check(required_checks, expected_context):
+    """Do not trust a status name unless the required check is issuer-bound.
+
+    GitHub required_status_checks.contexts alone accepts statuses spoofed by
+    other apps. The branch-protection API also exposes the issuing app_id
+    under required_status_checks.checks; fail closed if missing/ambiguous.
+    """
+    if not isinstance(required_checks, dict):
+        raise Denied("required status-check policy missing")
+    checks = required_checks.get("checks")
+    contexts = required_checks.get("contexts")
+    if not isinstance(checks, list) or not checks:
+        raise Denied("required status-check issuer binding missing")
+    # Legacy contexts can be satisfied by any status publisher and therefore
+    # cannot establish issuer provenance. Bootstrap policy requires these to
+    # be absent: only the app-bound checks[] representation is admissible.
+    if contexts is not None and (not isinstance(contexts, list) or contexts):
+        raise Denied("legacy required status-check contexts must be empty")
+    seen = set()
+    for check in checks:
+        if not isinstance(check, dict):
+            raise Denied("malformed required status-check issuer")
+        name, app_id = check.get("context"), check.get("app_id")
+        if (not isinstance(name, str) or not name
+                or name in seen or type(app_id) is not int or app_id <= 0):
+            raise Denied("ambiguous or unbound required status-check issuer")
+        seen.add(name)
+        if name == expected_context and app_id != GITHUB_ACTIONS_APP_ID:
+            raise Denied("required security status check has incorrect issuer")
+    if expected_context not in seen:
+        raise Denied("required issuer-bound security status check missing")
 
 
 def valid_sha(value):
@@ -388,6 +441,11 @@ def require_protected_source_codeowners():
                 for path in REQUIRED_CODEOWNER_PATHS]
     if effective[-len(required):] != required:
         raise Denied("private CI publisher and policies lack terminal CODEOWNER coverage")
+    # All workflows (including future names) must require the same reviewer.
+    # Otherwise an unreviewed workflow can emit the same Actions check name.
+    if (len(effective) <= len(required)
+            or effective[-len(required)-1] != "/.github/workflows/ @ORESoftware"):
+        raise Denied("source workflow directory lacks terminal CODEOWNER coverage")
     # The CODEOWNERS text can be syntactically well-formed yet ignored by
     # GitHub (for example, a non-existent owner or invalid pattern). Ask
     # GitHub's CODEOWNERS validator about the protected main revision.
@@ -434,12 +492,14 @@ def require_protected_carrier_codeowners(repository):
         raise Denied("private carrier CODEOWNERS blob integrity failed")
     effective = [line.strip() for line in decoded.splitlines()
                  if line.strip() and not line.strip().startswith("#")]
-    # The last matching rule wins. Require these final two rules in order:
-    # no later wildcard or exception can remove security ownership.
-    expected = ["/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
-                "/.github/workflows/ " + REQUIRED_CODEOWNER]
+    # The last matching rule wins. Require the same terminal trust root
+    # carried by approved private CI destinations: future workflow files,
+    # CODEOWNERS itself, and the issuer policy declaring carrier-policy.
+    expected = ["/.github/workflows/ " + REQUIRED_CODEOWNER,
+                "/.github/CODEOWNERS " + REQUIRED_CODEOWNER,
+                "/" + CARRIER_POLICY_PATH + " " + REQUIRED_CODEOWNER]
     if effective[-len(expected):] != expected:
-        raise Denied("private carrier workflows lack terminal security CODEOWNER coverage")
+        raise Denied("private carrier security files lack terminal CODEOWNER coverage")
     errors = gh_api(route + "/codeowners/errors?ref=main")
     if not isinstance(errors.get("errors"), list) or errors["errors"]:
         raise Denied("private carrier CODEOWNERS has GitHub validation errors")
@@ -450,6 +510,98 @@ def require_protected_carrier_codeowners(repository):
             or owner.get("type") != "User"
             or access.get("permission") not in ("write", "admin")):
         raise Denied("private carrier security CODEOWNER lacks write permission")
+
+
+def require_protected_carrier_policy(repository):
+    """Bind carrier-policy required-check provenance to reviewed main bytes."""
+    route = (
+        f"repos/{repository}/contents/" + CARRIER_POLICY_PATH + "?ref=main"
+    )
+    metadata = gh_api(route)
+    if (metadata.get("type") != "file"
+            or metadata.get("encoding") != "base64"
+            or not isinstance(metadata.get("content"), str)
+            or len(metadata["content"]) > 24 * 1024
+            or type(metadata.get("size")) is not int
+            or not 1 <= metadata["size"] <= 16 * 1024):
+        raise Denied("private carrier issuer policy metadata is unavailable")
+    try:
+        encoded = "".join(metadata["content"].splitlines())
+        raw = base64.b64decode(encoded, validate=True)
+        decoded = raw.decode("utf-8")
+    except (ValueError, UnicodeError) as exc:
+        raise Denied("private carrier issuer policy is not valid UTF-8/base64") from exc
+    if base64.b64encode(raw).decode("ascii") != encoded:
+        raise Denied("private carrier issuer policy base64 is noncanonical")
+    digest = hashlib.sha1(
+        b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+    ).hexdigest()
+    if (len(raw) != metadata["size"]
+            or b"\0" in raw
+            or valid_sha(metadata.get("sha")) != digest):
+        raise Denied("private carrier issuer policy blob integrity failed")
+    try:
+        policy = json.loads(decoded)
+    except (TypeError, ValueError) as exc:
+        raise Denied("private carrier issuer policy is not valid JSON") from exc
+    expected = {
+        "schema": 1,
+        "carrier": {
+            "context": CARRIER_POLICY_CHECK,
+            "appId": GITHUB_ACTIONS_APP_ID,
+        },
+    }
+    if (not isinstance(policy, dict)
+            or policy != expected
+            or list(policy.keys()) != ["schema", "carrier"]
+            or not isinstance(policy.get("carrier"), dict)
+            or list(policy["carrier"].keys()) != ["context", "appId"]):
+        raise Denied("private carrier issuer policy identity mismatch")
+    return digest
+
+
+def require_incident_containment():
+    """Require the exact independently observable completed incident.
+
+    Repository path + issue number are not durable identities: a repository
+    can be renamed/deleted/recreated and a pull request also occupies the
+    issues API namespace. Bind both objects to immutable numeric GitHub IDs,
+    require the incident repository to remain private, and reject PR-shaped
+    payloads before treating closure as containment.
+    """
+    incident_repository = gh_api(SOURCE_INCIDENT_METADATA_ROUTE)
+    if (incident_repository.get("full_name") != SOURCE_INCIDENT_REPOSITORY
+            or type(incident_repository.get("id")) is not int
+            or incident_repository["id"] != SOURCE_INCIDENT_REPOSITORY_ID
+            or incident_repository.get("private") is not True
+            or incident_repository.get("visibility") != "private"
+            or incident_repository.get("archived") is not False
+            or incident_repository.get("disabled") is not False):
+        raise Denied("private-source incident repository identity is not verified")
+    issue = gh_api(SOURCE_INCIDENT_ROUTE)
+    canonical_url = "https://api.github.com/" + SOURCE_INCIDENT_ROUTE
+    canonical_repository_url = (
+        "https://api.github.com/" + SOURCE_INCIDENT_METADATA_ROUTE
+    )
+    closed_at = issue.get("closed_at")
+    if (type(issue.get("id")) is not int
+            or issue["id"] != SOURCE_INCIDENT_ISSUE_ID
+            or type(issue.get("number")) is not int
+            or issue["number"] != SOURCE_INCIDENT_NUMBER
+            or issue.get("url") != canonical_url
+            or issue.get("repository_url") != canonical_repository_url
+            or issue.get("pull_request") is not None
+            or issue.get("state") != "closed"
+            or issue.get("state_reason") != "completed"
+            or not isinstance(closed_at, str)):
+        raise Denied("private-source exposure incident #22 remains unresolved")
+    try:
+        parsed_closed_at = datetime.strptime(
+            closed_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError) as exc:
+        raise Denied("private-source exposure incident closure timestamp is invalid") from exc
+    if parsed_closed_at.year < 2026:
+        raise Denied("private-source exposure incident closure timestamp is invalid")
 
 
 def require_protected_main_policy(approved_policy):
@@ -479,12 +631,13 @@ def require_protected_main_policy(approved_policy):
             or rules["enforce_admins"].get("enabled") is not True):
         raise Denied("protected main must enforce rules for administrators")
     required_checks = rules.get("required_status_checks")
+    # The only trusted required status entries are checks[] with explicit
+    # issuer identities. Legacy contexts[] MUST stay empty: those are not
+    # independently app-bound. require_pinned_actions_check enforces both.
     if (not isinstance(required_checks, dict)
-            or required_checks.get("strict") is not True
-            or not isinstance(required_checks.get("contexts"), list)
-            or not required_checks["contexts"]
-            or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
+            or required_checks.get("strict") is not True):
         raise Denied("protected main must require strict source CI checks")
+    require_pinned_actions_check(required_checks, SOURCE_POLICY_CHECK)
     # An unresolved security review thread must be able to block the policy
     # change before the private publisher trusts it. Do not infer this from
     # required approving reviews: GitHub exposes the gate separately.
@@ -504,6 +657,9 @@ def require_protected_main_policy(approved_policy):
                 not isinstance(allowances.get(key, []), list)
                 or allowances.get(key) for key in ("users", "teams", "apps")):
             raise Denied("branch review bypass allowances are not permitted")
+    # This is a necessary additional gate, never sufficient authorization.
+    # require_protected_main_policy runs before source reads AND each Git write.
+    require_incident_containment()
     require_protected_source_codeowners()
     metadata = gh_api(PROTECTED_POLICY_ROUTE)
     if (metadata.get("type") != "file"
@@ -933,8 +1089,9 @@ def require_private_ci_api_budget(file_count, estimated_writes=None):
         raise Denied("GitHub core API budget unavailable")
     # Each write revalidates both source and carrier CODEOWNERS, the pinned
     # carrier validation-workflow blob, and all immutable approvals. Reserve
-    # one additional core read per write for that protected workflow pin.
-    required = 25 * estimated_writes + 160
+    # three extra reads per write: pinned carrier workflow, incident repository
+    # identity, and exact incident state.
+    required = 27 * estimated_writes + 160
     if remaining < required:
         raise Denied("insufficient GitHub core API budget for safe private CI export")
 
@@ -1012,11 +1169,9 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
         if (not isinstance(carrier_rules.get("enforce_admins"), dict)
                 or carrier_rules["enforce_admins"].get("enabled") is not True
                 or not isinstance(checks, dict)
-                or checks.get("strict") is not True
-                or not isinstance(checks.get("contexts"), list)
-                or not checks["contexts"]
-                or not all(isinstance(c, str) and c for c in checks["contexts"])):
+                or checks.get("strict") is not True):
             raise Denied("private carrier main lacks enforced administrator and CI protections")
+        require_pinned_actions_check(checks, CARRIER_POLICY_CHECK)
         conversations = carrier_rules.get("required_conversation_resolution")
         if (not isinstance(conversations, dict)
                 or conversations.get("enabled") is not True):
@@ -1035,6 +1190,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                     for key in ("users", "teams", "apps")):
                 raise Denied("private carrier main allows review bypass")
         require_protected_carrier_codeowners(repository)
+        require_protected_carrier_policy(repository)
         workflow = gh_api(
             f"repos/{repository}/contents/.github/workflows/"
             + CARRIER_VALIDATION_WORKFLOW + "?ref=main")
