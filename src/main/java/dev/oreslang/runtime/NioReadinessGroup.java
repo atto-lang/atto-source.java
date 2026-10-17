@@ -731,6 +731,14 @@ public final class NioReadinessGroup implements AutoCloseable {
             Throwable terminal = null;
             try {
                 while (!stopping.get()) {
+                    // A cancelled SelectionKey remains in the selector's key
+                    // table until a select operation processes cancellation.
+                    // A completion worker may have already queued a follow-up
+                    // watch for the SAME socket. Registering it first can
+                    // throw CancelledKeyException and lose an otherwise valid
+                    // partial-read/write re-arm. Nonparking selectNow() fences
+                    // the old key's retirement before the registration batch.
+                    if (!commands.isEmpty()) selector.selectNow();
                     Watch watch;
                     int work = 0;
                     while (work++ < 128 && (watch = commands.poll()) != null) {
