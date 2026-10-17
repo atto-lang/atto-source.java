@@ -77,6 +77,60 @@ class DispatcherTest(unittest.TestCase):
             self.assertEqual(MOD.branch_absent(receipt()),"ci/oreslang-"+"2"*40)
         finally: MOD.api_list=old
 
+
+    def test_authorization_branch_binds_exact_payload_commit(self):
+        self.assertEqual(
+            MOD.authorization_branch("a"*40),
+            "ci/authorized-"+"a"*40)
+        with self.assertRaises(MOD.Denied):
+            MOD.authorization_branch("not-a-sha")
+
+    def test_existing_authorization_ref_denied(self):
+        old=MOD.api_list
+        try:
+            MOD.api_list=lambda route:[
+                {"ref":"refs/heads/ci/authorized-"+"a"*40}
+            ]
+            with self.assertRaisesRegex(MOD.Denied,"authorization ref already exists"):
+                MOD.authorization_ref_absent("a"*40)
+        finally:
+            MOD.api_list=old
+
+    def test_authorization_ref_is_created_only_after_final_live_recheck(self):
+        r=receipt(); commit="a"*40
+        old_api=MOD.PUB.gh_api; old_list=MOD.api_list; old_refresh=MOD.refresh_authorization
+        events=[]
+        payload_branch="ci/oreslang-"+r["source_tree_sha"]
+        try:
+            def api(route,method="GET",payload=None):
+                if method=="GET":
+                    self.assertTrue(route.endswith("/git/ref/heads/"+payload_branch))
+                    events.append("payload-readback")
+                    return {
+                        "ref":"refs/heads/"+payload_branch,
+                        "object":{"type":"commit","sha":commit},
+                    }
+                events.append("authorization-write")
+                self.assertEqual(events[-2],"refresh")
+                self.assertEqual(
+                    payload,
+                    {"ref":"refs/heads/ci/authorized-"+commit,"sha":commit})
+                return {
+                    "ref":"refs/heads/ci/authorized-"+commit,
+                    "object":{"type":"commit","sha":commit},
+                }
+            MOD.PUB.gh_api=api
+            MOD.api_list=lambda route:[]
+            MOD.refresh_authorization=lambda _: events.append("refresh")
+            self.assertEqual(
+                MOD.create_authorization_ref(r,commit),
+                "ci/authorized-"+commit)
+            self.assertEqual(
+                events,
+                ["payload-readback","refresh","authorization-write"])
+        finally:
+            MOD.PUB.gh_api=old_api; MOD.api_list=old_list; MOD.refresh_authorization=old_refresh
+
     def test_wrapped_github_base64_is_accepted(self):
         import base64, hashlib
         raw=b"hello world"
