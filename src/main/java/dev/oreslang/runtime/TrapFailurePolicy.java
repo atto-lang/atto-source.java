@@ -35,19 +35,20 @@ public final class TrapFailurePolicy {
     }
 
     private static boolean permits(
-            Throwable failure, Class<? extends Throwable> panicType,
+            Throwable failure,
+            Class<? extends Throwable> panicType,
             boolean explicitGuestCatch) {
-        Objects.requireNonNull(failure, "failure");
-        Objects.requireNonNull(panicType, "panicType");
+        if (failure == null) return false;
 
-        ArrayDeque<Throwable> pending = new ArrayDeque<>();
-        IdentityHashMap<Throwable, Boolean> visited = new IdentityHashMap<>();
-        pending.addLast(failure);
+        // First inspect the entire causal/suppressed graph for control signals
+        // that must never be downgraded into an ordinary guest error.
+        Deque<Throwable> pending = new ArrayDeque<>();
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        pending.add(failure);
         while (!pending.isEmpty()) {
-            if (visited.size() >= MAX_FAILURE_NODES) return false;
             Throwable current = pending.removeFirst();
-            if (visited.put(current, Boolean.TRUE) != null) return false;
-            if (panicType.isInstance(current)
+            if (!seen.add(current)) continue;
+            if ((panicType != null && panicType.isInstance(current))
                     || current instanceof GuestControlSignal.Raise
                     || current instanceof GuestControlSignal.Panic
                     || current instanceof Error
@@ -60,14 +61,37 @@ public final class TrapFailurePolicy {
             if (!explicitGuestCatch && current instanceof SecurityException) {
                 return false;
             }
-            Throwable cause = current.getCause();
-            if (cause != null) pending.addLast(cause);
-            for (Throwable suppressed : current.getSuppressed()) {
-                pending.addLast(suppressed);
-                if (pending.size() + visited.size() > MAX_FAILURE_NODES) return false;
-            }
-            if (pending.size() + visited.size() > MAX_FAILURE_NODES) return false;
+            if (current.getCause() != null) pending.addLast(current.getCause());
+            for (Throwable suppressed : current.getSuppressed()) pending.addLast(suppressed);
         }
-        return true;
+
+        // Classification follows the primary cause chain only. A suppressed
+        // guest throw must never make an unrelated host failure trappable.
+        Set<Throwable> causeSeen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable current = failure;
+                current != null && causeSeen.add(current);
+                current = current.getCause()) {
+            if (current instanceof GuestControlSignal.Throw) return true;
+            if (current instanceof SecurityException) return explicitGuestCatch;
+            if (isMappedGuestFailure(current)) return true;
+        }
+        return false;
+    }
+
+    private static boolean isMappedGuestFailure(Throwable failure) {
+        if (failure instanceof IllegalArgumentException
+                || failure instanceof IllegalStateException
+                || failure instanceof ArithmeticException
+                || failure instanceof IndexOutOfBoundsException
+                || failure instanceof ClassCastException
+                || failure instanceof UnsupportedOperationException
+                || failure instanceof NoSuchElementException
+                || failure instanceof NegativeArraySizeException
+                || failure instanceof ArrayStoreException) {
+            return true;
+        }
+        // The interpreter's cast failure is a dedicated guest runtime type.
+        return failure.getClass().getName()
+                .equals("dev.oreslang.nodes.OresEvalRootNode$OresCastError");
     }
 }
