@@ -101,6 +101,55 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void registeredButNotEnteredWorkerIsNotWarmForNoGrowthAdmission()
+            throws Exception {
+        var permitWorkerLoop = new CountDownLatch(1);
+        var wrapperEntered = new CountDownLatch(1);
+        var created = new AtomicInteger();
+        var factory = (java.util.concurrent.ThreadFactory) workerLoop ->
+                Thread.ofPlatform().daemon(true)
+                        .name("adaptive-registered-not-started-" + created.incrementAndGet())
+                        .unstarted(() -> {
+                            wrapperEntered.countDown();
+                            try {
+                                if (!permitWorkerLoop.await(5, TimeUnit.SECONDS))
+                                    throw new AssertionError("worker-loop gate timed out");
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                            workerLoop.run();
+                        });
+
+        try (var workers = new AdaptiveCarrierExecutor(1, 2, 8, factory)) {
+            workers.execute(() -> { });
+            assertTrue(wrapperEntered.await(2, TimeUnit.SECONDS));
+            assertEquals(1, workers.getPoolSize(),
+                    "ThreadPoolExecutor may register a worker before its loop enters");
+            assertEquals(0, workers.startedWorkerCount(),
+                    "registered worker is not yet safe reusable reactor capacity");
+            assertFalse(workers.readyForNoGrowthAdmission());
+            assertThrows(RejectedExecutionException.class,
+                    () -> workers.executeWithoutCarrierGrowth(() -> {}),
+                    "reactor-safe path must reject a registered-but-not-entered worker");
+
+            permitWorkerLoop.countDown();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (workers.startedWorkerCount() == 0 && System.nanoTime() < deadline)
+                Thread.onSpinWait();
+            assertEquals(1, workers.startedWorkerCount());
+            assertTrue(workers.readyForNoGrowthAdmission());
+
+            var delivered = new CountDownLatch(1);
+            workers.executeWithoutCarrierGrowth(delivered::countDown);
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals(1, created.get(),
+                    "no-growth reuse must not create a replacement worker");
+        } finally {
+            permitWorkerLoop.countDown();
+        }
+    }
+
     @Test void noGrowthAdmissionReusesWarmJvmCarrierWithoutStartingAnother() throws Exception {
         var created = new AtomicInteger();
         var factory = (java.util.concurrent.ThreadFactory) task ->
