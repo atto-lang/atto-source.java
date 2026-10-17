@@ -581,29 +581,13 @@ public final class ActorRuntime implements AutoCloseable {
      * actor mailbox receive; it shares existing VM actor-carrier capacity.
      * The source Future's runtime waiter contract prohibits guest callbacks.
      */
-    void prepareHostIoCompletionCapacity() {
-        if (closed.get()) throw new RejectedExecutionException("actor runtime closed");
-        if (privateDispatcher instanceof ActorAffinityDispatcher lanes) {
-            lanes.prepareLane(0);
-        } else if (privateDispatcher instanceof NativeCarrierExecutor nativePool) {
-            nativePool.prestartCoreThread();
-        } else if (privateDispatcher instanceof java.util.concurrent.ThreadPoolExecutor pool) {
-            pool.prestartCoreThread();
-        }
-    }
-
     void executeHostIoCompletion(Runnable notification) {
         Objects.requireNonNull(notification, "notification");
         if (closed.get()) throw new RejectedExecutionException("actor runtime closed");
-        Runnable delivery = () -> {
+        privateDispatcher.execute(() -> {
             try { notification.run(); }
             finally { nioCompletionCapacityHook.run(); }
-        };
-        if (privateDispatcher instanceof ActorAffinityDispatcher lanes) {
-            lanes.executeOnLane(0, delivery);
-        } else {
-            privateDispatcher.execute(delivery);
-        }
+        });
     }
 
     /** Total overrun detections, including notices dropped from the bounded queue. */
