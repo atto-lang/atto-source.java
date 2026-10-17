@@ -1,6 +1,8 @@
 # All source-export, CI-policy, runner, admission-test and review files
 # are under terminal exact CODEOWNER rules. Last matching rule wins.
-# Branch-protection enforcement and independent review are still required.
+# Independent exact-head review is required. Protected branches/rulesets are
+# additional enforcement when available; review-pinned external admission is
+# the fail-closed fallback for private repos where the plan lacks them.
 /.github/CODEOWNERS @ORESoftware
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-approved-source-snapshots.txt @ORESoftware
@@ -11,13 +13,16 @@
 /docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware
 /docs/security/PRIVATE_CI_POLICY_INTEGRATION_REVIEW_2026-10-16.md @ORESoftware
 /docs/security/PRIVATE_EXACT_MAIN_VALIDATION.md @ORESoftware
+/docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md @ORESoftware
 /scripts/check-private-ci-destination.sh @ORESoftware
 /scripts/publish-private-ci-source.py @ORESoftware
 /scripts/run-in-private-ci-destination.sh @ORESoftware
 /scripts/test-private-ci-destination.sh @ORESoftware
 /scripts/test-publish-private-ci-source.py @ORESoftware
 /scripts/ci_private_mirror_preflight.py @ORESoftware
+/scripts/verify-review-pinned-private-ci.py @ORESoftware
 /tests/test_ci_private_mirror_preflight.py @ORESoftware
+/tests/test_review_pinned_private_ci.py @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
