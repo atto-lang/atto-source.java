@@ -20,10 +20,17 @@ native pointer is exposed to guest code.
 Logical actor retirement revokes all arena access immediately. Before the owning
 `Arena` is physically closed, every native slot is explicitly overwritten with
 zeroes; deterministic lifetime alone is not treated as a zeroization guarantee.
-A persistent read loan may outlive
-an actor turn and can therefore defer physical close; its bytes remain charged
-to the actor/runtime quota until the final loan closes. Scratch has no loan API
-and is reclaimed at the turn boundary.
+A persistent read loan may outlive an actor turn and can therefore defer
+physical close; its bytes remain charged to the actor/runtime quota until the
+final loan closes. Scratch has no read-loan API and is reclaimed at the turn
+boundary.
+
+External continuations, FFI calls and I/O callbacks use a separate opaque
+lifetime-only lease. That lease grants no arena read/write authority. Actor
+retirement still logically closes both FFM regions immediately, while their
+physical Arena.close() is deferred until both read loans and lifetime pins have
+quiesced. Lease release is carrier-independent, idempotent, and retryable after
+a physical-close/accounting failure.
 
 Completion-thread loan release deliberately does not acquire the actor slice
 monitor. Retirement owns `slice -> region`; acquiring `region -> slice`
