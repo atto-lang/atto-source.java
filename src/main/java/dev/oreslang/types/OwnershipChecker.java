@@ -1934,6 +1934,10 @@ public final class OwnershipChecker {
             if (containsMutexGuardType(source.type)) {
                 throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
             }
+            if (containsPointerCapability(source.type)) {
+                throw error("closure cannot capture Pointer<T> value '" + capture.name
+                        + "' until linear/one-shot closure captures and place-aware storage ownership are implemented");
+            }
 
             if (capture.write) {
                 if (!source.mutable && !source.rebindable) throw error("closure cannot write read-only capture '" + capture.name + "'");
