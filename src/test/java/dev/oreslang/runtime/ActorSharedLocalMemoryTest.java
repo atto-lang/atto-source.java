@@ -181,6 +181,36 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void actorGenerationSequenceSaturatesWithoutRecyclingOrLeakingActorSlots() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var generationField = ActorRuntime.class.getDeclaredField("nextActorGeneration");
+            generationField.setAccessible(true);
+            var next = (java.util.concurrent.atomic.AtomicLong) generationField.get(runtime);
+            next.set(Long.MAX_VALUE - 1);
+
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("finish");
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(owner.failure().isEmpty(), () -> owner.failure().toString());
+            assertEquals(Long.MAX_VALUE, next.get(),
+                    "the last issued generation must leave a permanent saturation sentinel");
+            assertEquals(0, runtime.actorCount());
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                assertThrows(IllegalStateException.class,
+                        () -> runtime.<String>spawnShared(() -> (message, turn) -> {}),
+                        "exhaustion must not wrap or reuse an older actor generation");
+                assertEquals(Long.MAX_VALUE, next.get(),
+                        "failed generation issuance must not mutate the sentinel");
+                assertEquals(0, runtime.actorCount(),
+                        "failed spawning must refund its reserved actor slot");
+            }
+        }
+    }
+
+    @Test
     void sharedActorZeroByteDirectBlocksStillConsumeQuotaAndHaveBoundedHandles() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
