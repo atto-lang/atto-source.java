@@ -415,6 +415,30 @@ final class BooleanIntrinsicsTest {
     }
 
     @Test
+    void aggregateBuiltinsUseReservedPackagedCoreNotUserCoreModule() throws Exception {
+        assertEquals("true\ntrue\nfalse\n", run("""
+                define module core as
+                  pub fnc all_bool(Array<bool> values): bool {
+                    return false;
+                  }
+                  pub fnc any_bool(Array<bool> values): bool {
+                    return false;
+                  }
+                  pub fnc xor_parity_bool(Array<bool> values): bool {
+                    return true;
+                  }
+                end
+
+                pub fnc main(): void {
+                  stdio.println(And([true, true]));
+                  stdio.println(Or([false, true]));
+                  stdio.println(Xor([true, true]));
+                  return;
+                }
+                """, "boolean-packaged-core-reserved.ores"));
+    }
+
+    @Test
     void runtimeUsesLogicalIdentitiesParityAndScalarShortCircuiting() throws Exception {
         String program = """
                 pub fnc main(): void {
