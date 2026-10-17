@@ -1107,6 +1107,7 @@ public final class ActorRuntime implements AutoCloseable {
         void routeForwardTo(String target, Object value);
         void routeForwardByKey(String key, Object value);
         void routeBackward(Object value);
+        void routeReply(Object value);
     }
 
     private record MessageEnvelope(
@@ -3834,6 +3835,12 @@ public final class ActorRuntime implements AutoCloseable {
     /** Compiler bridge for sealed source self.backward(value). */
     public void routeCurrentPipelineBackward(Object value) {
         currentPipelineTurnAuthority().routeBackward(Objects.requireNonNull(
+                value, "pipeline payload"));
+    }
+
+    /** Compiler bridge for sealed source self.reply(value). */
+    public void routeCurrentPipelineReply(Object value) {
+        currentPipelineTurnAuthority().routeReply(Objects.requireNonNull(
                 value, "pipeline payload"));
     }
 
