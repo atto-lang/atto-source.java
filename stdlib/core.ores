@@ -37,4 +37,36 @@ define module core as
     fi
   }
 
+
+  // Boolean collection reducers live in Oreslang source. Scalar And/Or/Xor
+  // calls are compiler-lowered directly to &&, || and ^^ and do not call these.
+  // Identities follow standard folds: all([])=true, any([])=false, parity([])=false.
+  pub fnc all_bool(Array<bool> values): bool {
+    for const value of values do
+      if !value then
+        return false;
+      fi
+    done
+    return true;
+  }
+
+  pub fnc any_bool(Array<bool> values): bool {
+    for const value of values do
+      if value then
+        return true;
+      fi
+    done
+    return false;
+  }
+
+  pub fnc xor_parity_bool(Array<bool> values): bool {
+    let bool parity = false;
+    for const value of values do
+      if value then
+        parity = !parity;
+      fi
+    done
+    return parity;
+  }
+
 end
