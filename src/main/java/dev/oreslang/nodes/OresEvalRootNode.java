@@ -5073,6 +5073,10 @@ public final class OresEvalRootNode extends RootNode {
             if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
                 context.schedulerSafepoint();
             }
+            if (stmt instanceof Ast.ConstructorDelegateStmt) {
+                throw new IllegalArgumentException(
+                        "constructor(...) may execute only as a constructor's first delegation statement");
+            }
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
