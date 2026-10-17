@@ -24,7 +24,8 @@ import java.util.function.Supplier;
  * This is a trusted SHARED Java actor bridge, NOT source-level self.* lowering,
  * PRIVATE/UNTRUSTED transfer or a general-purpose guest capability.
  */
-final class ActorPipelineCorrelatedMailboxRouter<M> {
+final class ActorPipelineCorrelatedMailboxRouter<M>
+        implements ActorRuntime.PipelineTurnAuthority {
     record Correlation(long generation, long flowId, long routeId, String receiver) { }
 
     record Admission(
@@ -113,7 +114,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
             graph.requireIngressRoot(root);
             var frame = session.ingress(root);
             try {
-                owner.sendWithPipelineFrame(targets.get(root), message, frame);
+                owner.sendWithPipelineFrame(targets.get(root), message, frame, this);
             } catch (RuntimeException | Error failed) {
                 ActorPipelineRouteSession.retireDelivered(frame);
                 throw failed;
@@ -236,7 +237,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
             for (; next < children.size(); next++) {
                 var child = children.get(next);
                 try {
-                    owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child);
+                    owner.sendWithPipelineFrame(targets.get(child.receiver()), value, child, this);
                     // No allocation: ArrayList was pre-sized and the success
                     // receipt was created before any branch publication.
                     result.add(prepared.get(next));
@@ -264,15 +265,46 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
     private void sendChild(ActorPipelineRouteSession.MailFrame child, M value) {
         try {
             owner.sendWithPipelineFrame(targets.get(child.receiver()),
-                    Objects.requireNonNull(value, "pipeline payload"), child);
+                    Objects.requireNonNull(value, "pipeline payload"), child, this);
         } catch (RuntimeException | Error failed) {
             ActorPipelineRouteSession.retireDelivered(child);
             throw failed;
         }
     }
 
+    @Override
+    @SuppressWarnings("unchecked")
+    public void routeForward(Object value) {
+        forward((M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void routeForwardRoundRobin(Object value) {
+        forwardRoundRobin((M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void routeForwardTo(String target, Object value) {
+        forwardTo(target, (M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void routeForwardByKey(String key, Object value) {
+        forwardByKey(key, (M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void routeBackward(Object value) {
+        backward((M) value);
+    }
+
     /** Supervisor shutdown fences new selections. Pending admitted DATA may
-     * still reach recipients; no guest lowering is enabled by this method. */
+     * still reach recipients; the compiler bridge can use this router only
+     * through the matching scheduler-owned envelope authority. */
     void close() {
         owner.requirePipelineRegistrationHostAuthority();
         var write = publicationGate.writeLock();
