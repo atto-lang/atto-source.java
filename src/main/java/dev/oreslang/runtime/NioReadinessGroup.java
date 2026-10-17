@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.io.IOException;
 import java.nio.channels.CancelledKeyException;
 import java.nio.channels.SelectableChannel;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.util.ArrayList;
@@ -20,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Process-capable, bounded NIO readiness manager. One dedicated reactor starts
@@ -165,6 +168,80 @@ public final class NioReadinessGroup implements AutoCloseable {
                 stagedNotifications.removeFirst();
             }
         }
+    }
+
+    /**
+     * Accept one TCP connection using the VM-owned selector rather than a
+     * listener-owned selector thread. This is a host transport building block;
+     * source-level std/net still needs connection read/write integration.
+     *
+     * The listener stays caller-owned and MUST remain nonblocking and open
+     * until completion. SocketChannel.accept() runs on dedicated NIO completion
+     * workers, never on a selector, CONTROL carrier or actor turn. Only one
+     * outstanding accept/watch per listener is admitted by watch().
+     *
+     * Cancellation revokes the active readiness watch. If cancellation wins
+     * after accept(), the newly created socket is closed, never leaked.
+     */
+    public OresFuture<SocketChannel> acceptAsync(ServerSocketChannel listener) {
+        Objects.requireNonNull(listener, "listener");
+        if (listener.isBlocking())
+            throw new IllegalArgumentException("TCP listener must be nonblocking");
+        if (ownedCompletionExecutor == null)
+            return OresFuture.failed(new IllegalStateException(
+                    "TCP accept requires dedicated NIO completion workers"));
+        AtomicReference<OresFuture<Integer>> pendingWatch = new AtomicReference<>();
+        OresFuture<SocketChannel> accepted = new OresFuture<>(() -> {
+            OresFuture<Integer> pending = pendingWatch.getAndSet(null);
+            if (pending != null) pending.cancel(false);
+        });
+
+        final class AcceptPump {
+            void arm() {
+                if (accepted.isDone()) return;
+                OresFuture<Integer> readiness = NioReadinessGroup.this.watch(
+                        listener, SelectionKey.OP_ACCEPT);
+                pendingWatch.set(readiness);
+                if (accepted.isDone()) {
+                    pendingWatch.compareAndSet(readiness, null);
+                    readiness.cancel(false);
+                    return;
+                }
+                readiness.whenCompleteRuntime((events, failure) -> {
+                    pendingWatch.compareAndSet(readiness, null);
+                    if (accepted.isDone()) return;
+                    if (failure != null) {
+                        accepted.failFromRuntime(failure);
+                        return;
+                    }
+                    SocketChannel socket = null;
+                    try {
+                        // Even if another host accidentally consumes a ready
+                        // accept, null simply means re-arm rather than spin.
+                        if (listener.isBlocking())
+                            throw new IllegalStateException("listener became blocking");
+                        socket = listener.accept();
+                        if (socket == null) {
+                            arm();
+                            return;
+                        }
+                        socket.configureBlocking(false);
+                        if (!accepted.completeFromRuntime(socket))
+                            socket.close(); // cancelled just after accept()
+                    } catch (IOException | RuntimeException | Error problem) {
+                        if (socket != null) {
+                            try { socket.close(); }
+                            catch (IOException closeFailure) { problem.addSuppressed(closeFailure); }
+                        }
+                        accepted.failFromRuntime(problem);
+                        if (problem instanceof VirtualMachineError fatal) throw fatal;
+                        if (problem instanceof ThreadDeath fatal) throw fatal;
+                    }
+                });
+            }
+        }
+        new AcceptPump().arm();
+        return accepted;
     }
 
     /** Register one kernel-readiness notification without blocking a carrier. */
