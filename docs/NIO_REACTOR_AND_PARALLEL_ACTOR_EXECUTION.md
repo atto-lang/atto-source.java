@@ -19,8 +19,12 @@ accepted connections are supervisor-owned, cannot be transferred to an actor,
 and accept/read/write Future cancellations arbitrate against kernel work.
 Nonblocking reads and writes are capped at 64 KiB. Writes snapshot caller
 data and support short kernel writes; TCP reads return a possibly short
-byte-array and an empty array on EOF. Permission checks and context teardown
-still gate listener and connection ownership. NIO completion isolation is now demand-driven: its bounded host-completion
+byte-array and an empty array on EOF. Each listener enforces its own bounded
+`maxPending` operation budget, including accept/read/write and cancelled
+Future notification drains, with explicit capacity denial. Internal producer
+cancellation notifications cannot settle an exported Future before its
+cancellation CAS. Permission checks and context teardown still gate listener
+and connection ownership. NIO completion isolation is now demand-driven: its bounded host-completion
 pool has **zero resident workers at cold start** and can grow to at most two
 only after readiness actually settles work. Slow synchronous Future subscribers
 therefore remain off SELECTOR and CONTROL without adding cold-start threads.
