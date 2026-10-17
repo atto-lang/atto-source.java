@@ -2064,6 +2064,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final long generation;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        /** Cause-free immutable cross-actor failure metadata retained after finalization. */
+        private final AtomicReference<ActorFailureNotice> terminalFailureNotice =
+                new AtomicReference<>();
         // Observer Futures are runtime-owned: awaiting is allowed, cancelling
         // either observer cannot cancel the actor or fabricate its lifecycle.
         private final OresFuture<Void> readyFuture =
@@ -2097,7 +2100,20 @@ public final class ActorRuntime implements AutoCloseable {
         }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
-        public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /**
+         * Trusted-host diagnostic only. Actor/scheduler code must use
+         * terminalFailureNotice() or supervisor CONTROL instead of importing a
+         * foreign mutable Throwable graph.
+         */
+        public Optional<Throwable> failure() {
+            requireRawFailureHostAccess("inspect raw actor failure");
+            return Optional.ofNullable(terminationCause.get());
+        }
+
+        public Optional<ActorFailureNotice> terminalFailureNotice() {
+            return Optional.ofNullable(terminalFailureNotice.get());
+        }
 
         /**
          * Actor initialization barrier. Accessing ready starts an unstarted
@@ -3766,6 +3782,15 @@ public final class ActorRuntime implements AutoCloseable {
         if (inActorExecution()) {
             throw new SecurityException(
                     "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
+        }
+    }
+
+    private void requireRawFailureHostAccess(String operation) {
+        requireSupervisorContext(operation);
+        if (OresScheduler.current() != null) {
+            throw new SecurityException(
+                    "scheduler/source tasks cannot " + operation
+                            + "; use immutable actor failure metadata");
         }
     }
 
@@ -6839,7 +6864,6 @@ public final class ActorRuntime implements AutoCloseable {
                 new ActorSupervisorControlLane(dispatcherConfig.maxActors());
         private final AtomicLong supervisorFairnessYields = new AtomicLong();
         private int consecutiveSupervisorControls;
-        private ActorFailureNotice terminalFailureNotice;
         private final Set<OresFuture<?>> pendingOperations = ConcurrentHashMap.newKeySet();
         /**
          * Mutable scheduler metadata belongs to this actor, never to the shared
@@ -7218,17 +7242,19 @@ public final class ActorRuntime implements AutoCloseable {
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
             if (memorySlice != null) memorySlice.close();
-            if (terminalOutput != null && terminalFailureNotice == null) {
-                terminalFailureNotice = new ActorFailureNotice(
-                        ref.id(),
-                        ref.generation(),
-                        parent == null
-                                ? Optional.empty()
-                                : Optional.of(parent.ref.id()),
-                        kind,
-                        actorFailureKind(terminalOutput),
-                        nextSupervisorControlSequence(),
-                        boundedDiagnosticType(terminalOutput));
+            if (terminalOutput != null && ref.terminalFailureNotice.get() == null) {
+                ref.terminalFailureNotice.compareAndSet(
+                        null,
+                        new ActorFailureNotice(
+                                ref.id(),
+                                ref.generation(),
+                                parent == null
+                                        ? Optional.empty()
+                                        : Optional.of(parent.ref.id()),
+                                kind,
+                                actorFailureKind(terminalOutput),
+                                nextSupervisorControlSequence(),
+                                boundedDiagnosticType(terminalOutput)));
             }
             try {
                 actorExitHook.accept(executionDomain);
@@ -7241,8 +7267,9 @@ public final class ActorRuntime implements AutoCloseable {
             unregisterActor(this);
             if (parent != null) {
                 parent.childFinalized(this);
-            } else if (terminalFailureNotice != null) {
-                if (!rootSupervisionControl.publish(terminalFailureNotice)) {
+            } else if (ref.terminalFailureNotice.get() != null) {
+                if (!rootSupervisionControl.publish(
+                        ref.terminalFailureNotice.get())) {
                     throw new IllegalStateException(
                             "duplicate root CONTROL publication for " + ref.id());
                 }
@@ -7273,7 +7300,8 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "duplicate or foreign child finalization for " + child.ref.id());
                 }
-                ActorFailureNotice notice = child.terminalFailureNotice;
+                ActorFailureNotice notice =
+                        child.ref.terminalFailureNotice.get();
                 if (notice == null) {
                     childControl.retireGracefully(
                             child.ref.id(), child.ref.generation());
