@@ -194,11 +194,11 @@ public final class VmNioTcpListener implements AutoCloseable {
             }
             OresFuture<List<Long>> exposed = new OresFuture<>(() -> raw.cancel(false), () -> { });
             raw.whenCompleteRuntime((bytes, failure) -> {
-                if (failure != null) {
-                    exposed.failFromRuntime(failure);
-                    return;
-                }
                 try {
+                    if (failure != null) {
+                        exposed.failFromRuntime(failure);
+                        return;
+                    }
                     if (exposed.isDone()) return;
                     ArrayList<Long> list = new ArrayList<>(bytes.length);
                     for (byte b : bytes) list.add((long) (b & 0xff));
