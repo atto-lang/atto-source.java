@@ -127,8 +127,10 @@ public final class OresMain {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
                 } else if (arg.startsWith("--permission-check=")) {
-                    permissionCheckMode = PermissionCheckMode.parse(
-                            arg.substring("--permission-check=".length()));
+                    String value = arg.substring("--permission-check=".length());
+                    if (value.isBlank())
+                        throw new UsageException("--permission-check requires compile or runtime");
+                    permissionCheckMode = PermissionCheckMode.parse(value);
                 } else if (arg.equals("--allow-all")) {
                     for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
                         permissionBuilder.allowAll(permission);
@@ -220,7 +222,11 @@ public final class OresMain {
 
         final RuntimePermissions permissions;
         if (touchedPermissions.isEmpty()) {
-            permissions = RuntimePermissions.fromCapabilities(policy.capabilities());
+            // flags-2-env may control diagnostics and execution profile but
+            // must never promote developer/legacy coarse capabilities into
+            // implicit guest read/write/net/env/run/sys/ffi/import authority.
+            // The explicit fromCapabilities bridge is embedder-only.
+            permissions = RuntimePermissions.denyAll();
         } else {
             permissions = permissionBuilder.build();
 
