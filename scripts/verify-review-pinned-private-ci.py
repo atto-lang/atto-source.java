@@ -66,26 +66,61 @@ def pr_head(pr, repo, number):
         raise Denied("security PR is not open")
     if pr.get("merged") is True:
         raise Denied("security PR unexpectedly merged")
+    if pr.get("draft") is not False:
+        raise Denied("security PR must be ready for review")
     return require_sha((pr.get("head") or {}).get("sha"), "PR head")
 
 def exact_approval(reviews, head):
     if type(reviews) is not list:
         raise Denied("malformed review list")
-    approvals = []
+    exact = []
     for review in reviews:
         if type(review) is not dict:
             continue
         user = (review.get("user") or {}).get("login")
-        state = str(review.get("state") or "").upper()
         commit = review.get("commit_id")
-        if user == REVIEWER and state == "APPROVED" and commit == head:
-            approvals.append(review)
-    if len(approvals) != 1:
-        raise Denied("require exactly one independent exact-head approval by @" + REVIEWER)
-    review_id = approvals[0].get("id")
-    if type(review_id) is not int or review_id <= 0:
-        raise Denied("invalid approval review ID")
+        if user != REVIEWER or commit != head:
+            continue
+        review_id = review.get("id")
+        if type(review_id) is not int or review_id <= 0:
+            raise Denied("invalid exact-head review ID")
+        exact.append((review_id, str(review.get("state") or "").upper()))
+    if not exact:
+        raise Denied("require independent exact-head review by @" + REVIEWER)
+    review_id, state = max(exact)
+    if state != "APPROVED":
+        raise Denied("latest independent exact-head review is not approved")
     return review_id
+
+def exact_resume_comment(incident, heads, source_commit, source_tree):
+    if type(incident) is not list:
+        raise Denied("malformed incident comments")
+    expected = (
+        RESUME_MARKER
+        + " publisher=" + heads["publisher"]
+        + " destination=" + heads["destination"]
+        + " snapshot=" + heads["snapshot"]
+        + " carrier=" + heads["carrier"]
+        + " source_commit=" + source_commit
+        + " source_tree=" + source_tree
+        + " carrier_repo_id=" + str(CARRIER_REPO_ID)
+    )
+    matches = []
+    for comment in incident:
+        if type(comment) is not dict:
+            continue
+        user = (comment.get("user") or {}).get("login")
+        body = comment.get("body")
+        if user != REVIEWER or type(body) is not str:
+            continue
+        lines = [line.strip() for line in body.splitlines() if line.strip()]
+        if expected in lines:
+            cid = comment.get("id")
+            if type(cid) is int and cid > 0:
+                matches.append(cid)
+    if len(matches) != 1:
+        raise Denied("require exactly one independently bound incident resume approval")
+    return matches[0]
 
 def active_rows(path):
     text = Path(path).read_text(encoding="utf-8")
@@ -148,24 +183,10 @@ def main():
         heads[key] = head
         review_ids[key] = exact_approval(reviews, head)
 
-    incident = load_json(args.incident_comments)
-    if type(incident) is not list:
-        raise Denied("malformed incident comments")
-    resume = []
-    for comment in incident:
-        if type(comment) is not dict:
-            continue
-        user = (comment.get("user") or {}).get("login")
-        body = comment.get("body")
-        if user == REVIEWER and type(body) is str and RESUME_MARKER in body:
-            cid = comment.get("id")
-            if type(cid) is int and cid > 0:
-                resume.append(cid)
-    if len(resume) != 1:
-        raise Denied("require exactly one independent incident resume approval")
-
     parse_destination_entry(args.destination_ledger)
     source_commit, source_tree = parse_snapshot_entry(args.snapshot_ledger)
+    incident = load_json(args.incident_comments)
+    resume_id = exact_resume_comment(incident, heads, source_commit, source_tree)
     commit = load_json(args.source_commit)
     if require_sha(commit.get("sha"), "source commit metadata") != source_commit:
         raise Denied("source commit metadata mismatch")
@@ -210,7 +231,7 @@ def main():
         "carrier_policy_pr": 7,
         "carrier_policy_head_sha": heads["carrier"],
         "carrier_review_id": review_ids["carrier"],
-        "incident_resume_comment_id": resume[0],
+        "incident_resume_comment_id": resume_id,
     }
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
 
