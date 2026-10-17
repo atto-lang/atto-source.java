@@ -5030,14 +5030,6 @@ public final class OresEvalRootNode extends RootNode {
         // Cleanup may add suppressed diagnostics but must not replace a
         // process exit, panic, cancellation, authority failure, or host error.
         // Use the same bounded classifier as trap, including wrapped failures.
-        private boolean isUnmaskableFailure(Throwable failure) {
-            if (failure instanceof ProcessExitSignal || failure instanceof Error) {
-                return true;
-            }
-            return failure instanceof RuntimeException runtime
-                    && !isTrappableFailure(runtime);
-        }
-
         private int controlPriority(Throwable failure) {
             if (failure instanceof ReturnSignal
                     || failure instanceof BreakSignal
