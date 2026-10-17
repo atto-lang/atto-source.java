@@ -187,6 +187,15 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
         });
     }
 
+    /** Direct response to the authenticated flow origin. The destination is
+     * derived from the sealed route path and is never caller-selected. */
+    void reply(M value) {
+        inLiveGeneration(() -> {
+            sendChild(session.returnToOrigin(current()), value);
+            return null;
+        });
+    }
+
     /** Every recipient gets an independent admission result; earlier
      * successes are not rolled back when a later mailbox is full or stopped. */
     List<Admission> forwardAll(M value) {
@@ -300,6 +309,12 @@ final class ActorPipelineCorrelatedMailboxRouter<M>
     @SuppressWarnings("unchecked")
     public void routeBackward(Object value) {
         backward((M) value);
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void routeReply(Object value) {
+        reply((M) value);
     }
 
     /** Supervisor shutdown fences new selections. Pending admitted DATA may
