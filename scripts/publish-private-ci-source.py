@@ -66,6 +66,7 @@ REQUIRED_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
     "/.github/private-ci-approved-repositories.txt",
     "/.github/private-ci-approved-source-snapshots.txt",
+    "/.github/private-ci-independent-reviewer.json",
     "/.github/private-ci-required-checks.json",
     "/.github/workflows/private-ci-mirror-preflight.yml",
     "/.github/workflows/private-ci-policy.yml",

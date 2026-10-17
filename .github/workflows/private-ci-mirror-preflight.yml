@@ -16,6 +16,7 @@ on:
       - 'docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/private-ci-approved-source-snapshots.txt'
+      - '.github/private-ci-independent-reviewer.json'
       - '.github/CODEOWNERS'
       - '.github/workflows/private-ci-mirror-preflight.yml'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -35,6 +36,7 @@ on:
       - 'docs/security/PRIVATE_CI_REVIEW_PINNED_EXTERNAL_ADMISSION.md'
       - '.github/private-ci-approved-repositories.txt'
       - '.github/private-ci-approved-source-snapshots.txt'
+      - '.github/private-ci-independent-reviewer.json'
       - '.github/CODEOWNERS'
       - '.github/workflows/private-ci-mirror-preflight.yml'
       - 'docs/security/CI_PRIVATE_SOURCE_MIRRORING.md'
@@ -109,8 +111,8 @@ jobs:
           spec.loader.exec_module(module)
           suite = unittest.defaultTestLoader.loadTestsFromModule(module)
           count = suite.countTestCases()
-          if count < 17:
-              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 17: {count} tests")
+          if count < 40:
+              raise SystemExit(f"Review-pinned suite unexpectedly shrank below 40: {count} tests")
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           if (result.testsRun != count or not result.wasSuccessful()
                   or result.skipped or result.expectedFailures
