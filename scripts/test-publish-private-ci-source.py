@@ -533,7 +533,7 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
             return {"id": 1400792274, "full_name": pub.SOURCE_REPO,
                     "private": True}
         if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
-            return {"protected": True}
+            return {"protected": True, "commit": {"sha": self.commit}}
         if route.startswith("repos/" + pub.SOURCE_REPO + "/contents/"):
             path = route.split("/contents/", 1)[1].split("?ref=", 1)[0]
             data = (self.root / path).read_bytes()
@@ -595,6 +595,37 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.remote):
             pub.reviewed_source_main(self.root, "trusted/ci")
 
+    def test_all_protected_files_use_same_immutable_main_sha(self):
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            result = pub.reviewed_source_main(self.root, "trusted/ci")
+        self.assertEqual(result, self.commit)
+        paths = [route for _, route in self.routes if "/contents/" in route]
+        self.assertEqual(len(paths), 4)
+        self.assertTrue(all(route.endswith("?ref=" + self.commit)
+                            for route in paths))
+
+    def test_main_revision_change_mid_policy_verification_denied(self):
+        branch_reads = [0]
+        def changing_main(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
+                branch_reads[0] += 1
+                sha = self.commit if branch_reads[0] == 1 else "f" * 40
+                return {"protected": True, "commit": {"sha": sha}}
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=changing_main):
+            with self.assertRaisesRegex(pub.Denied, "changed during policy"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+        self.assertEqual(branch_reads[0], 2)
+
+    def test_missing_protected_main_commit_identity_denied(self):
+        def no_head(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
+                return {"protected": True, "commit": {"sha": None}}
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=no_head):
+            with self.assertRaises(pub.Denied):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+
     def test_unprotected_source_main_denied_before_source_reads(self):
         def unprotected(route, method="GET", payload=None):
             if route == "repos/" + pub.SOURCE_REPO:
@@ -627,7 +658,7 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
         (self.root / ".github/private-ci-approved-repositories.txt").write_text(
             "trusted/ci 246810\nunreviewed/destination 246811\n")
         def unchanged_remote(route, method="GET", payload=None):
-            if route.endswith("/contents/.github/private-ci-approved-repositories.txt?ref=main"):
+            if route.endswith("/contents/.github/private-ci-approved-repositories.txt?ref=" + self.commit):
                 data = original
                 return {"type": "file", "encoding": "base64",
                         "content": base64.b64encode(data).decode(),
@@ -642,7 +673,7 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
     def test_modified_local_publisher_denied(self):
         clean = (self.root / "scripts/publish-private-ci-source.py").read_bytes()
         def unchanged_remote(route, method="GET", payload=None):
-            if route.endswith("/contents/scripts/publish-private-ci-source.py?ref=main"):
+            if route.endswith("/contents/scripts/publish-private-ci-source.py?ref=" + self.commit):
                 return {"type": "file", "encoding": "base64",
                         "content": base64.b64encode(clean).decode(),
                         "sha": hashlib.sha1(
