@@ -1,0 +1,33 @@
+// Zorde — Oreslang standard-library scalar validation primitives.
+//
+// The compiler's normalized refinement IR is the authority for @Min/@Max,
+// @Range and 'with value gte/lte'. These pure routines provide the matching
+// runtime interval operations without lossy host float conversion.
+//
+// String Unicode-scalar constraints, typed schema descriptors, validation
+// reports and codec integration MUST use the shared core validation engine;
+// they are not emulated here using UTF-16 String.length or byte lengths.
+// Those entrypoints remain gated until the Zorde native engine is promoted.
+
+define module Zorde as
+
+  pub fnc int_at_least(int value, int minimum): bool {
+    return value >= minimum;
+  }
+
+  pub fnc int_at_most(int value, int maximum): bool {
+    return value <= maximum;
+  }
+
+  pub fnc int_between(int value, int minimum, int maximum): bool {
+    if minimum > maximum; do
+      return false;
+    fi
+    return value >= minimum && value <= maximum;
+  }
+
+  pub fnc int_exact(int value, int expected): bool {
+    return value == expected;
+  }
+
+end
