@@ -2718,24 +2718,53 @@ public final class ActorRuntime implements AutoCloseable {
             requireManager("release an ActorGroup worker");
             Objects.requireNonNull(worker, "worker");
             if (!worker.ownedBy(ActorRuntime.this)) {
-                throw new IllegalArgumentException("worker belongs to a different ActorRuntime");
+                throw new IllegalArgumentException(
+                        "worker belongs to a different ActorRuntime");
             }
-            synchronized (authorityLock) {
-                requireOpen();
-                if (stoppingWorkers.contains(worker.id())) {
-                    throw new IllegalStateException(
-                            "cannot transfer worker after stop/cancellation was admitted");
+
+            ActorCell<?> cell = actors.get(worker.id());
+            if (cell == null) {
+                throw new IllegalStateException("cannot transfer a stopped worker");
+            }
+            synchronized (cell.lifecycleLock) {
+                synchronized (authorityLock) {
+                    requireOpen();
+                    requireTerminalControlHealthyLocked();
+                    if (stoppingWorkers.contains(worker.id())) {
+                        throw new IllegalStateException(
+                                "cannot transfer worker after stop/cancellation was admitted");
+                    }
+                    if (!managedWorkers.containsKey(worker.id())) return false;
+                    if (cell.stopped.get() || cell.finalized) {
+                        throw new IllegalStateException(
+                                "cannot transfer a stopped worker");
+                    }
+
+                    SupervisorTerminalLedger.Reservation reservation =
+                            terminalReservations.get(worker.id());
+                    if (reservation == null) {
+                        throw new IllegalStateException(
+                                "managed worker lost supervision receipt state");
+                    }
+                    if (!cell.managedByGroup.compareAndSet(id, null)) {
+                        throw new IllegalStateException(
+                                "worker lifecycle owner changed unexpectedly");
+                    }
+
+                    try {
+                        terminalLedger.releaseLive(reservation);
+                    } catch (RuntimeException | Error failure) {
+                        terminalControlFailure.compareAndSet(null, failure);
+                        CoreLog.record(
+                                CoreLog.Level.ERROR,
+                                CoreLog.SUPERVISOR_CONTROL_FAILED,
+                                worker.generation());
+                        throw failure;
+                    }
+                    terminalReservations.remove(worker.id(), reservation);
+                    managedWorkers.remove(worker.id(), worker);
+                    return true;
                 }
-                if (!managedWorkers.containsKey(worker.id())) return false;
-                ActorCell<?> cell = actors.get(worker.id());
-                if (cell == null || cell.stopped.get()) {
-                    throw new IllegalStateException("cannot transfer a stopped worker");
-                }
-                if (!cell.managedByGroup.compareAndSet(id, null)) {
-                    throw new IllegalStateException("worker lifecycle owner changed unexpectedly");
-                }
-                managedWorkers.remove(worker.id(), worker);
-                return true;
             }
         }
 
