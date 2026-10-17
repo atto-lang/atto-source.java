@@ -221,6 +221,39 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void lateCancellationAfterStopFenceDoesNotRetainChannel() throws Exception {
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var watch = group.watch(pipe.source(), SelectionKey.OP_READ);
+                // Set the reactor's stop fence without waking its selector.
+                // This deterministic race models a cancellation arriving
+                // after shutdown owns the terminal queues, before retirement.
+                var reactorsField = NioReadinessGroup.class.getDeclaredField("reactors");
+                reactorsField.setAccessible(true);
+                Object reactor = ((java.util.List<?>) reactorsField.get(group)).getFirst();
+                var stopField = reactor.getClass().getDeclaredField("stopping");
+                stopField.setAccessible(true);
+                ((java.util.concurrent.atomic.AtomicBoolean) stopField.get(reactor)).set(true);
+                assertTrue(watch.cancel(false));
+                var queueField = reactor.getClass().getDeclaredField("cancellations");
+                queueField.setAccessible(true);
+                var queue = (java.util.Queue<?>) queueField.get(reactor);
+                assertTrue(queue.isEmpty(),
+                        "terminal cancellation must not resurrect a retired watch");
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+                assertTrue(queue.isEmpty());
+                assertEquals(0, group.pendingCount());
+                assertEquals(0, group.pendingNotifications());
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void failClosedOnInvalidAdmissionAndMaxPending() throws Exception {
         try (var group = new NioReadinessGroup(1, 1, 8);
              var listener = ServerSocketChannel.open()) {
