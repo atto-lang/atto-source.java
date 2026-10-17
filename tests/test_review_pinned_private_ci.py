@@ -61,7 +61,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             "destination_reviews": self.write("destination-reviews.json",
                 self.reviews(DEST_HEAD, rid=12)),
             "snapshot_pr": self.write("snapshot-pr.json",
-                self.pr(MOD.SOURCE_REPO, 1141, SNAP_HEAD)),
+                self.pr(MOD.SOURCE_REPO, 1173, SNAP_HEAD)),
             "snapshot_reviews": self.write("snapshot-reviews.json",
                 self.reviews(SNAP_HEAD, rid=13)),
             "carrier_pr": self.write("carrier-pr.json",
