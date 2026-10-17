@@ -165,17 +165,26 @@ def exact_permission(repo,r,receipt_key):
     if not permission_at_least(permission,"write") or permission!=r[receipt_key]:
         raise Denied("live reviewer permission changed: "+repo)
 
-def content_file(repo,path,ref,max_size=256*1024):
-    d=PUB.gh_api(f"repos/{repo}/contents/{path}?ref={ref}")
+def decode_contents_api_file(d,label,max_size):
     if (d.get("type")!="file" or d.get("encoding")!="base64" or type(d.get("content")) is not str
             or type(d.get("size")) is not int or d["size"]<1 or d["size"]>max_size):
-        raise Denied("reviewed file unavailable: "+path)
-    try: raw=base64.b64decode(d["content"],validate=True)
-    except Exception as exc: raise Denied("reviewed file is not canonical base64: "+path) from exc
-    if len(raw)!=d["size"]: raise Denied("reviewed file size mismatch: "+path)
+        raise Denied("reviewed file unavailable: "+label)
+    encoded=d["content"]
+    if any(ch.isspace() and ch not in "\\r\\n" for ch in encoded):
+        raise Denied("reviewed file has noncanonical base64 whitespace: "+label)
+    compact=encoded.replace("\\r","").replace("\\n","")
+    try: raw=base64.b64decode(compact,validate=True)
+    except Exception as exc: raise Denied("reviewed file is not canonical base64: "+label) from exc
+    if base64.b64encode(raw).decode("ascii")!=compact:
+        raise Denied("reviewed file has noncanonical base64 encoding: "+label)
+    if len(raw)!=d["size"]: raise Denied("reviewed file size mismatch: "+label)
     expected=hashlib.sha1(b"blob "+str(len(raw)).encode("ascii")+b"\\0"+raw).hexdigest()
-    if require_sha(d.get("sha"),path+" blob")!=expected: raise Denied("reviewed file blob mismatch: "+path)
+    if require_sha(d.get("sha"),label+" blob")!=expected: raise Denied("reviewed file blob mismatch: "+label)
     return raw,expected
+
+def content_file(repo,path,ref,max_size=256*1024):
+    d=PUB.gh_api(f"repos/{repo}/contents/{path}?ref={ref}")
+    return decode_contents_api_file(d,path,max_size)
 
 def content_blob(repo,path,ref):
     return content_file(repo,path,ref)[1]
@@ -208,11 +217,10 @@ def require_live_reviewer_policy(r):
 
 def require_exact_ledger(repo,path,ref,expected):
     d=PUB.gh_api(f"repos/{repo}/contents/{path}?ref={ref}")
-    if d.get("type")!="file" or d.get("encoding")!="base64" or type(d.get("content")) is not str:
-        raise Denied("reviewed ledger unavailable: "+path)
-    try: raw=base64.b64decode(d["content"],validate=True)
-    except Exception as exc: raise Denied("reviewed ledger is not canonical base64") from exc
-    rows=[x.strip() for x in raw.decode("utf-8").splitlines() if x.strip() and not x.lstrip().startswith("#")]
+    raw,_=decode_contents_api_file(d,path,64*1024)
+    try: text=raw.decode("utf-8")
+    except UnicodeDecodeError as exc: raise Denied("reviewed ledger is not UTF-8: "+path) from exc
+    rows=[x.strip() for x in text.splitlines() if x.strip() and not x.lstrip().startswith("#")]
     if rows!=[expected]: raise Denied("reviewed ledger entry changed: "+path)
 
 def incident_resume(r):
@@ -258,7 +266,7 @@ def branch_absent(r):
         raise Denied("private CI branch already exists")
     return branch
 
-def refresh_authorization(r):
+def refresh_authorization(r, require_new_ref=False):
     validate_receipt(r)
     repo_identity(SOURCE_REPO,SOURCE_REPO_ID); repo_identity(CARRIER_REPO,CARRIER_REPO_ID)
     exact_review(SOURCE_REPO,PUBLISHER_PR,r["publisher_policy_head_sha"],r,r["publisher_review_id"])
@@ -283,19 +291,30 @@ def refresh_authorization(r):
     incident_resume(r)
     parent=PUB.gh_api(f"repos/{CARRIER_REPO}/git/commits/{r['carrier_base_sha']}")
     if parent.get("sha")!=r["carrier_base_sha"]: raise Denied("carrier parent changed")
-    return PUB.nested_sha(parent,"tree")
+    parent_tree=PUB.nested_sha(parent,"tree")
+    tree=PUB.gh_api(f"repos/{CARRIER_REPO}/git/trees/{parent_tree}")
+    items=tree.get("tree")
+    if tree.get("sha")!=parent_tree or tree.get("truncated") is not False or not isinstance(items,list):
+        raise Denied("carrier parent tree unavailable")
+    if any(isinstance(x,dict) and x.get("path") in (PREFIX,PROVENANCE) for x in items):
+        raise Denied("reviewed carrier parent already contains private payload paths")
+    if require_new_ref: branch_absent(r)
+    return parent_tree
 
 def git_identity(source,r):
     try:
-        head=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD^{commit}"],text=True,timeout=20).strip()
-        tree=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD^{tree}"],text=True,timeout=20).strip()
+        env=PUB.verified_child_env()
+        head=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD^{commit}"],
+                                     text=True,timeout=20,env=env).strip()
+        tree=subprocess.check_output(["git","-C",str(source),"rev-parse","HEAD^{tree}"],
+                                     text=True,timeout=20,env=env).strip()
     except (OSError,subprocess.SubprocessError) as exc: raise Denied("source checkout Git identity unavailable") from exc
     if head!=r["source_commit_sha"] or tree!=r["source_tree_sha"]: raise Denied("source checkout is not approved commit/tree")
 
 def dispatch(receipt_path,source_dir):
     r=validate_receipt(load_json(receipt_path))
     branch_absent(r)
-    refresh_authorization(r)
+    refresh_authorization(r,True)
     source=Path(source_dir).resolve(strict=True); git_identity(source,r)
     files=PUB.collect_source(source,ROOT)
     if PUB.source_tree_sha(files)!=r["source_tree_sha"]: raise Denied("source bytes do not match approved Git tree")
@@ -309,7 +328,7 @@ def dispatch(receipt_path,source_dir):
             entry={"path":rel,"mode":mode,"type":"blob"}
             if as_text is not None: entry["content"]=as_text
             else:
-                refresh_authorization(r)
+                refresh_authorization(r,True)
                 blob=PUB.gh_api(f"repos/{CARRIER_REPO}/git/blobs",method="POST",
                                 payload={"content":base64.b64encode(data).decode("ascii"),"encoding":"base64"})
                 got=PUB.valid_sha(blob.get("sha"))
@@ -317,12 +336,12 @@ def dispatch(receipt_path,source_dir):
                 if got!=expected: raise Denied("uploaded blob digest mismatch")
                 entry["sha"]=got
             elements.append(entry)
-        refresh_authorization(r)
+        refresh_authorization(r,True)
         payload={"tree":elements}
         if isolated is not None: payload["base_tree"]=isolated
         isolated=PUB.valid_sha(PUB.gh_api(f"repos/{CARRIER_REPO}/git/trees",method="POST",payload=payload).get("sha"))
     if isolated!=r["source_tree_sha"]: raise Denied("carrier source subtree differs from approved tree")
-    base_tree=refresh_authorization(r)
+    base_tree=refresh_authorization(r,True)
     provenance=json.dumps(r,sort_keys=True,separators=(",",":"))+"\n"
     root_tree=PUB.gh_api(f"repos/{CARRIER_REPO}/git/trees",method="POST",payload={
       "base_tree":base_tree,
@@ -331,13 +350,13 @@ def dispatch(receipt_path,source_dir):
         {"path":PROVENANCE,"mode":"100644","type":"blob","content":provenance},
       ]})
     root_sha=PUB.valid_sha(root_tree.get("sha"))
-    refresh_authorization(r)
+    refresh_authorization(r,True)
     commit=PUB.gh_api(f"repos/{CARRIER_REPO}/git/commits",method="POST",payload={
       "message":"ci: exact approved private Oreslang snapshot "+r["source_tree_sha"],
       "tree":root_sha,"parents":[r["carrier_base_sha"]]
     })
     commit_sha=PUB.valid_sha(commit.get("sha"))
-    refresh_authorization(r); branch=branch_absent(r)
+    refresh_authorization(r,True); branch=branch_absent(r)
     created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
                        payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
     if created.get("ref")!="refs/heads/"+branch or PUB.nested_sha(created,"object")!=commit_sha:
