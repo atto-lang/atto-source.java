@@ -9376,10 +9376,10 @@ public final class OresEvalRootNode extends RootNode {
                 // Its *quotient* component may still be representable.
                 // Fall back to an exact binary64-input decimal rational
                 // calculation in just those exceptional cases.
-                if ((real != 0.0 && a == 0.0)
-                        || (imaginary != 0.0 && b == 0.0)
-                        || (o.real != 0.0 && c == 0.0)
-                        || (o.imaginary != 0.0 && d == 0.0)) {
+                if (scaledComponentLosesPrecision(real, a)
+                        || scaledComponentLosesPrecision(imaginary, b)
+                        || scaledComponentLosesPrecision(o.real, c)
+                        || scaledComponentLosesPrecision(o.imaginary, d)) {
                     return divExtremeFinite(o);
                 }
                 double denominator = c * c + d * d;
@@ -9414,6 +9414,16 @@ public final class OresEvalRootNode extends RootNode {
             double denominator = o.real * o.real + o.imaginary * o.imaginary;
             return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
                     (imaginary * o.real - real * o.imaginary) / denominator);
+        }
+
+        private static boolean scaledComponentLosesPrecision(
+                double original, double scaled) {
+            // Power-of-two scaling is exact while the result stays normal.
+            // Once a nonzero component becomes subnormal, low significand
+            // bits may already have been rounded away even though it did not
+            // underflow all the way to zero.
+            return original != 0.0
+                    && (scaled == 0.0 || Math.abs(scaled) < Double.MIN_NORMAL);
         }
 
         private static boolean severeCancellation(
