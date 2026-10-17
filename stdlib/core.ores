@@ -69,4 +69,20 @@ define module core as
     return parity;
   }
 
+
+  // The public source-level unary overloads. Arity=1 always selects the
+  // List<bool> reducer; scalar arity>=2 is a compiler-owned intrinsic family.
+  // Keep this module explicit until the trusted builtin-to-core link is ready.
+  pub fnc And(List<bool> values): bool {
+    return all_bool(values);
+  }
+
+  pub fnc Or(List<bool> values): bool {
+    return any_bool(values);
+  }
+
+  pub fnc Xor(List<bool> values): bool {
+    return xor_parity_bool(values);
+  }
+
 end
