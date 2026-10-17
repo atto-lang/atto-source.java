@@ -2774,12 +2774,6 @@ public final class TypeChecker {
                                         + " requires a SHARED actor; PRIVATE/UNTRUSTED actors "
                                         + "cannot receive correlated pipeline route frames");
                     }
-                    if (intrinsic.equals("forward_all") || intrinsic.equals("reply")) {
-                        throw new IllegalArgumentException(
-                                "self." + intrinsic
-                                        + " requires the next typed pipeline routing phase; "
-                                        + "guest fan-out receipts/full-path replies are not enabled");
-                    }
                     if (call.typeArgumentsPresent()) {
                         throw new IllegalArgumentException(
                                 "self." + intrinsic + " does not accept call-site type arguments");
@@ -2804,6 +2798,26 @@ public final class TypeChecker {
                             currentActorKind,
                             false,
                             "self." + intrinsic + " routed value");
+                    if (intrinsic.equals("forward_all")) {
+                        // Until aggregate deep-copy/share contracts are proven, fan-out
+                        // accepts only reusable immutable scalar DATA values.
+                        boolean replicable = payload == Primitive.INT
+                                || payload == Primitive.BOOL || payload == Primitive.STRING
+                                || payload instanceof StringLiteral
+                                || payload instanceof BoolLiteral;
+                        if (!replicable) {
+                            throw new IllegalArgumentException(
+                                    "self.forward_all requires immutable int/bool/string "
+                                            + "DATA until aggregate fan-out ownership is implemented");
+                        }
+                        return new ListType(new Record(Map.of(
+                                "edge_index", Primitive.INT,
+                                "target", Primitive.STRING,
+                                "flow_id", Primitive.INT,
+                                "route_id", Primitive.INT,
+                                "admitted", Primitive.BOOL,
+                                "status", Primitive.STRING), true));
+                    }
                     return Primitive.VOID;
                 }
                 if (actorSelf && (member.member().equals("on_start")
