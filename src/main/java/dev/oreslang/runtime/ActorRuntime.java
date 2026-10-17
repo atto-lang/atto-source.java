@@ -6589,15 +6589,17 @@ public final class ActorRuntime implements AutoCloseable {
         List<ActorId> stillRunning = new ArrayList<>();
         for (ActorCell<?> cell : snapshot) {
             long remaining = deadline - System.nanoTime();
-            if (remaining > 0) {
+            boolean donePublished = cell.ref.done().isDone();
+            if (remaining > 0 && !donePublished) {
                 try {
-                    cell.awaitFinalized(remaining);
+                    donePublished = cell.ref.awaitTermination(
+                            remaining, TimeUnit.NANOSECONDS);
                 } catch (InterruptedException waitInterrupted) {
                     interrupted = true;
                     break;
                 }
             }
-            if (!cell.finalized()) stillRunning.add(cell.ref.id());
+            if (!donePublished) stillRunning.add(cell.ref.id());
         }
 
         boolean dispatchersTerminated = true;
@@ -6635,7 +6637,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
-                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
+                    if (!cell.ref.done().isDone() && !stillRunning.contains(cell.ref.id())) {
                         stillRunning.add(cell.ref.id());
                     }
                 }
