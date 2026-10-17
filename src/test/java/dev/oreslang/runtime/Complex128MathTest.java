@@ -131,6 +131,14 @@ final class Complex128MathTest {
         assertRawBits(0x0000000000000002L, divideOneAndHalfMin.real());
     }
 
+    @Test
+    void divisionPreservesSmallComponentAcrossSubnormalNormalization() {
+        Complex128Math.Value actual = Complex128Math.divide(
+                1e300, 1e-20, 0.0, 1.0);
+        assertRawBits(0x3bc79ca10c924223L, actual.real());
+        assertRawBits(0xfe37e43c8800759cL, actual.imaginary());
+    }
+
     private static void assertRawBits(long expected, double actual) {
         assertEquals(
                 Long.toUnsignedString(expected, 16),
