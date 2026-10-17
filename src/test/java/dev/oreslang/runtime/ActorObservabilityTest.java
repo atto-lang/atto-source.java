@@ -173,6 +173,60 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void childFailureVisibilityDoesNotDependOnParentMailboxProgress()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        CountDownLatch parentBlocked = new CountDownLatch(1);
+        CountDownLatch releaseParent = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<String>> child =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if ("setup".equals(message)) {
+                            child.set(context.runtime().spawnPrivate(
+                                    () -> (childMessage, childContext) -> {
+                                        throw new IllegalStateException("child boom");
+                                    }));
+                            childCreated.countDown();
+                            return;
+                        }
+                        if ("hold".equals(message)) {
+                            parentBlocked.countDown();
+                            if (!releaseParent.await(5, TimeUnit.SECONDS))
+                                throw new AssertionError("parent hold timed out");
+                        }
+                    });
+
+            parent.send("setup");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            parent.drain().get(3, TimeUnit.SECONDS);
+
+            parent.send("hold");
+            assertTrue(parentBlocked.await(3, TimeUnit.SECONDS));
+            child.get().send("fail");
+            assertTrue(child.get().awaitTermination(3, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorTerminationEvent event =
+                    runtime.pollTerminationEvent().orElseThrow();
+            assertEquals(child.get().id(), event.actorId());
+            assertEquals(Optional.of(parent.id()), event.parentId());
+            assertEquals(ActorRuntime.ActorTerminationKind.FAILED,
+                    event.terminationKind());
+            assertTrue(parent.isAlive(),
+                    "child terminal observability cannot require parent mailbox progress");
+            assertTrue(runtime.snapshot(parent).orElseThrow().carrierActive());
+
+            releaseParent.countDown();
+            parent.stop();
+            assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            releaseParent.countDown();
+        }
+    }
+
+    @Test
     void childCancellationEventPrecedesParentFinalizationAndKeepsParentIdentity()
             throws Exception {
         CountDownLatch childCreated = new CountDownLatch(1);
