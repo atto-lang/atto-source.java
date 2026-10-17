@@ -582,12 +582,22 @@ final class AnyUnknownTernaryGuardTest {
                   return 4;
                 }
 
+                async fnc plusOne(int value): int {
+                  return value + 1;
+                }
+
+                async fnc positive(int value): bool {
+                  return value > 0;
+                }
+
                 async fnc choose(): int {
                   val int base = await seed();
                   val any opaque = base;
                   val int viaTernary =
-                      opaque is type int narrowed ? narrowed + 1 : 0;
-                  if opaque is type int checked && checked > 0 then
+                      opaque is type int narrowed
+                        ? await plusOne(narrowed)
+                        : 0;
+                  if opaque is type int checked && await positive(checked) then
                     return viaTernary + checked;
                   else
                     return 0;
@@ -789,6 +799,29 @@ final class AnyUnknownTernaryGuardTest {
                 }
                 """);
         assertEquals("11", output);
+    }
+
+    @Test
+    void moduleBindingsNamedIntegerShadowTheTrustedIntrinsic() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub val int Integer = 1;
+
+                        pub fnc bad(any value): int {
+                          return Integer.is_int(value) ? value : 0;
+                        }
+                        """)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          pub val int Integer = 1;
+
+                          pub fnc bad(any value): int {
+                            return Integer.is_int(value) ? value : 0;
+                          }
+                        end
+                        """)));
     }
 
     @Test
