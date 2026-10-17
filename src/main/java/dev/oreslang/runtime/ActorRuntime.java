@@ -4811,9 +4811,12 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void releaseSharedActorLocalRuntimeBytes(long bytes, ActorId owner) {
         if (bytes < 0) throw new IllegalArgumentException("actor-local memory release cannot be negative");
-        if (bytes == 0 || closed.get()) return;
+        if (bytes == 0) return;
+        // A runtime may already be marked closing while admitted turns and
+        // their reservations are draining. Refund actual actor-local charges
+        // until teardown finishes; skipping them would leave false live bytes
+        // and conceal accounting faults during the shutdown window.
         synchronized (memoryBudgetLock) {
-            if (closed.get()) return;
             long current = sharedActorLocalMemoryBytes.get();
             if (bytes > current) {
                 throw new IllegalStateException(
