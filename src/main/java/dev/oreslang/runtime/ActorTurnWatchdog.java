@@ -95,7 +95,12 @@ final class ActorTurnWatchdog {
         }
 
         void checkpoint() {
-            lastCheckpointNanos = System.nanoTime();
+            checkpointAt(System.nanoTime());
+        }
+
+        // Package-private deterministic test hook. Production callers use checkpoint().
+        void checkpointAt(long nowNanos) {
+            lastCheckpointNanos = nowNanos;
         }
 
         boolean preemptionRequested() {
@@ -104,7 +109,7 @@ final class ActorTurnWatchdog {
 
         private synchronized void inspect(long nowNanos) {
             if (!active || requested.get()
-                    || elapsedNanos(nowNanos) < OVERRUN_NANOS) return;
+                    || sinceCheckpointNanos(nowNanos) < OVERRUN_NANOS) return;
             requested.set(true);
             // The callback is VM-internal, nonblocking accounting only.
             // It must never invoke arbitrary guest code on the monitor thread.
