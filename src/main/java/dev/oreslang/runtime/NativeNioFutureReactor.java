@@ -349,6 +349,23 @@ public final class NativeNioFutureReactor implements AutoCloseable {
         }
     }
 
+    /**
+     * Configure and register a freshly accepted connection as one ownership
+     * transaction. Even failure before register() must close the accepted FD.
+     * Package access permits deterministic selector-failure regression tests.
+     */
+    static void registerAcceptedChannel(
+            SocketChannel channel, Selector selector, Object attachment) throws IOException {
+        try {
+            channel.configureBlocking(false);
+            channel.register(selector, 0, attachment);
+        } catch (IOException | RuntimeException failure) {
+            try { channel.close(); }
+            catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+            throw failure;
+        }
+    }
+
     private void acceptReady() throws IOException {
         int accepted = 0;
         while (!accepts.isEmpty() && connections.size() < maxConnections && accepted++ < 64) {
@@ -366,16 +383,10 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             accepts.removeFirst();
             Connection connection = new Connection(channel);
             try {
-                channel.configureBlocking(false);
-                channel.register(selector, 0, connection);
+                registerAcceptedChannel(channel, selector, connection);
             } catch (IOException | RuntimeException failure) {
-                // An accepted socket can fail local configuration/registration
-                // independently of the listening socket. Close its descriptor
-                // and fail only this accept, not the entire listener and every
-                // outstanding connection. Configure is inside the same cleanup
-                // boundary: it too may throw after accept() succeeded.
-                try { channel.close(); }
-                catch (IOException closeFailure) { failure.addSuppressed(closeFailure); }
+                // Per-connection setup failure must not terminate the listener
+                // or strand other outstanding accepts.
                 fail(operation.future, failure);
                 continue;
             }
