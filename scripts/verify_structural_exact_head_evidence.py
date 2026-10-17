@@ -31,6 +31,7 @@ REQUIRED_CASES = {
         "readonlyClosedLiteralValuesCanBeObservedAsPrimitives",
         "numericWideningIsNotRepresentationSafeContainerCovariance",
         "neverConflateArraysListsAndTuples",
+        "fixedSequenceTypeCannotLoseOrContradictHomogeneousMetadata",
         "fixedCollectionsRequireExactExtent",
         "mapKeysMustStayExactlyInvariant",
         "unstableUnknownAndBorrowedMapKeysCannotForgeHashIdentity",
