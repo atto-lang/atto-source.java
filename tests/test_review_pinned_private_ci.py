@@ -84,6 +84,8 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
                 "archived": False,
                 "disabled": False,
             }),
+            "destination_ledger": self.write("destination-ledger.txt",
+                f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n"),
             "carrier_workflow": self.write("workflow.yml",
                 b"name: exact\non:\n  push:\n"),
             "snapshot_ledger": self.write("ledger.txt",
@@ -187,6 +189,20 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
             fx["snapshot_ledger"] = self.write("ledger-multiple.txt",
                 f"{SOURCE_COMMIT} {SOURCE_TREE} {MOD.CARRIER_REPO_ID}\n"
                 f"{'8'*40} {'9'*40} {MOD.CARRIER_REPO_ID}\n")
+        self.assertDenied(mutate)
+
+    def test_wrong_destination_ledger_denied(self):
+        def mutate(fx):
+            fx["destination_ledger"] = self.write(
+                "destination-ledger-wrong.txt", "other/repo 1357615104\n")
+        self.assertDenied(mutate)
+
+    def test_multiple_destination_entries_denied(self):
+        def mutate(fx):
+            fx["destination_ledger"] = self.write(
+                "destination-ledger-multiple.txt",
+                f"{MOD.CARRIER_REPO} {MOD.CARRIER_REPO_ID}\n"
+                f"other/repo {MOD.CARRIER_REPO_ID}\n")
         self.assertDenied(mutate)
 
     def test_wrong_destination_id_denied(self):
