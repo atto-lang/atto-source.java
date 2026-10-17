@@ -1075,6 +1075,55 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "Commenting out the test must invalidate the executable evidence");
     }
 
+    @Test
+    void privateSelfHostedWorkflowsMustIsolatePersistentRunnerState() throws Exception {
+        String checkout =
+                "      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4\n";
+        for (Path workflow : new Path[] {
+                Path.of(".github/workflows/private-exact-main-validation.yml"),
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"),
+                Path.of(".github/workflows/private-exact-publisher-validation.yml")
+        }) {
+            String text = Files.readString(workflow);
+            String name = "      - name: Create isolated runner user/tool state\n";
+            int start = text.indexOf(name);
+            int checkoutAt = text.indexOf(checkout);
+            assertTrue(start >= 0, "missing clean-room runner isolation: " + workflow);
+            assertTrue(checkoutAt > start,
+                    "clean-room runner isolation must execute before checkout: " + workflow);
+            String isolation = text.substring(start, checkoutAt);
+            assertTrue(isolation.contains("          set -euo pipefail\n"));
+            for (String required : new String[] {
+                    "test ! -L \"$RUNNER_TEMP\"",
+                    "cleanroom=$(/usr/bin/mktemp -d \"$RUNNER_TEMP/oreslang-cleanroom.XXXXXXXXXX\")",
+                    "printf 'HOME=%s\\n' \"$cleanroom/home\"",
+                    "printf 'XDG_CONFIG_HOME=%s\\n' \"$cleanroom/xdg\"",
+                    "printf 'PATH=/usr/bin:/bin\\n'",
+                    "printf 'GIT_CONFIG_NOSYSTEM=1\\n'",
+                    "printf 'GIT_CONFIG_GLOBAL=%s\\n' \"$cleanroom/home/.gitconfig\"",
+                    "printf 'GIT_CONFIG_COUNT=0\\n'",
+                    "GIT_OBJECT_DIRECTORY=\\nGIT_ALTERNATE_OBJECT_DIRECTORIES=\\nGIT_COMMON_DIR=\\n",
+                    "BASH_ENV=\\nENV=\\nPYTHONPATH=\\nPYTHONHOME=\\n",
+                    "JAVA_TOOL_OPTIONS=\\nJDK_JAVA_OPTIONS=\\n_JAVA_OPTIONS=\\nCLASSPATH=\\n",
+                    "printf 'MAVEN_ARGS=\\n'",
+                    "printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\\n' \"$cleanroom/m2-repository\"",
+                    "HTTP_PROXY=\\nHTTPS_PROXY=\\nALL_PROXY=\\nNO_PROXY=\\n",
+                    "SSL_CERT_FILE=\\nSSL_CERT_DIR=\\nCURL_CA_BUNDLE=\\nREQUESTS_CA_BUNDLE=\\nNODE_EXTRA_CA_CERTS=\\n",
+                    "LD_PRELOAD=\\nLD_LIBRARY_PATH=\\n",
+                    "} >> \"$GITHUB_ENV\""
+            }) {
+                assertTrue(isolation.contains(required),
+                        "missing persistent-runner isolation guard in " + workflow + ": " + required);
+            }
+            String weakened = isolation.replace("printf 'PATH=/usr/bin:/bin\\n'",
+                    "printf 'PATH=%s\\n' \"$PATH\"");
+            assertNotEquals(isolation, weakened,
+                    "mutation control must be able to weaken the trusted PATH guard");
+            assertFalse(weakened.contains("printf 'PATH=/usr/bin:/bin\\n'"),
+                    "an inherited runner PATH must not satisfy the clean-room contract");
+        }
+    }
+
     private static boolean hasExactLine(String body, int spaces, String executable) {
         String expected = " ".repeat(spaces) + executable;
         return body.lines().anyMatch(expected::equals);

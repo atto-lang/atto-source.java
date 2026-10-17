@@ -53,6 +53,41 @@ jobs:
           [[ "$APPROVED_WORKFLOW_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$APPROVED_CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ "$APPROVED_CANDIDATE_TREE" =~ ^[a-f0-9]{40}$ ]]
+      - name: Create isolated runner user/tool state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${RUNNER_TEMP:-}"
+          test -d "$RUNNER_TEMP"
+          test ! -L "$RUNNER_TEMP"
+          cleanroom=$(/usr/bin/mktemp -d "$RUNNER_TEMP/oreslang-cleanroom.XXXXXXXXXX")
+          [[ "$cleanroom" != *[[:space:]]* ]]
+          test -d "$cleanroom"
+          test ! -L "$cleanroom"
+          umask 077
+          /usr/bin/mkdir -p "$cleanroom/home" "$cleanroom/xdg" "$cleanroom/m2-repository"
+          : > "$cleanroom/home/.gitconfig"
+          {
+            printf 'CLEANROOM_ROOT=%s\n' "$cleanroom"
+            printf 'HOME=%s\n' "$cleanroom/home"
+            printf 'XDG_CONFIG_HOME=%s\n' "$cleanroom/xdg"
+            printf 'PATH=/usr/bin:/bin\n'
+            printf 'GIT_CONFIG_NOSYSTEM=1\n'
+            printf 'GIT_CONFIG_GLOBAL=%s\n' "$cleanroom/home/.gitconfig"
+            printf 'GIT_CONFIG_COUNT=0\n'
+            printf 'GIT_DIR=\nGIT_WORK_TREE=\nGIT_INDEX_FILE=\n'
+            printf 'GIT_OBJECT_DIRECTORY=\nGIT_ALTERNATE_OBJECT_DIRECTORIES=\nGIT_COMMON_DIR=\n'
+            printf 'GIT_SSH=\nGIT_SSH_COMMAND=\nGIT_ASKPASS=\nSSH_ASKPASS=\n'
+            printf 'BASH_ENV=\nENV=\nPYTHONPATH=\nPYTHONHOME=\n'
+            printf 'JAVA_TOOL_OPTIONS=\nJDK_JAVA_OPTIONS=\n_JAVA_OPTIONS=\nCLASSPATH=\n'
+            printf 'MAVEN_ARGS=\n'
+            printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\n' "$cleanroom/m2-repository"
+            printf 'HTTP_PROXY=\nHTTPS_PROXY=\nALL_PROXY=\nNO_PROXY=\n'
+            printf 'http_proxy=\nhttps_proxy=\nall_proxy=\nno_proxy=\n'
+            printf 'SSL_CERT_FILE=\nSSL_CERT_DIR=\nCURL_CA_BUNDLE=\nREQUESTS_CA_BUNDLE=\nNODE_EXTRA_CA_CERTS=\n'
+            printf 'LD_PRELOAD=\nLD_LIBRARY_PATH=\n'
+          } >> "$GITHUB_ENV"
+          test -s "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           ref: ${{ inputs.candidate_sha }}
