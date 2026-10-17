@@ -25,6 +25,32 @@ public final class BooleanIntrinsicLowering {
         return new Rewriter(resolvedBuiltins).program(program);
     }
 
+    /**
+     * Builds the ordinary logical AST used for scalar builtin type analysis and
+     * post-check lowering. Callers must validate source arity first.
+     */
+    public static Ast.Expr lowerScalarCall(String builtin, List<Ast.Expr> arguments) {
+        if (arguments == null || arguments.size() < 2) {
+            throw new IllegalArgumentException("scalar Boolean lowering requires at least two arguments");
+        }
+        final String operator = switch (builtin) {
+            case "And" -> "&&";
+            case "Or" -> "||";
+            case "Xor" -> "^^";
+            default -> throw new IllegalArgumentException(
+                    "unknown Boolean intrinsic " + builtin);
+        };
+        if (builtin.equals("Xor") && arguments.size() != 2) {
+            throw new IllegalArgumentException("scalar Xor lowering requires exactly two arguments");
+        }
+
+        Ast.Expr lowered = arguments.getFirst();
+        for (int i = 1; i < arguments.size(); i++) {
+            lowered = new Ast.BinaryExpr(operator, lowered, arguments.get(i));
+        }
+        return lowered;
+    }
+
     private static final class Rewriter {
         private final Map<Ast.CallExpr, String> resolvedBuiltins;
 
@@ -332,7 +358,7 @@ public final class BooleanIntrinsicLowering {
 
                 String builtin = resolvedBuiltins.get(call);
                 if (builtin != null && arguments.size() >= 2) {
-                    return lowerScalar(builtin, arguments);
+                    return lowerScalarCall(builtin, arguments);
                 }
 
                 return new Ast.CallExpr(
@@ -408,25 +434,5 @@ public final class BooleanIntrinsicLowering {
                             + expression.getClass().getSimpleName());
         }
 
-        private Ast.Expr lowerScalar(String builtin, List<Ast.Expr> arguments) {
-            final String operator = switch (builtin) {
-                case "And" -> "&&";
-                case "Or" -> "||";
-                case "Xor" -> "^^";
-                default -> throw new IllegalStateException(
-                        "unknown resolved Boolean intrinsic " + builtin);
-            };
-
-            if (builtin.equals("Xor") && arguments.size() != 2) {
-                throw new IllegalStateException(
-                        "type checker admitted non-binary scalar Xor");
-            }
-
-            Ast.Expr lowered = arguments.getFirst();
-            for (int i = 1; i < arguments.size(); i++) {
-                lowered = new Ast.BinaryExpr(operator, lowered, arguments.get(i));
-            }
-            return lowered;
-        }
     }
 }
