@@ -193,6 +193,29 @@ final class ActorPipelineRouteSession {
         return child;
     }
 
+    /**
+     * VM-only whole-path reply: deliver directly to the immutable original
+     * ingress actor, without requiring intermediate actors to relay the
+     * message. The full branch path remains attached to the new MailFrame,
+     * preserving fan-in correlation and preventing guessed reverse targets.
+     *
+     * This differs from returnOneHop(): reply consumes the current forward
+     * frame and publishes exactly one terminal reverse DATA envelope.
+     * Source actors and already-returning frames cannot manufacture replies.
+     */
+    synchronized MailFrame returnToOrigin(MailFrame current) {
+        requireForward(current);
+        if (current.receiverIndex == 0)
+            throw new IllegalStateException("pipeline origin cannot reply to itself");
+        reserveRouteIds(1);
+        MailFrame child = new MailFrame(this, generation, current.flowId,
+                nextRouteId, current.actorPath, 0, true);
+        active.put(child, Boolean.TRUE);
+        active.remove(current);
+        nextRouteId++;
+        return child;
+    }
+
     /** Send to the immediate authenticated sender of the current message. */
     public synchronized ReturnPath backward(MailFrame current) {
         requireForward(current);
