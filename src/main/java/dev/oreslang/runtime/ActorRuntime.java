@@ -7326,18 +7326,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void awaitFinalized(long remainingNanos) throws InterruptedException {
-            long deadline = System.nanoTime() + Math.max(0L, remainingNanos);
-            synchronized (lifecycleLock) {
-                while (!finalized) {
-                    long remaining = deadline - System.nanoTime();
-                    if (remaining <= 0) return;
-                    long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
-                    lifecycleLock.wait(millis);
-                }
-            }
-        }
-
         private void cancelQueuedScheduleOnShutdown() {
             synchronized (lifecycleLock) {
                 if (scheduled.get() && !carrierActive) {
