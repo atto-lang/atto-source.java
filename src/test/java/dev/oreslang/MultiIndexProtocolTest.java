@@ -102,6 +102,41 @@ final class MultiIndexProtocolTest {
     }
 
     @Test
+    void indexedSetterEvaluatesIndicesBeforeAssignedValue() throws Exception {
+        String output = run("""
+                fnc first(): int {
+                  stdio.stdout.write("A");
+                  return 1;
+                }
+
+                fnc second(): int {
+                  stdio.stdout.write("B");
+                  return 2;
+                }
+
+                fnc assigned(): int {
+                  stdio.stdout.write("V");
+                  return 7;
+                }
+
+                define class Matrix as
+                  pub [Symbol.indexSet](int row, int col, int value): void {
+                    stdio.stdout.write("S");
+                    return;
+                  }
+                end
+
+                pub routine main(): void {
+                  let mut matrix = new Matrix();
+                  matrix[first(), second()] = assigned();
+                  return;
+                }
+                """);
+
+        assertEquals("ABVS", output);
+    }
+
+    @Test
     void builtInCollectionsRemainUnary() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
