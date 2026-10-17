@@ -1,5 +1,7 @@
 # Free `fnc` / `routine` overloads and nominal enum dispatch (pre-1.0)
 
+> **Later target amendment (2026-10-17):** [ENUM_VARIANT_OVERLOAD_EXTENSION.md](ENUM_VARIANT_OVERLOAD_EXTENSION.md) adds safe, static `Foo.A` case-type overload specialization. Statements below forbidding case-specific overload keys apply only to the earlier enum-family phase; do not infer that either phase is executable in the current runtime.
+
 Status: **name+arity exists in Java and the LLVM native free-function subset**.
 The **same-arity extension permits only distinct eligible nominal enum
 identities**; primitive-type differences are not overload discriminators.
