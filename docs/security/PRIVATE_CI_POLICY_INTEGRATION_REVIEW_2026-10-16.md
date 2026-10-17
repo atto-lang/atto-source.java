@@ -209,9 +209,21 @@ GraalVM JDK 25 with native carriers and skip flags disabled; and checks a new
 Surefire XML with exactly the **13 named** reference methods, no missing,
 duplicated, failed, errored, skipped, flaky or rerun cases. It then requires
 the Option class again in the **fresh full** Maven `clean verify` report set.
-This only proves JUnit execution when corresponding GitHub job steps and
-test logs independently agree with the immutable candidate tree. AOT/hybrid
-and strict isolate validation remain mandatory and separate.
+The same opt-in gate also pins the **exact** shared v1 Option contract
+(`bb2302e138f4b36d68afd6ffa9280b24fa270d04`), admission checker
+(`77a30027582d2496d5e7087a9a51a75c075496cd`) and Java process probe
+(`6ef4692b0d6c30e572d0f5520e2dd29ad68932cf`) by their actual Git
+blob identities. It runs all **nine** source admission cases and four
+positive Graal guest exit values (42, 7, 43, 0) on the exact candidate.
+An independent Python verifier embedded in the trusted protected workflow
+rejects missing/duplicated cases, incorrect compiler exits and guest results,
+a forged suite/revision or an incomplete report. The candidate's own
+`scripts/check_option_pattern_contract.py` cannot silently replace that
+trusted report verifier.
+
+This only proves JUnit and source/guest execution when corresponding GitHub
+job steps and test logs independently agree with the immutable candidate
+tree. AOT/hybrid and strict isolate validation remain mandatory and separate.
 
 The final identity-only artifact now records
 `option_pattern_requested=true/false` and
