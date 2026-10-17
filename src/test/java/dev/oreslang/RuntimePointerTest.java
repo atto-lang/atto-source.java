@@ -118,7 +118,7 @@ final class RuntimePointerTest {
         reject("let mut p = rt ref new Box(); "
                         + "val borrow mut Box write = rt deref mut p; "
                         + "const Box read = rt deref p;",
-                "mutable borrow is active");
+                "mutably borrowed");
 
         reject("let mut p = rt ref new Box(); "
                         + "val borrow mut Box write = rt deref mut p; "
