@@ -32,10 +32,13 @@ public final class NativeBuildPermissions {
             }
             return builder.build();
         }
-        return fromProperties(System.getProperties().entrySet().stream()
-                .collect(java.util.stream.Collectors.toUnmodifiableMap(
-                        entry -> String.valueOf(entry.getKey()),
-                        entry -> String.valueOf(entry.getValue()))), true);
+        java.util.HashMap<String, String> configured = new java.util.HashMap<>();
+        for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
+            String key = PREFIX + permission.cliName();
+            String value = System.getProperty(key);
+            if (value != null) configured.put(key, value);
+        }
+        return fromProperties(configured, true);
     }
 
     static RuntimePermissions fromProperties(
