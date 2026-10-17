@@ -61,6 +61,8 @@ final class ActorReliabilityKernelTest {
             assertEquals(0, health.queuedContinuations());
             assertEquals(1, health.activeTurns());
             assertTrue(health.carrierActive());
+            assertEquals(ActorRuntime.ActorHealthPhase.RUNNING, health.phase());
+            assertEquals(ActorRuntime.ActorTerminalClass.NONE, health.terminalClass());
             assertEquals(1L, health.mailboxRejections());
             assertFalse(health.failed());
             assertTrue(health.parentId().isEmpty());
@@ -216,6 +218,52 @@ final class ActorReliabilityKernelTest {
         } finally {
             release.countDown();
             CoreLog.configure(CoreLog.Level.OFF);
+        }
+    }
+
+    @Test
+    void terminalHealthSurvivesCellRetirementWithoutRetainingFailureText() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var failing = runtime.<String>spawnShared(() -> (message, context) -> {
+                throw new IllegalStateException("SECRET-POSTMORTEM-FAILURE");
+            });
+            failing.send("SECRET-POSTMORTEM-PAYLOAD");
+            assertTrue(failing.awaitTermination(5, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorHealthSnapshot failed =
+                    runtime.actorHealth(failing).orElseThrow();
+            assertEquals(ActorRuntime.ActorHealthPhase.TERMINATED, failed.phase());
+            assertEquals(ActorRuntime.ActorTerminalClass.FAILURE,
+                    failed.terminalClass());
+            assertTrue(failed.failed());
+            assertFalse(failed.alive());
+            assertTrue(failed.finalized());
+            assertEquals(0, failed.queuedUserMessages());
+            assertEquals(0, failed.queuedContinuations());
+            assertFalse(failed.toString().contains("SECRET-POSTMORTEM-FAILURE"));
+            assertFalse(failed.toString().contains("SECRET-POSTMORTEM-PAYLOAD"));
+
+            var cancelled = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            cancelled.ready().get(5, TimeUnit.SECONDS);
+            assertTrue(cancelled.cancel());
+            assertTrue(cancelled.awaitTermination(5, TimeUnit.SECONDS));
+            ActorRuntime.ActorHealthSnapshot cancelledHealth =
+                    runtime.actorHealth(cancelled).orElseThrow();
+            assertEquals(ActorRuntime.ActorTerminalClass.CANCELLED,
+                    cancelledHealth.terminalClass());
+            assertFalse(cancelledHealth.failed());
+
+            var graceful = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            graceful.ready().get(5, TimeUnit.SECONDS);
+            graceful.stop();
+            assertTrue(graceful.awaitTermination(5, TimeUnit.SECONDS));
+            ActorRuntime.ActorHealthSnapshot gracefulHealth =
+                    runtime.actorHealth(graceful).orElseThrow();
+            assertEquals(ActorRuntime.ActorTerminalClass.NONE,
+                    gracefulHealth.terminalClass());
+            assertFalse(gracefulHealth.failed());
         }
     }
 
