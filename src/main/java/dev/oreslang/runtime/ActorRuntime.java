@@ -766,11 +766,16 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind ownerKind;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
+        /** Native FFM bytes remain charged until the physical Arena closes. */
+        private final AtomicLong retainedNativeBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
         // ByteBuffer.allocateDirect(0) still creates managed wrapper/metadata.
         // Count a zero-byte handle against the actor quota and bound all handles.
         private static final int MAX_LIVE_DIRECT_BLOCKS = 1024;
         private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        private final Set<ExplicitNativeI64Region> explicitNativeI64Regions =
+                ConcurrentHashMap.newKeySet();
+        private final Set<ActorArena> actorArenas = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, ActorKind ownerKind, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -838,82 +843,212 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Deterministically reclaimable actor-owned native scalar storage.
+         *
+         * The Java wrapper remains GC managed, but the guest data itself lives
+         * in a Java 25 FFM Arena and remains charged until that Arena physically
+         * closes. No DirectByteBuffer fallback is permitted.
+         */
+        public ExplicitNativeI64Region newExplicitNativeI64Region(int slots) {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (slots < 1 || slots > 65536) {
+                throw new IllegalArgumentException("native actor i64 slots must be 1..65536");
+            }
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get() || cell.stopped.get()) {
+                    throw new IllegalStateException("actor heap retired during native region admission");
+                }
+                MemoryReservation reservation = reserve(
+                        Math.multiplyExact((long) slots, Long.BYTES),
+                        "actor-owned FFM i64 region",
+                        true);
+                try {
+                    AtomicReference<ExplicitNativeI64Region> registered = new AtomicReference<>();
+                    ExplicitNativeI64Region region = new ExplicitNativeI64Region(
+                            slots,
+                            reservation,
+                            this::requireCurrentOwner,
+                            () -> explicitNativeI64Regions.remove(registered.get()));
+                    registered.set(region);
+                    explicitNativeI64Regions.add(region);
+                    return region;
+                } catch (RuntimeException | Error failure) {
+                    reservation.close();
+                    throw failure;
+                }
+            }
+        }
+
+        /**
+         * Persistent native actor data plus turn-scoped scratch. Scratch must
+         * close before a mailbox/continuation boundary.
+         */
+        public ActorArena newActorArena(int persistentSlots, int scratchSlots) {
+            ActorCell<?> cell = requireCurrentOwner();
+            synchronized (cell.lifecycleLock) {
+                if (sliceClosed.get() || cell.stopped.get()) {
+                    throw new IllegalStateException("actor heap retired during arena admission");
+                }
+                ActorArena arena = ActorArena.open(this, persistentSlots, scratchSlots);
+                actorArenas.add(arena);
+                return arena;
+            }
+        }
+
+        /** Hot-path owner admission without constructing a temporary reservation. */
+        void requireOwnerActive() {
+            ActorCell<?> cell = requireCurrentOwner();
+            if (sliceClosed.get() || cell.stopped.get()) {
+                throw new IllegalStateException("actor native arena owner has retired");
+            }
+        }
+
+        void unregisterArena(ActorArena arena) {
+            actorArenas.remove(arena);
+        }
+
+        private void assertScratchTurnsClosed() {
+            for (ActorArena arena : actorArenas) {
+                if (arena.hasActiveScratchTurn()) {
+                    throw new IllegalStateException(
+                            "actor scratch arena scope escaped a mailbox/continuation boundary; "
+                            + "close ScratchTurn before returning or awaiting");
+                }
+            }
+        }
+
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
             return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
         }
 
         private MemoryReservation reserve(long bytes, String purpose) {
+            return reserve(bytes, purpose, false);
+        }
+
+        private MemoryReservation reserve(
+                long bytes,
+                String purpose,
+                boolean retainPhysicalNativeBytes) {
             // SHARED mailbox/output admission holds lifecycleLock. Take that
-            // lock *before* this slice monitor, also during local allocation,
-            // so concurrent send and actor-local allocations cannot jointly
-            // oversubscribe the actor's policy. Finalization uses this order.
+            // lock before this slice monitor so local allocations cannot race
+            // shutdown or jointly oversubscribe the actor policy.
             if (ownerKind != ActorKind.SHARED) {
-                return reserveUnderSliceLock(bytes, purpose, null);
+                return reserveUnderSliceLock(
+                        bytes, purpose, null, retainPhysicalNativeBytes);
             }
             ActorCell<?> cell = currentActor.get();
             if (cell == null || cell.memorySlice != this || cell.kind != ActorKind.SHARED) {
-                throw new IllegalStateException("shared actor-local allocation requires owner turn");
+                throw new IllegalStateException(
+                        "shared actor-local allocation requires owner turn");
             }
             synchronized (cell.lifecycleLock) {
-                return reserveUnderSliceLock(bytes, purpose, cell);
+                return reserveUnderSliceLock(
+                        bytes, purpose, cell, retainPhysicalNativeBytes);
             }
         }
 
         private synchronized MemoryReservation reserveUnderSliceLock(
-                long bytes, String purpose, ActorCell<?> sharedCell) {
-            if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
-            if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
+                long bytes,
+                String purpose,
+                ActorCell<?> sharedCell,
+                boolean retainPhysicalNativeBytes) {
+            if (bytes < 0) {
+                throw new IllegalArgumentException("memory reservation cannot be negative");
+            }
+            if (sliceClosed.get()) {
+                throw new IllegalStateException("private actor memory slice is closed");
+            }
+            if (bytes == 0) return new MemoryReservation(this, 0, false);
 
-            long current = usedBytes.get();
-            long next;
-            try {
-                next = Math.addExact(current, bytes);
-            } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " accounting overflow");
-            }
-            long actorLimit = limitBytes;
-            if (sharedCell != null) {
-                actorLimit = Math.max(0L, limitBytes
-                        - sharedCell.sharedMailboxBytes.get()
-                        - sharedCell.outputBytes.get());
-            }
-            if (next > actorLimit) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current + " limit=" + actorLimit);
-            }
+            // Late FFM loan completion runs off-carrier. Serialize all actor
+            // memory counters with the aggregate runtime counters so physical
+            // close cannot race a new logical reservation and lose an update.
+            synchronized (memoryBudgetLock) {
+                long current = usedBytes.get();
+                long next;
+                long nextRetained = retainedNativeBytes.get();
+                try {
+                    next = Math.addExact(current, bytes);
+                    if (retainPhysicalNativeBytes) {
+                        nextRetained = Math.addExact(nextRetained, bytes);
+                    }
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(purpose + " accounting overflow");
+                }
+                long actorLimit = limitBytes;
+                if (sharedCell != null) {
+                    actorLimit = Math.max(0L, limitBytes
+                            - sharedCell.sharedMailboxBytes.get()
+                            - sharedCell.outputBytes.get());
+                }
+                if (next > actorLimit) {
+                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                            + ": requested=" + bytes + " used=" + current
+                            + " limit=" + actorLimit);
+                }
 
-            if (ownerKind == ActorKind.SHARED) {
-                reserveSharedActorLocalRuntimeBytes(bytes, owner, purpose);
-            } else {
-                reservePrivateRuntimeBytes(bytes, owner, purpose);
+                if (ownerKind == ActorKind.SHARED) {
+                    reserveSharedActorLocalRuntimeBytes(bytes, owner, purpose);
+                } else {
+                    reservePrivateRuntimeBytes(bytes, owner, purpose);
+                }
+                usedBytes.set(next);
+                if (retainPhysicalNativeBytes) retainedNativeBytes.set(nextRetained);
+                return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
             }
-            usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
         }
 
-        private void requireCurrentOwner() {
+        private ActorCell<?> requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
             if (cell == null || cell.kind != ownerKind || cell.memorySlice != this
                     || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
                         "actor-local memory slice may only be reserved by its owning actor");
             }
+            return cell;
         }
 
         private synchronized void release(long bytes) {
             if (bytes == 0 || sliceClosed.get()) return;
-            long remaining = usedBytes.addAndGet(-bytes);
-            if (remaining < 0) {
-                usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
+            synchronized (memoryBudgetLock) {
+                long current = usedBytes.get();
+                if (bytes > current) {
+                    throw new IllegalStateException(
+                            "private actor memory accounting underflow for " + owner);
+                }
+                if (ownerKind == ActorKind.SHARED) {
+                    releaseSharedActorLocalRuntimeBytes(bytes, owner);
+                } else {
+                    releasePrivateRuntimeBytes(bytes, owner);
+                }
+                usedBytes.set(current - bytes);
             }
-            try {
-                if (ownerKind == ActorKind.SHARED) releaseSharedActorLocalRuntimeBytes(bytes, owner);
-                else releasePrivateRuntimeBytes(bytes, owner);
-            } catch (RuntimeException failure) {
-                usedBytes.addAndGet(bytes);
-                throw failure;
+        }
+
+        /**
+         * Native loan completion may happen after the actor turn and slice
+         * have ended. Keep aggregate quota charged until physical FFM close.
+         */
+        private void releasePhysicalNative(long bytes) {
+            if (bytes == 0) return;
+            // Deliberately do NOT acquire the slice monitor here. Loan.close()
+            // owns the FFM region monitor; slice retirement owns slice -> region.
+            // Taking region -> slice would deadlock those two paths.
+            synchronized (memoryBudgetLock) {
+                long retained = retainedNativeBytes.get();
+                long used = usedBytes.get();
+                if (bytes < 0 || bytes > retained || bytes > used) {
+                    throw new IllegalStateException(
+                            "actor native budget accounting underflow for " + owner);
+                }
+                if (ownerKind == ActorKind.SHARED) {
+                    releaseSharedActorLocalRuntimeBytes(bytes, owner);
+                } else {
+                    releasePrivateRuntimeBytes(bytes, owner);
+                }
+                retainedNativeBytes.addAndGet(-bytes);
+                usedBytes.addAndGet(-bytes);
             }
         }
 
@@ -928,17 +1063,64 @@ public final class ActorRuntime implements AutoCloseable {
         // Runtime finalization is an internal CONTROL path and may run
         // outside an actor turn. Never expose this authority on ActorContext.
         private synchronized void retireFromRuntime() {
-            // Publish revocation before scrubbing. Retain work after an
-            // exceptional native/accounting release so shutdown is retryable.
+            // Revocation is monotonic, but physical cleanup is retryable.
             sliceClosed.set(true);
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
-            blocks.clear();
-            long bytes = usedBytes.get();
-            if (bytes != 0) {
-                if (ownerKind == ActorKind.SHARED) releaseSharedActorLocalRuntimeBytes(bytes, owner);
-                else releasePrivateRuntimeBytes(bytes, owner);
-                usedBytes.set(0); // only after aggregate release succeeded
+            Throwable failure = null;
+
+            for (ExplicitNativeI64Region region : List.copyOf(explicitNativeI64Regions)) {
+                try {
+                    region.retireFromActor();
+                    if (region.physicallyClosed()) explicitNativeI64Regions.remove(region);
+                } catch (RuntimeException | Error error) {
+                    if (failure == null) failure = error;
+                    else if (failure != error) failure.addSuppressed(error);
+                }
             }
+
+            for (PrivateMemoryBlock block : List.copyOf(blocks)) {
+                try {
+                    block.invalidateFromSlice();
+                    blocks.remove(block);
+                } catch (RuntimeException | Error error) {
+                    if (failure == null) failure = error;
+                    else if (failure != error) failure.addSuppressed(error);
+                }
+            }
+
+            // Scratch scopes can no longer be used after revocation. The
+            // constituent FFM regions above remain registered while loan-pinned.
+            actorArenas.removeIf(ActorArena::physicallyClosed);
+
+            // Do not refund FFM bytes still physically pinned by async loans.
+            // Ordinary logical/direct-buffer bytes are released only if all
+            // destructors succeeded, so a failed scrub remains diagnosable.
+            if (failure == null) {
+                synchronized (memoryBudgetLock) {
+                    long bytes = usedBytes.get();
+                    long pinned = retainedNativeBytes.get();
+                    if (pinned > bytes) {
+                        failure = new IllegalStateException(
+                                "physically pinned native memory exceeds actor accounting");
+                    } else {
+                        long released = bytes - pinned;
+                        if (released != 0) {
+                            try {
+                                if (ownerKind == ActorKind.SHARED) {
+                                    releaseSharedActorLocalRuntimeBytes(released, owner);
+                                } else {
+                                    releasePrivateRuntimeBytes(released, owner);
+                                }
+                                usedBytes.set(pinned);
+                            } catch (RuntimeException | Error error) {
+                                failure = error;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (failure instanceof RuntimeException error) throw error;
+            if (failure instanceof Error error) throw error;
         }
 
         private void unregister(PrivateMemoryBlock block) {
@@ -1077,11 +1259,16 @@ public final class ActorRuntime implements AutoCloseable {
     public final class MemoryReservation implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final long bytes;
+        private final boolean physicalNative;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private MemoryReservation(ActorMemorySlice slice, long bytes) {
+        private MemoryReservation(
+                ActorMemorySlice slice,
+                long bytes,
+                boolean physicalNative) {
             this.slice = Objects.requireNonNull(slice);
             this.bytes = bytes;
+            this.physicalNative = physicalNative;
         }
 
         public ActorId owner() { return slice.owner(); }
@@ -1090,8 +1277,12 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (released.get()) return;
-            slice.release(bytes);
-            // Do not lose the ability to retry after failed aggregate release.
+            if (physicalNative) slice.releasePhysicalNative(bytes);
+            else {
+                slice.requireCurrentOwner();
+                slice.release(bytes);
+            }
+            // Do not lose retry authority after an aggregate release failure.
             released.set(true);
         }
     }
@@ -7781,6 +7972,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 }
                             }
                         }
+                        // Persistent FFM survives turns; scratch never may.
+                        // This check also covers cooperative continuation
+                        // segments before the scheduler can hand off carriers.
+                        memorySlice.assertScratchTurnsClosed();
                         if (codeExecutor == null
                                 && isPrivateKind(kind)
                                 && !trustedFactory) {
