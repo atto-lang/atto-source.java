@@ -560,6 +560,47 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void borrowedCallableCannotEscapeAsOwnedCallable() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc leak(borrow (() => void) cb): (() => void) {
+                  return cb;
+                }
+
+                pub routine main(): void {
+                  return;
+                }
+                """));
+        String message = String.valueOf(failure)
+                + " " + String.valueOf(failure.getCause());
+        assertTrue(message.contains("borrow")
+                || message.contains("expected Function")
+                || message.contains("return value"));
+    }
+
+    @Test
+    void namedCallableRequiresExplicitBorrowForBorrowedCallableParameter() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc invoke_now(borrow (() => void) cb): void {
+                  cb();
+                  return;
+                }
+
+                fnc target(): void {
+                  return;
+                }
+
+                pub routine main(): void {
+                  invoke_now(target);
+                  return;
+                }
+                """));
+        String message = String.valueOf(failure)
+                + " " + String.valueOf(failure.getCause());
+        assertTrue(message.contains("borrow")
+                || message.contains("argument 1"));
+    }
+
+    @Test
     void borrowedCallbackCannotEstablishBlankValInitialization() {
         Exception failure = assertThrows(Exception.class, () -> run("""
                 define class Sample as
