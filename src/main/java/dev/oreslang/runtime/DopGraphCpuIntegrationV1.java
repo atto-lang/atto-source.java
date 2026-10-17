@@ -78,6 +78,7 @@ public final class DopGraphCpuIntegrationV1 {
                 new java.util.concurrent.CountDownLatch(1);
         AtomicBoolean schedulerAccepted = new AtomicBoolean();
         AtomicBoolean scheduling = new AtomicBoolean(true);
+        AtomicBoolean inlineAttempted = new AtomicBoolean();
         Thread submittingThread = Thread.currentThread();
         OresFuture<Long> future = new OresFuture<>(() -> cancelled.set(true));
         try {
@@ -94,8 +95,11 @@ public final class DopGraphCpuIntegrationV1 {
                     // An inline executor would deadlock if this callback
                     // waited for its own execute(...) caller to return.
                     if (scheduling.get() && Thread.currentThread() == submittingThread) {
-                        throw new IllegalStateException(
-                                "owned CPU graph requires a queued worker executor, not inline dispatch");
+                        // Report inline rejection after execute(...) returns
+                        // so a subsequent scheduler exception remains the
+                        // terminal failure instead of being masked.
+                        inlineAttempted.set(true);
+                        return;
                     }
                     try {
                         // A broken executor may wait for this worker to
@@ -121,7 +125,13 @@ public final class DopGraphCpuIntegrationV1 {
                     future.failFromRuntime(failure);
                 }
             });
-            schedulerAccepted.set(true);
+            if (inlineAttempted.get()) {
+                cancelled.set(true);
+                future.failFromRuntime(new IllegalStateException(
+                        "owned CPU graph requires a queued worker executor, not inline dispatch"));
+            } else {
+                schedulerAccepted.set(true);
+            }
         } catch (RuntimeException failure) {
             // A buggy scheduler may have retained or already started the
             // worker and then thrown. Open the gate only in its rejected
