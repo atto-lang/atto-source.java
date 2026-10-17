@@ -24,6 +24,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -581,8 +582,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong failedTerminations = new AtomicLong();
     private final AtomicLong supervisionEventSequence = new AtomicLong();
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
-    private final ArrayBlockingQueue<ActorTerminationEvent> supervisionEvents =
-            new ArrayBlockingQueue<>(SUPERVISION_EVENT_CAPACITY);
+    private final AtomicInteger supervisionEventsQueued = new AtomicInteger();
+    private final ConcurrentLinkedQueue<ActorTerminationEvent> supervisionEvents =
+            new ConcurrentLinkedQueue<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -755,7 +757,15 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host/supervisor nonblocking terminal-event drain. */
     public Optional<ActorTerminationEvent> pollTerminationEvent() {
         requireSupervisorContext("drain actor termination diagnostics");
-        return Optional.ofNullable(supervisionEvents.poll());
+        ActorTerminationEvent event = supervisionEvents.poll();
+        if (event == null) return Optional.empty();
+        int remaining = supervisionEventsQueued.decrementAndGet();
+        if (remaining < 0) {
+            supervisionEventsQueued.incrementAndGet();
+            throw new IllegalStateException(
+                    "actor termination diagnostic queue accounting underflow");
+        }
+        return Optional.of(event);
     }
 
     public long supervisionEventsDropped() {
@@ -866,8 +876,29 @@ public final class ActorRuntime implements AutoCloseable {
             supervisionEventsDropped.incrementAndGet();
             return;
         }
-        if (!supervisionEvents.offer(event)) {
-            supervisionEventsDropped.incrementAndGet();
+        for (;;) {
+            int queued = supervisionEventsQueued.get();
+            if (queued >= SUPERVISION_EVENT_CAPACITY) {
+                supervisionEventsDropped.incrementAndGet();
+                return;
+            }
+            if (!supervisionEventsQueued.compareAndSet(queued, queued + 1)) continue;
+            boolean published = false;
+            try {
+                supervisionEvents.add(event);
+                published = true;
+            } catch (Throwable diagnosticsFailure) {
+                // Observability is non-authoritative. Even OOME/other host
+                // failures here must not strand an actor after guest
+                // execution has already quiesced.
+                supervisionEventsDropped.incrementAndGet();
+            } finally {
+                if (!published) {
+                    int remaining = supervisionEventsQueued.decrementAndGet();
+                    if (remaining < 0) supervisionEventsQueued.set(0);
+                }
+            }
+            return;
         }
     }
 
