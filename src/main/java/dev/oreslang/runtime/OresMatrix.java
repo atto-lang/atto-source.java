@@ -16,6 +16,13 @@ import java.util.List;
  * implementation.</p>
  */
 public final class OresMatrix implements ImmutableGuestValue {
+    // The Java Matrix implementation is currently the portable exact-reference
+    // core, not an unbounded BLAS backend. Bound allocation and exact BigInteger
+    // work before allocating result planes so hostile guest shapes fail
+    // deterministically instead of turning into process-level OOM/CPU denial.
+    private static final long MAX_DENSE_LOGICAL_BYTES = 32L * 1024 * 1024;
+    private static final long MAX_EXACT_MATMUL_TERM_PRODUCTS = 1_000_000L;
+
     private final int rows;
     private final int cols;
     private final double[] real;
@@ -30,13 +37,8 @@ public final class OresMatrix implements ImmutableGuestValue {
         if (rows <= 0 || cols <= 0) {
             throw new IllegalArgumentException("matrix dimensions must be positive");
         }
-        int elements;
-        try {
-            elements = Math.multiplyExact(rows, cols);
-        } catch (ArithmeticException overflow) {
-            throw new IllegalArgumentException(
-                    "matrix dimensions overflow addressable storage", overflow);
-        }
+        int elements = checkedElements(
+                rows, cols, imaginary != null, "matrix backing storage");
         if (real == null || real.length != elements
                 || (imaginary != null && imaginary.length != elements)) {
             throw new IllegalArgumentException("matrix backing storage does not match shape");
@@ -77,7 +79,8 @@ public final class OresMatrix implements ImmutableGuestValue {
             }
         }
 
-        int elements = Math.multiplyExact(rowCount, columnCount);
+        int elements = checkedElements(
+                rowCount, columnCount, complex, "matrix literal");
         double[] real = new double[elements];
         double[] imaginary = complex ? new double[elements] : null;
         for (int r = 0; r < rowCount; r++) {
@@ -103,7 +106,8 @@ public final class OresMatrix implements ImmutableGuestValue {
 
     public static OresMatrix identity(int size) {
         if (size <= 0) throw new IllegalArgumentException("identity size must be positive");
-        double[] real = new double[Math.multiplyExact(size, size)];
+        int elements = checkedElements(size, size, false, "identity matrix");
+        double[] real = new double[elements];
         for (int i = 0; i < size; i++) real[i * size + i] = 1.0;
         return new OresMatrix(size, size, real, null, false);
     }
@@ -150,7 +154,22 @@ public final class OresMatrix implements ImmutableGuestValue {
                             + " @ " + (other == null ? "null" : other.rows + "x" + other.cols));
         }
         boolean complex = isComplex() || other.isComplex();
-        int elements = Math.multiplyExact(rows, other.cols);
+        long termProducts;
+        try {
+            termProducts = Math.multiplyExact(
+                    Math.multiplyExact((long) rows, (long) other.cols),
+                    (long) cols);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    "matrix multiplication work estimate overflow", overflow);
+        }
+        if (termProducts > MAX_EXACT_MATMUL_TERM_PRODUCTS) {
+            throw new IllegalArgumentException(
+                    "matrix multiplication exceeds exact-reference work budget: terms="
+                            + termProducts + " limit=" + MAX_EXACT_MATMUL_TERM_PRODUCTS);
+        }
+        int elements = checkedElements(
+                rows, other.cols, complex, "matrix multiplication output");
         double[] outReal = new double[elements];
         double[] outImaginary = complex ? new double[elements] : null;
         for (int r = 0; r < rows; r++) {
@@ -257,6 +276,37 @@ public final class OresMatrix implements ImmutableGuestValue {
     public long logicalBytes() {
         long elements = Math.multiplyExact((long) rows, (long) cols);
         return Math.addExact(64L, Math.multiplyExact(elements, isComplex() ? 16L : 8L));
+    }
+
+    private static int checkedElements(
+            int rows, int cols, boolean complex, String operation) {
+        if (rows <= 0 || cols <= 0) {
+            throw new IllegalArgumentException(operation + " dimensions must be positive");
+        }
+        int elements;
+        try {
+            elements = Math.multiplyExact(rows, cols);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    operation + " dimensions overflow addressable storage", overflow);
+        }
+        long logicalBytes;
+        try {
+            logicalBytes = Math.addExact(
+                    64L,
+                    Math.multiplyExact(
+                            (long) elements,
+                            complex ? 16L : 8L));
+        } catch (ArithmeticException overflow) {
+            throw new IllegalArgumentException(
+                    operation + " logical byte estimate overflow", overflow);
+        }
+        if (logicalBytes > MAX_DENSE_LOGICAL_BYTES) {
+            throw new IllegalArgumentException(
+                    operation + " exceeds dense reference allocation budget: bytes="
+                            + logicalBytes + " limit=" + MAX_DENSE_LOGICAL_BYTES);
+        }
+        return elements;
     }
 
     private double imag(int index) {
