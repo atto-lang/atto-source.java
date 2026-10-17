@@ -14,6 +14,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Predicate;
 
 /**
  * Project-level Oreslang compiler configuration.
@@ -154,22 +155,46 @@ public final class OresProjectConfig {
      * </ul>
      */
     public Optional<Path> resolveImport(Path importer, String importPath) {
+        return resolveImport(importer, importPath, ignored -> true);
+    }
+
+    /**
+     * Resolve an import without probing filesystem candidates outside the
+     * caller's host-owned IMPORT policy. A denied root/candidate is skipped;
+     * if no candidate spelling is authorized, fail with a permission error
+     * rather than revealing whether an unauthorized file exists.
+     */
+    public Optional<Path> resolveImport(
+            Path importer,
+            String importPath,
+            Predicate<Path> candidateAllowed) {
         if (importer == null) throw new IllegalArgumentException("importer path cannot be null");
         if (importPath == null || importPath.isBlank()) {
             throw new IllegalArgumentException("import path cannot be blank");
         }
+        java.util.Objects.requireNonNull(candidateAllowed, "candidateAllowed");
         if (ImportRules.isJavaPath(importPath)) return Optional.empty();
 
         String unix = importPath.replace('\\', '/');
         Path raw = Path.of(unix);
-        if (raw.isAbsolute()) return existingSource(raw);
+        if (raw.isAbsolute()) {
+            CandidateResolution resolved = existingSource(raw, candidateAllowed);
+            if (!resolved.anyAuthorized())
+                throw new SecurityException("filesystem import denied by scoped IMPORT permission");
+            return resolved.source();
+        }
 
         if (unix.startsWith(".")) {
             Path parent = importer.toAbsolutePath().normalize().getParent();
             if (parent == null) parent = Path.of("").toAbsolutePath().normalize();
-            return existingSource(parent.resolve(raw).normalize());
+            CandidateResolution resolved =
+                    existingSource(parent.resolve(raw).normalize(), candidateAllowed);
+            if (!resolved.anyAuthorized())
+                throw new SecurityException("filesystem import denied by scoped IMPORT permission");
+            return resolved.source();
         }
 
+        boolean anyAuthorized = false;
         for (Path root : searchRoots()) {
             Path normalizedRoot = root.toAbsolutePath().normalize();
             Path candidate = normalizedRoot.resolve(raw).normalize();
@@ -177,26 +202,38 @@ public final class OresProjectConfig {
                 throw new IllegalArgumentException(
                         "bare import '" + importPath + "' escapes configured search root '" + normalizedRoot + "'");
             }
-            Optional<Path> resolved = existingSource(candidate);
-            if (resolved.isPresent()) return resolved;
+            CandidateResolution resolved = existingSource(candidate, candidateAllowed);
+            anyAuthorized |= resolved.anyAuthorized();
+            if (resolved.source().isPresent()) return resolved.source();
         }
+        if (!anyAuthorized)
+            throw new SecurityException("filesystem import denied by scoped IMPORT permission");
         return Optional.empty();
     }
 
-    private static Optional<Path> existingSource(Path candidate) {
+    private record CandidateResolution(Optional<Path> source, boolean anyAuthorized) { }
+
+    private static CandidateResolution existingSource(
+            Path candidate,
+            Predicate<Path> candidateAllowed) {
         Path normalized = candidate.toAbsolutePath().normalize();
-        if (Files.isRegularFile(normalized)) return Optional.of(normalized);
+        ArrayList<Path> candidates = new ArrayList<>();
+        candidates.add(normalized);
 
         String text = normalized.toString().toLowerCase();
-        if (text.endsWith(".ores") || text.endsWith(".java")) return Optional.empty();
+        if (!text.endsWith(".ores") && !text.endsWith(".java")) {
+            candidates.add(Path.of(normalized.toString() + ".ores").toAbsolutePath().normalize());
+            candidates.add(Path.of(normalized.toString() + ".java").toAbsolutePath().normalize());
+        }
 
-        Path ores = Path.of(normalized.toString() + ".ores");
-        if (Files.isRegularFile(ores)) return Optional.of(ores.toAbsolutePath().normalize());
-
-        Path java = Path.of(normalized.toString() + ".java");
-        if (Files.isRegularFile(java)) return Optional.of(java.toAbsolutePath().normalize());
-
-        return Optional.empty();
+        boolean anyAuthorized = false;
+        for (Path possible : candidates) {
+            if (!candidateAllowed.test(possible)) continue;
+            anyAuthorized = true;
+            if (Files.isRegularFile(possible))
+                return new CandidateResolution(Optional.of(possible), true);
+        }
+        return new CandidateResolution(Optional.empty(), anyAuthorized);
     }
 
     private static Path directoryFor(Path start) {
