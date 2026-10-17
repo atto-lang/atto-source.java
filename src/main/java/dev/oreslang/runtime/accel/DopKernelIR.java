@@ -4,6 +4,7 @@ import dev.oreslang.runtime.DataOrientedLayout;
 import dev.oreslang.runtime.DopRegionSchedule;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.lang.ref.WeakReference;
 import java.util.Objects;
 
 /**
@@ -49,7 +50,7 @@ public final class DopKernelIR {
             this.layout = layout;
             this.bytes = ByteBuffer.allocateDirect(Math.toIntExact(layout.byteLength()))
                     .order(ByteOrder.LITTLE_ENDIAN);
-            this.regionToken = new HostBuffer.RegionToken(layout.rows(), layout.fields());
+            this.regionToken = new HostBuffer.RegionToken(this, layout.rows(), layout.fields());
         }
     }
 
@@ -65,13 +66,18 @@ public final class DopKernelIR {
             // Volatile retirement is monotonic; a region cannot be resurrected.
             // Never retain State or its direct ByteBuffer in a region descriptor.
             private volatile boolean live = true;
-            private RegionToken(long rows, int fields) {
+            // Weak provenance: a planner root must not pin an abandoned
+            // native allocation or report a GC-reclaimed backing as live.
+            // Holding a real execution loan still strongly retains State.
+            private final WeakReference<State> ownerState;
+            private RegionToken(State ownerState, long rows, int fields) {
                 this.rows = rows;
                 this.fields = fields;
+                this.ownerState = new WeakReference<>(Objects.requireNonNull(ownerState));
             }
             public long rows() { return rows; }
             public int fields() { return fields; }
-            public boolean isLive() { return live; }
+            public boolean isLive() { return live && ownerState.get() != null; }
             private void retire() { live = false; }
         }
         private final State state;
