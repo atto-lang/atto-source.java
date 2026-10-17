@@ -62,6 +62,42 @@ final class ActorTurnWatchdogTest {
     }
 
     @Test
+    void fullWatchdogDiagnosticsDropWithoutBlockingBusyActor()
+            throws Exception {
+        AtomicBoolean release = new AtomicBoolean();
+        CountDownLatch entered = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var queuedField = ActorRuntime.class.getDeclaredField("watchdogNoticesQueued");
+            queuedField.setAccessible(true);
+            ((AtomicInteger) queuedField.get(runtime)).set(1_024);
+
+            var actor = runtime.<String>spawnShared(() -> (message, context) -> {
+                entered.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+                while (!release.get() && System.nanoTime() < deadline) {
+                    context.runtime().schedulerSafepoint();
+                    if (context.runtime().watchdogPreemptionRequested()) {
+                        context.self().stop();
+                        return;
+                    }
+                    Thread.onSpinWait();
+                }
+                context.self().stop();
+            });
+
+            actor.send("busy");
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS),
+                    "watchdog observer backpressure cannot block actor progress");
+            assertTrue(runtime.watchdogOverruns() >= 1);
+            assertTrue(runtime.watchdogNoticesDropped() >= 1,
+                    "full diagnostic capacity must drop rather than contend with the actor");
+        } finally {
+            release.set(true);
+        }
+    }
+
+    @Test
     void retiringLeaseSuppressesStaleNoticesForReusedCarriers() throws Exception {
         AtomicInteger notices = new AtomicInteger();
         ActorTurnWatchdog.Lease lease =
