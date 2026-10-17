@@ -262,6 +262,27 @@ final class DenoCliDefaultPermissionsTest {
                 "ORES_CHECK", "false"), "ORES_CHECK"));
     }
 
+    @Test
+    void guestMkdirFailsClosedForNewDirectoryUntilSecureNativeAdapter() throws Exception {
+        Path newDirectory = temp.resolve("guest-new-directory");
+        Path source = temp.resolve("guest-mkdir.ores");
+        String literal = newDirectory.toString().replace("\\", "\\\\").replace("\"", "\\\"");
+        Files.writeString(source, "pub fnc main(): void { fs.mkdir_all(\"" + literal
+                + "\"); return; }");
+        assertEquals(1, OresMain.exitStatusForArgs(new String[]{
+                "--allow-write=" + newDirectory, source.toString()
+        }), "a granted write scope is not permission to use an unsafe path-based mkdir");
+        assertFalse(Files.exists(newDirectory),
+                "no external filesystem side effect may occur on denial");
+
+        // Repeating mkdir_all on an already existing, scoped directory is
+        // idempotent and can be verified through a secure directory handle.
+        Files.createDirectory(newDirectory);
+        assertEquals(0, OresMain.exitStatusForArgs(new String[]{
+                "--allow-write=" + newDirectory, source.toString()
+        }));
+    }
+
     private Path sourceReadingEnvironment() throws Exception {
         Path source = temp.resolve("permission-env.ores");
         Files.writeString(source, """
