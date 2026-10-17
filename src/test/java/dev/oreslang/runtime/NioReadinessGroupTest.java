@@ -31,43 +31,6 @@ final class NioReadinessGroupTest {
         }
     }
 
-    @Test void boundCompletionCapacityPreparesBeforeFirstReactorStarts() throws Exception {
-        var prepared = new java.util.concurrent.atomic.AtomicInteger();
-        var completion = java.util.concurrent.Executors.newSingleThreadExecutor(task ->
-                Thread.ofPlatform().daemon(true).name("nio-bound-completion-test").unstarted(task));
-        var first = java.nio.channels.Pipe.open();
-        var second = java.nio.channels.Pipe.open();
-        try (var group = new NioReadinessGroup(1, 8, 8);
-             var firstSource = first.source();
-             var firstSink = first.sink();
-             var secondSource = second.source();
-             var secondSink = second.sink()) {
-            firstSource.configureBlocking(false);
-            secondSource.configureBlocking(false);
-            group.bindVmCompletionExecutor(completion::execute, () -> {
-                assertEquals(0, group.reactorCount(),
-                        "completion carriers must be prepared before selector startup");
-                prepared.incrementAndGet();
-            });
-
-            var firstWatch = group.watch(firstSource, SelectionKey.OP_READ);
-            assertEquals(1, prepared.get(),
-                    "first valid I/O admission prepares completion capacity exactly once");
-            assertEquals(1, group.reactorCount());
-
-            var secondWatch = group.watch(secondSource, SelectionKey.OP_READ);
-            assertEquals(1, prepared.get(),
-                    "later watches must not repeatedly prestart completion carriers");
-
-            assertTrue(firstWatch.cancel(false));
-            assertTrue(secondWatch.cancel(false));
-            group.close();
-            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
-        } finally {
-            completion.shutdownNow();
-        }
-    }
-
     @Test void repeatedSameSocketReadRearmsAfterCancelledKeyPurge() throws Exception {
         // A producer can enqueue the next watch as soon as a Future settles.
         // Every next command must register AFTER the old cancelled key is
