@@ -947,6 +947,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 + "        type: boolean"));
         assertTrue(runner.contains("REQUIRE_OPTION_PATTERN: "
                 + "$" + "{{ inputs.verify_option_pattern }}"));
+        assertTrue(runner.contains("APPROVED_OPTION_TEST_BLOB: "
+                + "$" + "{{ vars.ORESLANG_PRIVATE_CANDIDATE_OPTION_TEST_BLOB }}"));
         String[] ordered = {
                 "Require exact Option-pattern source when requested",
                 "Remove prior Surefire reports before Option-pattern execution",
@@ -972,6 +974,12 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "if: " + "$" + "{{ inputs.verify_option_pattern == true }}"),
                     "Feature proof must be explicitly requested: " + name);
         }
+        String sourceProof = section(runner,
+                "      - name: Require exact Option-pattern source when requested",
+                "      - name: Remove prior Surefire reports before Option-pattern execution");
+        assertTrue(sourceProof.contains("git hash-object \"$source\""));
+        assertTrue(sourceProof.contains("\"$APPROVED_OPTION_TEST_BLOB\""));
+        assertTrue(runner.contains("[[ \"$APPROVED_OPTION_TEST_BLOB\" =~ ^[a-f0-9]{40}$ ]]"));
         String reset = section(runner,
                 "      - name: Remove prior Surefire reports before Option-pattern execution",
                 "      - name: Execute exact candidate Option-pattern JUnit runtime");
@@ -1047,6 +1055,8 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                 "      - name: Write scoped exact-candidate identity metadata (not certification)",
                 "      - name: Upload exact-candidate identity metadata only");
         assertTrue(metadata.contains("\"option_pattern_requested\""));
+        assertTrue(metadata.contains("\"option_pattern_test_blob\""));
+        assertTrue(metadata.contains("\"APPROVED_OPTION_TEST_BLOB\""));
         assertTrue(metadata.contains("\"option_pattern_junit_methods_required\""));
         assertTrue(metadata.contains("\"verified_execution_claim\": False"));
         assertTrue(metadata.contains("\"native_guest_parity_certified\": False"));
