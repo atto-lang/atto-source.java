@@ -420,37 +420,41 @@ def dispatch(receipt_path,source_dir):
       "tree":root_sha,"parents":[r["carrier_base_sha"]]
     })
     commit_sha=PUB.valid_sha(commit.get("sha"))
-    refresh_authorization(r,True); branch=branch_absent(r)
-    created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
-                       payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
-    if created.get("ref")!="refs/heads/"+branch or PUB.nested_sha(created,"object")!=commit_sha:
-        raise Denied("carrier ref creation response mismatch")
-    ref=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
-    if ref.get("ref")!="refs/heads/"+branch or PUB.nested_sha(ref,"object")!=commit_sha:
-        raise Denied("carrier ref readback mismatch")
+    # Prove immutable payload objects before creating the push-triggering ref.
     committed=PUB.gh_api(f"repos/{CARRIER_REPO}/git/commits/{commit_sha}")
     parents=committed.get("parents")
     if (committed.get("sha")!=commit_sha or PUB.nested_sha(committed,"tree")!=root_sha or
-        not isinstance(parents,list) or len(parents)!=1 or parents[0].get("sha")!=r["carrier_base_sha"]):
+        not isinstance(parents,list) or len(parents)!=1 or not isinstance(parents[0],dict)
+        or parents[0].get("sha")!=r["carrier_base_sha"]):
         raise Denied("payload commit parent/tree readback mismatch")
     tree=PUB.gh_api(f"repos/{CARRIER_REPO}/git/trees/{root_sha}")
     entries=tree.get("tree")
-    if tree.get("truncated") is not False or not isinstance(entries,list): raise Denied("payload root tree readback invalid")
-    by_path={x.get("path"):x for x in entries if isinstance(x,dict)}
-    provenance_bytes=provenance.encode("utf-8")
-    provenance_sha=hashlib.sha1(
-        b"blob "+str(len(provenance_bytes)).encode("ascii")+b"\\0"+provenance_bytes
-    ).hexdigest()
-    source_entry=by_path.get(PREFIX,{})
-    provenance_entry=by_path.get(PROVENANCE,{})
-    if (source_entry.get("sha")!=r["source_tree_sha"]
-            or source_entry.get("type")!="tree"
-            or source_entry.get("mode") not in ("040000","40000")
-            or provenance_entry.get("sha")!=provenance_sha
-            or provenance_entry.get("type")!="blob"
-            or provenance_entry.get("mode")!="100644"):
-        raise Denied("payload root tree does not contain exact source/provenance")
-    refresh_authorization(r)
+    if tree.get("sha")!=root_sha or tree.get("truncated") is not False:
+        raise Denied("payload root tree readback invalid")
+    verify_payload_root_entries(entries,r,provenance)
+
+    refresh_authorization(r,True); branch=branch_absent(r)
+    created=PUB.gh_api(f"repos/{CARRIER_REPO}/git/refs",method="POST",
+                       payload={"ref":"refs/heads/"+branch,"sha":commit_sha})
+    created_obj=created.get("object") or {}
+    if (created.get("ref")!="refs/heads/"+branch or created_obj.get("type")!="commit"
+            or require_sha(created_obj.get("sha"),"created ref commit")!=commit_sha):
+        raise Denied("carrier ref creation response mismatch")
+    try:
+        ref=PUB.gh_api(f"repos/{CARRIER_REPO}/git/ref/heads/{branch}")
+        ref_obj=ref.get("object") or {}
+        if (ref.get("ref")!="refs/heads/"+branch or ref_obj.get("type")!="commit"
+                or require_sha(ref_obj.get("sha"),"readback ref commit")!=commit_sha):
+            raise Denied("carrier ref readback mismatch")
+        refresh_authorization(r)
+    except Exception as exc:
+        try:
+            cleanup_exact_payload_ref(r,commit_sha)
+        except Exception as cleanup:
+            raise Denied(
+                "payload verification failed and exact ref cleanup could not be confirmed"
+            ) from cleanup
+        raise exc
     return commit_sha,len(files)
 
 def main(argv=None):
