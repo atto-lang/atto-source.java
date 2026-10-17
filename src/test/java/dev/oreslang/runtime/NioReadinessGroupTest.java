@@ -17,10 +17,12 @@ final class NioReadinessGroupTest {
     @Test void slowFutureSubscribersNeverRunOnSelectorAndBackpressureIsBounded() throws Exception {
         // A runtime completion subscriber is allowed to be adversarial host
         // code; it must not pin the selector or grow the completion queue.
-        try (var group = new NioReadinessGroup(1, 2, 8);
-             var one = java.nio.channels.Pipe.open();
-             var two = java.nio.channels.Pipe.open();
-             var three = java.nio.channels.Pipe.open()) {
+        try (var group = new NioReadinessGroup(1, 2, 8)) {
+            // Pipe is not AutoCloseable: its two channels are individually owned.
+            var one = java.nio.channels.Pipe.open();
+            var two = java.nio.channels.Pipe.open();
+            var three = java.nio.channels.Pipe.open();
+            try {
             one.source().configureBlocking(false);
             two.source().configureBlocking(false);
             three.source().configureBlocking(false);
@@ -65,6 +67,14 @@ final class NioReadinessGroupTest {
             group.close();
             assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
             assertEquals(0, group.pendingNotifications());
+            } finally {
+                one.source().close();
+                one.sink().close();
+                two.source().close();
+                two.sink().close();
+                three.source().close();
+                three.sink().close();
+            }
         }
     }
 
