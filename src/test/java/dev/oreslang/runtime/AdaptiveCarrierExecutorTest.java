@@ -226,6 +226,37 @@ class AdaptiveCarrierExecutorTest {
         }
     }
 
+    @Test void shutdownNowUnwrapsQueuedNoGrowthTasksAndRetiresCredits()
+            throws Exception {
+        var factory = (java.util.concurrent.ThreadFactory) task ->
+                Thread.ofPlatform().daemon(true).name("adaptive-shutdown-model").unstarted(task);
+        var workers = new AdaptiveCarrierExecutor(1, 1, 8, factory);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        Runnable pending = () -> { };
+        try {
+            assertEquals(1, workers.prestartAllCoreThreads());
+            workers.execute(() -> {
+                entered.countDown();
+                try { release.await(5, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            workers.executeWithoutCarrierGrowth(pending);
+
+            List<Runnable> abandoned = workers.shutdownNow();
+            assertEquals(List.of(pending), abandoned,
+                    "shutdown must expose the original host task, not its identity wrapper");
+            release.countDown();
+            assertTrue(workers.awaitTermination(3, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+            workers.shutdownNow();
+        }
+    }
+
     @Test void rejectsInvalidLimits() {
         var factory = (java.util.concurrent.ThreadFactory) task -> new Thread(task);
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveCarrierExecutor(-1, 5, 1, factory));
