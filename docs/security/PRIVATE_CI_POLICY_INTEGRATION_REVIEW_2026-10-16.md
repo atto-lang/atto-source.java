@@ -5,7 +5,7 @@ This is a **current-main-based integration candidate only**. Neither the files n
 ## Source lines / decisions
 
 - Start from immutable Java main commit `12cdd17af7f949a3c54e045a46a2fc21be0ea5d0`, tree `939c88979417da9c0b4bc7bcf045c82e2e477483`.
-- Preserve the comprehensive fail-closed publisher, exact source snapshot approval policy, CI preflight and 149 checked-in Python adversarial tests (147 inherited plus 2 integration regressions) from Java security PR #954, commit `b9ae8b0b350f73f2e643a45400abe245f6430aad`. Preserve the existing executable modes for existing scripts.
+- Preserve the comprehensive fail-closed publisher, exact source snapshot approval policy, CI preflight and 150 checked-in Python adversarial tests (147 inherited plus 2 integration regressions) from Java security PR #954, commit `b9ae8b0b350f73f2e643a45400abe245f6430aad`. Preserve the existing executable modes for existing scripts.
 - Source the three workflow-dispatch-only, source-repository-scoped exact-runner workflows and their JUnit workflow admission tests from Java #1014, commit `abccfd2c77ff4ae30e57ab38780372170150d4d8`.
 - Union existing, #954, and #1014 CODEOWNERS entries without dropping protections. No ACL or GitHub branch setting is changed by a CODEOWNERS file.
 - Related #1018 numeric identity binding, #1089 protected-source checks, and #1118 exact Git tree/TOCTOU protections overlap #954's comprehensive implementation; compare adversarial coverage rather than overwriting the publisher with a shorter, less-protective version.
@@ -23,7 +23,7 @@ This is a **current-main-based integration candidate only**. Neither the files n
 - `bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh`.
 - `python3 -I -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py`.
 - `bash scripts/test-private-ci-destination.sh`.
-- Three runs of `python3 -I scripts/test-publish-private-ci-source.py`, with at least 149 tests each; no skips/failures/expected failures.
+- Three runs of `python3 -I scripts/test-publish-private-ci-source.py`, with at least 150 tests each; no skips/failures/expected failures.
 - Compile and run the three source-runner JUnit workflow/security tests from #1014; full JDK 25 Maven and GraalVM AOT/hybrid guest execution on exact checked-out tree after independently approved source-local runner is functional.
 
 ## Release hold
@@ -42,7 +42,7 @@ test paths between the publisher's mandatory terminal block and the actual
 CODEOWNERS file. Two checked-in Python regressions now check the real file's
 terminal block and mandatory coverage of source-local runner files.
 
-The source-local publisher validation workflow now requires a minimum **149**
+The source-local publisher validation workflow now requires a minimum **150**
 Python tests in each of three rounds; a passing command exit without the
 required count, or any skipped/expected failure, is rejected.
 
@@ -66,3 +66,16 @@ https://github.com/ores-truffle-oreslang/oreslang-source.java/actions/runs/38990
 a confidential cross-organization Git mirror unless protected-main approval,
 reviewed destination and source-snapshot tuple, and incident-containment gates
 are independently demonstrated.
+
+## Untrusted candidate Python import-path hardening
+
+The three private source-local workflows and the policy preflight now run
+Python-based report verifiers, script compilation, and publisher tests with
+Python `-I` isolated mode. This prevents an untrusted candidate directory from
+silently replacing the verification script's standard-library imports through
+the current working directory or environment-provided PYTHONPATH. The checked-in
+Python suite includes a new admission regression enforcing isolated-mode
+call sites, raising the required case count to **150**. Exact-head execution
+on original-source CI remains blocked pending runner allocation and protected
+main approval. Do not mistake a source-free hosted mock for candidate JUnit,
+GraalVM, or publisher test evidence.
