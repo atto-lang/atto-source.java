@@ -47,6 +47,7 @@ REQUIRED_CASES = {
         "arrayListInterchangeAndReadonlyMutationFailClosed",
         "fixedArrayAndFixedListRequireExactKindAndExtent",
         "structuralMapUsesInvariantStableKeysAndOptionalLookup",
+        "contractRejectsShapeOnlyOverloadAndDynamicSpread",
         "structuralCollectionLoanCannotCrossSuspendBoundary",
     }),
 }

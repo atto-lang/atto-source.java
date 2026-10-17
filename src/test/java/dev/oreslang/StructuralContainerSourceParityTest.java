@@ -228,6 +228,25 @@ final class StructuralContainerSourceParityTest {
     }
 
     @Test
+    void contractRejectsShapeOnlyOverloadAndDynamicSpread() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc classify(structural Array<int> values): int { return 1; }
+                  fnc classify(structural List<int> values): int { return 2; }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc add(int left, int right): int { return left + right; }
+                  fnc bad(List<int> values): int {
+                    return add(...values);
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void structuralCollectionLoanCannotCrossSuspendBoundary() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
