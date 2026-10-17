@@ -2085,6 +2085,8 @@ public final class ActorRuntime implements AutoCloseable {
                 new OresFuture<>(() -> false, () -> { });
         private final OresFuture<Void> doneFuture =
                 new OresFuture<>(() -> false, () -> { });
+        /** Set only after actor initialization crosses the ready barrier. */
+        private volatile boolean readySucceeded;
         /** Final structural diagnostics retained after the ActorCell is unregistered. */
         private volatile ActorHealthSnapshot terminalHealth;
         private volatile ActorOutputStream<Object> outputStream;
@@ -2097,6 +2099,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure != null) {
                     readyRefFuture.failFromRuntime(OresFuture.unwrap(failure));
                 } else {
+                    readySucceeded = true;
                     readyRefFuture.completeFromRuntime(this);
                 }
             });
