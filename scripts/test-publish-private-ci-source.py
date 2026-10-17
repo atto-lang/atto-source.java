@@ -89,10 +89,15 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.carrier_review_count = [1] * 100
         self.carrier_codeowner = [True] * 100
         self.carrier_codeowners_text = (
-            "/.github/CODEOWNERS @ORESoftware\n"
             "/.github/workflows/ @ORESoftware\n"
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/private-ci-carrier-policy.json @ORESoftware\n"
         )
         self.carrier_codeowners_sha = None
+        self.carrier_policy_text = (
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":15368}}\n'
+        )
+        self.carrier_policy_sha = None
         self.carrier_codeowners_errors = []
         self.carrier_security_permission = "write"
         self.carrier_stale_review_dismissal = [True] * 100
@@ -238,6 +243,13 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                                 + bytes([0]) + raw).hexdigest()
             return {"type": "file", "encoding": "base64", "size": len(raw),
                     "sha": self.carrier_codeowners_sha or sha,
+                    "content": base64.b64encode(raw).decode("ascii")}
+        if route == "repos/trusted/ci/contents/.github/private-ci-carrier-policy.json?ref=main":
+            raw = self.carrier_policy_text.encode("utf-8")
+            sha = hashlib.sha1(b"blob " + str(len(raw)).encode("ascii")
+                                + bytes([0]) + raw).hexdigest()
+            return {"type": "file", "encoding": "base64", "size": len(raw),
+                    "sha": self.carrier_policy_sha or sha,
                     "content": base64.b64encode(raw).decode("ascii")}
         if route == "repos/trusted/ci/codeowners/errors?ref=main":
             return {"errors": self.carrier_codeowners_errors}
@@ -690,22 +702,26 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         finally:
             self.preflight.start()
 
-    def test_carrier_workflow_codeowners_must_cover_every_workflow(self):
+    def test_carrier_workflow_codeowners_must_cover_every_security_file(self):
+        good = (
+            "/.github/workflows/ @ORESoftware\n"
+            "/.github/CODEOWNERS @ORESoftware\n"
+            "/.github/private-ci-carrier-policy.json @ORESoftware\n"
+        )
         for policy in ("",
                        "/.github/CODEOWNERS @ORESoftware\n",
                        "/.github/workflows/ @ORESoftware\n/.github/CODEOWNERS @ORESoftware\n",
-                       "/.github/CODEOWNERS @ORESoftware\n/.github/workflows/ @ORESoftware\n"
-                       "* @another-reviewer\n"):
+                       "/.github/CODEOWNERS @ORESoftware\n"
+                       "/.github/workflows/ @ORESoftware\n"
+                       "/.github/private-ci-carrier-policy.json @ORESoftware\n",
+                       good + "* @another-reviewer\n"):
             with self.subTest(policy=policy):
                 self.route_calls.clear()
                 self.carrier_codeowners_text = policy
-                with self.assertRaisesRegex(pub.Denied, "terminal security CODEOWNER coverage"):
+                with self.assertRaisesRegex(pub.Denied, "terminal CODEOWNER coverage"):
                     self.publish()
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
-        self.carrier_codeowners_text = (
-            "/.github/CODEOWNERS @ORESoftware\n"
-            "/.github/workflows/ @ORESoftware\n"
-        )
+        self.carrier_codeowners_text = good
 
     def test_carrier_codeowner_digest_validation_and_permission_fail_closed(self):
         self.carrier_codeowners_sha = "f" * 40
@@ -721,6 +737,49 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with self.assertRaisesRegex(pub.Denied, "lacks write permission"):
             self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_carrier_issuer_policy_must_exactly_pin_actions_app(self):
+        originals = self.carrier_policy_text
+        invalid = (
+            '{}\n',
+            '{"schema":2,"carrier":{"context":"carrier-policy","appId":15368}}\n',
+            '{"schema":1,"carrier":{"context":"wrong-policy","appId":15368}}\n',
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":15369}}\n',
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":true}}\n',
+            '{"schema":1,"carrier":{"context":"carrier-policy","appId":15368},"extra":1}\n',
+        )
+        for policy in invalid:
+            with self.subTest(policy=policy):
+                self.route_calls.clear()
+                self.carrier_policy_text = policy
+                with self.assertRaisesRegex(pub.Denied, "carrier issuer policy"):
+                    self.publish()
+                self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_policy_text = originals
+
+    def test_carrier_issuer_policy_blob_integrity_fails_closed(self):
+        self.carrier_policy_sha = "f" * 40
+        with self.assertRaisesRegex(pub.Denied, "issuer policy blob integrity"):
+            self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+        self.carrier_policy_sha = None
+
+    def test_carrier_issuer_policy_revocation_aborts_before_next_write(self):
+        original = self.fake_api
+        def revoke(route, method="GET", payload=None):
+            response = original(route, method, payload)
+            if route == "repos/trusted/ci/git/blobs" and method == "POST":
+                self.carrier_policy_text = (
+                    '{"schema":1,"carrier":{"context":"carrier-policy","appId":15369}}\n'
+                )
+            return response
+        with patch.object(pub, "gh_api", side_effect=revoke):
+            with self.assertRaisesRegex(pub.Denied, "carrier issuer policy"):
+                pub.publish("trusted/ci", self.source,
+                            ("ci/oreslang-" + self.expected_tree),
+                            self.root, self.expected_tree, D)
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
 
     def test_carrier_security_owner_revocation_aborts_after_first_blob(self):
         original = self.fake_api
