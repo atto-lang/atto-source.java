@@ -25,7 +25,8 @@ final class ActorTurnWatchdogTest {
                 entered.countDown();
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
                 while (!release.get() && System.nanoTime() < deadline) {
-                    context.runtime().schedulerSafepoint();
+                    // Deliberately omit schedulerSafepoint(): this turn is
+                    // uncooperative and must eventually receive a request.
                     if (context.runtime().watchdogPreemptionRequested()) {
                         flagged.countDown();
                     }
@@ -97,6 +98,27 @@ final class ActorTurnWatchdogTest {
     }
 
     @Test
+    void checkpointResetsUncooperativeIntervalInsteadOfUsingTotalTurnAge() {
+        AtomicInteger notices = new AtomicInteger();
+        long base = System.nanoTime();
+        try (ActorTurnWatchdog.Lease lease =
+                     ActorTurnWatchdog.enter(ignored -> notices.incrementAndGet())) {
+            // Simulate a long-lived turn that cooperated at t=+6 ms.
+            lease.checkpointAt(base + TimeUnit.MILLISECONDS.toNanos(6));
+
+            ActorTurnWatchdog.scanAt(base + TimeUnit.MILLISECONDS.toNanos(8));
+            assertFalse(lease.preemptionRequested(),
+                    "2 ms since the latest checkpoint is not an overrun");
+            assertEquals(0, notices.get());
+
+            ActorTurnWatchdog.scanAt(base + TimeUnit.MILLISECONDS.toNanos(11));
+            assertTrue(lease.preemptionRequested(),
+                    "5 ms without a checkpoint must request cooperation");
+            assertEquals(1, notices.get());
+        }
+    }
+
+    @Test
     void actorCannotDrainHostWatchdogNoticesOrReadGlobalMetrics() throws Exception {
         CountDownLatch completed = new CountDownLatch(1);
         AtomicInteger denied = new AtomicInteger();
@@ -144,7 +166,8 @@ final class ActorTurnWatchdogTest {
                 long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
                 while (!OresScheduler.preemptionRequested()
                         && System.nanoTime() < deadline) {
-                    OresScheduler.checkpointCurrentTurn();
+                    // Deliberately omit checkpointCurrentTurn(): this is the
+                    // scheduler-level uncooperative-turn regression.
                     Thread.onSpinWait();
                 }
                 return OresScheduler.done(OresScheduler.preemptionRequested());
