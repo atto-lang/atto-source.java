@@ -732,6 +732,12 @@ public final class TypeChecker {
                     "index protocol method '" + klass.name() + "." + method.name()
                             + "' must be synchronous and non-generator");
         }
+        if (method.parameters().stream().anyMatch(param ->
+                param.structural() || param.type().isBorrow())) {
+            throw new IllegalArgumentException(
+                    "index protocol parameters must be ordinary by-value parameters; "
+                            + "borrowed/structural index protocol parameters are not supported yet");
+        }
         if (method.name().equals("Symbol.index")) {
             if (method.parameters().isEmpty()) {
                 throw new IllegalArgumentException("[Symbol.index] requires at least one index parameter");
