@@ -76,6 +76,38 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void completionWorkerCannotJoinItsOwnReactorOrControlPool() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var pipe = Pipe.open()) {
+            pipe.source().configureBlocking(false);
+            pipe.sink().configureBlocking(false);
+            var pending = vm.nioReadiness().watch(pipe.source(), SelectionKey.OP_READ);
+            var callback = new java.util.concurrent.CompletableFuture<Boolean>();
+            pending.whenCompleteRuntime((events, failure) -> {
+                if (failure != null) {
+                    callback.completeExceptionally(failure);
+                    return;
+                }
+                try {
+                    if (!OresVM.onNioWorker()) {
+                        callback.complete(false);
+                        return;
+                    }
+                    vm.close();
+                    callback.complete(false);
+                } catch (IllegalStateException expected) {
+                    callback.complete(vm.started());
+                }
+            });
+            assertEquals(1, pipe.sink().write(ByteBuffer.wrap(new byte[]{9})));
+            assertTrue(callback.get(3, TimeUnit.SECONDS),
+                    "NIO runtime subscriber must not self-join its completion pool");
+            assertEquals(0, vm.nioReadiness().pendingCount());
+        } finally {
+            vm.close(); // only external host may join the selector and CONTROL
+        }
+    }
+
     @Test void vmCloseRetiresReadinessAndRejectsNewRegistrations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var nio = vm.nioReadiness();
