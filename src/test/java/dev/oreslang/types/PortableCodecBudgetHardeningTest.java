@@ -27,4 +27,39 @@ final class PortableCodecBudgetHardeningTest {
         };
         assertThrows(IllegalArgumentException.class, () -> new ObjectShape(hostile));
     }
+
+    @Test void snapshotsBoundedIndicesWithoutUsingUntrustedToArrayOrIterator() {
+        Field field = new Field("payload", 0, new Scalar(ScalarKind.I64));
+        List<Field> deceptive = new AbstractList<>() {
+            int reads;
+            @Override public int size() { return ++reads == 1 ? 1 : 1_000_000; }
+            @Override public Field get(int index) {
+                if (index != 0) throw new AssertionError("snapshot read outside checked bound");
+                return field;
+            }
+            @Override public Object[] toArray() {
+                throw new AssertionError("hostile toArray must never run");
+            }
+            @Override public <T> T[] toArray(T[] target) {
+                throw new AssertionError("hostile typed toArray must never run");
+            }
+        };
+        ObjectShape shape = assertDoesNotThrow(() -> new ObjectShape(deceptive));
+        assertEquals(List.of(field), shape.fields());
+    }
+
+    @Test void rejectsARecordThatShrinksDuringItsBoundedSnapshot() {
+        Field field = new Field("first", 0, new Scalar(ScalarKind.I64));
+        List<Field> shrinking = new AbstractList<>() {
+            @Override public int size() { return 2; }
+            @Override public Field get(int index) {
+                if (index == 0) return field;
+                throw new IndexOutOfBoundsException("record changed during snapshot");
+            }
+        };
+        IllegalArgumentException denied = assertThrows(IllegalArgumentException.class,
+                () -> new ObjectShape(shrinking));
+        assertTrue(denied.getMessage().contains("changed during snapshot"));
+    }
+
 }
