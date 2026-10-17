@@ -10,6 +10,7 @@ import dev.oreslang.runtime.NativeBuildMode;
 import dev.oreslang.runtime.CorePerf;
 import dev.oreslang.runtime.CoreDebug;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.runtime.PermissionCheckMode;
 import dev.oreslang.runtime.RuntimePermissions;
@@ -105,8 +106,10 @@ public final class OresMain {
                     // Oreslang permissions never prompt. This Deno-compatible
                     // spelling is accepted so automation can state that intent.
                 } else if (arg.startsWith("--permission-check=")) {
-                    permissionCheckMode = PermissionCheckMode.parse(
-                            arg.substring("--permission-check=".length()));
+                    String value = arg.substring("--permission-check=".length());
+                    if (value.isBlank())
+                        throw new UsageException("--permission-check requires compile or runtime");
+                    permissionCheckMode = PermissionCheckMode.parse(value);
                 } else if (arg.equals("--allow-all")) {
                     for (RuntimePermissions.Permission permission : RuntimePermissions.Permission.values()) {
                         permissionBuilder.allowAll(permission);
@@ -225,7 +228,8 @@ public final class OresMain {
             }
             String source = directOresSource;
             if (permissionCheckMode == PermissionCheckMode.COMPILE) {
-                OresCompiler.validateForIsolate(source, policy);
+                var parsed = OresCompiler.validateForIsolate(source, policy);
+                CapabilityChecker.check(parsed, policy, permissionCheckMode, permissions);
             }
             Map<String, String> defines = BuildOptions.mergeDefines(System.getenv(), buildDefines);
             Set<String> entries = buildEntryPoints.isEmpty() ? Set.of("main") : Set.copyOf(buildEntryPoints);
@@ -250,7 +254,8 @@ public final class OresMain {
                         path,
                         System.getenv(),
                         policy,
-                        permissionCheckMode);
+                        permissionCheckMode,
+                        permissions);
             } catch (Exception error) {
                 System.err.println(formatCheckDiagnostic(path, error));
                 return 1;
