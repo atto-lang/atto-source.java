@@ -30,3 +30,5 @@
 /src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
+/scripts/dispatch-review-pinned-private-ci.py @ORESoftware
+/tests/test_review_pinned_dispatcher.py @ORESoftware
