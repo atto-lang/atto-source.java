@@ -9,18 +9,20 @@ import java.util.UUID;
 /**
  * Host/CONTROL-only foundation for future typed GenServer call/reply.
  *
- * Tickets are opaque single-use local objects; they MUST NOT be serialized,
- * exposed as guest DATA, or mistaken for supervisor authority. This is only
- * correlation admission, not a guest GenServer or transport implementation.
- * No callbacks or guest code are invoked while holding the short ledger lock.
+ * <p>Tickets are opaque single-use local objects; they MUST NOT be serialized,
+ * exposed as guest DATA, or mistaken for supervisor authority. Correlations are
+ * deterministic process-local sequence numbers, while runtime/actor/incarnation
+ * identity remains the authority fence.</p>
+ *
+ * <p>No callbacks or guest code are invoked while holding the short ledger lock.</p>
  */
 final class GenServerReplyLedger {
     static final class AdmissionException extends IllegalStateException {
-        enum Reason { CLOSED, CAPACITY }
+        enum Reason { CLOSED, CAPACITY, CORRELATION_EXHAUSTED }
         private final Reason reason;
 
         AdmissionException(Reason reason, String message) {
-            super(message);
+            super(message, null);
             this.reason = Objects.requireNonNull(reason, "reason");
         }
 
@@ -31,81 +33,148 @@ final class GenServerReplyLedger {
         Target {
             Objects.requireNonNull(runtimeId, "runtimeId");
             Objects.requireNonNull(actorId, "actorId");
-            if (incarnation <= 0) throw new IllegalArgumentException("incarnation must be positive");
+            if (incarnation <= 0) {
+                throw new IllegalArgumentException("incarnation must be positive");
+            }
         }
     }
 
     static final class Ticket {
         private final GenServerReplyLedger ledger;
         private final Target target;
-        private final UUID correlation;
+        private final long correlation;
 
-        private Ticket(GenServerReplyLedger ledger, Target target, UUID correlation) {
+        private Ticket(GenServerReplyLedger ledger, Target target, long correlation) {
             this.ledger = ledger;
             this.target = target;
             this.correlation = correlation;
         }
+
+        long correlationForDiagnostics() {
+            return correlation;
+        }
     }
 
+    record Snapshot(
+            int capacity,
+            int pending,
+            boolean closed,
+            long nextCorrelation,
+            long registered,
+            long replyClaims,
+            long retireClaims,
+            long rejectedClaims,
+            long capacityRejected) { }
+
     private final int capacity;
-    private final Map<UUID, Ticket> pending = new HashMap<>();
+    private final Map<Long, Ticket> pending = new HashMap<>();
     private boolean closed;
+    /** Monotonic, local, opaque. Zero permanently marks sequence exhaustion. */
+    private long nextCorrelation = 1L;
+    private long registered;
+    private long replyClaims;
+    private long retireClaims;
+    private long rejectedClaims;
+    private long capacityRejected;
 
     GenServerReplyLedger(int capacity) {
-        if (capacity < 1 || capacity > 1_000_000)
+        if (capacity < 1 || capacity > 1_000_000) {
             throw new IllegalArgumentException("capacity must be 1..1,000,000");
+        }
         this.capacity = capacity;
     }
 
     Ticket register(Target target) {
         Objects.requireNonNull(target, "target");
         synchronized (pending) {
-            if (closed)
+            if (closed) {
                 throw new AdmissionException(
                         AdmissionException.Reason.CLOSED,
                         "GenServer reply ledger is closed");
-            if (pending.size() >= capacity)
+            }
+            if (pending.size() >= capacity) {
+                capacityRejected = saturatingIncrement(capacityRejected);
                 throw new AdmissionException(
                         AdmissionException.Reason.CAPACITY,
                         "bounded GenServer call quota exceeded");
-            UUID correlation;
-            do { correlation = UUID.randomUUID(); } while (pending.containsKey(correlation));
+            }
+            if (nextCorrelation == 0L) {
+                throw new AdmissionException(
+                        AdmissionException.Reason.CORRELATION_EXHAUSTED,
+                        "GenServer correlation sequence exhausted");
+            }
+            long correlation = nextCorrelation;
+            nextCorrelation = correlation == Long.MAX_VALUE
+                    ? 0L : correlation + 1L;
             Ticket ticket = new Ticket(this, target, correlation);
             pending.put(correlation, ticket);
+            registered = saturatingIncrement(registered);
             return ticket;
         }
     }
 
     /**
      * True at most once when target and incarnation match and ticket is live.
-     * Caller separately publishes the reply to a runtime-owned Future.
      * False never settles another request and never proves actor death.
      */
     boolean tryReply(Ticket ticket, Target respondingActor) {
         Objects.requireNonNull(respondingActor, "respondingActor");
-        if (ticket == null || ticket.ledger != this || !ticket.target.equals(respondingActor))
+        if (ticket == null
+                || ticket.ledger != this
+                || !ticket.target.equals(respondingActor)) {
+            synchronized (pending) {
+                rejectedClaims = saturatingIncrement(rejectedClaims);
+            }
             return false;
+        }
         synchronized (pending) {
-            return pending.remove(ticket.correlation, ticket);
+            boolean won = pending.remove(ticket.correlation, ticket);
+            if (won) replyClaims = saturatingIncrement(replyClaims);
+            else rejectedClaims = saturatingIncrement(rejectedClaims);
+            return won;
         }
     }
 
     /** Timeout/cancel retire correlation; accepted server work may still run. */
     boolean retire(Ticket ticket) {
-        if (ticket == null || ticket.ledger != this) return false;
+        if (ticket == null || ticket.ledger != this) {
+            synchronized (pending) {
+                rejectedClaims = saturatingIncrement(rejectedClaims);
+            }
+            return false;
+        }
         synchronized (pending) {
-            return pending.remove(ticket.correlation, ticket);
+            boolean won = pending.remove(ticket.correlation, ticket);
+            if (won) retireClaims = saturatingIncrement(retireClaims);
+            else rejectedClaims = saturatingIncrement(rejectedClaims);
+            return won;
         }
     }
 
     int pendingCount() {
-        synchronized (pending) { return pending.size(); }
+        synchronized (pending) {
+            return pending.size();
+        }
+    }
+
+    Snapshot snapshot() {
+        synchronized (pending) {
+            return new Snapshot(
+                    capacity,
+                    pending.size(),
+                    closed,
+                    nextCorrelation,
+                    registered,
+                    replyClaims,
+                    retireClaims,
+                    rejectedClaims,
+                    capacityRejected);
+        }
     }
 
     /**
      * Close atomically fences further registrations/replies and returns the
-     * exact tickets that lost to shutdown. The caller may settle associated
-     * runtime-owned Futures only after this method releases the ledger lock.
+     * exact tickets that lost to shutdown. Caller settlement occurs after lock release.
      */
     List<Ticket> closeTickets() {
         synchronized (pending) {
@@ -117,8 +186,11 @@ final class GenServerReplyLedger {
         }
     }
 
-    /** Close atomically fences further registrations/replies; no callbacks. */
     int close() {
         return closeTickets().size();
+    }
+
+    private static long saturatingIncrement(long value) {
+        return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
     }
 }
