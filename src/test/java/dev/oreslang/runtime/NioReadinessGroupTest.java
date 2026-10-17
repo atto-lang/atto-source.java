@@ -78,6 +78,37 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void reactorShutdownWaitsForOutstandingCompletionCallbacks() throws Exception {
+        try (var group = new NioReadinessGroup(1, 1, 8)) {
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var entered = new java.util.concurrent.CountDownLatch(1);
+                var release = new java.util.concurrent.CountDownLatch(1);
+                var watcher = group.watch(pipe.source(), SelectionKey.OP_READ);
+                watcher.whenCompleteRuntime((events, failure) -> {
+                    entered.countDown();
+                    try { release.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+                });
+                try {
+                    pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[]{1}));
+                    assertTrue(entered.await(2, TimeUnit.SECONDS));
+                    group.close();
+                    assertFalse(group.awaitStopped(50, TimeUnit.MILLISECONDS),
+                            "selector shutdown alone is not notification quiescence");
+                } finally {
+                    release.countDown();
+                }
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+                assertEquals(0, group.pendingNotifications());
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void fivePendingReadsUseOneReactorNotFiveIoThreads() throws Exception {
         try (var group = new NioReadinessGroup(4, 32, 64);
              var listener = ServerSocketChannel.open()) {
