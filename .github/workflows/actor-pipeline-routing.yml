@@ -16,6 +16,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineAdmissionBridgeSmoke.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineAdmissionBridge.java'
       - 'src/test/java/dev/oreslang/ActorPipelineRoutingAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/SourceActorThreeStagePipelineBaselineTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'scripts/test-actor-pipeline-route-plan.sh'
@@ -41,6 +42,7 @@ on:
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineAdmissionBridgeSmoke.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineAdmissionBridge.java'
       - 'src/test/java/dev/oreslang/ActorPipelineRoutingAdmissionTest.java'
+      - 'src/test/java/dev/oreslang/SourceActorThreeStagePipelineBaselineTest.java'
       - 'src/main/java/dev/oreslang/types/TypeChecker.java'
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'scripts/test-actor-pipeline-route-plan.sh'
@@ -88,4 +90,4 @@ jobs:
           sh scripts/test-actor-pipeline-route-plan.sh
           sh scripts/test-actor-pipeline-router-host-gate.sh
           mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
-            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineRoutingAdmissionTest,ActorPipelineAdmissionBridgeTest test
+            -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineRoutingAdmissionTest,ActorPipelineAdmissionBridgeTest,SourceActorThreeStagePipelineBaselineTest test
