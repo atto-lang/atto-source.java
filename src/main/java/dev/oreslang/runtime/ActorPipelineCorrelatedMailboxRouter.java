@@ -195,7 +195,10 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
      */
     void reply(M value) {
         inLiveGeneration(() -> {
-            sendChild(session.returnToOrigin(current()), value);
+            var frame = current(); // Authenticate the actual DATA receive first.
+            Objects.requireNonNull(value, "pipeline reply payload");
+            // Invalid payloads must not consume this one-shot return path.
+            sendChild(session.returnToOrigin(frame), value);
             return null;
         });
     }
