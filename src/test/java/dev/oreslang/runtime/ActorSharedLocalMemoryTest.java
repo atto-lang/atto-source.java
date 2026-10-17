@@ -242,6 +242,40 @@ final class ActorSharedLocalMemoryTest {
     }
 
     @Test
+    void shutdownAccountingFailureCompletesDoneAsFailureInsteadOfStrandingActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var aggregateField = ActorRuntime.class.getDeclaredField("sharedActorLocalMemoryBytes");
+            aggregateField.setAccessible(true);
+            var aggregate = (java.util.concurrent.atomic.AtomicLong) aggregateField.get(runtime);
+            CountDownLatch allocated = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorMemorySlice> slice = new AtomicReference<>();
+
+            var owner = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var local = turn.localMemory().orElseThrow();
+                local.allocateActorLocalBytes(8).writeLong(0, 42);
+                slice.set(local);
+                // Model a corrupt external refund counter at finalization.
+                aggregate.set(0);
+                allocated.countDown();
+                turn.self().stop();
+            });
+            owner.ready().get(5, TimeUnit.SECONDS);
+            owner.send("corrupt-refund");
+            assertTrue(allocated.await(5, TimeUnit.SECONDS));
+            assertTrue(owner.awaitTermination(5, TimeUnit.SECONDS),
+                    "CONTROL must complete termination even after a failed arena refund");
+            assertTrue(owner.failure().isPresent(),
+                    "accounting failure must not masquerade as graceful termination");
+            assertTrue(owner.failure().orElseThrow().getMessage().contains("underflow"));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> owner.getDone().get(5, TimeUnit.SECONDS));
+            assertTrue(slice.get().closed(), "failed refund must still revoke memory");
+            assertEquals(8L, slice.get().usedBytes(),
+                    "failed aggregate refund remains charged for diagnosis/retry");
+        }
+    }
+
+    @Test
     void sharedActorLocalQuotaCanRejectWithoutAggregateAccountingLeak() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch checked = new CountDownLatch(1);
