@@ -64,10 +64,6 @@ public final class OresVM implements AutoCloseable {
     private OresVM(int controlParallelism, OresScheduler.TurnExecutor turnExecutor, Executor rootAdmission) {
         ActorHeapAdmission.requireSupportedJvmMode(
                 System.getProperty("ores.runtime.gc.mode", "hybrid"));
-        if (controlParallelism < 2 || controlParallelism > 20) {
-            throw new IllegalArgumentException("CONTROL initial carriers must be in 2..20");
-        }
-
         AtomicInteger carrierId = new AtomicInteger();
         ThreadFactory factory = runnable -> Thread.ofPlatform()
                 .daemon(true)
@@ -83,8 +79,7 @@ public final class OresVM implements AutoCloseable {
         // created only when independent runnable CONTROL turns contend.
         int maximumControlParallelism = Integer.getInteger(
                 "ores.runtime.control.max.parallelism", 20);
-        if (maximumControlParallelism < controlParallelism || maximumControlParallelism > 20)
-            throw new IllegalArgumentException("CONTROL maximum carriers must be in 2..20 and >= minimum");
+        validateControlBounds(controlParallelism, maximumControlParallelism);
         this.controlExecutor = new AdaptiveCarrierExecutor(
                 controlParallelism, maximumControlParallelism,
                 DEFAULT_QUEUE_CAPACITY, factory);
@@ -112,6 +107,12 @@ public final class OresVM implements AutoCloseable {
             controlExecutor.shutdownNow();
             throw failure;
         }
+    }
+
+    static void validateControlBounds(int minimum, int maximum) {
+        if (minimum < 2 || minimum > 20 || maximum < minimum || maximum > 20)
+            throw new IllegalArgumentException(
+                    "CONTROL carrier limits must satisfy 2 <= minimum <= maximum <= 20");
     }
 
     static OresVM create(OresScheduler.TurnExecutor turnExecutor) {
