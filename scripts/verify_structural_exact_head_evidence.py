@@ -48,6 +48,7 @@ REQUIRED_CASES = {
         "fixedArrayAndFixedListRequireExactKindAndExtent",
         "structuralMapUsesInvariantStableKeysAndOptionalLookup",
         "contractRejectsShapeOnlyOverloadAndDynamicSpread",
+        "zeroWidthFixedMetadataCannotHideUnsafePayloadTypes",
         "structuralCollectionLoanCannotCrossSuspendBoundary",
     }),
 }

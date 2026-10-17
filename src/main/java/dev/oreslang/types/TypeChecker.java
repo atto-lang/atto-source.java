@@ -3964,8 +3964,14 @@ public final class TypeChecker {
         }
         if (type instanceof StructuralContainerView) return true;
         if (type instanceof Tuple tuple) {
-            return tuple.elements().stream()
-                    .anyMatch(element -> containsChannelCallable(element, seen, genericBindings));
+            if (tuple.elements().stream()
+                    .anyMatch(element -> containsChannelCallable(element, seen, genericBindings))) {
+                return true;
+            }
+            return tuple.elements().isEmpty()
+                    && tuple.homogeneousElement() != null
+                    && containsChannelCallable(
+                            tuple.homogeneousElement(), seen, genericBindings);
         }
         if (type instanceof Union union) {
             return union.options().stream()
@@ -4041,8 +4047,14 @@ public final class TypeChecker {
         }
         if (type instanceof StructuralContainerView) return true;
         if (type instanceof Tuple tuple) {
-            return tuple.elements().stream()
-                    .anyMatch(element -> containsChannelBorrow(element, seen, genericBindings));
+            if (tuple.elements().stream()
+                    .anyMatch(element -> containsChannelBorrow(element, seen, genericBindings))) {
+                return true;
+            }
+            return tuple.elements().isEmpty()
+                    && tuple.homogeneousElement() != null
+                    && containsChannelBorrow(
+                            tuple.homogeneousElement(), seen, genericBindings);
         }
         if (type instanceof Union union) {
             return union.options().stream()
@@ -4425,6 +4437,13 @@ public final class TypeChecker {
             for (int i = 0; i < sourceTuple.elements().size(); i++) {
                 if (readonlyCapabilityErased(
                         sourceTuple.elements().get(i), targetTuple.elements().get(i))) return true;
+            }
+            if (sourceTuple.elements().isEmpty()
+                    && sourceTuple.homogeneousElement() != null
+                    && targetTuple.homogeneousElement() != null) {
+                return readonlyCapabilityErased(
+                        sourceTuple.homogeneousElement(),
+                        targetTuple.homogeneousElement());
             }
             return false;
         }
@@ -5080,7 +5099,15 @@ public final class TypeChecker {
         }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
-                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
+                validateActorCallableBoundaryType(
+                        tuple.elements().get(i), actorKind, false,
+                        where + " tuple element " + i);
+            }
+            if (tuple.elements().isEmpty()
+                    && tuple.homogeneousElement() != null) {
+                validateActorCallableBoundaryType(
+                        tuple.homogeneousElement(), actorKind, false,
+                        where + " zero-width fixed element type");
             }
             return;
         }
@@ -5175,8 +5202,13 @@ public final class TypeChecker {
             return true;
         }
         if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
-            return true;
+            for (Type element : tuple.elements()) {
+                if (!isSharedSafe(element, seen, genericBindings)) return false;
+            }
+            return !tuple.elements().isEmpty()
+                    || tuple.homogeneousElement() == null
+                    || isSharedSafe(
+                            tuple.homogeneousElement(), seen, genericBindings);
         }
         if (type instanceof Record record) {
             for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings)) return false;
@@ -6260,6 +6292,10 @@ public final class TypeChecker {
         iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
+            if (tuple.elements().isEmpty()
+                    && tuple.homogeneousElement() != null) {
+                return tuple.homogeneousElement();
+            }
             Type result = Unknown.INSTANCE;
             for (Type element : tuple.elements()) {
                 result = result == Unknown.INSTANCE ? element : commonType(result, element);

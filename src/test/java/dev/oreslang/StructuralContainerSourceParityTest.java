@@ -247,6 +247,27 @@ final class StructuralContainerSourceParityTest {
     }
 
     @Test
+    void zeroWidthFixedMetadataCannotHideUnsafePayloadTypes() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<FixedArray[0 of &int]> payload): void {
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                actor fnc bad(FixedArray[0 of Future<int>] payload): void {
+                  return;
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                actor fnc ok(FixedArray[0 of int] payload): void {
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void structuralCollectionLoanCannotCrossSuspendBoundary() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
