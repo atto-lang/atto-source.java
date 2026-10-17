@@ -70,14 +70,24 @@ final class GenServerPendingCallsTest {
         var pendingB = calls.register(target(1));
 
         assertTrue(calls.tryReply(replied, target(1), "done"));
-        IllegalStateException shutdown = new IllegalStateException("runtime shutdown");
+        IllegalStateException shutdown =
+                new IllegalStateException("secret runtime shutdown details");
         assertEquals(2, calls.closePending(shutdown));
         assertEquals(0, calls.closePending(shutdown));
         assertEquals("done", assertDoesNotThrow(replied.future()::get));
         for (var call : java.util.List.of(pendingA, pendingB)) {
             ExecutionException failure = assertThrows(
                     ExecutionException.class, call.future()::get);
-            assertSame(shutdown, failure.getCause());
+            var closed = assertInstanceOf(
+                    GenServerPendingCalls.GenServerCallClosedException.class,
+                    failure.getCause());
+            assertEquals(
+                    IllegalStateException.class.getName(),
+                    closed.diagnosticType());
+            assertNull(closed.getCause());
+            assertEquals(0, closed.getSuppressed().length);
+            assertFalse(closed.getMessage().contains("secret runtime shutdown details"));
+            assertNotSame(shutdown, closed);
         }
         assertThrows(IllegalStateException.class, () -> calls.register(target(1)));
     }
@@ -117,6 +127,29 @@ final class GenServerPendingCallsTest {
                 }
             }
         }
+    }
+
+    @Test
+    void ledgerStatsExposeBoundedPressureWithoutLeakingTickets() {
+        var calls = new GenServerPendingCalls<String>(1);
+        var first = calls.register(target(1));
+        var live = calls.ledgerSnapshot();
+        assertEquals(1, live.capacity());
+        assertEquals(1, live.pending());
+        assertEquals(1, live.registered());
+        assertEquals(2, live.nextCorrelation());
+
+        assertThrows(IllegalStateException.class, () -> calls.register(target(1)));
+        assertEquals(1, calls.ledgerSnapshot().capacityRejected());
+
+        assertFalse(calls.tryReply(first, target(2), "stale"));
+        assertEquals(1, calls.ledgerSnapshot().rejectedClaims());
+        assertTrue(calls.tryReply(first, target(1), "ok"));
+
+        var done = calls.ledgerSnapshot();
+        assertEquals(0, done.pending());
+        assertEquals(1, done.replyClaims());
+        assertEquals(1, done.registered());
     }
 
     @Test
