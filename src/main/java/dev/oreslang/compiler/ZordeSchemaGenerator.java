@@ -3,11 +3,13 @@ package dev.oreslang.compiler;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.RefinementRules;
+import dev.oreslang.types.StaticZordeSchema;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -27,12 +29,24 @@ public final class ZordeSchemaGenerator {
      */
     public static final class Plan {
         private final Map<String, RefinementRules.Descriptor> schemas;
+        private final Map<String, InferredScalarType> inferredTypes;
 
-        private Plan(Map<String, RefinementRules.Descriptor> schemas) {
+        private Plan(Map<String, RefinementRules.Descriptor> schemas,
+                     Map<String, InferredScalarType> inferredTypes) {
             this.schemas = Collections.unmodifiableMap(new LinkedHashMap<>(schemas));
+            this.inferredTypes = Collections.unmodifiableMap(new LinkedHashMap<>(inferredTypes));
         }
 
         public Map<String, RefinementRules.Descriptor> schemas() { return schemas; }
+        public Map<String, InferredScalarType> inferredTypes() { return inferredTypes; }
+
+        /** This type projection must eventually be installed into TypeChecker. */
+        public InferredScalarType inferType(String qualifiedName) {
+            InferredScalarType result = inferredTypes.get(qualifiedName);
+            if (result == null)
+                throw new IllegalArgumentException("no inferred Zorde type for " + qualifiedName);
+            return result;
+        }
 
         /** Schema lookup requires a fully qualified compilation-unit identity. */
         public RefinementRules.Descriptor schema(String qualifiedTypeName) {
@@ -58,6 +72,64 @@ public final class ZordeSchemaGenerator {
             return new Conversion(
                     new CheckedScalar(qualifiedTypeName, contract.fingerprint(), raw), null);
         }
+    }
+
+    /**
+     * Derived Oreslang type from a statically known schema. Input is the
+     * untrusted primitive; output is a possibly refined or nominal alias.
+     * Not a callable guest type constructor or an implicit cast.
+     */
+    public record InferredScalarType(String qualifiedName, Ast.TypeRef inputBase,
+                                     Ast.RefinementSpec outputRefinement,
+                                     String nominalIdentity, String schemaFingerprint) {
+        public InferredScalarType {
+            Objects.requireNonNull(qualifiedName);
+            Objects.requireNonNull(inputBase);
+            Objects.requireNonNull(nominalIdentity);
+            Objects.requireNonNull(schemaFingerprint);
+        }
+    }
+
+    private static void insertSchema(
+            Map<String, RefinementRules.Descriptor> schemas,
+            Map<String, InferredScalarType> inferred,
+            String qualifiedName, StaticZordeSchema schema, boolean nominal) {
+        String identity = nominal ? qualifiedName : "";
+        RefinementRules.Descriptor descriptor =
+                schema.descriptor(nominal ? qualifiedName : null, nominal);
+        if (schemas.putIfAbsent(qualifiedName, descriptor) != null)
+            throw new IllegalArgumentException("duplicate generated Zorde schema " + qualifiedName);
+        inferred.put(qualifiedName, new InferredScalarType(
+                qualifiedName, schema.baseType(), schema.refinement(nominal),
+                identity, descriptor.fingerprint()));
+    }
+
+    /**
+     * Schema-first compile-time substrate: the same descriptor and refined
+     * type projection as annotation/with declarations. Builders MUST be
+     * compile-time known, immutable and from the approved scalar vocabulary.
+     * No arbitrary callback, transform, coercion or runtime-created schema
+     * can statically infer a refined type.
+     */
+    public static Plan planStaticSchemas(
+            String namespace, Map<String, StaticZordeSchema> declarations,
+            Set<String> nominalNames) {
+        if (namespace == null || !namespace.matches("[A-Za-z_][A-Za-z_0-9]*"))
+            throw new IllegalArgumentException("schema-first types require source namespace");
+        Objects.requireNonNull(declarations);
+        Objects.requireNonNull(nominalNames);
+        if (!declarations.keySet().containsAll(nominalNames))
+            throw new IllegalArgumentException("nominal schema has no declared type");
+        Map<String, RefinementRules.Descriptor> descriptors = new TreeMap<>();
+        Map<String, InferredScalarType> inferred = new TreeMap<>();
+        for (Map.Entry<String, StaticZordeSchema> entry : declarations.entrySet()) {
+            String name = entry.getKey();
+            if (name == null || !name.matches("[A-Za-z_][A-Za-z_0-9]*"))
+                throw new IllegalArgumentException("invalid static schema declaration name");
+            insertSchema(descriptors, inferred, namespace + "." + name,
+                    Objects.requireNonNull(entry.getValue()), nominalNames.contains(name));
+        }
+        return new Plan(descriptors, inferred);
     }
 
     /** Error data, not an exception that exposes raw untrusted content. */
@@ -130,6 +202,7 @@ public final class ZordeSchemaGenerator {
         }
 
         Map<String, RefinementRules.Descriptor> collected = new TreeMap<>();
+        Map<String, InferredScalarType> inferred = new TreeMap<>();
         for (Ast.ModuleDecl module : program.modules()) {
             String moduleName = module.name();
             if (!moduleName.matches("[A-Za-z_][A-Za-z_0-9]*")) {
@@ -157,15 +230,14 @@ public final class ZordeSchemaGenerator {
                     throw new IllegalArgumentException(
                             "nominal Zorde schema requires a namespace: " + alias.name());
                 }
-                RefinementRules.Descriptor schema = RefinementRules.descriptor(
-                        alias.refinement().nominal() ? qualifiedName : null,
-                        alias.target(), alias.refinement());
-                if (collected.putIfAbsent(qualifiedName, schema) != null) {
-                    throw new IllegalArgumentException(
-                            "duplicate generated Zorde schema " + qualifiedName);
-                }
+                // Annotation-first and schema-first MUST lower via the same
+                // pure schema builder and the same descriptor construction.
+                StaticZordeSchema staticSchema =
+                        StaticZordeSchema.fromRefinement(alias.target(), alias.refinement());
+                insertSchema(collected, inferred, qualifiedName, staticSchema,
+                        alias.refinement().nominal());
             }
         }
-        return new Plan(collected);
+        return new Plan(collected, inferred);
     }
 }
