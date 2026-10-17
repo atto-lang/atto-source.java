@@ -83,6 +83,71 @@ final class ClassConstructorHardeningTest {
     }
 
     @Test
+    void overloadsResolveByArityNotParameterTypes() throws Exception {
+        String source = """
+                define class Sample as
+                  val int value;
+
+                  constructor() { self.value = 1; return; }
+                  constructor(int n) { self.value = n; return; }
+                  constructor(int n, int extra) { self.value = n + extra; return; }
+
+                  pub get(): int { return self.value; }
+                end
+                pub routine main(): void {
+                  val a = new Sample();
+                  val b = new Sample(20);
+                  val c = new Sample(20, 22);
+                  stdio.stdout.write(a.get());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(b.get());
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(c.get());
+                  return;
+                }
+                """;
+        Ast.ClassDecl klass = (Ast.ClassDecl) Parser.parse(source)
+                .modules().getFirst().declarations().getFirst();
+        assertEquals(3, klass.constructors().size());
+        assertEquals(0, klass.constructorForArity(0).arity());
+        assertEquals(2, klass.constructorForArity(2).arity());
+        assertNull(klass.constructorForArity(3));
+        assertEquals("1|20|42", run(source));
+    }
+
+    @Test
+    void missingConstructorArityRejectsRatherThanUsingSyntheticFields() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                define class Sample as
+                  val int value;
+                  constructor() { self.value = 42; return; }
+                  constructor(int n, int extra) { self.value = n + extra; return; }
+                end
+                pub routine main(): void {
+                  val x = new Sample(42);
+                  return;
+                }
+                """));
+        assertTrue(String.valueOf(failure).contains("constructor")
+                || String.valueOf(failure.getCause()).contains("constructor"));
+    }
+
+    @Test
+    void overloadedConstructorFieldInitializersMustBeValidForEveryArity() {
+        assertThrows(Exception.class, () -> run("""
+                define class Sample as
+                  val int value: input;
+                  constructor(int input) { return; }
+                  constructor() { return; }
+                end
+                pub routine main(): void {
+                  val x = new Sample();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void omittedConstructorKeepsLegacySynthesizedFieldInitialization() throws Exception {
         String output = run("""
                 define class Legacy as
@@ -122,11 +187,11 @@ final class ClassConstructorHardeningTest {
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
                         define class Box as
-                          constructor() { return; }
                           constructor(int value) { return; }
+                          constructor(string text) { return; }
                         end
                         """));
-        assertTrue(duplicate.getMessage().contains("only one constructor"));
+        assertTrue(duplicate.getMessage().contains("duplicate constructor arity 1"));
 
         IllegalArgumentException typed = assertThrows(
                 IllegalArgumentException.class,

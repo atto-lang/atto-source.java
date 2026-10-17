@@ -585,18 +585,18 @@ public final class TreeShaker {
                 for (Ast.FieldDecl field : klass.fields()) {
                     fields.add((Ast.FieldDecl) rewriteDeclaration(module, field));
                 }
-                Ast.ConstructorDecl constructor = klass.constructor();
-                if (constructor != null) {
+                List<Ast.ConstructorDecl> rewrittenConstructors = new ArrayList<>();
+                for (Ast.ConstructorDecl constructor : klass.constructors()) {
                     LinkedHashMap<String, Object> locals = new LinkedHashMap<>();
                     locals.put("self", UNKNOWN);
                     for (Ast.Param parameter : constructor.parameters()) {
                         locals.put(parameter.name(), UNKNOWN);
                     }
-                    constructor = new Ast.ConstructorDecl(
+                    rewrittenConstructors.add(new Ast.ConstructorDecl(
                             constructor.visibility(),
                             constructor.parameters(),
                             constructor.annotations(),
-                            rewriteStatements(constructor.body(), module, locals));
+                            rewriteStatements(constructor.body(), module, locals)));
                 }
                 List<Ast.MethodDecl> methods = new ArrayList<>();
                 for (Ast.MethodDecl method : klass.methods()) {
@@ -626,8 +626,10 @@ public final class TreeShaker {
                         klass.parents(),
                         klass.interfaces(),
                         fields,
-                        constructor,
-                        methods);
+                        rewrittenConstructors.isEmpty() ? null : rewrittenConstructors.getFirst(),
+                        methods,
+                        rewrittenConstructors.size() <= 1
+                                ? List.of() : rewrittenConstructors.subList(1, rewrittenConstructors.size()));
             }
             return declaration;
         }
@@ -1138,8 +1140,7 @@ public final class TreeShaker {
                     scanType(field.type());
                     scanExpression(module, field.initializer(), Set.of("self"));
                 }
-                if (klass.constructor() != null) {
-                    Ast.ConstructorDecl constructor = klass.constructor();
+                for (Ast.ConstructorDecl constructor : klass.constructors()) {
                     for (Ast.Param parameter : constructor.parameters()) scanType(parameter.type());
                     for (Ast.Annotation annotation : constructor.annotations()) scanAnnotation(annotation);
                     LinkedHashSet<String> locals = new LinkedHashSet<>();

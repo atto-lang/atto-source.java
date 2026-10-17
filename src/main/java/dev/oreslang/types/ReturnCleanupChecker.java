@@ -65,8 +65,8 @@ public final class ReturnCleanupChecker {
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     callable(fn.body(), fn.parameters(), null);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
-                    if (klass.constructor() != null) {
-                        callable(klass.constructor().body(), klass.constructor().parameters(), null);
+                    for (Ast.ConstructorDecl constructor : klass.constructors()) {
+                        callable(constructor.body(), constructor.parameters(), null);
                     }
                     for (Ast.MethodDecl method : klass.methods()) {
                         callable(method.body(), method.parameters(), null);

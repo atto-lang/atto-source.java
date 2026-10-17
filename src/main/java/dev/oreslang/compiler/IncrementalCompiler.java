@@ -245,12 +245,13 @@ public final class IncrementalCompiler {
             abi.append(" implements ");
             for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
             abi.append('\n');
-            if (klass.constructor() != null
-                    && klass.constructor().visibility() == Ast.Visibility.PUBLIC) {
+            for (Ast.ConstructorDecl constructor : klass.constructors()) {
+                if (constructor.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(" constructor");
-                appendParams(abi, klass.constructor().parameters());
+                appendParams(abi, constructor.parameters());
                 abi.append('\n');
-            } else if (klass.constructor() == null) {
+            }
+            if (klass.constructors().isEmpty()) {
                 // Legacy synthesized constructors are externally visible when
                 // their class is public; all positional field slots affect ABI.
                 abi.append(" synthesized-constructor(");
