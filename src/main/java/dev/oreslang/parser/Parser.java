@@ -3118,6 +3118,12 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after call type arguments");
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
+                if (expr instanceof Ast.MemberExpr member
+                        && member.receiver() instanceof Ast.NameExpr owner
+                        && owner.name().equals("Integer")
+                        && member.member().equals("is_int")) {
+                    throw error(previous(), "Integer.is_int does not accept type arguments");
+                }
                 expr = new Ast.CallExpr(expr, typeArguments, args);
             } else if (match(LPAREN)) {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
