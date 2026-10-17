@@ -4400,9 +4400,18 @@ public final class OresEvalRootNode extends RootNode {
                         return null;
                     }, List.of());
                 }
-                // Partial fan-out cannot hide per-edge admission results, and
-                // reply cannot skip the compiler-owned reverse-path semantics.
-                case "forward_all", "reply" -> null;
+                case "reply" -> {
+                    if (args.size() != 1) {
+                        throw new IllegalArgumentException(
+                                "self.reply expects exactly one value");
+                    }
+                    yield object.owner.invokableInvocation(ignored -> {
+                        runtime.routeCurrentPipelineReply(args.getFirst());
+                        return null;
+                    }, List.of());
+                }
+                // Partial fan-out cannot hide per-edge admission results.
+                case "forward_all" -> null;
                 default -> null;
             };
         }
