@@ -76,6 +76,13 @@ successful left match; failed matches short-circuit. These are ordinary
 lexical refinement bindings, not a mechanism for escaping mutable locals
 into deferred closures.
 
+When `&&` chains nested Option patterns, each payload binding retains the
+ownership root of the value that was matched. For example,
+`outer matches Some(inner) && inner matches Some(payload)` does **not**
+create an independent owner of `payload`; moving `payload` and then
+moving `inner` again must be rejected. Patterns on *different* original
+Option values keep distinct ownership roots.
+
 A refinement binding is not a copy. If `dog` is introduced by
 `animal is type Dog dog`, both names identify the same ownership place. Moving
 through either name consumes the same move-only value.
