@@ -378,7 +378,8 @@ public final class Parser {
             }
             rejectCallableStructuralAnnotation(annotations, "actor class declarations");
             Ast.ActorThreadPolicy annotationThreads = parseActorThreadAnnotation(annotations);
-            return parseActorClass(actorKind, modifiers.visibility, annotationThreads);
+            return parseActorClass(actorKind, modifiers.visibility, annotationThreads,
+                    modifiers.shared || modifiers.untrusted || actorToken.type() == ISOACTOR);
         }
         if (match(FNC)) {
             modifiers = mergeModifiers(modifiers, parseModifiers());
@@ -609,6 +610,7 @@ public final class Parser {
             String className,
             Ast.Visibility classVisibility,
             boolean filePrivateScope) {
+        rejectActorThreadAnnotation(annotations, "constructors");
         Token keyword = advance(); // contextual 'constructor'
         if (mods.async || mods.suspends || mods.generator || mods.structural || mods.nonLexical || mods.isStatic
                 || mods.isAbstract || mods.shared || mods.untrusted) {
@@ -706,7 +708,8 @@ public final class Parser {
         }
         rejectCallableStructuralAnnotation(annotations, "actor class declarations");
         Ast.ActorThreadPolicy annotationThreads = parseActorThreadAnnotation(annotations);
-        return parseActorClass(kind, modifiers.visibility, annotationThreads);
+        return parseActorClass(kind, modifiers.visibility, annotationThreads,
+                modifiers.shared || modifiers.untrusted || actorToken.type() == ISOACTOR);
     }
 
     private boolean matchContextualIdentifier(String lexeme) {
@@ -732,7 +735,8 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind, Ast.Visibility visibility,
-                                          Ast.ActorThreadPolicy annotationThreads) {
+                                          Ast.ActorThreadPolicy annotationThreads,
+                                          boolean explicitActorKind) {
         String name = consume(IDENT, "expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         if (match(FROM)) {
@@ -742,7 +746,7 @@ public final class Parser {
             else if (match(UNTRUSTED)) sourceKind = Ast.ActorKind.UNTRUSTED;
             else throw error(peek(), "expected private, shared or untrusted after actor 'from'");
             consume(ACTOR, "expected 'actor' after actor base kind");
-            if (actorKind != Ast.ActorKind.PRIVATE && actorKind != sourceKind) {
+            if (explicitActorKind && actorKind != sourceKind) {
                 throw error(previous(), "actor base kind conflicts with declaration modifier");
             }
             actorKind = sourceKind;
@@ -1049,6 +1053,7 @@ public final class Parser {
 
     private Ast.FieldDecl parseTypeFirstClassField(
             List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectActorThreadAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         boolean isFinal = matchContextualIdentifier("final");
         boolean mutableReferent = match(MUT);
@@ -1067,6 +1072,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseColonField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectActorThreadAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         String name = consume(IDENT, "expected field name").lexeme();
         consume(COLON, "expected ':' after field name");
@@ -1080,6 +1086,7 @@ public final class Parser {
 
     /** Actor-state 'final name: Type' is a const/immutable field spelling. */
     private Ast.FieldDecl parseFinalActorField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectActorThreadAnnotation(annotations, "fields");
         rejectCallableStructuralAnnotation(annotations, "fields");
         consumeContextualIdentifier("final", "expected 'final' actor field");
         String name = consume(IDENT, "expected field name after 'final'").lexeme();
@@ -1092,6 +1099,7 @@ public final class Parser {
     }
 
     private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
+        rejectActorThreadAnnotation(annotations, "module bindings");
         rejectCallableStructuralAnnotation(annotations, "module bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
@@ -2498,6 +2506,7 @@ public final class Parser {
     }
 
     private Ast.BindingStmt parseBindingStatement(List<Ast.Annotation> annotations) {
+        rejectActorThreadAnnotation(annotations, "bindings");
         Ast.BindingKind kind = parseBindingKind();
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
