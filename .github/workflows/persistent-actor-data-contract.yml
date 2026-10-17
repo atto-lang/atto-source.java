@@ -10,6 +10,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/PersistentActorMap.java'
       - 'src/main/java/dev/oreslang/types/ActorStateModeContracts.java'
       - 'src/test/java/dev/oreslang/runtime/PersistentActorMapTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSharedLocalMemoryTest.java'
       - 'src/test/java/dev/oreslang/types/ActorStateModeContractsTest.java'
   push:
     paths:
@@ -21,6 +22,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/PersistentActorMap.java'
       - 'src/main/java/dev/oreslang/types/ActorStateModeContracts.java'
       - 'src/test/java/dev/oreslang/runtime/PersistentActorMapTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorSharedLocalMemoryTest.java'
       - 'src/test/java/dev/oreslang/types/ActorStateModeContractsTest.java'
   workflow_dispatch:
 permissions:
@@ -56,6 +58,6 @@ jobs:
           distribution: graalvm
           cache: maven
       - name: HAMT and pure-actor runtime regression
-        run: mvn -B -ntp -Dtest=PersistentActorMapTest,ActorStateModeContractsTest test
+        run: mvn -B -ntp -Dtest=PersistentActorMapTest,ActorSharedLocalMemoryTest,ActorStateModeContractsTest test
       - name: Full Java/GraalVM verification
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
