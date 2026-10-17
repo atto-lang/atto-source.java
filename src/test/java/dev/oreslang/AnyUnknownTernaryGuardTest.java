@@ -201,6 +201,68 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void provenCopyRefinementMayBeCopiedWithoutConsumingOpaqueRoot() throws Exception {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc twice(int left, int right): int {
+                  return left + right;
+                }
+
+                pub fnc use(any value): int {
+                  if Integer.is_int(value) then
+                    val int first = value;
+                    val int second = value;
+                    return twice(first, second);
+                  fi
+                  return 0;
+                }
+                """)));
+
+        String output = run("""
+                fnc twice(int left, int right): int {
+                  return left + right;
+                }
+
+                fnc use(any value): int {
+                  if Integer.is_int(value) then
+                    val int first = value;
+                    val int second = value;
+                    return twice(first, second);
+                  fi
+                  return 0;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(use(4));
+                  stdio.stdout.write(use("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("80", output);
+    }
+
+    @Test
+    void moveOnlyRefinementThroughOpaqueTopRemainsRooted() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                        end
+
+                        fnc consume(Box box): int {
+                          return 1;
+                        }
+
+                        pub fnc bad(any value): any {
+                          val int selected =
+                              value is type Box box ? consume(box) : 0;
+                          return value;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("moved value"), failure::getMessage);
+    }
+
+    @Test
     void opaqueTopValuesRemainMoveOnlyAfterTypeErasure() {
         IllegalArgumentException anyMove = assertThrows(
                 IllegalArgumentException.class,
