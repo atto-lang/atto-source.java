@@ -9357,12 +9357,18 @@ public final class OresEvalRootNode extends RootNode {
             // subnormal magnitudes representable during intermediate products.
             double numeratorScale = Math.max(Math.abs(real), Math.abs(imaginary));
             double divisorScale = Math.max(Math.abs(o.real), Math.abs(o.imaginary));
-            if (numeratorScale > 0.0 && divisorScale > 0.0
+            if (divisorScale > 0.0
                     && Double.isFinite(numeratorScale) && Double.isFinite(divisorScale)) {
-                int numeratorExponent = Math.getExponent(numeratorScale);
+                // A zero numerator still needs the scaled divisor path. Falling
+                // through to c*c+d*d can underflow a tiny finite divisor to
+                // zero and turn exact 0/z into NaN.
+                int numeratorExponent = numeratorScale > 0.0
+                        ? Math.getExponent(numeratorScale) : 0;
                 int divisorExponent = Math.getExponent(divisorScale);
-                double a = Math.scalb(real, -numeratorExponent);
-                double b = Math.scalb(imaginary, -numeratorExponent);
+                double a = numeratorScale > 0.0
+                        ? Math.scalb(real, -numeratorExponent) : real;
+                double b = numeratorScale > 0.0
+                        ? Math.scalb(imaginary, -numeratorExponent) : imaginary;
                 double c = Math.scalb(o.real, -divisorExponent);
                 double d = Math.scalb(o.imaginary, -divisorExponent);
                 // A small nonzero component can disappear when the larger
