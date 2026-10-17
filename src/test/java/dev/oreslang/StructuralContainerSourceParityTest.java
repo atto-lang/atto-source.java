@@ -266,10 +266,17 @@ final class StructuralContainerSourceParityTest {
                     stdio.stdout.write(":");
                     stdio.stdout.write(values == values);
                     let mut Map<string,int> other = new Map<string,int>();
-                    other.put("a", 7);
                     other.put("b", 9);
+                    other.put("a", 7);
                     stdio.stdout.write(":");
                     stdio.stdout.write(values == other);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(values is other);
+                    values.put("a", 8);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(values.size);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(values.get("a").unwrap());
                     return;
                   }
                 end
@@ -288,7 +295,7 @@ final class StructuralContainerSourceParityTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("2:7:true|a=7|b=9|11:12:true:true",
+        assertEquals("2:7:true|a=7|b=9|11:12:true:true:false:2:8",
                 out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
