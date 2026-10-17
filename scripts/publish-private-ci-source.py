@@ -147,6 +147,10 @@ def require_pinned_actions_check(required_checks, expected_context):
         seen.add(name)
         if name == expected_context and app_id != GITHUB_ACTIONS_APP_ID:
             raise Denied("required security status check has incorrect issuer")
+    # Legacy context-only checks have no trusted issuer. Permit the deprecated
+    # list only as a redundant view of the explicitly app-bound checks.
+    if contexts is not None and any(name not in seen for name in contexts):
+        raise Denied("legacy required status check lacks issuer binding")
     if expected_context not in seen:
         raise Denied("required issuer-bound security status check missing")
 
