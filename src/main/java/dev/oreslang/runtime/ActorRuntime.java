@@ -430,6 +430,9 @@ public final class ActorRuntime implements AutoCloseable {
         throw new IllegalStateException("actor generation sequence exhausted");
     }
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    /** VM-owned routing bridge for actors currently bound into one live pipeline generation. */
+    private final Map<ActorId, ActorPipelineCorrelatedMailboxRouter<?>> pipelineRouters =
+            new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /**
      * Reverse cooperation-membership index. All mutations to this map AND an
@@ -3794,6 +3797,90 @@ public final class ActorRuntime implements AutoCloseable {
                 || cell.finalized)
             throw new IllegalArgumentException(
                     "correlated host routing requires a live SHARED actor binding");
+    }
+
+    /** Install one sealed correlated router per bound actor. Registration is host-only;
+     * guest code receives no router object or route-frame capability. */
+    void registerCorrelatedPipelineRouter(
+            Set<ActorId> actorIds,
+            ActorPipelineCorrelatedMailboxRouter<?> router) {
+        requirePipelineRegistrationHostAuthority();
+        Objects.requireNonNull(actorIds, "pipeline actor ids");
+        Objects.requireNonNull(router, "pipeline router");
+        if (actorIds.isEmpty()) throw new IllegalArgumentException("pipeline router has no actors");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            List<ActorId> installed = new ArrayList<>();
+            try {
+                for (ActorId id : actorIds) {
+                    ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+                    if (cell == null || cell.kind != ActorKind.SHARED || cell.stopped.get()
+                            || cell.finalized) {
+                        throw new IllegalArgumentException(
+                                "pipeline router binding requires a live SHARED actor: " + id);
+                    }
+                    ActorPipelineCorrelatedMailboxRouter<?> prior =
+                            pipelineRouters.putIfAbsent(id, router);
+                    if (prior != null && prior != router) {
+                        throw new IllegalStateException(
+                                "actor is already bound to a live pipeline generation: " + id);
+                    }
+                    installed.add(id);
+                }
+            } catch (RuntimeException | Error failure) {
+                for (ActorId id : installed) pipelineRouters.remove(id, router);
+                throw failure;
+            }
+        }
+    }
+
+    void unregisterCorrelatedPipelineRouter(
+            Set<ActorId> actorIds,
+            ActorPipelineCorrelatedMailboxRouter<?> router) {
+        requirePipelineRegistrationHostAuthority();
+        Objects.requireNonNull(actorIds, "pipeline actor ids");
+        Objects.requireNonNull(router, "pipeline router");
+        synchronized (runtimeLifecycleLock) {
+            for (ActorId id : actorIds) pipelineRouters.remove(id, router);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private ActorPipelineCorrelatedMailboxRouter<Object> currentCorrelatedPipelineRouter(
+            String operation) {
+        requireCurrentPipelineReceiveTurn();
+        ActorId id = currentActorId().orElseThrow(() ->
+                new SecurityException("pipeline routing requires a current actor"));
+        ActorPipelineCorrelatedMailboxRouter<?> router = pipelineRouters.get(id);
+        if (router == null) {
+            throw new SecurityException(
+                    "current actor is not bound to a live pipeline generation for " + operation);
+        }
+        return (ActorPipelineCorrelatedMailboxRouter<Object>) router;
+    }
+
+    /** Compiler-owned guest intrinsic entrypoints. Authority is derived solely
+     * from the scheduler's current DATA turn and VM-owned route metadata. */
+    public void routeCurrentPipelineForward(Object value) {
+        currentCorrelatedPipelineRouter("forward").forward(value);
+    }
+
+    public void routeCurrentPipelineForwardRoundRobin(Object value) {
+        currentCorrelatedPipelineRouter("forward_round_robin").forwardRoundRobin(value);
+    }
+
+    public void routeCurrentPipelineForwardTo(String target, Object value) {
+        currentCorrelatedPipelineRouter("forward_to").forwardTo(
+                Objects.requireNonNull(target, "pipeline target"), value);
+    }
+
+    public void routeCurrentPipelineForwardByKey(String key, Object value) {
+        currentCorrelatedPipelineRouter("forward_by_key").forwardByKey(
+                Objects.requireNonNull(key, "pipeline routing key"), value);
+    }
+
+    public void routeCurrentPipelineBackward(Object value) {
+        currentCorrelatedPipelineRouter("backward").backward(value);
     }
 
 
