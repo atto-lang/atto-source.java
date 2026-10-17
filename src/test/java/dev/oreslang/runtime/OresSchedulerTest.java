@@ -16,6 +16,20 @@ import static org.junit.jupiter.api.Assertions.*;
 final class OresSchedulerTest {
 
     @Test
+    void explicitFixedSchedulerPrestartsExactlyRequestedCarriers() {
+        OresScheduler scheduler = new OresScheduler(3);
+        try {
+            assertEquals(3, scheduler.parallelism());
+            assertEquals(3, scheduler.ownedCarrierCount(),
+                    "explicit OresScheduler(N) owns exactly N prestarted carriers");
+        } finally {
+            scheduler.close();
+        }
+        assertEquals(0, scheduler.ownedCarrierCount(),
+                "closing the explicit scheduler retires its owned carriers");
+    }
+
+    @Test
     void rejectedGuestContextAdmissionSettlesTheOwningTask() throws Exception {
         IllegalStateException failure = new IllegalStateException("guest context entry rejected");
         try (OresScheduler scheduler = OresScheduler.managed(1, runnable -> { throw failure; })) {
