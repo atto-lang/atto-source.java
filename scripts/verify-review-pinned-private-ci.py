@@ -31,6 +31,7 @@ EXPECTED_PRS = {
     "carrier": (CARRIER_REPO, 7),
 }
 RESUME_MARKER = "PRIVATE_CI_RESUME_APPROVED"
+RESUME_REVOKE_MARKER = "PRIVATE_CI_RESUME_REVOKED"
 MAX_JSON = 2 * 1024 * 1024
 
 class Denied(RuntimeError):
@@ -162,12 +163,24 @@ def exact_approval(reviews, head, reviewer, author_id):
         raise Denied("latest independent exact-head review is not approved")
     return latest["id"]
 
+def comment_key(comment):
+    created = comment.get("created_at")
+    if type(created) is not str:
+        raise Denied("incident authorization comment lacks created_at")
+    try:
+        stamp = dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise Denied("invalid incident authorization created_at") from exc
+    cid = comment.get("id")
+    if type(cid) is not int or cid <= 0:
+        raise Denied("invalid incident authorization comment ID")
+    return stamp, cid
+
 def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
     if type(incident) is not list:
         raise Denied("malformed incident comments")
-    expected = (
-        RESUME_MARKER
-        + " publisher=" + heads["publisher"]
+    suffix = (
+        " publisher=" + heads["publisher"]
         + " destination=" + heads["destination"]
         + " snapshot=" + heads["snapshot"]
         + " carrier=" + heads["carrier"]
@@ -175,8 +188,10 @@ def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
         + " source_tree=" + source_tree
         + " carrier_repo_id=" + str(CARRIER_REPO_ID)
     )
+    approve = RESUME_MARKER + suffix
+    revoke = RESUME_REVOKE_MARKER + suffix
     reviewer_login, reviewer_id, _ = reviewer
-    matches = []
+    events = []
     for comment in incident:
         if type(comment) is not dict:
             continue
@@ -186,13 +201,26 @@ def exact_resume_comment(incident, heads, source_commit, source_tree, reviewer):
                 or user.get("type") != "User" or type(body) is not str):
             continue
         lines = [line.strip() for line in body.splitlines() if line.strip()]
-        if expected in lines:
-            cid = comment.get("id")
-            if type(cid) is int and cid > 0:
-                matches.append(cid)
-    if len(matches) != 1:
-        raise Denied("require exactly one independently bound incident resume approval")
-    return matches[0]
+        marker = None
+        if approve in lines:
+            marker = "APPROVED"
+        if revoke in lines:
+            if marker is not None:
+                raise Denied("incident comment cannot both approve and revoke")
+            marker = "REVOKED"
+        if marker is not None:
+            events.append((comment_key(comment), marker, comment["id"]))
+    if not events:
+        raise Denied("missing independently bound incident resume approval")
+    events.sort(key=lambda item: item[0])
+    previous = None
+    for _, marker, _ in events:
+        if marker == previous:
+            raise Denied("duplicate incident authorization state transition")
+        previous = marker
+    if events[-1][1] != "APPROVED":
+        raise Denied("incident resume authorization is revoked")
+    return events[-1][2]
 
 def active_rows(path):
     text = Path(path).read_text(encoding="utf-8")
