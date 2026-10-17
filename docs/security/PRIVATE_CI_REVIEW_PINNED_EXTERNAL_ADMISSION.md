@@ -17,7 +17,7 @@ dispatcher proves all of the following from live GitHub API responses:
    exact current head SHA;
 2. Sagitta destination approval PR `#1092` satisfies the same exact-head
    review rule;
-3. exact source snapshot approval PR `#1141` satisfies the same exact-head
+3. exact source snapshot approval PR `#1173` satisfies the same exact-head
    review rule and contains exactly one active
    `source-commit source-tree destination-repository-id` tuple;
 4. Sagitta carrier policy PR `sagitta-infra#7` satisfies the same exact-head
