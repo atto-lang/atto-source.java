@@ -6201,6 +6201,7 @@ public final class OresEvalRootNode extends RootNode {
                         Object currentValue = object.fields.get(target.member());
                         boolean constructorInitialization =
                                 env.canInitialize(object)
+                                        && ownedField.owner() == object.klass
                                         && currentValue == UNINITIALIZED_FIELD;
                         if (field.bindingKind() != Ast.BindingKind.LET
                                 && !constructorInitialization) {
