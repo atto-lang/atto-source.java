@@ -147,9 +147,17 @@ public final class Complex128Math {
         Dyadic denominator = add(multiply(c, c), multiply(d, d));
         Dyadic realNumerator = add(multiply(a, c), multiply(b, d));
         Dyadic imaginaryNumerator = add(multiply(b, c), negate(multiply(a, d)));
+
+        // Exact dyadic arithmetic intentionally erases the sign of zero.
+        // Preserve IEEE zero quadrants from the corresponding primitive
+        // numerator expressions; the exact denominator is strictly positive.
+        double realZeroHint = ar * br + ai * bi;
+        double imaginaryZeroHint = ai * br - ar * bi;
         return new Value(
-                roundRatio(realNumerator, denominator, false),
-                roundRatio(imaginaryNumerator, denominator, false));
+                roundRatio(realNumerator, denominator,
+                        negativeZeroHint(realZeroHint)),
+                roundRatio(imaginaryNumerator, denominator,
+                        negativeZeroHint(imaginaryZeroHint)));
     }
 
     private static boolean allFinite(double a, double b, double c, double d) {
