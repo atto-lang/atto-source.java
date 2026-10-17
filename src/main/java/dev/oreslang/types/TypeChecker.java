@@ -4262,7 +4262,46 @@ public final class TypeChecker {
         return false;
     }
 
+    /**
+     * A runtime shape test proves fields, not write permission. Opaque input
+     * may originally be a readonly struct, including inside a union.
+     */
+    private boolean hasOpaqueCapabilityProvenance(Type type) {
+        if (type == Types.Any.INSTANCE || type == Types.UnknownValue.INSTANCE
+                || type == Unknown.INSTANCE || type instanceof Generic) return true;
+        if (type instanceof Union union) {
+            return union.options().stream().anyMatch(this::hasOpaqueCapabilityProvenance);
+        }
+        return false;
+    }
+
+    /** Recover data shape without manufacturing mutable record capabilities. */
+    private Type readonlyRecoveredShape(Type type) {
+        if (type instanceof Record record) {
+            Map<String, Type> fields = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : record.members().entrySet()) {
+                fields.put(field.getKey(), readonlyRecoveredShape(field.getValue()));
+            }
+            return new Record(fields, true);
+        }
+        if (type instanceof ListType list) return new ListType(readonlyRecoveredShape(list.element()));
+        if (type instanceof Tuple tuple) {
+            return new Tuple(tuple.elements().stream().map(this::readonlyRecoveredShape).toList(), tuple.kind());
+        }
+        if (type instanceof Union union) {
+            return Types.unionOf(union.options().stream().map(this::readonlyRecoveredShape).toList());
+        }
+        if (type instanceof Named named) {
+            return new Named(named.name(),
+                    named.arguments().stream().map(this::readonlyRecoveredShape).toList());
+        }
+        return type;
+    }
+
     private Type overlayReadonlyCapabilities(Type actual, Type expected) {
+        if (hasOpaqueCapabilityProvenance(deref(actual))) {
+            return readonlyRecoveredShape(expected);
+        }
         if (actual instanceof Borrow actualBorrow && expected instanceof Borrow expectedBorrow) {
             return new Borrow(
                     overlayReadonlyCapabilities(actualBorrow.target(), expectedBorrow.target()),
@@ -5321,7 +5360,11 @@ public final class TypeChecker {
                 // capability, including readonly members inside an explicit
                 // struct. A named structural contract needs the same shape
                 // overlay when the subject is a record.
-                if (subject instanceof Record) bindingType = targetShape;
+                if (subject instanceof Record || hasOpaqueCapabilityProvenance(subject)) {
+                    // A named structural contract on erased input is a checked
+                    // data view, not an unrestricted nominal write capability.
+                    bindingType = targetShape;
+                }
                 bindingType = overlayReadonlyCapabilities(subject, bindingType);
                 bindings.define(structural.binding(), bindingType, Ast.BindingKind.VAL);
             }
