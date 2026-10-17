@@ -12,14 +12,14 @@ Java owns the language reference implementation but must not claim syntax suppor
 @Size(min=1, max=32)
 type Username = string;
 
-type Username2 = string with length ge 1 and length le 32;
+type Username2 = string with length gte 1 and length lte 32;
 
-define newtype Username3(string) with length ge 1 and length le 32;
+define newtype Username3(string) with length gte 1 and length lte 32;
 
 type NonBlank = string where it.trim().length > 0;
 ~~~
 
-- Reserve `with` for conjunctions of compiler-known property comparisons; textual `eq/ne/gt/ge/lt/le` and symbolic operators are equivalent.
+- Reserve `with` for conjunctions of compiler-known property comparisons; textual `eq/ne/gt/gte/lt/lte` and symbolic `==/!=/>/>=/</<=` operators are equivalent; `ge`/`le` are not accepted aliases.
 - Reserve `where` for effect-checked pure deterministic Boolean predicates on immutable `it`; reject impure calls, await and mutation.
 - `@Size`, `@Length` and `@NotEmpty` become **enforced type constraints**, not advisory Java Bean Validation annotations. Preserve unrelated existing annotation behaviors (e.g., `@Ret`, `@FromJson`, `@NamedParams`).
 - `type` forms create refinements; `define newtype` creates a distinct nominal type. Generate `try_from` returning `Result<T, ConstraintError>`; expose owned `into_inner`, never an unchecked constructor.
