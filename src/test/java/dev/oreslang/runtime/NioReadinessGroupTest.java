@@ -636,6 +636,42 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void vmBoundCompletionsUseExistingExecutorAndNoNioWorkers() throws Exception {
+        // The single explicit executor represents an actor carrier; the
+        // NIO manager may not create any dedicated completion carrier.
+        var delivered = new java.util.concurrent.atomic.AtomicReference<String>();
+        try (var host = java.util.concurrent.Executors.newSingleThreadExecutor(
+                    task -> new Thread(task, "test-actor-carrier"));
+             var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(host);
+            assertTrue(group.usesVmCompletionCarriers());
+            assertEquals(0, group.completionCarrierCount());
+            assertEquals(0, group.reactorCount());
+
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var watch = group.watch(pipe.source(), SelectionKey.OP_READ);
+                watch.whenCompleteRuntime((value, error) ->
+                        delivered.set(Thread.currentThread().getName()));
+                assertEquals(1, group.reactorCount());
+                assertThrows(IllegalStateException.class,
+                        () -> group.bindVmCompletionExecutor(host),
+                        "the completion execution domain cannot change after admission");
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {42}));
+                assertTrue(watch.get(3, TimeUnit.SECONDS) != 0);
+                group.close();
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+                assertEquals("test-actor-carrier", delivered.get(),
+                        "Future subscribers must not run on the selector or CONTROL");
+                assertEquals(0, group.completionCarrierCount());
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void neverUsedGroupStartsAndStopsWithZeroReactorThreads() throws Exception {
         var group = new NioReadinessGroup(4, 16, 16);
         assertEquals(0, group.reactorCount());
