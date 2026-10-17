@@ -544,6 +544,44 @@ final class CallableSemanticsTest {
         assertTrue(reservedClass.getMessage().contains("compiler-builtin erased type"));
     }
 
+    @Test
+    void borrowedCallableRetainsSignatureButCannotEraseIntoOwnedAny() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc invoke_now(borrow (() => void) cb): void {
+                  cb();
+                  return;
+                }
+
+                fnc use(): void {
+                  invoke_now(|| -> { return; });
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException parameterErase = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc sink(Any value): void { return; }
+
+                        fnc bad(borrow (() => void) cb): void {
+                          sink(cb);
+                          return;
+                        }
+                        """)));
+        assertTrue(parameterErase.getMessage().contains("Any")
+                || parameterErase.getMessage().contains("argument"));
+
+        IllegalArgumentException returnErase = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(borrow (() => void) cb): Any {
+                          return cb;
+                        }
+                        """)));
+        assertTrue(returnErase.getMessage().contains("return value")
+                || returnErase.getMessage().contains("Any"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callables.ores")
