@@ -167,6 +167,11 @@ does not retain an invocation signature. Therefore an `AnyCallable` value
 cannot be invoked until checked narrowing establishes a concrete
 `CallableType`.
 
+`Any` is the erased top type for ordinary **owned** runtime values. Borrow
+capabilities are not subtypes of `Any`: a `Borrow<T>` cannot be widened to
+`Any` and retained after its lexical lifetime. Concrete owned callables remain
+ordinary values and therefore may widen to `AnyCallable` or `Any`.
+
 Erasing to `AnyCallable` never erases capture, borrow, actor-isolation,
 serialization, sharing or construction-region restrictions.
 
