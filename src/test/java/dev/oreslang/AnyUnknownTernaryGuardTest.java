@@ -290,6 +290,28 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void trustedGuardNeverLeaksToFalseOrUnprovenBooleanEdges() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc badFalse(any v): int {
+                          return Integer.is_int(v) ? 0 : v;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc badOr(any v): int {
+                          return Integer.is_int(v) || true ? v : 0;
+                        }
+                        """)));
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc badNegated(any v): int {
+                          return !Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+    }
+
+    @Test
     void explicitTernaryBindingsAndAndRefinementsAreOwnershipSafe() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc explicit(any v): int {
