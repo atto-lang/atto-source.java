@@ -806,4 +806,25 @@ final class HotReloadModuleContractTest {
                 IllegalStateException.class,
                 () -> loader.activateModule(candidate));
     }
+
+    @Test
+    void moduleGenerationDoesNotExposeRawContextThatCouldBypassAdmission() {
+        try (HotReloadManager loader =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            String source = """
+                    pub define contract WorkerApi as
+                      fnc run(): int;
+                    end
+                    define module Worker conforms WorkerApi as
+                      pub fnc run(): int { return 1; }
+                    end
+                    """;
+            HotReloadManager.Generation generation =
+                    loader.loadModule("worker.ores", "Worker", source, "WorkerApi");
+
+            assertThrows(IllegalStateException.class, generation::context);
+            assertEquals(false, generation.started());
+            assertEquals(null, loader.active("worker.ores"));
+        }
+    }
 }
