@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -118,6 +120,25 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         private final Runnable command;
         private NoGrowthTurn(Runnable command) { this.command = command; }
         @Override public void run() { command.run(); }
+    }
+
+    @Override public List<Runnable> shutdownNow() {
+        admission.lock();
+        try {
+            List<Runnable> drained = super.shutdownNow();
+            if (drained.size() > admittedTurns)
+                throw new IllegalStateException("carrier runnable credit underflow during shutdown");
+            admittedTurns -= drained.size();
+
+            ArrayList<Runnable> abandoned = new ArrayList<>(drained.size());
+            for (Runnable task : drained) {
+                abandoned.add(task instanceof NoGrowthTurn wrapper
+                        ? wrapper.command : task);
+            }
+            return List.copyOf(abandoned);
+        } finally {
+            admission.unlock();
+        }
     }
 
     @Override public void execute(Runnable task) {
