@@ -28,7 +28,7 @@ jobs:
         shell: bash
         env:
           EXPECTED: ${{ github.sha }}
-          EXPECTED_REPO_ID: 1400792274
+          EXPECTED_REPO_ID: '1400792274'
           ACTUAL_REPO_ID: ${{ github.repository_id }}
           SOURCE_PRIVATE: ${{ github.event.repository.private }}
         run: |
