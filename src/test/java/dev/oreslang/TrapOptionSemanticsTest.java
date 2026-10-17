@@ -319,14 +319,14 @@ final class TrapOptionSemanticsTest {
                   } catch (signal) {
                     stdio.stdout.write(signal.kind);
                     stdio.stdout.write(":");
-                    stdio.stdout.write(signal.message.contains_literal("Option::unwrap()"));
+                    stdio.stdout.write(signal.message);
                   }
                   return;
                 }
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("panic:true", run(source));
+        assertEquals("panic:called Option::unwrap() on a None value", run(source));
     }
 
     @Test
