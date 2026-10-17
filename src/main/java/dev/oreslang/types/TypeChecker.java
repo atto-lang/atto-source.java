@@ -6846,6 +6846,28 @@ public final class TypeChecker {
 
     private final Set<Type> validatingPointerTargets = new HashSet<>();
 
+    private boolean containsPointerType(Type type) {
+        if (type instanceof Borrow borrow) return containsPointerType(borrow.target());
+        if (type instanceof ListType list) return containsPointerType(list.element());
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) if (containsPointerType(element)) return true;
+            return false;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) if (containsPointerType(member)) return true;
+            return false;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) if (containsPointerType(option)) return true;
+            return false;
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Pointer")) return true;
+            for (Type argument : named.arguments()) if (containsPointerType(argument)) return true;
+        }
+        return false;
+    }
+
     private void requirePointerTarget(Type target) {
         if (!validatingPointerTargets.add(target)) {
             throw new IllegalArgumentException("Pointer<T> target graph cannot recursively contain pointer capabilities");
@@ -6934,14 +6956,21 @@ public final class TypeChecker {
             case "void" -> Primitive.VOID;
             case "Array", "List", "Vector", "Slice", "Tuple", "FixedArray", "FixedList" -> {
                 Ast.ClassDecl declared = findClass(ref.name());
+                Type collection;
                 if (!Set.of("Array", "List").contains(ref.name()) && declared != null
                         && ref.arguments().stream().noneMatch(argument ->
                                 argument.isSequenceShape() || argument.isNamedParameter())) {
                     validateGenericArity(ref, declared.genericParameters(), "class " + declared.name());
-                    yield new Named(qualifiedClassName(declared),
+                    collection = new Named(qualifiedClassName(declared),
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                } else {
+                    collection = resolveCollectionType(ref, generics, self, allowNullMarker);
                 }
-                yield resolveCollectionType(ref, generics, self, allowNullMarker);
+                if (containsPointerType(collection)) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " cannot contain Pointer<T> until place-aware move-out is implemented");
+                }
+                yield collection;
             }
             case "Pointer" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
