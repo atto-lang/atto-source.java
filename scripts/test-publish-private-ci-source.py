@@ -1046,6 +1046,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 {"checks": [], "contexts": ["private-ci-policy"]},
                 "private-ci-policy")
 
+    def test_legacy_required_checks_cannot_bypass_app_issuer_binding(self):
+        # The app-bound security check does not make a second name-only
+        # required status trustworthy. The latter may be set by an untrusted
+        # GitHub status publisher unless it too is app-bound.
+        accepted = {"checks": [
+            {"context": "private-ci-policy", "app_id": 15368},
+            {"context": "trusted-other-check", "app_id": 15368},
+        ]}
+        for contexts in ([], ["private-ci-policy"],
+                         ["trusted-other-check"],
+                         ["private-ci-policy", "trusted-other-check"]):
+            with self.subTest(accepted=contexts):
+                pub.require_pinned_actions_check(
+                    {**accepted, "contexts": contexts}, "private-ci-policy")
+        for contexts in (["unbound-check"],
+                         ["private-ci-policy", "unbound-check"],
+                         ["trusted-other-check", "unbound-check"]):
+            with self.subTest(denied=contexts):
+                with self.assertRaisesRegex(pub.Denied, "lacks issuer binding"):
+                    pub.require_pinned_actions_check(
+                        {**accepted, "contexts": contexts},
+                        "private-ci-policy")
+
     def test_carrier_protection_rejects_force_push_and_deletion(self):
         original = self.fake_api
         for field in ("allow_force_pushes", "allow_deletions"):
