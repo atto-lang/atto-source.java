@@ -6302,15 +6302,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
-                    Object index = eval(target.index(), env);
-                    int i = sequenceIndex(index);
-                    if (receiver instanceof List<?> raw) {
-                        @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
-                        list.set(i, value);
-                        return value;
-                    }
-                    throw new IllegalArgumentException(
-                            "indexed assignment requires a mutable array/list; struct fields use statically known member assignment");
+                    List<Object> keys = new ArrayList<>(target.arity());
+                    for (Ast.Expr index : target.indices()) keys.add(eval(index, env));
+                    return indexSetValue(receiver, keys, value, env);
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
