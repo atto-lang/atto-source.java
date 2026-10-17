@@ -336,6 +336,7 @@ public final class CapabilityChecker {
                 checkStatements(s.defaultBody(), policy);
             } else if (stmt instanceof Ast.SelectStmt s) {
                 for (Ast.SelectArm arm : s.arms()) {
+                    checkType(arm.bindingType(), policy);
                     if (arm.channel() != null) checkExpr(arm.channel(), policy);
                     if (arm.value() != null) checkExpr(arm.value(), policy);
                     checkStatements(arm.body(), policy);
@@ -529,11 +530,17 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) {
+            for (Ast.StructFieldSpec field : e.declaredFields()) {
+                checkType(field.type(), policy);
+            }
             for (Ast.ObjectField f : e.fields()) {
                 checkExpr(f.value(), policy);
             }
         }
         else if (expr instanceof Ast.LambdaExpr e) {
+            for (Ast.Param parameter : e.parameters()) {
+                checkType(parameter.type(), policy);
+            }
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
         }
