@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/** Terminal supervisor CONTROL failures account for, then release undeliverable notices. */
+/** Terminal supervisor CONTROL failures retain exact bounded state for escalation. */
 @Timeout(20)
 final class SupervisorFailureRetentionTest {
     private static SupervisorFailureControl.Notice notice(
@@ -22,7 +22,7 @@ final class SupervisorFailureRetentionTest {
     }
 
     @Test
-    void dispatchFailureReleasesAllControlNoticesAfterAccounting() {
+    void dispatchFailureRetainsAllControlNoticesAfterAccounting() {
         var supervisor = ActorRuntime.SupervisorId.create();
         var group = ActorRuntime.ActorGroupId.create();
         var lane = new SupervisorFailureControl(supervisor, group, Runnable::run, 4);
