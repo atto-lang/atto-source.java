@@ -255,6 +255,33 @@ final class VmNioTcpListenerTest {
         }
     }
 
+    @Test void invalidReadBoundsDoNotConsumePendingCapacity() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 1, 1)) {
+            var accepting = listener.acceptAsync();
+            try (var peer = new Socket(InetAddress.getByName("127.0.0.1"), listener.localPort())) {
+                var connection = accepting.get(3, TimeUnit.SECONDS);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.pendingOperations() != 0 && System.nanoTime() < deadline)
+                    Thread.sleep(1);
+                assertEquals(0, listener.pendingOperations());
+                for (int invalid : new int[] {0, -1, 65537}) {
+                    var rejected = connection.readBytesAsync(invalid);
+                    var failure = assertThrows(ExecutionException.class,
+                            () -> rejected.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+                    assertEquals(0, listener.pendingOperations(),
+                            "invalid read bounds must fail before admission");
+                }
+                var read = connection.readBytesAsync(1);
+                peer.getOutputStream().write(9);
+                assertEquals(List.of(9L), read.get(3, TimeUnit.SECONDS));
+            }
+        } finally {
+            vm.close();
+        }
+    }
+
     @Test void completedAndClosedConnectionFailClosedForSubsequentOperations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 16, 1, 16)) {
