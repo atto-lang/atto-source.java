@@ -204,7 +204,7 @@ class MirrorGateTest(unittest.TestCase):
         body = b"[" * 2000 + b"0" + b"]" * 2000
         def nested(req, timeout):
             return FakeResponse(req.full_url, body)
-        with self.assertRaisesRegex(admission.MirrorPreflightError, "invalid repository metadata"):
+        with self.assertRaisesRegex(admission.MirrorPreflightError, "structure too complex"):
             admission.fetch_metadata("private/dst", "test", opener=nested)
 
     def test_cli_missing_tokens_fails_closed_without_echoing_values(self):

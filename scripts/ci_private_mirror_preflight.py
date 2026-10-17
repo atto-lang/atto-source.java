@@ -17,6 +17,8 @@ import urllib.request
 
 MAX_RESPONSE_BYTES = 131072
 MAX_TOKEN_LENGTH = 4096
+MAX_JSON_DEPTH = 64
+MAX_JSON_NODES = 4096
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z", re.ASCII)
 BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~+/-]+={0,16}\Z", re.ASCII)
 
@@ -45,6 +47,21 @@ def _finite_float(text):
     return value
 
 
+def _validate_json_shape(value):
+    stack = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if depth > MAX_JSON_DEPTH or nodes > MAX_JSON_NODES:
+            raise MirrorPreflightError("repository metadata structure too complex")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+    return value
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise MirrorPreflightError("repository metadata redirect refused")
@@ -68,14 +85,11 @@ def validate_metadata(actual, expected_name, expected_id):
         raise MirrorPreflightError("repository identity mismatch")
     if type(actual.get("id")) is not int or actual["id"] != expected_id:
         raise MirrorPreflightError("repository numeric identity mismatch")
-    # Unknown state must fail closed as well as explicitly archived/disabled.
     if actual.get("archived") is not False or actual.get("disabled") is not False:
         raise MirrorPreflightError("repository active status is missing or inactive")
 
 
 def validate_token(token):
-    # Bearer token68 characters only. Deny controls, whitespace, Unicode and
-    # header-breaking payloads before constructing any HTTP request.
     if (not isinstance(token, str) or not 1 <= len(token) <= MAX_TOKEN_LENGTH
             or not BEARER_TOKEN.fullmatch(token)):
         raise MirrorPreflightError("authenticated repository visibility required")
@@ -105,15 +119,15 @@ def fetch_metadata(name, token, opener=None):
             if len(data) > MAX_RESPONSE_BYTES:
                 raise MirrorPreflightError("repository metadata response too large")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        # Never include raw HTTP exception text: it can contain request data.
         raise MirrorPreflightError("repository metadata unavailable") from None
     try:
-        return json.loads(
+        parsed = json.loads(
             data,
             object_pairs_hook=_unique_object,
             parse_constant=_bad_constant,
             parse_float=_finite_float,
         )
+        return _validate_json_shape(parsed)
     except MirrorPreflightError:
         raise
     except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError):
@@ -125,12 +139,10 @@ def verify(source, destination, source_id, destination_id, source_token, destina
     validate_repository_name(destination)
     if source.lower() == destination.lower():
         raise MirrorPreflightError("source and destination must be distinct repositories")
-    # bool is an int subclass in Python; never admit it as a pinned GitHub ID.
     if (type(source_id) is not int or type(destination_id) is not int
             or source_id <= 0 or destination_id <= 0
             or source_id == destination_id):
         raise MirrorPreflightError("expected numeric repository identities must be distinct and positive")
-    # Require both credentials before either private repository is queried.
     validate_token(source_token)
     validate_token(destination_token)
     for name, expected_id, token in (
