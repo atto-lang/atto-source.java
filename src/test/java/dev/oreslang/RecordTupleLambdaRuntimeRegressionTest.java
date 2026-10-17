@@ -23,11 +23,14 @@ final class RecordTupleLambdaRuntimeRegressionTest {
                   const point = struct{x: int, y: int}{x: 7, y: 9};
                   const xOnly = point as {x: int};
                   const pair = tuple(multiply(7), xOnly.x) as Tuple[int, int];
+                  const nested = tuple(struct{x: int}{x: 8}) as Tuple[{x: int}];
                   stdio.stdout.write(pair[0]);
                   stdio.stdout.write("|");
                   stdio.stdout.write(pair[1]);
                   stdio.stdout.write("|");
                   stdio.stdout.write(mapper(5));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(nested[0].x);
                   return;
                 }
                 """;
@@ -40,6 +43,6 @@ final class RecordTupleLambdaRuntimeRegressionTest {
                 .allowAllAccess(false).out(out).build()) {
             context.eval(source);
         }
-        assertEquals("21|7|15", out.toString(StandardCharsets.UTF_8));
+        assertEquals("21|7|15|8", out.toString(StandardCharsets.UTF_8));
     }
 }

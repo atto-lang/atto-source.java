@@ -3930,11 +3930,29 @@ public final class TypeChecker {
                     || element.isSequenceShape() || element.isBorrow()) return false;
             if (element.isTupleType() || element.name().equals("Tuple")) {
                 if (!runtimeCheckableTupleCastShape(element)) return false;
-            } else if (!element.arguments().isEmpty() || element.isRecordType()) {
+            } else if (element.isRecordType()) {
+                for (Ast.TypeRef fieldType : element.recordMembers().values()) {
+                    if (!runtimeCheckableAggregateFieldShape(fieldType)) return false;
+                }
+            } else if (!element.arguments().isEmpty() || element.inferArguments()) {
                 return false;
             }
         }
         return true;
+    }
+
+    private boolean runtimeCheckableAggregateFieldShape(Ast.TypeRef field) {
+        if (field.isBorrow() || field.inferArguments()) return false;
+        if (field.isTupleType() || field.name().equals("Tuple")) {
+            return runtimeCheckableTupleCastShape(field);
+        }
+        if (field.isRecordType()) {
+            for (Ast.TypeRef nested : field.recordMembers().values()) {
+                if (!runtimeCheckableAggregateFieldShape(nested)) return false;
+            }
+            return true;
+        }
+        return field.arguments().isEmpty();
     }
 
     private Type channelElementType(Type channel, String where) {

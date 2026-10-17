@@ -319,14 +319,15 @@ primary         = literal
                 | "(" expression ")" ;
 
 lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
-pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_body ;
+pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|"
+                  [ ":" type_ref ] "->" lambda_body ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
-                = "(" [ param_list ] ")" "->" lambda_body ;
+                = "(" [ param_list ] ")" [ ":" type_ref ] "->" lambda_body ;
 lambda_body     = block | expression ;
 
-tuple_literal   = "tuple" "(" [ argument_list ] ")"
-                | "(" expression "," expression { "," expression } ")" ;
+tuple_literal   = "tuple" "(" argument_list ")" ;
+/* Parentheses group exactly one expression; tuple patterns have distinct syntax. */
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 inferred_struct_literal
@@ -615,6 +616,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      and statically typed iterable classes; object destructuring targets returned
      record/map-like values.
    - Destructuring is not currently permitted in callable parameter lists.
+   - Lambda return types are declared after the parameter delimiter:
+     |int n|: int -> n * 3 or (int n): int -> n * 3.
+     They are signature contracts, not expression-level checked casts.
+   - Tuple values require tuple(...): tuple(x) creates a one-element tuple;
+     tuple() and bare (x, y) are invalid value syntax. Positional tuples
+     do not implicitly convert to field-named records, and vice versa.
    - Lambdas may use either a braced block or a single expression body. A braced
      lambda never implicitly returns its final statement: non-void block lambdas
      must use explicit return and return on every path when a contextual result

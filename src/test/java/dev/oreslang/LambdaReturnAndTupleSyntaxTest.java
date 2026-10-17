@@ -97,6 +97,19 @@ final class LambdaReturnAndTupleSyntaxTest {
                   return;
                 }
                 """)));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val nested = tuple(struct{x: int}{x: 3}) as Tuple[{x: int}];
+                  val deeper = tuple(tuple(struct{x: int}{x: 4})) as Tuple[Tuple[{x: int}]];
+                  return;
+                }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc f(): void {
+                  val nested = tuple(infer struct{x: 3}) as Tuple[{x: int}];
+                  return;
+                }
+                """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc f(): void {
                   val mistaken = tuple(3) as {x: int};
