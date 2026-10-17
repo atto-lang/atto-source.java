@@ -404,6 +404,65 @@ public final class ActorRuntime implements AutoCloseable {
             long duplicatePublishRejected,
             long fairnessYields) { }
 
+    public enum ActorLifecycleState {
+        STARTING,
+        IDLE,
+        RUNNABLE,
+        RUNNING,
+        SUSPENDED,
+        STOPPING
+    }
+
+    /**
+     * Payload-free host diagnostics for one actor. No mailbox value, actor
+     * state, exception message, stack or raw Throwable is exposed.
+     */
+    public record ActorDiagnostics(
+            ActorId actorId,
+            long generation,
+            ActorKind kind,
+            Optional<ActorId> parent,
+            int childCount,
+            ActorLifecycleState lifecycle,
+            int userMailboxCapacity,
+            int queuedUserMessages,
+            int queuedContinuations,
+            long nextUserMessageSequence,
+            long lastProcessedUserMessageSequence,
+            int pendingDrainWaiters,
+            int pendingOperations,
+            long sharedMailboxBytes,
+            long outputBytes,
+            boolean sourceReceiveSuspended,
+            boolean scheduled,
+            boolean carrierActive,
+            int activeTurns,
+            ActorControlStats supervisorControl) {
+        public ActorDiagnostics {
+            Objects.requireNonNull(actorId, "actorId");
+            Objects.requireNonNull(kind, "kind");
+            Objects.requireNonNull(parent, "parent");
+            Objects.requireNonNull(lifecycle, "lifecycle");
+            Objects.requireNonNull(supervisorControl, "supervisorControl");
+        }
+    }
+
+    /** Bounded process/runtime-level actor diagnostics. */
+    public record ActorRuntimeDiagnostics(
+            int activeActors,
+            int maxActors,
+            long privateMemoryBytes,
+            long sharedMemoryBytes,
+            long watchdogOverruns,
+            long watchdogNoticesDropped,
+            CarrierBackend carrierBackend,
+            ActorControlStats rootSupervisorControl) {
+        public ActorRuntimeDiagnostics {
+            Objects.requireNonNull(carrierBackend, "carrierBackend");
+            Objects.requireNonNull(rootSupervisorControl, "rootSupervisorControl");
+        }
+    }
+
     public enum CarrierBackend { NATIVE_PTHREAD, JVM_THREAD_POOL }
 
     private static final String CARRIER_BACKEND_PROPERTY = "ores.runtime.carriers";
@@ -739,6 +798,83 @@ public final class ActorRuntime implements AutoCloseable {
     public ActorControlStats rootSupervisionStats() {
         requireSupervisorContext("inspect root supervisor CONTROL");
         return controlStats(rootSupervisionControl.snapshot(), 0L);
+    }
+
+    public ActorRuntimeDiagnostics runtimeDiagnostics() {
+        requireSupervisorContext("inspect actor runtime diagnostics");
+        return new ActorRuntimeDiagnostics(
+                actorCount.get(),
+                dispatcherConfig.maxActors(),
+                privateMemoryBytes.get(),
+                sharedMemoryBytes.get(),
+                watchdogOverruns.get(),
+                watchdogNoticesDropped.get(),
+                carrierBackend(),
+                controlStats(rootSupervisionControl.snapshot(), 0L));
+    }
+
+    public ActorDiagnostics actorDiagnostics(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor diagnostics");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) throw terminated(ref);
+
+        synchronized (cell.lifecycleLock) {
+            int queuedUser;
+            int queuedContinuations;
+            synchronized (cell.mailboxAccountingLock) {
+                queuedUser = cell.queuedUserMessages;
+                queuedContinuations = cell.queuedContinuations;
+            }
+
+            ActorLifecycleState lifecycle;
+            if (cell.stopped.get() || cell.sealing || cell.forceKillFenced) {
+                lifecycle = ActorLifecycleState.STOPPING;
+            } else if (cell.sourceReceiveSuspended) {
+                lifecycle = ActorLifecycleState.SUSPENDED;
+            } else if (cell.activeTurns != 0 || cell.carrierActive) {
+                lifecycle = ActorLifecycleState.RUNNING;
+            } else if (cell.scheduled.get()
+                    || queuedUser != 0
+                    || queuedContinuations != 0
+                    || cell.childControl.hasPending()) {
+                lifecycle = ActorLifecycleState.RUNNABLE;
+            } else if (!ref.readyFuture.isDone()) {
+                lifecycle = ActorLifecycleState.STARTING;
+            } else {
+                lifecycle = ActorLifecycleState.IDLE;
+            }
+
+            return new ActorDiagnostics(
+                    ref.id(),
+                    ref.generation(),
+                    cell.kind,
+                    cell.parent == null
+                            ? Optional.empty()
+                            : Optional.of(cell.parent.ref.id()),
+                    cell.children.size(),
+                    lifecycle,
+                    cell.policy.maxMailboxMessages(),
+                    queuedUser,
+                    queuedContinuations,
+                    cell.nextUserMessageSequence,
+                    cell.lastProcessedUserMessageSequence,
+                    cell.pendingDrains.size(),
+                    cell.pendingOperations.size(),
+                    cell.sharedMailboxBytes.get(),
+                    cell.outputBytes.get(),
+                    cell.sourceReceiveSuspended,
+                    cell.scheduled.get(),
+                    cell.carrierActive,
+                    cell.activeTurns,
+                    controlStats(
+                            cell.childControl.snapshot(),
+                            cell.supervisorFairnessYields.get()));
+        }
     }
 
     public ActorControlStats supervisionStatsFor(ActorRef<?> ref) {
