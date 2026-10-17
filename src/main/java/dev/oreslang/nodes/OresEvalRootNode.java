@@ -8695,7 +8695,17 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
-        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private Complex asComplex(Object value) {
+            if (value instanceof Complex c) return c;
+            // Exact numeric carriers may require more than 53 bits; never
+            // silently narrow them into binary64 complex arithmetic.
+            if (value instanceof java.math.BigInteger || value instanceof java.math.BigDecimal) {
+                throw new IllegalArgumentException(
+                        "explicit conversion required from BigInt/Decimal to binary64 complex");
+            }
+            if (value instanceof Number n) return new Complex(n.doubleValue(), 0.0);
+            throw new IllegalArgumentException("value is not numeric");
+        }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
