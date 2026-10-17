@@ -125,6 +125,79 @@ final class VmNioTcpListenerTest {
         }
     }
 
+    @Test void connectionCloseFutureWaitsForReadSubscriberDrain() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 1, 2)) {
+            var accepting = listener.acceptAsync();
+            try (var peer = new Socket(InetAddress.getByName("127.0.0.1"), listener.localPort())) {
+                var connection = accepting.get(3, TimeUnit.SECONDS);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.pendingOperations() != 0 && System.nanoTime() < deadline)
+                    Thread.sleep(1);
+                var read = connection.readBytesAsync(1);
+                var subscriberEntered = new java.util.concurrent.CountDownLatch(1);
+                var releaseSubscriber = new java.util.concurrent.CountDownLatch(1);
+                read.whenCompleteRuntime((value, failure) -> {
+                    subscriberEntered.countDown();
+                    try { releaseSubscriber.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                peer.getOutputStream().write(55);
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+                assertEquals(1, listener.pendingOperations(),
+                        "operation credit is retained while terminal subscriber is running");
+                var closed = connection.closeAsync();
+                assertFalse(closed.isDone(),
+                        "connection close Future must not overtake admitted callback drain");
+                releaseSubscriber.countDown();
+                assertEquals(List.of(55L), read.get(3, TimeUnit.SECONDS));
+                closed.get(3, TimeUnit.SECONDS);
+                assertEquals(0, listener.pendingOperations());
+            }
+        } finally {
+            vm.close();
+        }
+    }
+
+    @Test void listenerCloseFutureWaitsForConnectionOperationDrain() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 1, 2);
+        try {
+            var accepting = listener.acceptAsync();
+            try (var peer = new Socket(InetAddress.getByName("127.0.0.1"), listener.localPort())) {
+                var connection = accepting.get(3, TimeUnit.SECONDS);
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                while (listener.pendingOperations() != 0 && System.nanoTime() < deadline)
+                    Thread.sleep(1);
+                var read = connection.readBytesAsync(1);
+                var subscriberEntered = new java.util.concurrent.CountDownLatch(1);
+                var releaseSubscriber = new java.util.concurrent.CountDownLatch(1);
+                read.whenCompleteRuntime((value, failure) -> {
+                    subscriberEntered.countDown();
+                    try { releaseSubscriber.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+                peer.getOutputStream().write(56);
+                assertTrue(subscriberEntered.await(3, TimeUnit.SECONDS));
+                var closed = listener.closeAsync();
+                assertFalse(closed.isDone(),
+                        "listener close Future must wait for admitted connection callback drain");
+                releaseSubscriber.countDown();
+                assertEquals(List.of(56L), read.get(3, TimeUnit.SECONDS));
+                closed.get(3, TimeUnit.SECONDS);
+                assertTrue(listener.isTerminated());
+                assertEquals(0, listener.pendingOperations());
+            }
+        } finally {
+            listener.close();
+            vm.close();
+        }
+    }
+
     @Test void listenerCloseRevokesUnacceptedFutureWithoutLeakingOperations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 2, 1)) {
