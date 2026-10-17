@@ -290,6 +290,52 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void explicitTernaryBindingsAndAndRefinementsAreOwnershipSafe() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc explicit(any v): int {
+                  return v is type int narrowed ? narrowed + 1 : 0;
+                }
+
+                pub fnc positive(any v): int {
+                  return Integer.is_int(v) && v > 0 ? v : 0;
+                }
+
+                pub fnc repeated(any v): int {
+                  return Integer.is_int(v) && Integer.is_int(v) ? v : 0;
+                }
+                """)));
+    }
+
+    @Test
+    void explicitTernaryBindingExistsAtRuntimeOnlyOnTrueEdge() throws Exception {
+        String output = run("""
+                fnc explicit(any v): int {
+                  return v is type int narrowed ? narrowed + 1 : 0;
+                }
+
+                pub fnc main(): void {
+                  stdio.stdout.write(explicit(4));
+                  stdio.stdout.write(explicit("x"));
+                  return;
+                }
+                """);
+
+        assertEquals("50", output);
+    }
+
+    @Test
+    void importedIntegerNamespaceCannotBeMistakenForCompilerIntrinsic() {
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        import * as Integer from './dep';
+
+                        pub fnc bad(any v): int {
+                          return Integer.is_int(v) ? v : 0;
+                        }
+                        """)));
+    }
+
+    @Test
     void nestedTernaryIsRightAssociativeAndConditionsRequireBool() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc choose(bool a, bool b): int {
