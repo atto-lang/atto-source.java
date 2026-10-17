@@ -39,7 +39,7 @@ final class OresCarrierBudgetTest {
 
     @Test void invalidBudgetFailsClosedRatherThanDisablingTheGuard() {
         for (String bad : new String[] {"", " ", "0", "-1", "3", "257",
-                "99999999999999999", "1.5", "8 ", "wat"}) {
+                "99999999999999999", "1.5", "8 ", "wat", "+4", "0x10", "4\\n"}) {
             assertThrows(IllegalArgumentException.class, () -> parse(bad), bad);
         }
     }
