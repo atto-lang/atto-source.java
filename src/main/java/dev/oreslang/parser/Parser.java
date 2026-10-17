@@ -1544,6 +1544,8 @@ public final class Parser {
         if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
         else if (match(NULL)) name = "null";
+        else if (match(ANY)) name = "any";
+        else if (match(UNKNOWN_VALUE)) name = "unknown";
         else name = parseQualifiedName();
 
         List<Ast.TypeRef> args = new ArrayList<>();
