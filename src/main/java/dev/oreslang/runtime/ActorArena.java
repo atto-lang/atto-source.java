@@ -118,7 +118,10 @@ public final class ActorArena implements AutoCloseable {
             this.scratchPin = scratchPin;
         }
 
-        @Override public void close() {
+        @Override public synchronized void close() {
+            // Preserve the actor-level lifetime charge until both regions
+            // finish their physical cleanup. LifetimePin.close() is itself
+            // idempotent and retries failed native release.
             Throwable failure = null;
             try { scratchPin.close(); }
             catch (RuntimeException | Error error) { failure = error; }
@@ -127,16 +130,17 @@ public final class ActorArena implements AutoCloseable {
                 if (failure == null) failure = error;
                 else if (failure != error) failure.addSuppressed(error);
             }
-            if (accounted.compareAndSet(false, true)) {
-                synchronized (ActorArena.this) {
-                    if (externalLeases <= 0) {
-                        throw new IllegalStateException("actor arena external lease accounting underflow");
-                    }
-                    externalLeases--;
-                }
-            }
             if (failure instanceof RuntimeException error) throw error;
             if (failure instanceof Error error) throw error;
+            synchronized (ActorArena.this) {
+                if (!accounted.get()) {
+                    if (externalLeases <= 0)
+                        throw new IllegalStateException(
+                                "actor arena external lease accounting underflow");
+                    externalLeases--;
+                    accounted.set(true);
+                }
+            }
         }
     }
 
