@@ -61,6 +61,8 @@ final class ActorReliabilityKernelTest {
             assertEquals(0, health.queuedContinuations());
             assertEquals(3L, health.acceptedUserMessages());
             assertEquals(0L, health.processedUserMessages());
+            assertEquals(0L, health.contiguousProcessedUserMessages());
+            assertEquals(0, health.outOfOrderCompletedMessages());
             assertEquals(3L, health.outstandingAcceptedMessages());
             assertEquals(0, health.pendingDrainWaiters());
             assertEquals(1, health.activeTurns());
