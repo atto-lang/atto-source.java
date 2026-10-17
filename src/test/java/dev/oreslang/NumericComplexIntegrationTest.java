@@ -1,8 +1,10 @@
 package dev.oreslang;
 
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -39,6 +41,34 @@ final class NumericComplexIntegrationTest {
                     && ((1e-300 + 1e-300i) / (1e-300 + 1e-300i)) eq 1
                     && (5e-324i / 5e-324i) eq 1;
                 """));
+    }
+
+    @Test
+    void complexIntegralPromotionRequiresExactBinary64Range() {
+        assertTrue(evaluatesTrue("""
+                return (9007199254740992 + 1i)
+                        eq (9007199254740992.0 + 1i)
+                    && (-9007199254740992 + 1i)
+                        eq (-9007199254740992.0 + 1i);
+                """));
+
+        for (String literal : new String[] {
+                "9007199254740993",
+                "-9007199254740993"
+        }) {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false).build()) {
+                PolyglotException failure = assertThrows(
+                        PolyglotException.class,
+                        () -> context.eval(OresLanguage.ID, """
+                                pub routine main(): complex {
+                                  return %s + 1i;
+                                }
+                                """.formatted(literal)));
+                assertTrue(failure.getMessage().contains("exact binary64 range"),
+                        failure::toString);
+            }
+        }
     }
 
     @Test
