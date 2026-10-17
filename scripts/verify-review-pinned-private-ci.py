@@ -22,7 +22,7 @@ CARRIER_REPO_ID = 1357615104
 EXPECTED_PRS = {
     "publisher": (SOURCE_REPO, 1123),
     "destination": (SOURCE_REPO, 1092),
-    "snapshot": (SOURCE_REPO, 1141),
+    "snapshot": (SOURCE_REPO, 1173),
     "carrier": (CARRIER_REPO, 7),
 }
 RESUME_MARKER = "PRIVATE_CI_RESUME_APPROVED"
@@ -182,7 +182,7 @@ def main():
         "destination_approval_pr": 1092,
         "destination_approval_head_sha": heads["destination"],
         "destination_review_id": review_ids["destination"],
-        "snapshot_approval_pr": 1141,
+        "snapshot_approval_pr": 1173,
         "snapshot_approval_head_sha": heads["snapshot"],
         "snapshot_review_id": review_ids["snapshot"],
         "carrier_policy_pr": 7,
