@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,6 +34,30 @@ public final class ActorPipelineRouteSessionSmoke {
         check(ActorPipelineRouteSession.ReturnPath.class.getConstructors().length == 0,
                 "host caller could construct a forged reply path");
         var plan = graph();
+        // A selector-only ledger cannot attach even a legitimate root frame
+        // to a real mailbox. A sealed host binding must match the *actual*
+        // recipient identity, not merely a graph actor-instance name.
+        var bound = new ActorPipelineRouteSession(plan, 19, 4,
+                Map.of("source", "actor-0",
+                        "worker-a", "actor-1", "worker-b", "actor-2",
+                        "sink", "actor-3"));
+        var permitted = bound.ingress("source");
+        ActorPipelineRouteSession.verifyMailboxRecipient(permitted, "actor-0");
+        try {
+            ActorPipelineRouteSession.verifyMailboxRecipient(permitted, "actor-1");
+            throw new AssertionError("bound frame reached wrong recipient");
+        } catch (SecurityException expected) { }
+        check(bound.outstanding() == 1,
+                "wrong-recipient preflight consumed legitimate frame");
+        bound.complete(permitted);
+        var selectorOnly = new ActorPipelineRouteSession(plan, 19, 4);
+        var bareFrame = selectorOnly.ingress("source");
+        try {
+            ActorPipelineRouteSession.verifyMailboxRecipient(bareFrame, "actor-0");
+            throw new AssertionError("unbound selector frame reached mailbox");
+        } catch (SecurityException expected) { }
+        selectorOnly.complete(bareFrame);
+
         var ledger = new ActorPipelineRouteSession(plan, 7, 8);
         reject(() -> ledger.ingress("worker-a"), "internal worker must not originate flow");
         reject(() -> ledger.ingress("worker-b"), "second internal worker must not originate flow");
