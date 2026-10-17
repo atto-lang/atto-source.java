@@ -83,8 +83,9 @@ final class SupervisorFailureRetentionTest {
             assertFalse(process.healthy());
             assertTrue(process.failure().isPresent());
             assertEquals(1, process.undelivered());
-            assertEquals(0, process.queued(),
-                    "failed supervisor process must not retain undeliverable mail");
+            assertEquals(1, process.queued(),
+                    "failed supervisor process must retain unresolved terminal state");
+            assertEquals(1, process.pendingSnapshot().size());
             assertEquals(0, process.resolved(), "no fabricated restart receipt");
         }
     }
