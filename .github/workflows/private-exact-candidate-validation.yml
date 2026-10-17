@@ -344,3 +344,60 @@ jobs:
           lib="${libraries[0]}"
           echo "VERIFIED_ISOLATE_LIBRARY=$lib"
           timeout 180s mvn -B -ntp "-Dpolyglot.engine.IsolateLibrary=$PWD/$lib" -DskipTests exec:java -Dexec.args="--strict-isolate --mode=hybrid --platform=linux examples/together.ores"
+      - name: Write scoped exact-candidate identity metadata (not certification)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git_hash(ref):
+              value = subprocess.check_output(
+                  ["git", "rev-parse", "--verify", ref], text=True, timeout=10).strip()
+              if not re.fullmatch(r"[a-f0-9]{40}", value):
+                  raise SystemExit("Invalid source Git identity")
+              return value
+
+          commit = git_hash("HEAD")
+          tree = git_hash("HEAD^{tree}")
+          if (commit != os.environ["APPROVED_CANDIDATE_SHA"]
+                  or tree != os.environ["APPROVED_CANDIDATE_TREE"]
+                  or os.environ["GITHUB_SHA"] != os.environ["APPROVED_WORKFLOW_SHA"]):
+              raise SystemExit("Candidate identity changed after exact-head testing")
+          if os.environ["GITHUB_REPOSITORY_ID"] != "1400792274":
+              raise SystemExit("Wrong source repository")
+          data = {
+              "schema": "oreslang-private-exact-candidate-diagnostic-v1",
+              "source_repository": os.environ["GITHUB_REPOSITORY"],
+              "source_repository_id": os.environ["GITHUB_REPOSITORY_ID"],
+              "workflow_dispatch_commit": os.environ["GITHUB_SHA"],
+              "candidate_commit": commit,
+              "candidate_tree": tree,
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "runner_name": os.environ.get("RUNNER_NAME", ""),
+              "actor_junit_classes_expected": [
+                  "dev.oreslang.runtime.PersistentActorMapTest",
+                  "dev.oreslang.runtime.ActorSharedLocalMemoryTest",
+                  "dev.oreslang.types.ActorStateModeContractsTest",
+              ],
+              "native_modes_expected": ["aot", "hybrid", "isolate"],
+              "verified_execution_claim": False,
+              "native_guest_parity_certified": False,
+              "requires_independent_api_job_steps_and_test_reports": True,
+              "source_or_binaries_in_artifact": False,
+          }
+          out = Path(os.environ["RUNNER_TEMP"]) / "oreslang-private-candidate-identity.json"
+          out.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+      - name: Upload exact-candidate identity metadata only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-candidate-identity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oreslang-private-candidate-identity.json
+          if-no-files-found: error
+          retention-days: 3
