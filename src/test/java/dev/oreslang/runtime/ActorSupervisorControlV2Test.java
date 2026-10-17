@@ -276,6 +276,94 @@ final class ActorSupervisorControlV2Test {
     }
 
     @Test
+    void lifecycleObserversNeverExportRawTerminalThrowableGraphs() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        IllegalStateException secret =
+                                new IllegalStateException(
+                                        "secret-token=do-not-cross",
+                                        new RuntimeException("secret-cause"));
+                        secret.addSuppressed(
+                                new RuntimeException("secret-suppressed"));
+                        thrown.set(secret);
+                        throw secret;
+                    });
+
+            var output = actor.outputs().next();
+            actor.send("fail");
+
+            ExecutionException doneFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> actor.done().get(5, TimeUnit.SECONDS));
+            var doneSnapshot = assertInstanceOf(
+                    ActorRuntime.ActorFailureSnapshotException.class,
+                    doneFailure.getCause());
+            assertNull(doneSnapshot.getCause());
+            assertEquals(0, doneSnapshot.getSuppressed().length);
+            assertFalse(doneSnapshot.getMessage().contains("secret-token"));
+            assertFalse(doneSnapshot.getMessage().contains("secret-cause"));
+            assertEquals(
+                    IllegalStateException.class.getName(),
+                    doneSnapshot.notice().diagnosticType());
+
+            ExecutionException outputFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> output.get(5, TimeUnit.SECONDS));
+            var outputSnapshot = assertInstanceOf(
+                    ActorRuntime.ActorFailureSnapshotException.class,
+                    outputFailure.getCause());
+            assertEquals(doneSnapshot.notice(), outputSnapshot.notice());
+
+            // Trusted host diagnostics still retain the original failure.
+            assertSame(thrown.get(), actor.failure().orElseThrow());
+
+            var terminated = assertThrows(
+                    ActorRuntime.ActorTerminatedException.class,
+                    () -> actor.send("late"));
+            assertNull(terminated.getCause(),
+                    "send-to-dead must not smuggle the raw actor cause");
+
+            try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                assertEquals(doneSnapshot.notice(), lease.notice());
+                lease.ack();
+            }
+        }
+    }
+
+    @Test
+    void startupFailureReadyFutureIsCauseFreeButHostDiagnosticRemainsRaw() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<Throwable> thrown = new AtomicReference<>();
+            var actor = runtime.<String>spawnShared(() -> {
+                IllegalArgumentException secret =
+                        new IllegalArgumentException("secret-constructor-detail");
+                thrown.set(secret);
+                throw secret;
+            });
+
+            ExecutionException readyFailure = assertThrows(
+                    ExecutionException.class,
+                    () -> actor.ready().get(5, TimeUnit.SECONDS));
+            var snapshot = assertInstanceOf(
+                    ActorRuntime.ActorFailureSnapshotException.class,
+                    readyFailure.getCause());
+            assertNull(snapshot.getCause());
+            assertFalse(snapshot.getMessage().contains("secret-constructor-detail"));
+            assertEquals(
+                    IllegalArgumentException.class.getName(),
+                    snapshot.notice().diagnosticType());
+            assertSame(thrown.get(), actor.failure().orElseThrow());
+
+            try (var lease = runtime.pollRootSupervisionControl().orElseThrow()) {
+                assertEquals(snapshot.notice(), lease.notice());
+                lease.ack();
+            }
+        }
+    }
+
+    @Test
     void failureStormGetsPriorityButCannotStarveHealthyMailForever() throws Exception {
         final int children = 70;
         try (ActorRuntime runtime = new ActorRuntime(
