@@ -1,0 +1,218 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+@Timeout(30)
+final class ActorReliabilityKernelTest {
+    private static IsolatePolicy tinyMailboxPolicy(int messages) {
+        return new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                64L * 1024 * 1024,
+                messages,
+                Duration.ofSeconds(5),
+                false);
+    }
+
+    @Test
+    void structuralHealthSnapshotSeesSaturationWithoutGuestPayload() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        IsolatePolicy policy = tinyMailboxPolicy(2);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(policy, () -> (message, context) -> {
+                entered.countDown();
+                try {
+                    if (!release.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("test handler release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+            });
+
+            actor.send("SECRET-FIRST");
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            actor.send("SECRET-QUEUED-A");
+            actor.send("SECRET-QUEUED-B");
+            assertThrows(ActorRuntime.ActorMailboxFullException.class,
+                    () -> actor.send("SECRET-REJECTED"));
+
+            ActorRuntime.ActorHealthSnapshot health =
+                    runtime.actorHealth(actor).orElseThrow();
+            assertEquals(actor.id(), health.actorId());
+            assertEquals(actor.generation(), health.generation());
+            assertEquals(ActorRuntime.ActorKind.SHARED, health.kind());
+            assertTrue(health.alive());
+            assertTrue(health.initialized());
+            assertEquals(2, health.queuedUserMessages());
+            assertEquals(0, health.queuedContinuations());
+            assertEquals(1, health.activeTurns());
+            assertTrue(health.carrierActive());
+            assertFalse(health.failed());
+            assertTrue(health.parentId().isEmpty());
+
+            String rendered = health.toString();
+            assertFalse(rendered.contains("SECRET-FIRST"));
+            assertFalse(rendered.contains("SECRET-QUEUED-A"));
+            assertFalse(rendered.contains("SECRET-QUEUED-B"));
+            assertFalse(rendered.contains("SECRET-REJECTED"));
+
+            release.countDown();
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void actorCannotReadHostHealthSnapshotsEvenForItself() throws Exception {
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        CountDownLatch checked = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnSharedTrusted(context -> (message, turn) -> {
+                try {
+                    turn.runtime().actorHealth(turn.self());
+                    observed.set(new AssertionError(
+                            "actor unexpectedly acquired host health authority"));
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    checked.countDown();
+                    turn.self().stop();
+                }
+            });
+
+            actor.send("inspect");
+            assertTrue(checked.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, observed.get());
+            assertTrue(observed.get().getMessage().contains("host/supervisor"));
+        }
+    }
+
+    @Test
+    void overloadAndFailureTelemetryNeverRecordsGuestPayloadOrFailureText() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            CoreLog.configure(CoreLog.Level.WARN);
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var saturated = runtime.<String>spawnShared(
+                        tinyMailboxPolicy(1),
+                        () -> (message, context) -> {
+                            entered.countDown();
+                            try {
+                                if (!release.await(5, TimeUnit.SECONDS)) {
+                                    throw new IllegalStateException(
+                                            "SECRET-SATURATION-TIMEOUT");
+                                }
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(interrupted);
+                            }
+                        });
+
+                saturated.send("SECRET-ACTIVE-PAYLOAD");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                saturated.send("SECRET-QUEUED-PAYLOAD");
+                assertThrows(ActorRuntime.ActorMailboxFullException.class,
+                        () -> saturated.send("SECRET-REJECTED-PAYLOAD"));
+
+                var failing = runtime.<String>spawnShared(() -> (message, context) -> {
+                    throw new IllegalStateException(
+                            "SECRET-TERMINAL-FAILURE-TEXT");
+                });
+                failing.send("SECRET-FAILURE-PAYLOAD");
+                assertTrue(failing.awaitTermination(5, TimeUnit.SECONDS));
+                assertTrue(failing.failure().isPresent());
+
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                CoreLog.dumpRetained(
+                        new PrintStream(bytes, true, StandardCharsets.UTF_8));
+                String log = bytes.toString(StandardCharsets.UTF_8);
+                assertTrue(log.contains(
+                        "\"event\":\"actor.mailbox.rejected\""));
+                assertTrue(log.contains(
+                        "\"event\":\"actor.terminal.failure\""));
+                assertFalse(log.contains("SECRET-ACTIVE-PAYLOAD"));
+                assertFalse(log.contains("SECRET-QUEUED-PAYLOAD"));
+                assertFalse(log.contains("SECRET-REJECTED-PAYLOAD"));
+                assertFalse(log.contains("SECRET-FAILURE-PAYLOAD"));
+                assertFalse(log.contains("SECRET-TERMINAL-FAILURE-TEXT"));
+                assertFalse(log.contains("IllegalStateException"));
+
+                release.countDown();
+                saturated.stop();
+                assertTrue(saturated.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+    }
+
+    @Test
+    void runtimeHealthIsAggregateBoundedAndHostOnly() throws Exception {
+        AtomicReference<Throwable> actorAttempt = new AtomicReference<>();
+        CountDownLatch attempted = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnSharedTrusted(context -> (message, turn) -> {
+                try {
+                    turn.runtime().runtimeHealth();
+                    actorAttempt.set(new AssertionError(
+                            "actor unexpectedly read runtime health"));
+                } catch (Throwable failure) {
+                    actorAttempt.set(failure);
+                } finally {
+                    attempted.countDown();
+                    turn.self().stop();
+                }
+            });
+
+            ActorRuntime.RuntimeHealthSnapshot before = runtime.runtimeHealth();
+            assertEquals(1, before.actorCount());
+            assertTrue(before.privateMemoryBytes() >= 0);
+            assertTrue(before.sharedMemoryBytes() >= 0);
+            assertTrue(before.watchdogOverruns() >= 0);
+            assertTrue(before.watchdogNoticesDropped() >= 0);
+            assertTrue(before.watchdogObserverFailures() >= 0);
+            assertFalse(before.closed());
+
+            actor.send("try");
+            assertTrue(attempted.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, actorAttempt.get());
+
+            ActorRuntime.RuntimeHealthSnapshot after = runtime.runtimeHealth();
+            assertEquals(0, after.actorCount());
+        }
+    }
+
+    @Test
+    void foreignRuntimeCannotInspectActorHealth() {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var actor = left.<String>spawnShared(() -> (message, context) -> { });
+            assertThrows(IllegalArgumentException.class,
+                    () -> right.actorHealth(actor));
+            actor.stop();
+        }
+    }
+}
