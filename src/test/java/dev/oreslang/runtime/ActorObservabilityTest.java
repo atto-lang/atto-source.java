@@ -62,6 +62,7 @@ final class ActorObservabilityTest {
             ActorRuntime.ActorRuntimeStats pressure = runtime.runtimeStats();
             assertEquals(1, pressure.liveActors());
             assertEquals(2L, pressure.userMessagesAccepted());
+            assertEquals(0L, pressure.userMessagesProcessed());
             assertEquals(1L, pressure.mailboxFullRejections());
             assertEquals(0L, pressure.continuationAdmissionFailures());
 
@@ -75,6 +76,7 @@ final class ActorObservabilityTest {
             ActorRuntime.ActorRuntimeStats terminal = runtime.runtimeStats();
             assertEquals(0, terminal.liveActors());
             assertEquals(1L, terminal.normalTerminations());
+            assertEquals(2L, terminal.userMessagesProcessed());
             assertEquals(0L, terminal.cancelledTerminations());
             assertEquals(0L, terminal.failedTerminations());
 
@@ -98,6 +100,41 @@ final class ActorObservabilityTest {
             assertTrue(runtime.pollTerminationEvent().isEmpty());
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void sendRejectionTelemetrySeparatesSealedTerminatedAndForeignRefs()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime();
+             ActorRuntime foreign = new ActorRuntime()) {
+            var sealed = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            sealed.getReady().get(3, TimeUnit.SECONDS);
+            sealed.gracefulStop();
+            assertThrows(ActorRuntime.ActorSealedException.class,
+                    () -> sealed.send("late"));
+            sealed.getDone().get(3, TimeUnit.SECONDS);
+
+            var dead = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+            dead.stop();
+            assertTrue(dead.awaitTermination(3, TimeUnit.SECONDS));
+            assertThrows(ActorRuntime.ActorTerminatedException.class,
+                    () -> dead.send("late"));
+
+            var foreignRef = foreign.<String>spawnShared(
+                    () -> (message, context) -> { });
+            assertThrows(ActorRuntime.ActorInvalidReferenceException.class,
+                    () -> runtime.send(foreignRef, "wrong runtime"));
+            foreignRef.stop();
+
+            ActorRuntime.ActorRuntimeStats stats = runtime.runtimeStats();
+            assertEquals(1L, stats.sealedSendRejections());
+            assertEquals(1L, stats.terminatedSendRejections());
+            assertEquals(1L, stats.invalidReferenceSendRejections());
+            assertEquals(0L, stats.lifecycleFenceSendRejections());
+            assertEquals(0L, stats.mailboxFullRejections());
         }
     }
 
