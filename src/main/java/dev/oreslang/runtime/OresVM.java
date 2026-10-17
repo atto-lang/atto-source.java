@@ -24,6 +24,15 @@ public final class OresVM implements AutoCloseable {
     private static final int DEFAULT_CONTROL_PARALLELISM =
             Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors()));
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
+    /** A host I/O mapping callback is not necessarily an OresScheduler turn.
+     * Mark its owning CONTROL worker separately so external-host teardown
+     * cannot await termination of the very thread invoking close().
+     */
+    private static final ThreadLocal<Boolean> ON_CONTROL_CARRIER = new ThreadLocal<>();
+
+    static boolean onControlCarrier() {
+        return Boolean.TRUE.equals(ON_CONTROL_CARRIER.get());
+    }
 
     private enum StartupState { NEW, STARTING, STARTED, FAILED, CLOSED }
 
@@ -45,7 +54,11 @@ public final class OresVM implements AutoCloseable {
         ThreadFactory factory = runnable -> Thread.ofPlatform()
                 .daemon(true)
                 .name("ores-control-plane-" + carrierId.getAndIncrement())
-                .unstarted(runnable);
+                .unstarted(() -> {
+                    ON_CONTROL_CARRIER.set(Boolean.TRUE);
+                    try { runnable.run(); }
+                    finally { ON_CONTROL_CARRIER.remove(); }
+                });
 
         // CONTROL keeps its prestarted minimum so the root supervisor and
         // Mailmen never depend on actor-carrier startup. Extra carriers are
@@ -193,6 +206,7 @@ public final class OresVM implements AutoCloseable {
         // External trusted host only. Carrier callbacks must never wait for
         // their own scheduler or selector to terminate.
         if (OresScheduler.current() != null
+                || onControlCarrier()
                 || ActorRuntime.inActorExecution()
                 || ActorRuntime.inActorGroupMailmanExecution()) {
             throw new IllegalStateException(
