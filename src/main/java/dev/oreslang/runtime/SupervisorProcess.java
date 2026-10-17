@@ -227,7 +227,9 @@ public final class SupervisorProcess implements AutoCloseable {
      * An unresolved callback cannot be declared completed by cancellation.
      */
     @Override
-    public synchronized void close() {
+    public void close() {
+        synchronized (decisionFence) {
+        synchronized (this) {
         if (state == State.CLOSED) return;
         if (state == State.RUNNING) {
             undelivered.addAndGet(mailbox.size());
