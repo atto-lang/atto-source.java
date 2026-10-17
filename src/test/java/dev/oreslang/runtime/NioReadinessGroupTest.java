@@ -59,8 +59,11 @@ final class NioReadinessGroupTest {
                         throw new RejectedExecutionException("test bootstrap interrupted", interrupted);
                     }
                 }
-                callbackPool.execute(command);
-            });
+                callbackPool.execute(() -> {
+                    try { command.run(); }
+                    finally { group.retryStagedNotifications(); }
+                });
+            }, true);
 
             var firstReady = group.watch(firstSource, SelectionKey.OP_READ);
             var secondReady = group.watch(secondSource, SelectionKey.OP_READ);
