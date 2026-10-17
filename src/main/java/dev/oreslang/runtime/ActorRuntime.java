@@ -3929,17 +3929,35 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("register actor pipeline routing");
         if (OresScheduler.current() != null) {
             throw new SecurityException(
-                    "actor pipeline registration cannot occur on scheduler continuations");
+                    "host actor pipeline registration cannot occur on scheduler continuations");
         }
         if (closed.get()) {
             throw new IllegalStateException("actor runtime is closed");
         }
     }
 
-    /** Correlated host frames must never enter a PRIVATE/UNTRUSTED isolate.
-     * Reject that binding before the supervisor publishes a graph. */
-    void requireSharedPipelineBinding(ActorRef<?> ref) {
-        requirePipelineRegistrationHostAuthority();
+    /**
+     * Compiler-owned source topology may be created on the non-actor root
+     * scheduler (for example from an async main continuation). It still cannot
+     * be created from any actor turn, Mailman CONTROL turn, force-cancel hook,
+     * or a closed runtime.
+     */
+    void requireSourcePipelineRegistrationAuthority() {
+        requireNoForceCancellationHookReentry("register source ActorStream");
+        requireNotActorGroupMailman("register source ActorStream");
+        if (inActorExecution()) {
+            throw new SecurityException(
+                    "actor code cannot register source ActorStream topology");
+        }
+        if (closed.get()) {
+            throw new IllegalStateException("actor runtime is closed");
+        }
+    }
+
+    private void requireSharedPipelineBindingInternal(
+            ActorRef<?> ref, boolean sourceRoot) {
+        if (sourceRoot) requireSourcePipelineRegistrationAuthority();
+        else requirePipelineRegistrationHostAuthority();
         Objects.requireNonNull(ref, "pipeline actor");
         if (!ref.ownedBy(this))
             throw new ActorInvalidReferenceException(
@@ -3948,7 +3966,17 @@ public final class ActorRuntime implements AutoCloseable {
         if (cell == null || cell.kind != ActorKind.SHARED || cell.stopped.get()
                 || cell.finalized)
             throw new IllegalArgumentException(
-                    "correlated host routing requires a live SHARED actor binding");
+                    "correlated routing requires a live SHARED actor binding");
+    }
+
+    /** Host-only graph binding check retained for native/host tests. */
+    void requireSharedPipelineBinding(ActorRef<?> ref) {
+        requireSharedPipelineBindingInternal(ref, false);
+    }
+
+    /** Compiler-root graph binding check for source ActorStream construction. */
+    void requireSharedSourcePipelineBinding(ActorRef<?> ref) {
+        requireSharedPipelineBindingInternal(ref, true);
     }
 
 
