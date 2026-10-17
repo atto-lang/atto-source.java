@@ -329,7 +329,7 @@ def verify(fetch, backend, commit, tree, run_id, required_jobs, required_steps,
                 raise Denied("workflow step timestamps overlap or contradict execution order")
             previous_step_end = step_end
             step_name = step.get("name")
-            if not isinstance(step_name, str) or not step_name:
+            if not isinstance(step_name, str) or not step_name.strip():
                 raise Denied("workflow step has no name")
             if step_name in seen_step_names:
                 raise Denied("ambiguous duplicate workflow step name in job")
