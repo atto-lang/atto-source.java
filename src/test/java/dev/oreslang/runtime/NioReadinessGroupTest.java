@@ -84,7 +84,7 @@ final class NioReadinessGroupTest {
             assertFalse(firstReady.isDone(),
                     "actual completion remains staged until the bound executor is bootstrapped");
             assertFalse(secondReady.isDone(),
-                    "all actual completions remain staged; helper executes only a no-op");
+                    "actual completion delivery must wait while off-selector submission is blocked");
             assertTrue(group.completionCarrierCount() >= 1,
                     "the transient helper exists only after runnable completion demand");
 
