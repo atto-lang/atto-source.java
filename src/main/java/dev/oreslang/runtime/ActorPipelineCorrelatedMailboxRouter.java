@@ -152,6 +152,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
 
     void forward(M value) {
         inLiveGeneration(() -> {
+            Objects.requireNonNull(value, "pipeline payload");
             sendChild(session.forward(current()), value);
             return null;
         });
@@ -159,6 +160,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
 
     void forwardRoundRobin(M value) {
         inLiveGeneration(() -> {
+            Objects.requireNonNull(value, "pipeline payload");
             sendChild(session.forwardRoundRobin(current()), value);
             return null;
         });
@@ -166,6 +168,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
 
     void forwardTo(String target, M value) {
         inLiveGeneration(() -> {
+            Objects.requireNonNull(value, "pipeline payload");
             sendChild(session.forwardTo(current(), target), value);
             return null;
         });
@@ -173,6 +176,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
 
     void forwardByKey(String key, M value) {
         inLiveGeneration(() -> {
+            Objects.requireNonNull(value, "pipeline payload");
             sendChild(session.forwardByKey(current(), key), value);
             return null;
         });
@@ -185,6 +189,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
      * not enabled until compiler-owned backward message handlers exist. */
     void backward(M value) {
         inLiveGeneration(() -> {
+            Objects.requireNonNull(value, "pipeline payload");
             sendChild(session.returnOneHop(current()), value);
             return null;
         });
