@@ -1472,6 +1472,7 @@ public final class Parser {
             boolean mutable = match(MUT);
             return Ast.TypeRef.borrowed(parseTypeAtom(), mutable);
         }
+        if (match(ANY, UNKNOWN)) return Ast.TypeRef.simple(previous().lexeme());
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
         if (match(LBRACKET)) {
@@ -3121,7 +3122,7 @@ public final class Parser {
             } else if (match(LPAREN)) {
                 List<Ast.Expr> args = parseCallArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, args);
+                expr = lowerBuiltinIntegerGuardOrCall(expr, args);
             } else if (match(DOT, DOUBLE_COLON)) {
                 // Two explicit qualified-member spellings, one binding and
                 // evaluation path; no dynamic symbol lookup or macro rewrite.
@@ -3134,6 +3135,30 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    /**
+     * Integer.is_int is a sealed core predicate. Lower it onto the existing
+     * checked 'is int' runtime path rather than trusting a user-defined method
+     * name, host reflection or a callback-supplied boolean.
+     *
+     * Only a simple local name can be bound in the success flow environment.
+     * Ownership/mutability constraints are checked by TypeChecker; arbitrary
+     * member and call expressions are evaluated once but never narrowed.
+     */
+    private Ast.Expr lowerBuiltinIntegerGuardOrCall(Ast.Expr callee, List<Ast.Expr> args) {
+        if (callee instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr owner
+                && owner.name().equals("Integer")
+                && member.member().equals("is_int")) {
+            if (args.size() != 1) {
+                throw error(previous(), "Integer.is_int expects exactly one value");
+            }
+            Ast.Expr value = args.getFirst();
+            String binding = value instanceof Ast.NameExpr name ? name.name() : null;
+            return new Ast.TypeTestExpr(value, Ast.TypeRef.simple("int"), binding);
+        }
+        return new Ast.CallExpr(callee, args);
     }
 
     private List<Ast.TypeRef> parseCallTypeArguments() {
