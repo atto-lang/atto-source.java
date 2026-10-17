@@ -224,6 +224,36 @@ final class RuntimePointerTest {
         }
     }
 
+    @Test void refRejectsRuntimeCapabilitiesHiddenInsideNominalObjects() {
+        String nestedResource = """
+                define class ResourceHolder as
+                  pub let Channel<int> messages = Channel.new<int>(1);
+                end
+                fnc bad(): void {
+                  const holder = new ResourceHolder();
+                  const p = rt ref holder;
+                  return;
+                }
+                """;
+        var resourceFailure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse(nestedResource)));
+        assertTrue(resourceFailure.getMessage().contains("nested runtime/resource"),
+                resourceFailure.getMessage());
+
+        String ordinaryNestedData = BOX + """
+                define class Outer as
+                  pub let Box child = new Box();
+                end
+                fnc ok(): void {
+                  const outer = new Outer();
+                  const p = rt ref outer;
+                  const view = rt deref p;
+                  return;
+                }
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(ordinaryNestedData)));
+    }
+
     @Test void refTransfersOwnershipAndCannotUpgradeBorrowing() {
         reject("val Box box = new Box(); const p = rt ref box; stdio.println(box.value);", "moved");
         reject("val Box box = new Box(); const view = rt borrow box; const p = rt ref view;", "Pointer<T>");
