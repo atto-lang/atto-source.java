@@ -4,16 +4,6 @@ on:
   push:
     branches:
       - integration/dop-cpu-current-main-20261016
-    paths:
-      - 'src/main/java/dev/oreslang/runtime/DataOrientedLayout.java'
-      - 'src/main/java/dev/oreslang/runtime/DopRegionSchedule.java'
-      - 'src/main/java/dev/oreslang/runtime/accel/DopKernelIR.java'
-      - 'src/test/java/dev/oreslang/runtime/Dop*.java'
-      - 'src/test/java/dev/oreslang/runtime/accel/Dop*.java'
-      - 'scripts/dop-planner/**'
-      - 'scripts/test-dop-planner-standalone.sh'
-      - '.github/workflows/dop-cpu-exact-head.yml'
-      - 'pom.xml'
   workflow_dispatch:
 
 permissions:
