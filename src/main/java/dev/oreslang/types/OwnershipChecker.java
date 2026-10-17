@@ -2003,6 +2003,18 @@ public final class OwnershipChecker {
         }
         if (param.type().isBorrow()) {
             boolean mutable = param.type().mutableBorrow();
+            if (!mutable
+                    && arg instanceof Ast.LambdaExpr lambda
+                    && isBorrowedCallable(param.type())) {
+                ValueInfo temporary = checkLambda(
+                        lambda, scope, null,
+                        false, false, initializingClass != null);
+                if (containsMutexGuardType(temporary.type)) {
+                    throw error(callable + " argument " + position
+                            + " cannot lend a guard-bearing callable");
+                }
+                return;
+            }
             if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                 if (mutable && !unary.operator().equals("&mut")) {
                     throw error(callable + " argument " + position + " requires rt borrow mut");
