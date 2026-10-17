@@ -13,6 +13,50 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 final class NativeCarrierExecutorTest {
 
     @Test
+    void awaitTerminationRequiresShutdownEvenIfNoPthreadsEverStarted() throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-await-cold-");
+        try {
+            assertEquals(0, pool.getStartedCarrierCount());
+            assertFalse(pool.isTerminated());
+            assertFalse(pool.awaitTermination(0, TimeUnit.NANOSECONDS),
+                    "cold construction is not an executor termination event");
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(pool.isTerminated());
+        }
+    }
+
+    @Test
+    void shutdownCannotClaimTerminatedWhileNativeBootstrapAdmissionIsOutstanding()
+            throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-bootstrap-barrier-");
+        var field = NativeCarrierExecutor.class.getDeclaredField("bootstrapAdmissions");
+        field.setAccessible(true);
+        var attempts = (java.util.concurrent.atomic.AtomicInteger) field.get(pool);
+        // Force only the publication window, not a fake Java carrier. This
+        // pinpoints the exact false-positive that a pthread attach race
+        // previously introduced to isTerminated/awaitTermination.
+        attempts.incrementAndGet();
+        try {
+            pool.shutdownNow();
+            assertFalse(pool.isTerminated());
+            assertFalse(pool.awaitTermination(20, TimeUnit.MILLISECONDS));
+        } finally {
+            attempts.decrementAndGet();
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(pool.isTerminated());
+        }
+    }
+
+    @Test
     void noBootstrapAdmissionRejectsColdNativePoolAndRunsOnlyAfterPublication()
             throws Exception {
         String os = System.getProperty("os.name", "")
