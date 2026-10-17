@@ -9390,7 +9390,14 @@ public final class OresEvalRootNode extends RootNode {
                         || (ac == 0.0 && a != 0.0 && c != 0.0)
                         || (bd == 0.0 && b != 0.0 && d != 0.0)
                         || (bc == 0.0 && b != 0.0 && c != 0.0)
-                        || (ad == 0.0 && a != 0.0 && d != 0.0)) {
+                        || (ad == 0.0 && a != 0.0 && d != 0.0)
+                        // Nonzero cancellation can be just as dangerous as a
+                        // rounded-to-zero numerator. If subtraction/addition
+                        // has discarded at least half of the larger product,
+                        // product-rounding error is amplified enough that the
+                        // fast path no longer has a small-ULP error bound.
+                        || severeCancellation(realNumerator, ac, bd)
+                        || severeCancellation(imaginaryNumerator, bc, ad)) {
                     return divExtremeFinite(o);
                 }
                 int exponent = numeratorExponent - divisorExponent;
@@ -9401,6 +9408,12 @@ public final class OresEvalRootNode extends RootNode {
             double denominator = o.real * o.real + o.imaginary * o.imaginary;
             return new Complex((real * o.real + imaginary * o.imaginary) / denominator,
                     (imaginary * o.real - real * o.imaginary) / denominator);
+        }
+
+        private static boolean severeCancellation(
+                double combined, double leftTerm, double rightTerm) {
+            double scale = Math.max(Math.abs(leftTerm), Math.abs(rightTerm));
+            return scale > 0.0 && Math.abs(combined) <= 0.5 * scale;
         }
 
         private Complex divExtremeFinite(Complex o) {
