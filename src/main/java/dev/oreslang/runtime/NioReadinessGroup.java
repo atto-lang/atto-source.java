@@ -73,6 +73,10 @@ public final class NioReadinessGroup implements AutoCloseable {
     // optional VM executor can still be supplied by narrow embedding tests.
     private final Executor completionExecutor;
     private final ThreadPoolExecutor ownedCompletionExecutor;
+    // Context-owned completion handoff: scheduler/actor carriers already in
+    // the VM budget, never an extra NIO completion worker. Installed once
+    // before first watch; standalone host groups retain the legacy pool.
+    private volatile Executor boundCompletionExecutor;
     private final ConcurrentLinkedDeque<Runnable> stagedNotifications =
             new ConcurrentLinkedDeque<>();
     private final Object notificationDispatch = new Object();
@@ -137,9 +141,28 @@ public final class NioReadinessGroup implements AutoCloseable {
     int activeWriteLeases() {
         synchronized (lifecycle) { return writeLeases.size(); }
     }
-    boolean usesVmCompletionCarriers() { return ownedCompletionExecutor == null; }
+    boolean usesVmCompletionCarriers() {
+        return boundCompletionExecutor != null || ownedCompletionExecutor == null;
+    }
     int completionCarrierCount() {
-        return ownedCompletionExecutor == null ? 0 : ownedCompletionExecutor.getPoolSize();
+        return boundCompletionExecutor != null || ownedCompletionExecutor == null
+                ? 0 : ownedCompletionExecutor.getPoolSize();
+    }
+
+    /** One-time, pre-admission binding for an actual VM actor scheduler.
+     * Standalone host NIO groups may retain their transitional private pool.
+     * Binding after first I/O admission would strand notifications across
+     * executor domains, so it is explicitly forbidden.
+     */
+    void bindVmCompletionExecutor(Executor executor) {
+        Objects.requireNonNull(executor, "executor");
+        synchronized (lifecycle) {
+            if (closed || boundCompletionExecutor != null || !reactors.isEmpty()
+                    || pending.get() != 0 || notificationReservations.get() != 0)
+                throw new IllegalStateException(
+                        "NIO completion scheduler must be bound before first I/O admission");
+            boundCompletionExecutor = executor;
+        }
     }
 
     private void releaseNotificationReservation() {
@@ -153,7 +176,7 @@ public final class NioReadinessGroup implements AutoCloseable {
      * tasks, including slow or queued completions.
      */
     private void dispatchNotification(Runnable notification) {
-        if (ownedCompletionExecutor != null) {
+        if (boundCompletionExecutor == null && ownedCompletionExecutor != null) {
             completionExecutor.execute(notification);
         } else {
             stagedNotifications.addLast(notification);
@@ -166,13 +189,15 @@ public final class NioReadinessGroup implements AutoCloseable {
      * executes a Future subscriber inline, or spins on a full executor.
      */
     void retryStagedNotifications() {
-        if (ownedCompletionExecutor != null) return;
+        Executor target = boundCompletionExecutor;
+        if (target == null && ownedCompletionExecutor != null) return;
+        if (target == null) target = completionExecutor;
         synchronized (notificationDispatch) {
             for (int i = 0; i < 128; ++i) {
                 Runnable next = stagedNotifications.peekFirst();
                 if (next == null) return;
                 try {
-                    completionExecutor.execute(() -> OresVM.runAsNioWorker(next));
+                    target.execute(() -> OresVM.runAsNioWorker(next));
                 } catch (RejectedExecutionException full) {
                     // Keep the accepted reservation until a CONTROL task
                     // completes and its afterExecute hook retries delivery.
@@ -834,9 +859,9 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
         long left = deadline - System.nanoTime();
         if (left <= 0) return false;
-        if (ownedCompletionExecutor != null)
+        if (boundCompletionExecutor == null && ownedCompletionExecutor != null)
             return ownedCompletionExecutor.awaitTermination(left, TimeUnit.NANOSECONDS);
-        // The VM owns CONTROL shutdown, which must happen AFTER all of our
+        // The VM owns its actor and CONTROL shutdown, which must happen AFTER all of our
         // notifications finish. Never shut down its shared executor here.
         retryStagedNotifications();
         synchronized (notificationDrain) {
