@@ -101,6 +101,18 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void complexDivisionPreservesNonzeroComponentAfterSubnormalNormalization() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      return ((1e300 + 1e-20i) / 1i)
+                          eq (1e-20 - 1e300i);
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void complexDivisionFallsBackForLargeNonzeroCancellationError() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
