@@ -14,3 +14,4 @@
 /.github/private-ci-approved-repositories.txt @ORESoftware
 /.github/private-ci-approved-source-snapshots.txt @ORESoftware
 /.github/private-ci-required-checks.json @ORESoftware
+/.github/workflows/private-ci-policy.yml @ORESoftware
