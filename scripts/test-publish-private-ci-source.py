@@ -889,6 +889,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             git("config", "user.email", "ci@example.invalid")
             protected = (
                 "scripts/publish-private-ci-source.py",
+                "scripts/dispatch-review-pinned-private-ci.py",
                 "scripts/run-in-private-ci-destination.sh",
                 "scripts/check-private-ci-destination.sh",
                 ".github/private-ci-approved-repositories.txt",
