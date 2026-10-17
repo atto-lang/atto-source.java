@@ -201,6 +201,31 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
+    void opaqueTopValuesRemainMoveOnlyAfterTypeErasure() {
+        IllegalArgumentException anyMove = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(any value): void {
+                          val any first = value;
+                          val any second = value;
+                          return;
+                        }
+                        """)));
+        assertTrue(anyMove.getMessage().contains("moved value"), anyMove::getMessage);
+
+        IllegalArgumentException unknownMove = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad(unknown value): void {
+                          val unknown first = value;
+                          val unknown second = value;
+                          return;
+                        }
+                        """)));
+        assertTrue(unknownMove.getMessage().contains("moved value"), unknownMove::getMessage);
+    }
+
+    @Test
     void opaqueValuesHaveNoUncheckedMembers() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
