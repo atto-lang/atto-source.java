@@ -8,9 +8,10 @@ package dev.oreslang.runtime;
  * admitted. At most {@code maxRestarts} admissions may occur in one rolling
  * {@code windowNanos} interval. Denied attempts do not consume capacity.</p>
  *
- * <p>The implementation allocates only its fixed timestamp ring at
- * construction. Steady-state admission mutates primitive fields under one
- * short monitor and never consults wall-clock time.</p>
+ * <p>The gate state is a fixed timestamp ring plus primitive counters.
+ * {@link #tryAcquireFast(long)} is allocation-free after construction.
+ * {@link #tryAcquire(long)} intentionally allocates one immutable Decision for
+ * callers that need a self-contained diagnostic result.</p>
  */
 public final class SupervisorRestartWindow {
     public record Decision(
@@ -44,6 +45,7 @@ public final class SupervisorRestartWindow {
     private long lastObservedNanos = -1L;
     private long decisionSequence;
     private long suppressed;
+    private long lastRetryAfterNanos;
 
     public SupervisorRestartWindow(int maxRestarts, long windowNanos) {
         this(maxRestarts, windowNanos, 0L);
@@ -76,26 +78,55 @@ public final class SupervisorRestartWindow {
      * rolling budget or manufacture a negative retry interval.</p>
      */
     public synchronized Decision tryAcquire(long nowNanos) {
+        boolean allowed = apply(nowNanos);
+        return new Decision(
+                allowed,
+                size,
+                lastRetryAfterNanos,
+                decisionSequence);
+    }
+
+    /**
+     * Allocation-free admission API for the supervisor hot path. Detailed
+     * retry/sequence state remains available through primitive accessors.
+     */
+    public synchronized boolean tryAcquireFast(long nowNanos) {
+        return apply(nowNanos);
+    }
+
+    public synchronized long lastRetryAfterNanos() {
+        return lastRetryAfterNanos;
+    }
+
+    public synchronized long decisionSequence() {
+        return decisionSequence;
+    }
+
+    private boolean apply(long nowNanos) {
         observeMonotonic(nowNanos);
         expire(nowNanos);
-        long sequence = nextSequence();
+        nextSequence();
 
         if (size >= maxRestarts) {
             long oldest = admittedAt[head];
             long deadline = saturatingAdd(oldest, windowNanos);
-            long retryAfter = deadline <= nowNanos ? 0L : deadline - nowNanos;
+            lastRetryAfterNanos =
+                    deadline <= nowNanos ? 0L : deadline - nowNanos;
             suppressed = saturatingIncrement(suppressed);
-            CoreLog.record(
-                    CoreLog.Level.WARN,
-                    CoreLog.SUPERVISOR_RESTART_SUPPRESSED,
-                    diagnosticKey);
-            return new Decision(false, size, retryAfter, sequence);
+            if (isPowerOfTwo(suppressed)) {
+                CoreLog.record(
+                        CoreLog.Level.WARN,
+                        CoreLog.SUPERVISOR_RESTART_SUPPRESSED,
+                        diagnosticKey);
+            }
+            return false;
         }
 
         int tail = (head + size) % admittedAt.length;
         admittedAt[tail] = nowNanos;
         size++;
-        return new Decision(true, size, 0L, sequence);
+        lastRetryAfterNanos = 0L;
+        return true;
     }
 
     /** Read-only counters; no timestamp sampling or eviction occurs here. */
@@ -226,6 +257,10 @@ public final class SupervisorRestartWindow {
 
     private static long saturatingIncrement(long value) {
         return value == Long.MAX_VALUE ? Long.MAX_VALUE : value + 1L;
+    }
+
+    private static boolean isPowerOfTwo(long value) {
+        return value > 0 && (value & (value - 1L)) == 0L;
     }
 
     static long saturatingAdd(long left, long right) {
