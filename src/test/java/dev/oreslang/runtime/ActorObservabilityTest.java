@@ -97,6 +97,42 @@ final class ActorObservabilityTest {
     }
 
     @Test
+    void failedActiveMessageAndQueuedTailAreDistinguishedInTerminalRecord()
+            throws Exception {
+        CountDownLatch active = new CountDownLatch(1);
+        CountDownLatch failNow = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<Integer>spawnShared(
+                    () -> (message, context) -> {
+                        active.countDown();
+                        if (!failNow.await(5, TimeUnit.SECONDS))
+                            throw new AssertionError("failure gate timed out");
+                        throw new IllegalStateException("boom");
+                    });
+
+            actor.send(1);
+            assertTrue(active.await(3, TimeUnit.SECONDS));
+            actor.send(2);
+            failNow.countDown();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorTerminationEvent event =
+                    runtime.pollTerminationEvent().orElseThrow();
+            assertEquals(ActorRuntime.ActorTerminationKind.FAILED,
+                    event.terminationKind());
+            assertEquals(2L, event.acceptedUserMessages());
+            assertEquals(0L, event.processedUserMessages(),
+                    "the throwing active message is accepted but never marked processed");
+            assertEquals(1, event.abandonedUserMessages(),
+                    "queued tail is reported separately from the active failed message");
+            assertEquals(IllegalStateException.class.getName(), event.failureType());
+            assertEquals(1L, runtime.runtimeStats().failedTerminations());
+        } finally {
+            failNow.countDown();
+        }
+    }
+
+    @Test
     void terminalDiagnosticsNeverInvokeHostileThrowableFormatting() throws Exception {
         AtomicInteger messageCalls = new AtomicInteger();
         final class HostileFailure extends RuntimeException {
