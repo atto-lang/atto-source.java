@@ -279,7 +279,9 @@ public final class Types {
         if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
         if ((left == Primitive.COMPLEX && right == Primitive.DECIMAL)
                 || (left == Primitive.DECIMAL && right == Primitive.COMPLEX)) {
-            return Unknown.INSTANCE;
+            // Preserve both exact-decimal and binary-complex domains rather
+            // than widening to Unknown, which is intentionally permissive.
+            return unionOf(left, right);
         }
         if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
         if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
