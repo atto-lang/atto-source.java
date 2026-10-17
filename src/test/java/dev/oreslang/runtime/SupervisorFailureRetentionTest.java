@@ -38,11 +38,11 @@ final class SupervisorFailureRetentionTest {
                 "failed CONTROL scheduling must reject handler installation");
         assertTrue(lane.failure().isPresent());
         assertEquals(2, lane.undelivered());
-        assertEquals(0, lane.queued(),
-                "failed CONTROL cannot permanently retain abandoned message payloads");
-        lane.publish(notice(supervisor, group));
-        assertEquals(3, lane.undelivered());
-        assertEquals(0, lane.queued());
+        assertEquals(2, lane.queued(),
+                "failed CONTROL must retain exact terminal state for escalation");
+        assertEquals(2, lane.pendingSnapshot().size());
+        assertThrows(IllegalStateException.class,
+                () -> lane.reserve(ActorRuntime.ActorId.create()));
     }
 
     @Test
