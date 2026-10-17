@@ -19,7 +19,7 @@
 | `Or` / `BooleanOps.Or` | 2 or more `bool` | one `Array<bool>` or list; empty reduces to `false` | scalar arguments left-to-right with short-circuit |
 | `Xor` / `BooleanOps.Xor` | **exactly 2 `bool`** | one `Array<bool>` or list; existing parity reduction retained for compatibility | both scalar arguments evaluated exactly once, in order; no short-circuit |
 
-The legacy `Xor(array)` reducer computes odd parity for any array length, including empty (`false`). It is a *distinct one-argument aggregate overload*; it does not authorize `Xor(a, b, c)`. The packaged Oreslang `std/core` module now owns equivalent `all_bool(Array<bool>)`, `any_bool(Array<bool>)`, and `xor_parity_bool(Array<bool>)` reducer loops. Public one-argument builtins still retain their compatibility surface while linker/bootstrap work is completed; parity tests must prove builtin results equal the source reducers before the Java aggregate fallback is removed. A future migration may introduce an explicit `XorParity`/parity reducer before retiring that aggregate overload; do not silently change its result, and do not remove it without an API migration plan.
+The legacy `Xor(array)` reducer computes odd parity for any array length, including empty (`false`). It is a *distinct one-argument aggregate overload*; it does not authorize `Xor(a, b, c)`. The packaged Oreslang `std/core` module owns `all_bool(Array<bool>)`, `any_bool(Array<bool>)`, and `xor_parity_bool(Array<bool>)` reducer loops. On the Java backend, public one-argument builtins eagerly materialize their aggregate argument and then invoke those packaged source reducers through the reserved `@std/core.ores` linked-code-unit identity. There is no Java reducer fold and no implicit guest-visible `core` binding. A future migration may introduce an explicit `XorParity`/parity reducer before retiring that aggregate overload; do not silently change its result, and do not remove it without an API migration plan.
 
 Calls have no generic call-site type parameters. Scalar parameters must type-check as `bool`; array/list contents must type-check as `bool`. Qualification through the trusted builtin `BooleanOps` namespace preserves intrinsic behavior; qualified `std/core` source-module calls are ordinary eager calls. User-defined callables with the same name or a user-defined `BooleanOps` module retain normal shadowing/overloading rules, rather than being rewritten as intrinsics.
 
@@ -44,10 +44,11 @@ or `Xor`, and a real source module named `BooleanOps`, are never accidentally
 rewritten. The evaluator is no longer permitted to execute scalar builtin calls
 directly; an unlowered scalar call is an internal compiler error.
 
-The one-argument aggregate reducers remain calls for now. They can move to
-Oreslang-owned core source once packaged core-module resolution and backend
-linking can make the same implementation available to JIT, Native Image and
-LLVM without introducing a second semantic owner.
+The one-argument aggregate reducers remain calls because aggregate construction
+is eager. Java/Graal routes those calls to compiler-owned packaged `std/core`
+source after the argument is materialized. LLVM still needs its native
+`Array<bool>` representation and reducer-loop lowering; it must preserve the
+same eager-container boundary without introducing a second semantic definition.
 
 ## Example
 
@@ -104,7 +105,7 @@ Scalar calls do not need variadic source functions. After name resolution and ty
 - `Xor(a, b)` lowers to `a ^^ b`.
 - Scalar `Xor` with any arity other than two is rejected before lowering.
 - User-defined functions/modules named `And`, `Or`, `Xor`, or `BooleanOps` are never rewritten.
-- Aggregate one-argument calls are the remaining bootstrap path. Their semantic implementation now exists in packaged Oreslang source; the final step is to route the builtin aggregate surface to those linked source functions without introducing a shadowable implicit user binding.
+- Aggregate one-argument calls stay as calls. Java/Graal routes them through the reserved packaged `@std/core.ores` evaluator after eager aggregate materialization, so user modules cannot shadow the reducer implementation. LLVM aggregate lowering remains a backend follow-up.
 
 The synchronous source `rest ...Type` ABI is independent of trusted Boolean scalar intrinsic lowering. Neither the variadic fallback nor the builtin rewrite changes the rule that fixed overload identity is caller-visible name + exact arity.
 
