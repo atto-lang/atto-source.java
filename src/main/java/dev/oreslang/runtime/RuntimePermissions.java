@@ -197,11 +197,21 @@ public final class RuntimePermissions {
     }
 
     public String[] applicationArguments() {
+        requireDirectSerialization();
         return applicationArguments(ARG_PREFIX);
     }
 
     public String[] buildCeilingApplicationArguments() {
+        requireDirectSerialization();
         return applicationArguments(BUILD_ARG_PREFIX);
+    }
+
+    private void requireDirectSerialization() {
+        if (ceiling != null) {
+            throw new IllegalStateException(
+                    "bounded RuntimePermissions cannot be serialized without its build ceiling; "
+                            + "use IsolatePolicy.applicationArguments(buildCeiling, runtimeGrant, ...)");
+        }
     }
 
     private String[] applicationArguments(String prefix) {
