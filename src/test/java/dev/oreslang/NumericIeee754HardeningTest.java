@@ -139,8 +139,7 @@ final class NumericIeee754HardeningTest {
                       val complex oppositeImaginary =
                           (1e200 + 1e-100i) / (1e200 - 1e-100i);
                       return identicalExtreme eq 1
-                        && !(oppositeImaginary eq 1)
-                        && (oppositeImaginary neq 1);
+                        && oppositeImaginary eq (1 + 2e-300i);
                     }
                     """).asBoolean());
         }
