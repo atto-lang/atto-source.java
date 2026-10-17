@@ -67,6 +67,13 @@ final class RuntimePointerTest {
         }
     }
 
+    @Test void rawPointerEscapeRequiresNativeTrustedLowering() {
+        var error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse(BOX + "fnc bad(): void { const p = rt raw value; return; }"));
+        assertTrue(error.getMessage().contains("trusted unsafe.memory"), error.getMessage());
+        assertTrue(error.getMessage().contains("managed Java backend"), error.getMessage());
+    }
+
     @Test void unsupportedExclusivePointerFormsAreRejectedBeforeTypeChecking() {
         for (String operation : new String[] {"ref", "unref", "deref"}) {
             var error = assertThrows(IllegalArgumentException.class,
