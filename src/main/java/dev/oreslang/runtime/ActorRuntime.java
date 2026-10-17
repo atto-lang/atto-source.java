@@ -3893,9 +3893,10 @@ public final class ActorRuntime implements AutoCloseable {
                             createdGroupsByActor.computeIfAbsent(
                                     creator, ignored -> new java.util.HashSet<>()).add(id);
                         }
-                        // Finalization calls unregisterActor() while holding
-                        // ActorCell.lifecycleLock. Never acquire that lock here:
-                        // instead recheck the stop flag after publication. If
+                        // Actor finalization may concurrently reconcile
+                        // this group's membership. Never acquire the creator's
+                        // lifecycle lock here: instead recheck its stop flag
+                        // after publication. If
                         // retirement beat group creation's registration, the
                         // group is closed before it can escape to the caller.
                         if (creatorCell != null && creatorCell.stopped.get()) {
@@ -7538,63 +7539,129 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void publishFinalizationNow(FinalizationPlan plan) {
             // This phase intentionally owns NO actor lifecycle monitor.
-            // OresFuture/channel callbacks, ActorGroup cleanup, parent
-            // bookkeeping and host collector hooks may all re-enter runtime
-            // code or block independently.
+            // Every potentially re-entrant/host-controlled step is isolated:
+            // failure is telemetry, not permission to strand the ActorCell.
+            Throwable firstFatal = null;
+            Runnable outputNotifications = () -> { };
+
             if (plan.scheduler != null) {
                 try {
                     plan.scheduler.close();
-                } catch (RuntimeException ignored) {
-                    // Actor teardown remains authoritative; source scheduler
-                    // cancellation is best-effort after guest quiescence.
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
                 }
             }
-            drainMailboxReservations();
-            outputStream.close(plan.terminal);
-            if (memorySlice != null) memorySlice.close();
-
-            recordTerminationEvent(
-                    this,
-                    plan.terminal,
-                    plan.acceptedUserMessages,
-                    plan.processedUserMessages,
-                    plan.abandonedUserMessages,
-                    plan.abandonedContinuations);
 
             try {
-                actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Collector/observer failure cannot prevent actor retirement.
+                drainMailboxReservations();
+            } catch (Throwable failure) {
+                firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
             }
 
-            unregisterActor(this);
+            try {
+                // Commit EOF/error state now but postpone arbitrary pending
+                // reader/select callbacks until authoritative lifecycle state,
+                // parent progress and DONE state have been published.
+                outputNotifications = outputStream.closeDeferred(plan.terminal);
+            } catch (Throwable failure) {
+                firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+            }
 
-            synchronized (lifecycleLock) {
-                if (!finalizationPrepared || finalized) {
-                    throw new IllegalStateException(
-                            "actor finalization publication identity lost for " + ref.id());
+            if (memorySlice != null) {
+                try {
+                    memorySlice.close();
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
                 }
-                finalized = true;
-                finalizationPrepared = false;
+            }
+
+            try {
+                recordTerminationEvent(
+                        this,
+                        plan.terminal,
+                        plan.acceptedUserMessages,
+                        plan.processedUserMessages,
+                        plan.abandonedUserMessages,
+                        plan.abandonedContinuations);
+            } catch (Throwable failure) {
+                firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+            }
+
+            firstFatal = unregisterActor(this, firstFatal);
+
+            boolean publishTerminalObservers = false;
+            synchronized (lifecycleLock) {
+                if (finalizationPrepared && !finalized) {
+                    finalized = true;
+                    finalizationPrepared = false;
+                    publishTerminalObservers = true;
+                } else {
+                    lifecyclePublicationFailures.incrementAndGet();
+                }
                 lifecycleLock.notifyAll();
             }
 
-            // Structured parent progress is lifecycle-authoritative and must
-            // not wait behind arbitrary ready/done Future subscribers.
-            if (parent != null) parent.childFinalized(this);
+            if (publishTerminalObservers) {
+                // Parent tree progress is authoritative and precedes every
+                // arbitrary Future/output observer belonging to this child.
+                if (parent != null) {
+                    try {
+                        parent.childFinalized(this);
+                    } catch (Throwable failure) {
+                        firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                    }
+                }
 
-            Throwable terminal = plan.terminal;
-            if (!ref.readyFuture.isDone()) {
-                ref.readyFuture.failFromRuntime(
-                        terminal == null
-                                ? new ActorTerminatedException(ref.id(), kind, null)
-                                : terminal);
+                // Internal one-shot finalization barriers take precedence over
+                // public ready/done subscribers. Their callbacks may publish
+                // an invocation result, but they can no longer delay parent
+                // structured teardown because finalized=true is already set.
+                try {
+                    finalizedFuture.completeFromRuntime(null);
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+
+                // Execution-domain retirement is allowed to lag logical
+                // finalization, but public DONE remains behind this host hook.
+                try {
+                    actorExitHook.accept(executionDomain);
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+
+                Throwable terminal = plan.terminal;
+                if (!ref.readyFuture.isDone()) {
+                    try {
+                        ref.readyFuture.failFromRuntime(
+                                terminal == null
+                                        ? new ActorTerminatedException(ref.id(), kind, null)
+                                        : terminal);
+                    } catch (Throwable failure) {
+                        firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                    }
+                }
+
+                try {
+                    if (terminal == null) ref.doneFuture.completeFromRuntime(null);
+                    else ref.doneFuture.failFromRuntime(terminal);
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+
+                // Channel close state was committed above; only synchronous
+                // waiter callbacks remain. They are explicitly last and can
+                // never delay parent progress or the actor's finalized state.
+                try {
+                    outputNotifications.run();
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
             }
-            if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-            else ref.doneFuture.failFromRuntime(terminal);
-            finalizedFuture.completeFromRuntime(null);
+
+            // Preserve VM-fatal semantics, but only after best-effort terminal
+            // state publication has made the actor impossible to resurrect.
+            rethrowHostFatal(firstFatal);
         }
 
         private void childFinalized(ActorCell<?> child) {
