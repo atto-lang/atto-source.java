@@ -248,17 +248,26 @@ final class StructuralContainerSourceParityTest {
 
     @Test
     void zeroWidthFixedMetadataCannotHideUnsafePayloadTypes() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc bad(Channel<FixedArray[0 of &int]> payload): void {
-                  return;
-                }
-                """)));
+        IllegalArgumentException channelBorrow = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Channel<FixedArray[0 of &int]> payload): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(channelBorrow.getMessage().contains("cannot transport borrowed payloads"),
+                channelBorrow::getMessage);
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                actor fnc bad(FixedArray[0 of Future<int>] payload): void {
-                  return;
-                }
-                """)));
+        IllegalArgumentException actorFuture = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        actor fnc bad(FixedArray[0 of Future<int>] payload): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(actorFuture.getMessage().contains("cannot use Future")
+                        && actorFuture.getMessage().contains("actor boundary"),
+                actorFuture::getMessage);
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 actor fnc ok(FixedArray[0 of int] payload): void {
