@@ -146,6 +146,12 @@ final class ActorSupervisorControlV2Test {
                             assertEquals(childRef.get().id(), failure.actor());
                             assertEquals(ActorRuntime.ActorFailureKind.FAILURE,
                                     failure.failureKind());
+                            assertThrows(SecurityException.class,
+                                    () -> childRef.get().failure(),
+                                    "parent actors must not import raw child Throwable graphs");
+                            assertEquals(
+                                    failure,
+                                    childRef.get().terminalFailureNotice().orElseThrow());
                             order.add("CONTROL");
                             controlSeen.countDown();
                         }
