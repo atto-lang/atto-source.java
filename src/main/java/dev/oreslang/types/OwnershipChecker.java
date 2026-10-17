@@ -2461,6 +2461,13 @@ public final class OwnershipChecker {
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
             VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
+            // Implicit same-name narrowing applies only to a stable place;
+            // explicitly named pattern bindings have separate snapshot rules.
+            if (test.value() instanceof Ast.NameExpr name
+                    && name.name().equals(test.binding())) {
+                if (original == null || original.rebindable) return;
+                if (destination.locals.containsKey(test.binding())) return;
+            }
             defineRefinementAlias(test.binding(), test.targetType(), original, destination);
             return;
         }
