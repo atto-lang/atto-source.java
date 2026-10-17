@@ -6,6 +6,7 @@ import dev.oreslang.runtime.OresScheduler;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -13,6 +14,71 @@ import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(20)
 final class ActorContinuationTeardownTest {
+
+    @Test
+    void concurrentHostStopCannotAdmitFreshActorSourceWork()
+            throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch inActorTurn = new CountDownLatch(1);
+            CountDownLatch releaseTurn = new CountDownLatch(1);
+            AtomicInteger rejectedAdmissions = new AtomicInteger();
+            AtomicInteger guestSourceStarts = new AtomicInteger();
+            AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+            var actor = runtime.<Integer>spawnShared(() -> (message, context) -> {
+                inActorTurn.countDown();
+                try {
+                    assertTrue(releaseTurn.await(5, TimeUnit.SECONDS));
+                    try {
+                        context.runtime().startActorTask(resume -> {
+                            guestSourceStarts.incrementAndGet();
+                            return OresScheduler.done(null);
+                        });
+                        unexpected.set(new AssertionError(
+                                "fresh source task was admitted after STOP"));
+                    } catch (ActorRuntime.ActorTerminatedException expected) {
+                        rejectedAdmissions.incrementAndGet();
+                    }
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            actor.send(1);
+            assertTrue(inActorTurn.await(5, TimeUnit.SECONDS));
+            // Host stop waits for physical carrier finalization. It must run
+            // on another host thread while this test controls the blocked
+            // actor turn; otherwise the test deadlocks before releasing it.
+            java.util.concurrent.ExecutorService stopper =
+                    java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                java.util.concurrent.Future<?> stopResult =
+                        stopper.submit((java.util.concurrent.Callable<Void>) () -> {
+                            actor.stop();
+                            return null;
+                        });
+                try {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (actor.isAlive() && System.nanoTime() < deadline) {
+                        Thread.sleep(1);
+                    }
+                    assertFalse(actor.isAlive(),
+                            "STOP must seal admission before releasing the actor turn");
+                } finally {
+                    releaseTurn.countDown();
+                }
+                stopResult.get(10, TimeUnit.SECONDS);
+            } finally {
+                stopper.shutdownNow();
+                assertTrue(stopper.awaitTermination(5, TimeUnit.SECONDS));
+            }
+            assertTrue(actor.awaitTermination(10, TimeUnit.SECONDS));
+            assertNull(unexpected.get(), "STOP must reject registration deterministically");
+            assertEquals(1, rejectedAdmissions.get());
+            assertEquals(0, guestSourceStarts.get(),
+                    "no post-STOP task may execute even if its carrier was active");
+        }
+    }
     @Test
     void gracefulStopCancelsQueuedSourceTasksWithoutRunningThem() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 2, 64, 16);
