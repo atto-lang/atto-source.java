@@ -50,15 +50,25 @@ public final class RefinementRules {
         }
     }
 
-    /** Interval implication is decidable for this closed built-in comparison fragment. */
-    public static Interval normalize(Ast.TypeRef base, List<Ast.RefinementBound> clauses) {
+    private static String canonicalBaseName(Ast.TypeRef base) {
         Objects.requireNonNull(base);
-        Objects.requireNonNull(clauses);
-        String prop = switch (base.name()) {
-            case "string", "String" -> "length";
-            case "int" -> "value";
+        return switch (base.name()) {
+            case "string", "String" -> "string";
+            case "int" -> "int";
             default -> throw new IllegalArgumentException("unsupported refinement base " + base.name());
         };
+    }
+
+    private static boolean qualifiedIdentity(String identity) {
+        return identity != null && identity.matches(
+                "[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)+");
+    }
+
+    /** Interval implication is decidable for this closed built-in comparison fragment. */
+    public static Interval normalize(Ast.TypeRef base, List<Ast.RefinementBound> clauses) {
+        Objects.requireNonNull(clauses);
+        String canonicalBase = canonicalBaseName(base);
+        String prop = canonicalBase.equals("string") ? "length" : "value";
         long min = prop.equals("length") ? 0 : Long.MIN_VALUE;
         long max = Long.MAX_VALUE;
         Set<Long> excluded = new HashSet<>();
@@ -127,13 +137,12 @@ public final class RefinementRules {
             throw new UnsupportedOperationException("where predicates cannot be emitted as scalar schemas");
         String identity = "";
         if (spec.nominal()) {
-            if (qualifiedIdentity == null || !qualifiedIdentity.matches(
-                    "[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)+"))
+            if (!qualifiedIdentity(qualifiedIdentity))
                 throw new IllegalArgumentException("nominal schema requires qualified identifier");
             identity = qualifiedIdentity;
         }
         Interval interval = normalize(base, spec.bounds());
-        String canonicalBase = base.name().equals("String") ? "string" : base.name();
+        String canonicalBase = canonicalBaseName(base);
         List<Long> exclusions = List.copyOf(new TreeSet<>(interval.excluded()));
         String canonical = "oreslang.refinement.v1\n" + canonicalBase + "\n"
                 + interval.property() + "\n" + interval.min() + "\n"
@@ -152,7 +161,7 @@ public final class RefinementRules {
     /** A constrained alias may flow into a weaker alias; nominal identities must match. */
     public static boolean entails(String fromIdentity, Ast.TypeRef fromType, Ast.RefinementSpec from,
                                    String toIdentity, Ast.TypeRef toType, Ast.RefinementSpec to) {
-        if (!fromType.name().equals(toType.name())) return false;
+        if (!canonicalBaseName(fromType).equals(canonicalBaseName(toType))) return false;
         if (from == null || to == null) return false;
         if (from.nominal() || to.nominal()) {
             if (!from.nominal() || !to.nominal() || !Objects.equals(fromIdentity, toIdentity))
@@ -229,6 +238,10 @@ public final class RefinementRules {
     /** Host-side reference operation; NOT yet the guest-language Result<T,E> API. */
     public static CheckedValue tryFrom(String identity, Ast.TypeRef base,
                                        Ast.RefinementSpec spec, Object raw) {
+        if (spec == null) throw new IllegalArgumentException("missing refinement");
+        if (spec.nominal() && !qualifiedIdentity(identity)) {
+            throw new IllegalArgumentException("nominal checked construction requires qualified identifier");
+        }
         if (!accepts(base, spec, raw))
             return new CheckedValue(false, null, "constraint violation for " + identity);
         return new CheckedValue(true,
