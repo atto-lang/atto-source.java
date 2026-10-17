@@ -2,7 +2,12 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.HashSet;
+import java.util.TreeSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -80,6 +85,61 @@ public final class RefinementRules {
             }
         }
         return new Interval(prop, min, max, excluded);
+    }
+
+    /**
+     * Canonical, reflection-free scalar descriptor shared by proof and runtime
+     * validation. Versioned encoding is intentionally independent of source
+     * annotation spelling and source-order. This is a host/compiler contract,
+     * not yet the guest-language zorde.schema<T>() implementation.
+     */
+    public record Descriptor(int version, String base, String property,
+                             long min, long max, List<Long> excluded,
+                             String nominalIdentity, String fingerprint) {
+        public Descriptor {
+            excluded = List.copyOf(excluded);
+        }
+        public boolean accepts(Object raw) {
+            if (property.equals("value")) {
+                return raw instanceof Long n && n >= min && n <= max
+                        && !excluded.contains(n);
+            }
+            if (!(raw instanceof String s)) return false;
+            try {
+                long n = unicodeScalarCount(s);
+                return n >= min && n <= max && !excluded.contains(n);
+            } catch (IllegalArgumentException invalidUnicode) {
+                return false;
+            }
+        }
+    }
+
+    public static Descriptor descriptor(String qualifiedIdentity, Ast.TypeRef base,
+                                        Ast.RefinementSpec spec) {
+        Objects.requireNonNull(spec, "refinement");
+        if (spec.whereExpression() != null)
+            throw new UnsupportedOperationException("where predicates cannot be emitted as scalar schemas");
+        String identity = "";
+        if (spec.nominal()) {
+            if (qualifiedIdentity == null || qualifiedIdentity.isBlank()
+                    || !qualifiedIdentity.contains("."))
+                throw new IllegalArgumentException("nominal schema requires qualified identity");
+            identity = qualifiedIdentity;
+        }
+        Interval interval = normalize(base, spec.bounds());
+        List<Long> exclusions = List.copyOf(new TreeSet<>(interval.excluded()));
+        String canonical = "oreslang.refinement.v1\\n" + base.name() + "\\n"
+                + interval.property() + "\\n" + interval.min() + "\\n"
+                + interval.max() + "\\n" + exclusions + "\\n" + identity;
+        String hash;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            hash = HexFormat.of().formatHex(digest.digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
+        return new Descriptor(1, base.name(), interval.property(), interval.min(),
+                interval.max(), exclusions, identity, hash);
     }
 
     /** A constrained alias may flow into a weaker alias; nominal identities must match. */
