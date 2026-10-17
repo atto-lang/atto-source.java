@@ -3929,6 +3929,7 @@ public final class ActorRuntime implements AutoCloseable {
                                             "ActorGroup managed worker limit exceeded: maximum "
                                                     + targetGroup.memberLimit);
                                 }
+                                targetGroup.supervisorControl.reserve(id);
                                 cell.managedByGroup.set(targetId);
                                 cell.supervision.set(targetGroup.supervisorControl);
                                 targetGroup.managedWorkers.put(id, ref);
