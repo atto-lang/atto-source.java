@@ -82,6 +82,9 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         identities = Map.copyOf(reverse);
         edges = Map.copyOf(indexed);
         session = new ActorPipelineRouteSession(plan, generation, maxActiveFrames);
+        // Publish the bridge only after every immutable binding/session field exists.
+        // ActorRuntime rejects overlapping live generations for the same actor.
+        owner.registerCorrelatedPipelineRouter(identities.keySet(), this);
     }
 
     /**
@@ -279,6 +282,7 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         write.lock();
         try {
             session.close();
+            owner.unregisterCorrelatedPipelineRouter(identities.keySet(), this);
         } finally {
             write.unlock();
         }
