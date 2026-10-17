@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.nio.channels.CancelledKeyException;
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.ServerSocketChannel;
@@ -52,6 +54,10 @@ public final class NioReadinessGroup implements AutoCloseable {
     // separate per-listener lease across callback settlement and re-arm,
     // otherwise a second acceptAsync can race the first one's accept().
     private final IdentityHashMap<ServerSocketChannel, OresFuture<SocketChannel>> acceptLeases =
+            new IdentityHashMap<>();
+    // Keep exclusive read ownership until all completion callbacks drain.
+    // A retired OP_READ key alone is not proof that its channel is free.
+    private final IdentityHashMap<SocketChannel, OresFuture<byte[]>> readLeases =
             new IdentityHashMap<>();
     private final AtomicInteger pending = new AtomicInteger();
     // Includes selector watches that have retired but whose terminal Future
@@ -136,6 +142,9 @@ public final class NioReadinessGroup implements AutoCloseable {
     int pendingNotifications() { return notificationReservations.get(); }
     int activeAcceptLeases() {
         synchronized (lifecycle) { return acceptLeases.size(); }
+    }
+    int activeReadLeases() {
+        synchronized (lifecycle) { return readLeases.size(); }
     }
     boolean usesVmCompletionCarriers() { return ownedCompletionExecutor == null; }
 
@@ -298,6 +307,126 @@ public final class NioReadinessGroup implements AutoCloseable {
         }
         new AcceptPump().arm();
         return accepted;
+    }
+
+    /**
+     * Read at most maximum bytes from a nonblocking TCP channel using the
+     * VM-owned selector. A read of -1 becomes an empty byte array (EOF).
+     *
+     * Only one read operation per channel is admitted until its terminal
+     * subscribers have returned. Cancellation wins only before the kernel
+     * read has been claimed, so it cannot silently consume socket data after
+     * reporting successful revocation. A transient zero-byte read re-arms
+     * readiness, without parking a CONTROL or actor carrier.
+     *
+     * The caller retains the channel and must not perform raw concurrent
+     * reads or switch it to blocking mode. This substrate does not confer a
+     * guest NETWORK capability or replace connection-level source lowering.
+     */
+    public OresFuture<byte[]> readAsync(SocketChannel channel, int maximum) {
+        Objects.requireNonNull(channel, "channel");
+        if (maximum < 1 || maximum > 65536)
+            return OresFuture.failed(new IllegalArgumentException("invalid TCP read bound"));
+        if (channel.isBlocking())
+            throw new IllegalArgumentException("TCP channel must be nonblocking");
+        if (ownedCompletionExecutor == null)
+            return OresFuture.failed(new IllegalStateException(
+                    "TCP read requires dedicated NIO completion workers"));
+        AtomicReference<OresFuture<Integer>> pendingWatch = new AtomicReference<>();
+        // 0 = cancellable, 1 = kernel read in progress / committed, 2 =
+        // cancellation won. A readiness callback may never read after 2.
+        AtomicInteger kernelPhase = new AtomicInteger();
+        OresFuture<byte[]> received = new OresFuture<>(
+                () -> kernelPhase.compareAndSet(0, 2),
+                () -> {
+                    OresFuture<Integer> pending = pendingWatch.getAndSet(null);
+                    if (pending != null) pending.cancel(false);
+                });
+        synchronized (lifecycle) {
+            if (closed || !channel.isOpen())
+                return OresFuture.failed(new IOException("NIO TCP channel closed"));
+            if (readLeases.containsKey(channel))
+                return OresFuture.failed(new IllegalStateException(
+                        "channel already has an outstanding TCP read"));
+            readLeases.put(channel, received);
+        }
+
+        final class ReadPump {
+            final AtomicInteger inFlight = new AtomicInteger();
+
+            void releaseIfTerminal() {
+                if (!received.isDone() || inFlight.get() != 0) return;
+                synchronized (lifecycle) {
+                    if (inFlight.get() == 0 && readLeases.get(channel) == received)
+                        readLeases.remove(channel);
+                }
+            }
+
+            void arm() {
+                inFlight.incrementAndGet();
+                if (received.isDone()) {
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    return;
+                }
+                final OresFuture<Integer> readiness;
+                try {
+                    readiness = NioReadinessGroup.this.watch(channel, SelectionKey.OP_READ);
+                } catch (RuntimeException | Error problem) {
+                    received.failFromRuntime(problem);
+                    inFlight.decrementAndGet();
+                    releaseIfTerminal();
+                    if (problem instanceof VirtualMachineError fatal) throw fatal;
+                    if (problem instanceof ThreadDeath fatal) throw fatal;
+                    return;
+                }
+                pendingWatch.set(readiness);
+                readiness.whenCompleteRuntime((events, failure) -> {
+                    pendingWatch.compareAndSet(readiness, null);
+                    try {
+                        if (received.isDone()) return;
+                        if (failure != null) {
+                            received.failFromRuntime(failure);
+                            return;
+                        }
+                        // The Future cancellation admission and this claim
+                        // share one CAS, never a racy isCancelled() snapshot.
+                        if (!kernelPhase.compareAndSet(0, 1)) return;
+                        try {
+                            if (channel.isBlocking())
+                                throw new IllegalStateException("TCP channel became blocking");
+                            ByteBuffer bytes = ByteBuffer.allocate(maximum);
+                            int n = channel.read(bytes);
+                            if (n == 0) {
+                                // No kernel consumption: cancellation can
+                                // safely become admissible again before rearm.
+                                kernelPhase.compareAndSet(1, 0);
+                                arm();
+                            } else if (n < 0) {
+                                received.completeFromRuntime(new byte[0]);
+                            } else {
+                                received.completeFromRuntime(Arrays.copyOf(bytes.array(), n));
+                            }
+                        } catch (IOException | RuntimeException | Error problem) {
+                            received.failFromRuntime(problem);
+                            if (problem instanceof VirtualMachineError fatal) throw fatal;
+                            if (problem instanceof ThreadDeath fatal) throw fatal;
+                        }
+                    } finally {
+                        inFlight.decrementAndGet();
+                        releaseIfTerminal();
+                    }
+                });
+                // Cancellation may have raced watch admission. The completion
+                // callback still owns inFlight until its cleanup is finished.
+                if (received.isDone()) {
+                    pendingWatch.compareAndSet(readiness, null);
+                    readiness.cancel(false);
+                }
+            }
+        }
+        new ReadPump().arm();
+        return received;
     }
 
     /** Register one kernel-readiness notification without blocking a carrier. */
