@@ -8,6 +8,12 @@ on:
     paths:
       - "src/main/java/dev/oreslang/nodes/OresEvalRootNode.java"
       - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/OresContext.java"
+      - "src/main/java/dev/oreslang/runtime/OresContextLifecycle.java"
+      - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/AsyncRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/AsyncNativeIo.java"
+      - "src/main/java/dev/oreslang/runtime/OresVM.java"
       - "src/main/java/dev/oreslang/runtime/OresScheduler.java"
       - "src/main/java/dev/oreslang/runtime/OresFuture.java"
       - "src/test/java/dev/oreslang/runtime/OresSchedulerTest.java"
@@ -16,6 +22,10 @@ on:
       - "src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java"
       - "src/test/java/dev/oreslang/runtime/SerialHttpStalledActorTest.java"
       - "src/test/java/dev/oreslang/runtime/OresContextLifecycleTest.java"
+      - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/AsyncRuntimeTest.java"
+      - "src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java"
+      - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
       - "src/test/java/dev/oreslang/ActorContinuationTeardownTest.java"
       - "src/test/java/dev/oreslang/SourceContinuationSingleDeliveryTest.java"
       - "src/test/java/dev/oreslang/SourceTerminalFlowPolicyTest.java"
@@ -60,7 +70,7 @@ jobs:
       - name: Execute guest-source continuation and state-handoff regressions
         run: |
           mvn -B -ntp -Dores.runtime.carriers=native \
-            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorStructuredCancellationTest,ActorReadinessLifecycleTest,SerialHttpStalledActorTest,OresContextLifecycleTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
+            -Dtest=OresSchedulerTest,ActorForceSourceCleanupRevocationTest,ActorStructuredCancellationTest,ActorReadinessLifecycleTest,SerialHttpStalledActorTest,OresContextLifecycleTest,NativeHttpTest,AsyncRuntimeTest,AsyncNativeIoTest,OresVMTest,ActorContinuationTeardownTest,SourceContinuationSingleDeliveryTest,SourceTerminalFlowPolicyTest,SourceInlineCriticalStateHandoffTest,SourceCriticalActorStateTest,SourceLoopSoftPreemptionTest,WithUsingLoanSuspensionAuditTest,GeneratorLanguageTest,AsyncAwaitLanguageTest,AsyncChannelBoundaryTest \
             test
       - name: Execute full Maven regression suite
         run: mvn -B -ntp -Dores.runtime.carriers=native verify
