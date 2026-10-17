@@ -24,6 +24,33 @@ SUITES = (
 )
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 
+REQUIRED_CASES = {
+    "StructuralContainerPolicyTest": frozenset({
+        "matchingArrayListAndMapReadonlyViewsAreAdmitted",
+        "directWritableCollectionsRemainInvariant",
+        "readonlyClosedLiteralValuesCanBeObservedAsPrimitives",
+        "numericWideningIsNotRepresentationSafeContainerCovariance",
+        "neverConflateArraysListsAndTuples",
+        "fixedCollectionsRequireExactExtent",
+        "mapKeysMustStayExactlyInvariant",
+        "unstableUnknownAndBorrowedMapKeysCannotForgeHashIdentity",
+        "unresolvedTypesAndMutableAliasesAreNotReadonlySafe",
+        "readonlyRecordMembersPermitOnlyClosedCovariantWidth",
+        "mutableOrUnresolvedHiddenFieldsMustNotBeLaundered",
+        "safeOptionalNestedValuesStayClosed",
+        "positionalNestedTupleMustNotStandInForFixedArray",
+        "shapeMetadataCannotMixMapKeysOrDynamicLengths",
+        "nestedOptionAndRecordProjectionCannotWidenNumbers",
+    }),
+    "StructuralContainerSourceParityTest": frozenset({
+        "structuralArrayAndListStayDistinctAndExecuteReadonlyReads",
+        "arrayListInterchangeAndReadonlyMutationFailClosed",
+        "fixedArrayAndFixedListRequireExactKindAndExtent",
+        "structuralMapUsesInvariantStableKeysAndOptionalLookup",
+        "structuralCollectionLoanCannotCrossSuspendBoundary",
+    }),
+}
+
 
 def require(condition, message):
     if not condition:
@@ -125,9 +152,14 @@ def inspect(reports, provenance, source_root=None, require_ci=False):
             seen.add(method)
             require(not any(next(case.iter(tag), None) is not None for tag in ("failure", "error", "skipped")),
                     "failed/skipped testcase hidden by XML counters: " + name)
+        required = REQUIRED_CASES.get(name, frozenset())
+        require(required.issubset(seen),
+                "required structural testcase(s) missing from " + name + ": "
+                + ", ".join(sorted(required - seen)))
         evidence.append({
             "suite": expected_class,
             "tests": len(tests),
+            "required_tests": sorted(required),
             "xml_sha256": hashlib.sha256(raw).hexdigest(),
         })
     return {
@@ -154,9 +186,13 @@ def self_test():
         }), encoding="utf-8")
         for name in SUITES:
             classname = "dev.oreslang." + name
+            methods = sorted(REQUIRED_CASES.get(name, {"example"}))
+            cases = "".join(
+                '<testcase classname="' + classname + '" name="' + method + '"/>'
+                for method in methods)
             (reports / ("TEST-" + classname + ".xml")).write_text(
-                '<testsuite name="' + classname + '" tests="1" errors="0" failures="0" skipped="0">'
-                '<testcase classname="' + classname + '" name="example"/></testsuite>',
+                '<testsuite name="' + classname + '" tests="' + str(len(methods))
+                + '" errors="0" failures="0" skipped="0">' + cases + '</testsuite>',
                 encoding="utf-8")
         require(inspect(reports, provenance)["tests_total"] == len(SUITES),
                 "synthetic control unexpectedly rejected")
@@ -175,6 +211,25 @@ def self_test():
                 continue
             raise ValueError("adversarial JUnit alteration was accepted")
         first.write_text(good, encoding="utf-8")
+
+        # Deleting a critical regression must fail even if XML counters are
+        # internally consistent and every remaining testcase passes.
+        required_suite = "StructuralContainerSourceParityTest"
+        required_path = reports / ("TEST-dev.oreslang." + required_suite + ".xml")
+        required_good = required_path.read_text(encoding="utf-8")
+        required_root = ET.fromstring(required_good)
+        victim = required_root.findall("testcase")[0]
+        required_root.remove(victim)
+        required_root.set("tests", str(len(required_root.findall("testcase"))))
+        required_path.write_bytes(ET.tostring(required_root, encoding="utf-8"))
+        try:
+            inspect(reports, provenance)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("missing required structural testcase was accepted")
+        required_path.write_text(required_good, encoding="utf-8")
+
         # A source-free local Git checkout exercises the real HEAD/tree
         # command path without exporting any Oreslang repository contents.
         checkout = p / "synthetic-git-checkout"
