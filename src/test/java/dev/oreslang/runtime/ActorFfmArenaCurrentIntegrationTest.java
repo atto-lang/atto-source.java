@@ -169,6 +169,45 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void failedExternalLeaseAccountingCanBeRetriedAfterPhysicalRelease() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+        var arenaRef = new AtomicReference<ActorArena>();
+        var leaseRef = new AtomicReference<ActorArena.ExternalLease>();
+        var registered = new CountDownLatch(1);
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arenaRef.set(arena);
+                leaseRef.set(arena.acquireExternalLease());
+                registered.countDown();
+                turn.self().stop();
+            });
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("pin");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(1, arenaRef.get().outstandingExternalLeases());
+
+            // The two FFM pins can retire successfully while the actor-level
+            // accounting step fails. Reusing that same completion token must
+            // remain possible; never set accounted before decrement succeeds.
+            var count = ActorArena.class.getDeclaredField("externalLeases");
+            count.setAccessible(true);
+            count.setInt(arenaRef.get(), 0);
+            try {
+                assertThrows(IllegalStateException.class, leaseRef.get()::close);
+            } finally {
+                count.setInt(arenaRef.get(), 1);
+            }
+            leaseRef.get().close();
+            leaseRef.get().close();
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void scratchScopeCannotEscapeMailboxBoundary() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
