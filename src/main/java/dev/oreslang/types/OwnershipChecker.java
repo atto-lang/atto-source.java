@@ -2600,7 +2600,14 @@ public final class OwnershipChecker {
         }
         if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
             BorrowPlace projected = borrowPlace(value, source);
-            return new RefinementPlace(projected.owner(), projected.type());
+            // Preserve the *projected* value's Copy/Move kind. A Holder can
+            // own Option<int> (Copy), so inheriting Holder's MOVE_ONLY kind
+            // would incorrectly consume Holder when matching Some(n).
+            // The synthetic place retains the real containing owner root.
+            VarState slot = new VarState(projected.type(), false,
+                    kindOfType(projected.type()), Origin.LOCAL);
+            slot.aliasSource = ownershipRoot(projected.owner());
+            return new RefinementPlace(slot, projected.type());
         }
         return null;
     }
