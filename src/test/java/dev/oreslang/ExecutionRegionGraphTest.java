@@ -27,6 +27,10 @@ final class ExecutionRegionGraphTest {
         assertEquals(Opcode.SUBMIT, plan.steps().getLast().opcode());
         assertTrue(plan.effects().contains(Effect.SUSPEND));
         assertThrows(IllegalArgumentException.class,
+                () -> ExecutionRegionGraph.lower(new CpuRegion(
+                        new CpuRegion(new I64Literal(42), true), true), Map.of()),
+                "Future<Future<T>> needs explicit await/composition");
+        assertThrows(IllegalArgumentException.class,
                 () -> ExecutionRegionGraph.executeCpuI64(plan));
         var awaited = ExecutionRegionGraph.lower(
                 new CpuRegion(new Await(new CpuRegion(new I64Literal(7), true)), false),
