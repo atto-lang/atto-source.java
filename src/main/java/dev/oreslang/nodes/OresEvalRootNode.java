@@ -3479,6 +3479,47 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 if (expr instanceof Ast.AssignExpr assignment) {
+                    if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                        evalSuspendableExpr(
+                                task,
+                                indexed.receiver(),
+                                env,
+                                (t, receiver, failure) -> {
+                                    if (failure != null) {
+                                        continuation.accept(t, null, failure);
+                                        return;
+                                    }
+                                    evalSuspendableArguments(
+                                            t,
+                                            indexed.indices(),
+                                            env,
+                                            (t2, keys, failure2) -> {
+                                                if (failure2 != null) {
+                                                    continuation.accept(t2, null, failure2);
+                                                    return;
+                                                }
+                                                evalSuspendableExpr(
+                                                        t2,
+                                                        assignment.value(),
+                                                        env,
+                                                        (t3, value, failure3) -> {
+                                                            if (failure3 != null) {
+                                                                continuation.accept(t3, null, failure3);
+                                                                return;
+                                                            }
+                                                            try {
+                                                                continuation.accept(
+                                                                        t3,
+                                                                        indexSetValue(receiver, keys, value, env),
+                                                                        null);
+                                                            } catch (RuntimeException | Error failure4) {
+                                                                continuation.accept(t3, null, failure4);
+                                                            }
+                                                        });
+                                            });
+                                });
+                        return;
+                    }
                     evalSuspendableExpr(
                             task,
                             assignment.value(),
@@ -3486,37 +3527,6 @@ public final class OresEvalRootNode extends RootNode {
                             (t, value, failure) -> {
                                 if (failure != null) {
                                     continuation.accept(t, null, failure);
-                                    return;
-                                }
-                                if (assignment.target() instanceof Ast.IndexExpr indexed) {
-                                    evalSuspendableExpr(
-                                            t,
-                                            indexed.receiver(),
-                                            env,
-                                            (t2, receiver, failure2) -> {
-                                                if (failure2 != null) {
-                                                    continuation.accept(t2, null, failure2);
-                                                    return;
-                                                }
-                                                evalSuspendableArguments(
-                                                    t2,
-                                                    indexed.indices(),
-                                                    env,
-                                                    (t3, keys, failure3) -> {
-                                                        if (failure3 != null) {
-                                                            continuation.accept(t3, null, failure3);
-                                                            return;
-                                                        }
-                                                        try {
-                                                            continuation.accept(
-                                                                    t3,
-                                                                    indexSetValue(receiver, keys, value, env),
-                                                                    null);
-                                                        } catch (RuntimeException | Error failure4) {
-                                                            continuation.accept(t3, null, failure4);
-                                                        }
-                                                    });
-                                            });
                                     return;
                                 }
                                 try {
