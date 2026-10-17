@@ -1,0 +1,81 @@
+name: Structural exact-head GraalVM guest regressions
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/ast/**'
+      - 'src/main/java/dev/oreslang/parser/**'
+      - 'src/main/java/dev/oreslang/types/**'
+      - 'src/test/java/dev/oreslang/*Structural*Test.java'
+      - 'src/test/java/dev/oreslang/*Tuple*Test.java'
+      - 'src/test/java/dev/oreslang/RecordWriteVarianceTest.java'
+      - 'contracts/structural/**'
+      - '.github/workflows/structural-exact-head-guest.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact source PR head without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Bind evidence to immutable source tree
+        shell: bash
+        env:
+          EXPECTED: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED"
+          git diff --quiet HEAD --
+          mkdir -p target
+          printf '{"source_sha":"%s","source_tree":"%s","scope":"java-structural-exact-head-guest"}\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse 'HEAD^{tree}')" \
+            > target/structural-guest-provenance.json
+      - name: GraalVM JDK 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Execute real parser, readonly, ownership and guest regressions
+        run: |
+          mvn -B -ntp -Dtest=StructuralTuplePolicyTest,PositionalTupleSyntaxTest,StructuralCallableParityTest,FixedProductCallPlanTest,RecordWriteVarianceTest,StructuralCrossSurfaceParityTest,StructuralTuplePatternMatchTest test
+      - name: Require nonempty JUnit results for every selected suite
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree as ET
+          names = (
+              'StructuralTuplePolicyTest', 'PositionalTupleSyntaxTest',
+              'StructuralCallableParityTest', 'FixedProductCallPlanTest',
+              'RecordWriteVarianceTest', 'StructuralCrossSurfaceParityTest',
+              'StructuralTuplePatternMatchTest',
+          )
+          root = Path('target/surefire-reports')
+          for name in names:
+              path = root / ('TEST-dev.oreslang.' + name + '.xml')
+              if not path.is_file():
+                  raise SystemExit('Missing actual test report: ' + str(path))
+              data = ET.parse(path).getroot()
+              if int(data.attrib.get('tests', '0')) < 1:
+                  raise SystemExit('Zero tests executed: ' + name)
+              if any(int(data.attrib.get(field, '0')) for field in ('errors', 'failures', 'skipped')):
+                  raise SystemExit('Nonpassing/skipped structural suite: ' + name)
+          print('Executed and verified all seven JUnit suites')
+          PY
+      - name: Preserve exact-head provenance and JUnit results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: structural-graal-exact-head-${{ github.run_id }}
+          path: |
+            target/structural-guest-provenance.json
+            target/surefire-reports/TEST-dev.oreslang.*.xml
+          if-no-files-found: error
+          retention-days: 7
