@@ -215,8 +215,8 @@ public final class SupervisorProcess implements AutoCloseable {
         undelivered.addAndGet(mailbox.size());
         // The failed process cannot resume or dispatch these notices.
         // Keep observable failure counters but release retained payloads.
-        mailbox.clear();
         callbackActive = false;
+        for (Pending pending : mailbox) pending.acknowledgement.cancel(false);
     }
 
     /**
