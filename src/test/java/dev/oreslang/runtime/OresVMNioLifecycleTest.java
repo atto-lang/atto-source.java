@@ -17,10 +17,11 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 final class OresVMNioLifecycleTest {
     @Test void controlCarrierBoundsRejectInvalidBootstrapPolicies() {
-        assertDoesNotThrow(() -> OresVM.validateControlBounds(2, 20));
+        assertDoesNotThrow(() -> OresVM.validateControlBounds(0, 20));
+        assertDoesNotThrow(() -> OresVM.validateControlBounds(1, 20));
         assertDoesNotThrow(() -> OresVM.validateControlBounds(20, 20));
         for (int[] limits : new int[][] {
-                {0, 20}, {1, 20}, {2, 1}, {2, 21}, {21, 21}, {4, 3}
+                {-1, 20}, {0, 0}, {2, 1}, {0, 21}, {21, 21}, {4, 3}
         }) {
             assertThrows(IllegalArgumentException.class,
                     () -> OresVM.validateControlBounds(limits[0], limits[1]));
@@ -32,7 +33,10 @@ final class OresVMNioLifecycleTest {
         var pipes = new ArrayList<Pipe>();
         try {
             assertEquals(1, vm.nioReactorCount(), "one initial process-level readiness thread");
-            assertTrue(vm.controlCarrierCount() >= 2);
+            assertEquals(0, vm.controlCarrierCount(),
+                    "throughput cold start must not prestart CONTROL carriers");
+            assertEquals(0, vm.nioReadiness().completionCarrierCount(),
+                    "completion isolation is lazy and must cost zero cold-start threads");
             assertFalse(vm.nioReadiness().usesVmCompletionCarriers(),
                     "arbitrary NIO Future subscribers must not consume CONTROL carriers");
             var nio = vm.nioReadiness();
@@ -47,6 +51,10 @@ final class OresVMNioLifecycleTest {
             assertEquals(5, nio.pendingCount());
             assertEquals(1, nio.reactorCount(),
                     "five pending I/O calls do not justify five selector threads");
+            assertEquals(0, vm.controlCarrierCount(),
+                    "idle I/O readiness must not create CONTROL carriers");
+            assertEquals(0, nio.completionCarrierCount(),
+                    "pending I/O alone must not create completion carriers");
             for (var pipe : pipes) {
                 assertEquals(1, pipe.sink().write(ByteBuffer.wrap(new byte[]{42})));
             }
@@ -60,6 +68,34 @@ final class OresVMNioLifecycleTest {
                 pipe.source().close();
                 pipe.sink().close();
             }
+        }
+    }
+
+    @Test void coldStartCreatesControlOnlyForRunnableControlWork() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try {
+            assertEquals(1, vm.nioReactorCount());
+            assertEquals(0, vm.controlCarrierCount());
+            assertEquals(0, vm.nioReadiness().completionCarrierCount());
+
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            vm.dispatchHostIoMapping(() -> {
+                entered.countDown();
+                try { release.await(3, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertEquals(1, vm.controlCarrierCount(),
+                    "first independently runnable CONTROL task creates one carrier");
+            assertEquals(0, vm.nioReadiness().completionCarrierCount());
+            release.countDown();
+        } finally {
+            vm.close();
+            assertEquals(0, vm.controlCarrierCount(),
+                    "shutdown must leave no VM CONTROL carriers");
+            assertEquals(0, vm.nioReadiness().completionCarrierCount(),
+                    "shutdown must leave no NIO completion carriers");
         }
     }
 
