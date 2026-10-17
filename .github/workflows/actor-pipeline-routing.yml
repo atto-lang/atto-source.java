@@ -5,6 +5,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineMailboxRouterTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouterTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPipelineGuestRoutingBridgeTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java'
@@ -31,6 +32,7 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRoutePlan.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineMailboxRouterTest.java'
       - 'src/test/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouterTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorPipelineGuestRoutingBridgeTest.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineCorrelatedMailboxRouter.java'
       - 'src/main/java/dev/oreslang/runtime/ActorPipelineRouteSession.java'
@@ -94,7 +96,7 @@ jobs:
             sh scripts/test-actor-pipeline-route-plan.sh
             sh scripts/test-actor-pipeline-router-host-gate.sh
             mvn -B -ntp -Dsurefire.failIfNoSpecifiedTests=true \
-              -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineRoutingAdmissionTest,ActorPipelineAdmissionBridgeTest test
+              -Dtest=ActorPipelineRoutePlanTest,ActorPipelineRouteSessionTest,ActorPipelineMailboxRouterTest,ActorPipelineCorrelatedMailboxRouterTest,ActorPipelineGuestRoutingBridgeTest,ActorPipelineRoutingAdmissionTest,ActorPipelineAdmissionBridgeTest test
           } 2>&1 | tee "$evidence/java-routing-tests.log"
       - name: Bind exact Java routing test evidence to checkout
         shell: bash
