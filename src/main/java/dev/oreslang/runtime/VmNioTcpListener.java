@@ -337,11 +337,15 @@ public final class VmNioTcpListener implements AutoCloseable {
                 snapshot = new ArrayList<>(outstanding);
                 quiesced = activeOperations == 0;
             }
-            // Revoke only still-cancellable operations. An already committed
-            // kernel write may instead fail or finish after descriptor close,
-            // but must never be reported as cleanly cancelled.
-            for (OresFuture<?> pending : snapshot) pending.cancel(false);
+            // Close the descriptor before publishing any terminal operation
+            // drain. Otherwise a synchronous cancellation subscriber can drive
+            // connectionClosed/listenerClosed to completion while the FD is
+            // still open on this stack.
             try { channel.close(); } catch (IOException ignored) { }
+            // Revoke only still-cancellable operations. An already committed
+            // kernel write may instead fail after descriptor close, but must
+            // never be reported as cleanly cancelled.
+            for (OresFuture<?> pending : snapshot) pending.cancel(false);
             if (quiesced) connectionClosed.completeFromRuntime(null);
         }
     }
