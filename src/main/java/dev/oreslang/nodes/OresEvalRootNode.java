@@ -8362,7 +8362,9 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
-            if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
+            if (name.equals("complex64")) return false;
+            if (name.equals("complex") || name.equals("complex128"))
+                return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
