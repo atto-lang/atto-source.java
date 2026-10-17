@@ -77,7 +77,7 @@ final class SupervisorRestartWindowTest {
             for (int i = 0; i < 64; i++) {
                 decisions.add(pool.submit(() -> {
                     start.await();
-                    if (gate.tryAcquire(77).allowed()) allowed.incrementAndGet();
+                    if (gate.tryAcquireFast(77)) allowed.incrementAndGet();
                     return null;
                 }));
             }
@@ -87,6 +87,51 @@ final class SupervisorRestartWindowTest {
         assertEquals(7, allowed.get());
         assertEquals(7, gate.currentAdmissions());
         assertEquals(57, gate.suppressedCount());
+    }
+
+    @Test
+    void allocationFreeFastPathSharesTheSameDecisionState() {
+        var gate = new SupervisorRestartWindow(1, 50);
+        assertTrue(gate.tryAcquireFast(10));
+        assertEquals(1L, gate.decisionSequence());
+        assertEquals(0L, gate.lastRetryAfterNanos());
+
+        assertFalse(gate.tryAcquireFast(11));
+        assertEquals(2L, gate.decisionSequence());
+        assertEquals(49L, gate.lastRetryAfterNanos());
+        assertEquals(1L, gate.suppressedCount());
+
+        assertEquals(0, gate.advance(60));
+        var detailed = gate.tryAcquire(60);
+        assertTrue(detailed.allowed());
+        assertEquals(gate.decisionSequence(), detailed.decisionSequence());
+        assertEquals(gate.lastRetryAfterNanos(), detailed.retryAfterNanos());
+    }
+
+    @Test
+    void repeatedRestartSuppressionIsSampledButExactCountIsRetained() {
+        CoreLog.configure(CoreLog.Level.OFF);
+        try {
+            CoreLog.configure(CoreLog.Level.WARN);
+            var gate = new SupervisorRestartWindow(1, 1_000, 9191);
+            assertTrue(gate.tryAcquireFast(0));
+            for (int i = 0; i < 100; i++) {
+                assertFalse(gate.tryAcquireFast(1));
+            }
+            assertEquals(100L, gate.suppressedCount());
+
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            CoreLog.dumpRetained(
+                    new PrintStream(bytes, true, StandardCharsets.UTF_8));
+            long samples = bytes.toString(StandardCharsets.UTF_8).lines()
+                    .filter(line -> line.contains(
+                            "\"event\":\"supervisor.restart.suppressed\""))
+                    .count();
+            assertEquals(7L, samples,
+                    "100 denials should log counts 1,2,4,8,16,32,64 only");
+        } finally {
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
     }
 
     @Test
