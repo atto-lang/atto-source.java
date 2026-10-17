@@ -175,4 +175,49 @@ final class SupervisorProcessTest {
             process.close();
         }
     }
+
+    @Test
+    void closeWaitsForLifecycleDecisionCommitFence() throws Exception {
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            var supervisor = ActorRuntime.SupervisorId.create();
+            var group = ActorRuntime.ActorGroupId.create();
+            CountDownLatch sinkEntered = new CountDownLatch(1);
+            CountDownLatch releaseSink = new CountDownLatch(1);
+            CountDownLatch closeReturned = new CountDownLatch(1);
+            AtomicInteger decisions = new AtomicInteger();
+            SupervisorProcess process = new SupervisorProcess(
+                    supervisor, group, pool, 1,
+                    ignored -> CompletableFuture.completedFuture(
+                            SupervisorProcess.Directive.STOP),
+                    ignored -> {
+                        decisions.incrementAndGet();
+                        sinkEntered.countDown();
+                        try {
+                            assertTrue(releaseSink.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                    });
+            try {
+                var ack = process.accept(notice(supervisor, group, "fence"));
+                assertTrue(sinkEntered.await(5, TimeUnit.SECONDS));
+                Thread closer = new Thread(() -> {
+                    process.close();
+                    closeReturned.countDown();
+                });
+                closer.start();
+                assertFalse(closeReturned.await(100, TimeUnit.MILLISECONDS));
+                releaseSink.countDown();
+                assertTrue(closeReturned.await(5, TimeUnit.SECONDS));
+                ack.toCompletableFuture().get(5, TimeUnit.SECONDS);
+                assertEquals(1, decisions.get());
+                assertEquals(1, process.resolved());
+            } finally {
+                releaseSink.countDown();
+                process.close();
+            }
+        }
+    }
+
 }
