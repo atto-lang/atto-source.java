@@ -114,6 +114,31 @@ public final class RefinementRules {
                              String nominalIdentity, String fingerprint) {
         public Descriptor {
             excluded = List.copyOf(excluded);
+            if (version != 1 || base == null || property == null
+                    || (!base.equals("int") && !base.equals("string"))
+                    || !(base.equals("int") ? property.equals("value")
+                                          : property.equals("length"))
+                    || min > max || (base.equals("string") && min < 0)
+                    || nominalIdentity == null
+                    || (!nominalIdentity.isEmpty() && !qualifiedIdentity(nominalIdentity))) {
+                throw new IllegalArgumentException("invalid refinement descriptor shape");
+            }
+            List<Long> canonicalHoles = List.copyOf(new TreeSet<>(excluded));
+            if (!excluded.equals(canonicalHoles)) {
+                throw new IllegalArgumentException("noncanonical refinement descriptor exclusions");
+            }
+            for (long excludedValue : excluded) {
+                if (excludedValue < min || excludedValue > max) {
+                    throw new IllegalArgumentException("refinement descriptor exclusion outside interval");
+                }
+            }
+            new Interval(property, min, max, new HashSet<>(excluded));
+            // A descriptor is a reference-data integrity check, not proof
+            // that the compiler has admitted or constructed this type.
+            if (!fingerprintFor(base, property, min, max, excluded, nominalIdentity)
+                    .equals(fingerprint)) {
+                throw new IllegalArgumentException("refinement descriptor fingerprint mismatch");
+            }
         }
         public boolean accepts(Object raw) {
             if (property.equals("value")) {
@@ -127,6 +152,21 @@ public final class RefinementRules {
             } catch (IllegalArgumentException invalidUnicode) {
                 return false;
             }
+        }
+    }
+
+    private static String fingerprintFor(String base, String property,
+                                         long min, long max,
+                                         List<Long> exclusions, String identity) {
+        String canonical = "oreslang.refinement.v1\n" + base + "\n"
+                + property + "\n" + min + "\n"
+                + max + "\n" + exclusions + "\n" + identity;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(
+                    canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
         }
     }
 
