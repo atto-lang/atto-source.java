@@ -27,17 +27,23 @@ same fixed slot kind as `val`.
 
 ## Static proof obligation
 
-For each explicit constructor independently, track two sets across normal
-control flow:
+For each explicit constructor independently, every blank `val` field carries a
+saturated assignment-count interval `[min,max]`, where `2` means two or more
+writes. The important states are `[0,0]` (uninitialized), `[0,1]` (maybe
+initialized), and `[1,1]` (definitely initialized exactly once).
 
-- `must`: blank val fields initialized on every incoming path;
-- `may`: blank val fields initialized on any incoming path.
+A direct assignment `self.field = expr` is admitted only from `[0,0]`.
+The right-hand side is checked before the write commits. At a control-flow join:
 
-An assignment `self.field = expr` is admitted only if the field is absent from
-`may`, and then added to both sets. At branch joins, `must` is the **intersection**
-and `may` the **union** of normally continuing branches. Returning branches
-require complete `must` state *before* the return and do not contribute to
-later joins. An implicit fallthrough also requires complete `must` state.
+```text
+join([a,b], [c,d]) = [min(a,c), max(b,d)]
+```
+
+A normally returning constructor edge, including implicit fallthrough, requires
+`[1,1]` for every blank `val`. Returning branches do not contribute to later
+joins. This interval form is equivalent to MUST-intersection/MAY-union for the
+current proof while retaining explicit assignment cardinality for later loop and
+callback analysis.
 
 Examples:
 
@@ -64,8 +70,17 @@ self.count = 0;
 Reads of a blank `self.field` before definite initialization are rejected.
 Only a direct constructor statement can initialize a blank val slot; writes
 hidden inside expression forms, lambdas, or callbacks cannot establish the
-proof. Constructor `self` remains a construction-scoped, unpublished receiver
-that may not escape into borrowed, retained or asynchronous callbacks.
+proof.
+
+Constructor `self` remains a construction-scoped, unpublished receiver. An
+ordinary callback cannot capture it because the callback might retain or
+schedule the closure. A fresh inline closure may capture `self` only when the
+receiving parameter is an explicit immutable borrowed **concrete callable**
+type, for example `borrow (() => void)`. That borrow proves non-escape for the
+call boundary and retains the callable signature. It does not prove that the
+callee invokes the closure exactly once, so it still cannot initialize a blank
+`val`. Named callable values do not receive this inline-lambda borrowing
+exception and follow ordinary explicit borrow rules.
 
 The Java checker now uses the shared assignment-count interval IR. `if/else`,
 `switch`, and statement `match` participate in constructor dataflow. For
