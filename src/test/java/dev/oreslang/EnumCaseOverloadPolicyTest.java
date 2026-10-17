@@ -133,6 +133,8 @@ final class EnumCaseOverloadPolicyTest {
         assertThrows(IllegalArgumentException.class, () -> fixed("Any"));
         assertThrows(IllegalArgumentException.class, () -> enumCase("root.Foo", ""));
         assertThrows(IllegalArgumentException.class, () -> enumType("Foo"));
+        assertThrows(IllegalArgumentException.class, () -> enumType("root. Foo"));
+        assertThrows(IllegalArgumentException.class, () -> enumType("root.\u0000Foo"));
         assertThrows(IllegalArgumentException.class, () -> enumType("root.\uD800"));
         assertThrows(IllegalArgumentException.class, () ->
                 new EnumInfo("root.X", List.of("A", "A"), true));
