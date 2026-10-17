@@ -78,10 +78,13 @@ final class NioReadinessGroupTest {
             for (int round = 0; round < 48; ++round) {
                 var abandoned = group.acceptAsync(listener);
                 assertTrue(abandoned.cancel(false));
-                while (group.pendingCount() != 0 && System.nanoTime() < deadline)
+                while ((group.pendingCount() != 0 || group.activeAcceptLeases() != 0)
+                        && System.nanoTime() < deadline)
                     Thread.sleep(1); // host test driver only
                 assertEquals(0, group.pendingCount(),
-                        "cancelled one-shot accept must release listener ownership");
+                        "cancelled one-shot accept must retire the readiness watch");
+                assertEquals(0, group.activeAcceptLeases(),
+                        "cancelled accept must drain its callback before rearming");
                 assertEquals(1, group.reactorCount());
             }
             var rearmed = group.acceptAsync(listener);
