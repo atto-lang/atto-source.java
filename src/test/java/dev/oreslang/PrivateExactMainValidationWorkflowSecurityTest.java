@@ -1174,6 +1174,47 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
         }
     }
 
+    @Test
+    void preCheckoutShellAndLoaderHooksMustBeNeutralizedAtJobScope() throws Exception {
+        for (Path workflow : new Path[] {
+                Path.of(".github/workflows/private-exact-main-validation.yml"),
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"),
+                Path.of(".github/workflows/private-exact-publisher-validation.yml")
+        }) {
+            String text = Files.readString(workflow);
+            int envStart = text.indexOf("\n    env:\n");
+            int steps = text.indexOf("\n    steps:\n", envStart);
+            assertTrue(envStart >= 0 && steps > envStart,
+                    "privileged runner must declare environment before first step");
+            String env = text.substring(envStart, steps);
+            for (String guarded : new String[] {
+                    "BASH_ENV: ''", "ENV: ''", "LD_PRELOAD: ''",
+                    "LD_LIBRARY_PATH: ''", "PYTHONPATH: ''"
+            }) {
+                String key = guarded.substring(0, guarded.indexOf(':') + 1);
+                assertEquals(1L,
+                        env.lines().filter(line -> line.startsWith("      " + key)).count(),
+                        "exactly one job-level environment control required for " + key);
+                assertTrue(env.contains("\n      " + guarded),
+                        "untrusted startup/loader hooks must be neutralized before Bash starts: "
+                                + guarded + " in " + workflow);
+                String disabled = env.replace("      " + guarded, "      # " + guarded);
+                assertFalse(disabled.lines().anyMatch(line -> line.startsWith("      " + guarded)),
+                        "commenting out a job-level startup guard must fail validation");
+            }
+            int admission = text.indexOf("      - name: Verify exact-main admission before source checkout");
+            if (admission < 0) {
+                admission = text.indexOf("      - name: Verify approvals before any candidate source checkout");
+            }
+            if (admission < 0) {
+                admission = text.indexOf("      - name: Reject unreviewed workflow or candidate before checkout");
+            }
+            int cleanroom = text.indexOf("      - name: Create isolated runner user/tool state");
+            assertTrue(admission > steps && cleanroom > admission,
+                    "job-level guard must apply before first Bash admission step");
+        }
+    }
+
     private static boolean hasExactLine(String body, int spaces, String executable) {
         String expected = " ".repeat(spaces) + executable;
         return body.lines().anyMatch(expected::equals);

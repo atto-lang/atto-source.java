@@ -40,6 +40,11 @@ jobs:
     timeout-minutes: 180
     env:
       NODE_OPTIONS: '' # Job-level neutralization: GITHUB_ENV may not set NODE_OPTIONS.
+      BASH_ENV: '' # Bash reads this before the first script line (before cleanroom).
+      ENV: ''
+      LD_PRELOAD: '' # Dynamic loader runs before any step-level sanitization.
+      LD_LIBRARY_PATH: ''
+      PYTHONPATH: ''
       APPROVED_WORKFLOW_SHA: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA }}
       APPROVED_CANDIDATE_SHA: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA }}
       APPROVED_CANDIDATE_TREE: ${{ vars.ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE }}
