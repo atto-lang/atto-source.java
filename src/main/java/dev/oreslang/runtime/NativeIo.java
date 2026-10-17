@@ -214,7 +214,14 @@ public final class NativeIo {
     public static boolean exists(OresContext context, String rawPath) {
         Path path = canonicalIfExisting(rawPath);
         context.requirePermission(RuntimePermissions.Permission.READ, path.toString(), "fs.exists");
-        return Files.exists(path);
+        try {
+            secureFileAttributes(path);
+            return true;
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return false;
+        } catch (IOException failure) {
+            throw ioFailure("exists", path, failure);
+        }
     }
 
     /**
@@ -230,10 +237,8 @@ public final class NativeIo {
         if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalArgumentException("fs.list_dir requires directory: " + path);
         }
-        try (java.util.stream.Stream<Path> stream = Files.list(path)) {
-            List<String> names = stream.limit(20001).map(p -> p.getFileName().toString()).sorted().toList();
-            if (names.size() > 20000) throw new IllegalArgumentException("fs.list_dir exceeds 20000 entries: " + path);
-            return new java.util.ArrayList<>(names);
+        try {
+            return secureListDirectory(path);
         } catch (IOException failure) {
             throw ioFailure("list directory", path, failure);
         }
@@ -277,12 +282,17 @@ public final class NativeIo {
     }
 
     public static boolean isSymlink(OresContext context, String rawPath) {
-        return Files.isSymbolicLink(metadataTarget(context, rawPath, "fs.is_symlink"));
+        Path path = metadataTarget(context, rawPath, "fs.is_symlink");
+        try { return secureFileAttributes(path).isSymbolicLink(); }
+        catch (java.nio.file.NoSuchFileException missing) { return false; }
+        catch (IOException failure) { throw ioFailure("is symlink", path, failure); }
     }
 
     public static boolean isDir(OresContext context, String rawPath) {
-        return Files.isDirectory(metadataTarget(context, rawPath, "fs.is_dir"),
-                LinkOption.NOFOLLOW_LINKS);
+        Path path = metadataTarget(context, rawPath, "fs.is_dir");
+        try { return secureFileAttributes(path).isDirectory(); }
+        catch (java.nio.file.NoSuchFileException missing) { return false; }
+        catch (IOException failure) { throw ioFailure("is directory", path, failure); }
     }
 
     /**
@@ -308,22 +318,10 @@ public final class NativeIo {
         if (Files.isSymbolicLink(target)) {
             throw new SecurityException("fs.write_text_atomic refuses destination symlink: " + target);
         }
-        Path temp = null;
         try {
-            temp = Files.createTempFile(canonicalParent, ".oreslang-stack-", ".tmp");
-            Files.writeString(temp, value, StandardCharsets.UTF_8);
-            if (Files.isSymbolicLink(target)) {
-                throw new SecurityException("fs.write_text_atomic refuses destination symlink: " + target);
-            }
-            Files.move(temp, target,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            secureAtomicWrite(target, value);
         } catch (IOException failure) {
             throw ioFailure("atomic write", target, failure);
-        } finally {
-            if (temp != null) {
-                try { Files.deleteIfExists(temp); } catch (IOException ignored) { }
-            }
         }
     }
 
@@ -361,7 +359,7 @@ public final class NativeIo {
         Path path = canonicalExistingPath(rawPath);
         context.requirePermission(RuntimePermissions.Permission.WRITE, path.toString(), "fs.remove");
         try {
-            Files.delete(path);
+            secureRemove(path);
         } catch (IOException failure) {
             throw ioFailure("remove", path, failure);
         }
