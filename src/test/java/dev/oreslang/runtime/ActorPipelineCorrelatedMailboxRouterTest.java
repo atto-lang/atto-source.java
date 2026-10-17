@@ -126,6 +126,76 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void successfulSingleRouteConsumesFrameAndCannotEmulateFanout() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var routerRef = new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var finished = new CountDownLatch(1);
+            var firstDelivered = new CountDownLatch(1);
+            var unexpectedSecond = new AtomicInteger();
+            var failedSelection = new AtomicReference<Throwable>();
+            var replayDenied = new AtomicReference<Throwable>();
+
+            var workerA = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("first", value);
+                firstDelivered.countDown();
+            });
+            var workerB = runtime.<String>spawnShared(() -> (value, actor) -> {
+                unexpectedSecond.incrementAndGet();
+            });
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> { });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                try {
+                    routerRef.get().forwardTo("missing", "not-published");
+                } catch (Throwable failure) {
+                    failedSelection.set(failure);
+                }
+                routerRef.get().forwardTo("worker-a", "first");
+                try {
+                    // A second single-route publication from the same inbound
+                    // frame would be hidden fan-out and must be rejected.
+                    routerRef.get().forwardTo("worker-b", "second");
+                } catch (Throwable failure) {
+                    replayDenied.set(failure);
+                } finally {
+                    finished.countDown();
+                }
+            });
+
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", workerA,
+                           "worker-b", workerB, "sink", sink), 31, 12);
+            routerRef.set(router);
+            router.ingress("source", "begin");
+
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+            assertTrue(firstDelivered.await(5, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalArgumentException.class, failedSelection.get(),
+                    "a failed selector must not consume the authenticated source frame");
+            assertInstanceOf(IllegalStateException.class, replayDenied.get(),
+                    "a successful single-route publication must consume the source frame");
+
+            source.drain().get(5, TimeUnit.SECONDS);
+            workerA.drain().get(5, TimeUnit.SECONDS);
+            workerB.drain().get(5, TimeUnit.SECONDS);
+            assertEquals(0, unexpectedSecond.get(),
+                    "reusing one inbound frame must not emulate forward_all");
+            assertEquals(0, router.outstanding(),
+                    "one-shot source and delivered child frames must retire");
+
+            router.close();
+            source.stop();
+            workerA.stop();
+            workerB.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            workerA.getDone().get(5, TimeUnit.SECONDS);
+            workerB.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void sealedReplyReturnsDirectlyToAuthenticatedOrigin() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var done = new CountDownLatch(1);
