@@ -213,6 +213,15 @@ public final class Ast {
             if (rest && (structural || mutable)) {
                 throw new IllegalArgumentException("rest parameters are owned, immutable and non-structural");
             }
+            if (rest && containsBorrowedElement(type)) {
+                throw new IllegalArgumentException(
+                        "rest parameters cannot collect borrowed types in an owned list");
+            }
+        }
+
+        private static boolean containsBorrowedElement(TypeRef type) {
+            return type.isBorrow()
+                    || type.arguments().stream().anyMatch(Param::containsBorrowedElement);
         }
     }
 
