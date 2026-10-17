@@ -12,7 +12,7 @@ spec = importlib.util.spec_from_file_location("review_pinned_dispatcher", MODULE
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-A, B, C, D, E, F, G, H, I, J = tuple(chr(97 + n) * 40 for n in range(10))
+A, B, C, D, E, F, G, H, I, J = tuple(ch * 40 for ch in "abcdef0123")
 
 
 def receipt():
