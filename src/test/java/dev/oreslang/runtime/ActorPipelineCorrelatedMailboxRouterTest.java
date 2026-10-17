@@ -143,6 +143,7 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
                     new ArrayList<ActorPipelineCorrelatedMailboxRouter.Correlation>());
             var deniedAtIngress = new AtomicInteger();
             var deniedReplay = new AtomicInteger();
+            var deniedNullReply = new AtomicInteger();
             var unexpected = new AtomicReference<Throwable>();
             var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
                 try {
@@ -150,6 +151,12 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
                         throw new AssertionError("unexpected sink mail");
                     }
                     sinkFrames.add(bound.get().currentCorrelation());
+                    try {
+                        bound.get().reply(null);
+                        throw new AssertionError("null reply unexpectedly admitted");
+                    } catch (NullPointerException expected) {
+                        deniedNullReply.incrementAndGet();
+                    }
                     bound.get().reply("origin-ack");
                     try {
                         bound.get().reply("replayed-ack");
@@ -208,6 +215,7 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
             assertNull(unexpected.get(), "actor routing callback failed");
             assertEquals(1, deniedAtIngress.get());
             assertEquals(2, deniedReplay.get());
+            assertEquals(2, deniedNullReply.get());
             assertEquals(2, sinkFrames.size());
             assertEquals(2, sourceReplyFrames.size());
             assertEquals(sinkFrames.get(0).flowId(), sinkFrames.get(1).flowId());
