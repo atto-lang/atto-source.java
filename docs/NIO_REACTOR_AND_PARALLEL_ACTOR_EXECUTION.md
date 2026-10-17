@@ -92,6 +92,45 @@ selector are superseded by this section.
   Source-repository JDK25/Graal CI still cannot execute runner steps; the
   complete new runtime integration and NIO tests remain unqualified.
 
+## October 17 follow-up: warm-lane host completion placement
+
+The full-context bound NIO path first uses a one-shot **off-reactor
+submission helper** to bootstrap a cold actor carrier without waiting for
+native/JNI carrier publication on the selector. The helper never executes a
+Future subscriber; it only submits the already-reserved completion record.
+It is a transitional runtime-owned helper thread, not the canonical
+zero-extra-thread implementation.
+
+After first successful bootstrap, NIO terminal notifications that share an
+`ActorAffinityDispatcher` now prefer **already-started** actor lanes, choosing
+the least loaded warm lane by host-only `active + queued` diagnostics and
+round-robin tie breaking. This prevents later selector callbacks from
+synchronously cold-starting a different JNI/pthread lane and avoids parking
+all notifications behind one busy warm lane if another warm lane is idle.
+When no lane is started, host submission deterministically chooses lane 0;
+the integrated bootstrap helper handles its initial native startup off the
+selector. This changes neither the actor's reserved lane nor the physical
+single-flight invariant.
+
+The production `ActorAffinityDispatcher.java` Git blob
+`22a21ba29849891aafb855f819ff7f573dae4484` was reproduced byte-for-byte,
+compiled with JDK 21 strict lint and exercised locally through 50 warm-lane
+rounds plus 50 slow-subscriber saturation rounds (3,550 host assertions).
+The JDK 25 checked-in JUnit tests for warm-lane reuse, deterministic cold
+placement and idle-warm-lane preference are new and **not yet executed** on
+an authorized full source-tree runner.
+
+**Outstanding safety boundaries:** a slow/untrusted synchronous host
+callback can still monopolize a PRIVATE actor carrier when all warm lanes
+are busy. Thread scarcity and inline host `Executor` behavior cannot be
+solved purely by lane selection. Canonical completion delivery needs typed
+scheduler-only records and a nonblocking executor admission API, with
+arbitrary host callbacks isolated behind an explicitly supplied bounded host
+executor (or a separately budgeted execution domain). The transient
+bootstrap submitter also needs elimination before claiming no additional
+runtime-owned physical threads under NIO activity. Reactor-selector and
+CONTROL callbacks must never run guest code.
+
 ## Implementation status on this draft branch (October 16)
 
 - `AdaptiveCarrierExecutor` now supports a zero-resident minimum. Normal `OresVM` throughput startup uses CONTROL min=0/max=20; the first independently runnable CONTROL turn creates a carrier. A host may explicitly configure a nonzero warm minimum, which is prestarted before admission.
