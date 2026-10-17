@@ -153,7 +153,10 @@ class RunContract(unittest.TestCase):
         self.values[path] = baseline
 
     def test_final_workflow_id_must_have_exact_integer_type(self):
+        # True == 1 in Python: without a strict type check the old final
+        # reread could mistake a boolean for reviewed numeric workflow ID 1.
         run_path = self.prefix + "/actions/runs/17"
+        self.values[run_path]["workflow_id"] = 1
         seen = [0]
         def change_final_run_id(resource):
             data = copy.deepcopy(self.values[resource])
@@ -165,7 +168,7 @@ class RunContract(unittest.TestCase):
         with self.assertRaisesRegex(module.Denied, "changed during evidence"):
             self.verify(change_final_run_id, self.backend, self.commit,
                         self.tree, self.run_id, ["unit"],
-                        ["Execute test suite"])
+                        ["Execute test suite"], workflow_id=1)
         self.assertEqual(seen[0], 2)
 
     def test_run_changed_during_collection_denied(self):
