@@ -4,7 +4,6 @@ import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
@@ -19,8 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class TrapOptionSemanticsTest {
 
     @Test
-    void trapCallsTypeAsOptionAndNestedOptionIsNotFlattened() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+    void trapCallsUseStructuredTwoSlotResultAndNestedSuccessProjection() throws Exception {
+        String program = """
                 trap fnc value(): int {
                   return 7;
                 }
@@ -36,156 +35,127 @@ final class TrapOptionSemanticsTest {
                   return;
                 }
 
-                fnc use(): void {
-                  val Option<int> one = value();
-                  val Option<Option<int>> nested = maybe(true);
-                  val Option<void> finished = done();
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void trapReturnsSomeOnSuccessAndNoneOnOrdinaryRuntimeFailure() throws Exception {
-        String program = """
-                define class Animal as
-                end
-
-                define class Dog extends Animal as
-                end
-
-                define class Cat extends Animal as
-                end
-
-                trap fnc as_dog(Animal animal): Dog {
-                  return animal as Dog;
-                }
-
-                trap fnc maybe(bool present): Option<int> {
-                  if present; then
-                    return Some(9);
-                  fi
-                  return None;
-                }
-
-                trap fnc done(): void {
-                  return;
-                }
-
                 pub fnc main(): void {
-                  val Option<Dog> good = as_dog(new Dog());
-                  val Option<Dog> bad = as_dog(new Cat());
-                  val Option<Option<int>> nested_some = maybe(true);
-                  val Option<Option<int>> nested_none = maybe(false);
-                  val Option<void> finished = done();
+                  [const [number], const number_error] = value();
+                  [const [nested], const nested_error] = maybe(true);
+                  [const void_result, const void_error] = done();
 
-                  stdio.stdout.write(good.is_some());
+                  stdio.stdout.write(number.unwrap());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(bad.is_none());
+                  stdio.stdout.write(number_error.is_none());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(nested_some.unwrap().unwrap());
+                  stdio.stdout.write(nested.unwrap().unwrap());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(nested_none.unwrap().is_none());
+                  stdio.stdout.write(nested_error.is_none());
                   stdio.stdout.write(":");
-                  stdio.stdout.write(finished.is_some());
+                  stdio.stdout.write(void_result.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(void_error.is_none());
                   return;
                 }
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
-        assertEquals("true:true:9:true:true", run(program));
+        assertEquals("7:true:9:true:true:true", run(program));
     }
 
     @Test
-    void panicStillBypassesTrap() throws Exception {
+    void ordinaryThrowIsCapturedAsTrapErrorAndPreservesMessage() throws Exception {
         String program = """
-                trap fnc panics(): int {
-                  val Option<int> missing = None;
-                  return missing.unwrap();
+                fnc helper(): int {
+                  throw new Error("missing user");
+                }
+
+                trap fnc load(): int {
+                  return helper();
                 }
 
                 pub fnc main(): void {
-                  val Option<int> ignored = panics();
-                  stdio.stdout.write("unreachable");
+                  [const [value], const err] = load();
+                  stdio.stdout.write(value.is_none());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.unwrap().kind);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.unwrap().message);
                   return;
                 }
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
-        PolyglotException thrown = assertThrows(PolyglotException.class, () -> run(program));
-        assertTrue(thrown.getMessage().contains("Option::unwrap"));
+        assertEquals("true:true:Thrown:missing user", run(program));
     }
 
     @Test
-    void unsupportedSuspendingTrapFormsFailClosed() {
-        IllegalArgumentException async = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        async trap fnc later(): int {
-                          return 1;
-                        }
-                        """));
-        assertTrue(async.getMessage().contains("async trap"));
+    void normalTrapDestructuringExposesSuccessBundleAndErrorOption() throws Exception {
+        String program = """
+                trap fnc value(): int { return 17; }
+                pub fnc main(): void {
+                  [const results, const err] = value();
+                  stdio.stdout.write(results.is_some());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(results.unwrap()[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.is_none());
+                  return;
+                }
+                """;
 
-        IllegalArgumentException generator = assertThrows(
-                IllegalArgumentException.class,
-                () -> Parser.parse("""
-                        generator trap fnc values(): int {
-                          yield 1;
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
+        assertEquals("true:17:true", run(program));
+    }
+
+    @Test
+    void trapResultCannotBeDiscardedOrForgedAndErrorSlotCannotBeDiscarded() {
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        trap fnc value(): int { return 1; }
+                        fnc bad(): void {
+                          value();
                           return;
                         }
                         """));
-        assertTrue(generator.getMessage().contains("trap generator"));
-    }
 
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        trap fnc value(): int { return 1; }
+                        fnc bad(): void {
+                          [const [result], _] = value();
+                          return;
+                        }
+                        """));
 
-    @Test
-    void everySynchronousTrappedResultRejectsAssignmentToBareSuccessType() {
-        String declarations = """
-                trap fnc number(): int { return 7; }
-                trap fnc truth(): bool { return true; }
-                trap fnc done(): void { return; }
-                trap fnc optional(): Option<int> { return None; }
-                """;
-        String[] invalidBindings = {
-                "val int unwrapped = number();",
-                "val bool unwrapped = truth();",
-                "val int unwrapped = optional();",
-                "val Option<int> flattened = optional();",
-                "val Option<int> wrong_void = done();"
-        };
-        for (String binding : invalidBindings) {
-            String source = declarations + "fnc check(): void { " + binding + " return; }";
-            assertThrows(IllegalArgumentException.class,
-                    () -> OresCompiler.parseAndTypeCheck(source), binding);
-        }
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(declarations + """
-                fnc check(): void {
-                  val Option<int> number_value = number();
-                  val Option<bool> truth_value = truth();
-                  val Option<void> finished = done();
-                  val Option<Option<int>> nested = optional();
-                  return;
-                }
-                """));
+        assertThrows(IllegalArgumentException.class, () ->
+                OresCompiler.parseAndTypeCheck("""
+                        fnc forge(): void {
+                          const TrapResult<int> invalid = new TrapResult<int>();
+                          return;
+                        }
+                        """));
     }
 
     @Test
-    void trappedFunctionValueMustPreserveOptionReturn() throws Exception {
+    void trapFunctionValuesKeepStructuredReturnType() throws Exception {
         String source = """
                 trap fnc value(int x): int { return x + 1; }
                 pub fnc main(): void {
-                  val Fnc<int, Option<int>> callback = value;
-                  val Option<int> direct = value(9);
-                  val Option<int> via_callback = callback(9);
+                  val Fnc<int, TrapResult<int>> callback = value;
+                  [const [direct], const direct_error] = value(9);
+                  [const [via_callback], const callback_error] = callback(9);
                   stdio.stdout.write(direct.unwrap());
                   stdio.stdout.write(":");
                   stdio.stdout.write(via_callback.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(direct_error.is_none());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(callback_error.is_none());
                   return;
                 }
                 """;
+
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("10:10", run(source));
+        assertEquals("10:10:true:true", run(source));
 
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
                 trap fnc value(int x): int { return x; }
@@ -197,128 +167,149 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
-    void qualifiedModuleCallsRemainOptionTyped() throws Exception {
+    void moduleTrapCallsRemainStructured() throws Exception {
         String source = """
                 define module safely as
                   pub trap fnc value(): int { return 23; }
                 end
                 pub fnc main(): void {
-                  val Option<int> wrapped = safely.value();
-                  stdio.stdout.write(wrapped.unwrap());
+                  [const [result], const err] = safely.value();
+                  stdio.stdout.write(result.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.is_none());
                   return;
                 }
                 """;
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("23", run(source));
+        assertEquals("23:true", run(source));
+    }
 
+    @Test
+    void raiseAndPanicBypassTrapAndReachNearestRecover() throws Exception {
+        String source = """
+                trap fnc raises(): int {
+                  raise new Error("abort");
+                  return 1;
+                }
+
+                trap fnc panics(): int {
+                  panic new Error("invariant");
+                  return 2;
+                }
+
+                pub fnc main(): void {
+                  recover {
+                    [const [ignored], const ignored_error] = raises();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(signal.message);
+                  }
+                  stdio.stdout.write("|");
+                  recover {
+                    [const [ignored], const ignored_error] = panics();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(signal.message);
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("raise:abort|panic:invariant", run(source));
+    }
+
+    @Test
+    void tryCatchCannotSwallowRaiseButRecoverCan() throws Exception {
+        String source = """
+                trap fnc escapes(): int {
+                  try {
+                    raise new Error("leave");
+                  } catch (ordinary) {
+                    stdio.stdout.write("wrong");
+                  }
+                  return 3;
+                }
+
+                pub fnc main(): void {
+                  recover {
+                    [const [ignored], const ignored_error] = escapes();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("raise", run(source));
+    }
+
+    @Test
+    void internalOptionUnwrapPanicStillBypassesTrapButCanBeRecovered() throws Exception {
+        String source = """
+                trap fnc panics(): int {
+                  val Option<int> missing = None;
+                  return missing.unwrap();
+                }
+
+                pub fnc main(): void {
+                  recover {
+                    [const [ignored], const ignored_error] = panics();
+                  } catch (signal) {
+                    stdio.stdout.write(signal.kind);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(signal.message.contains_literal("Option::unwrap()"));
+                  }
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("panic:true", run(source));
+    }
+
+    @Test
+    void bareSuccessTypeAndLegacyOptionTrapAbiAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
-                define module safely as
-                  pub trap fnc value(): int { return 23; }
-                end
+                trap fnc value(): int { return 7; }
                 fnc bad(): void {
-                  val int raw = safely.value();
+                  val Option<int> unwrapped = value();
+                  return;
+                }
+                """));
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                trap fnc value(): int { return 7; }
+                fnc bad(): void {
+                  val TrapResult<int> result = value();
                   return;
                 }
                 """));
     }
 
     @Test
-    void returnedNoneIsSomeNoneAndRuntimeFailureIsOuterNone() throws Exception {
-        String source = """
-                define class Animal as
-                end
-                define class Dog extends Animal as
-                end
-                define class Cat extends Animal as
-                end
-
-                trap fnc optional(bool enabled): Option<int> {
-                  if enabled; then
-                    return Some(21);
-                  fi
-                  return None;
-                }
-                trap fnc failed(Animal animal): Option<int> {
-                  val Dog dog = animal as Dog;
-                  return None;
-                }
-
-                pub fnc main(): void {
-                  val Option<Option<int>> none_value = optional(false);
-                  val Option<Option<int>> some_value = optional(true);
-                  val Option<Option<int>> failed_value = failed(new Cat());
-                  stdio.stdout.write(none_value.is_some());
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(none_value.unwrap().is_none());
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(some_value.unwrap().unwrap());
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(failed_value.is_none());
+    void reservedExceptionalKeywordsParseIntoDedicatedAstNodes() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                fnc control(): void {
+                  try {
+                    throw new Error("ordinary");
+                  } catch (err) {
+                    recover {
+                      raise err;
+                    } catch (signal) {
+                      panic new Error(signal.kind);
+                    }
+                  }
                   return;
                 }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("true:true:21:true", run(source));
-    }
-
-    @Test
-    void voidTrapReturnsSomeEvenWithoutValue() throws Exception {
-        String source = """
-                trap fnc done(): void {
-                  return;
-                }
-                pub fnc main(): void {
-                  val Option<void> completed = done();
-                  stdio.stdout.write(completed.is_some());
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(completed.is_none());
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("true:false", run(source));
-    }
-
-    @Test
-    void aTrapMayCallAnotherTrapWithoutImplicitFlattening() throws Exception {
-        String source = """
-                trap fnc inner(): int { return 11; }
-                trap fnc outer(): Option<int> {
-                  return inner();
-                }
-                pub fnc main(): void {
-                  val Option<Option<int>> nested = outer();
-                  stdio.stdout.write(nested.is_some());
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(nested.unwrap().unwrap());
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("true:11", run(source));
-    }
-
-    @Test
-    void ordinaryFunctionsRemainUnwrapped() throws Exception {
-        String source = """
-                fnc raw(): int { return 3; }
-                trap fnc safe(): int { return 7; }
-                pub fnc main(): void {
-                  val int a = raw();
-                  val Option<int> b = safe();
-                  stdio.stdout.write(a);
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(b.unwrap());
-                  return;
-                }
-                """;
-        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
-        assertEquals("3:7", run(source));
+                """));
     }
 
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "trap-option.ores")
+        Source source = Source.newBuilder(OresLanguage.ID, program, "trap-result.ores")
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
 
