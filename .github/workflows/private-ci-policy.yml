@@ -52,7 +52,7 @@ jobs:
                   or vars["GITHUB_ACTIONS_APP_ID"] != 15368):
               raise SystemExit("publisher security issuer constants mismatch")
           required = vars["REQUIRED_CODEOWNER_PATHS"]
-          if not isinstance(required, tuple) or len(required) < 22 or len(set(required)) != len(required):
+          if not isinstance(required, tuple) or len(required) < 28 or len(set(required)) != len(required):
               raise SystemExit("private CI CODEOWNER path inventory invalid")
           codeowners = (base / "CODEOWNERS").read_text(encoding="utf-8").splitlines()
           rules = [s.strip() for s in codeowners if s.strip() and not s.lstrip().startswith("#")]
