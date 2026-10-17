@@ -72,7 +72,9 @@ final class ActorThreadPolicyHardeningTest {
     void defaultSerialPolicySurvivesCompilerAndTreeShaker() {
         var admitted = OresCompiler.analyze(sourceProgram());
         assertEquals(Ast.ActorThreadPolicy.defaults(), actor(admitted).actorThreads());
-        var result = TreeShaker.shake(admitted, BuildOptions.library(java.util.Map.of()));
+        // Keep the private actor explicitly rooted; library mode retains only public API.
+        var result = TreeShaker.shake(admitted,
+                new BuildOptions(java.util.Map.of(), java.util.Set.of("Worker"), false));
         assertEquals(Ast.ActorThreadPolicy.defaults(), actor(result.program()).actorThreads());
     }
 
