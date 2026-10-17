@@ -50,7 +50,7 @@ public final class TrapFailurePolicy {
         pending.add(failure);
         while (!pending.isEmpty()) {
             Throwable current = pending.removeFirst();
-            if (!seen.add(current)) continue;
+            if (!seen.add(current)) return false;
             if (seen.size() > MAX_FAILURE_NODES) return false;
             if ((panicType != null && panicType.isInstance(current))
                     || current instanceof GuestControlSignal.Raise
