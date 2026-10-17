@@ -1643,6 +1643,45 @@ fnc sink(): ((bool foo) => void) {
 
 Parameter names inside function types are documentation-only; structural function compatibility is determined by parameter/result types.
 
+### Any and AnyCallable
+
+`Any` is the erased top type for ordinary runtime values. A concrete value,
+including a reifiable function or lambda, may be widened to `Any`, but a value
+whose static type is `Any` is not callable and has no statically known members.
+
+`AnyCallable` is the erased supertype of **reifiable callable values**. A named
+`fnc`, `static fnc`, lambda, or another value with a concrete `Fnc<...>`
+signature may widen to `AnyCallable`. The reverse direction is not implicit:
+`AnyCallable` proves that the underlying value is callable but erases its
+parameter/result signature, so `callback(...)` is rejected until a future
+checked narrowing/cast establishes a concrete callable type.
+
+Neither `Any` nor `AnyCallable` is user-definable or shadowable, and neither
+may cross actor message/shared-state boundaries. Function and closure values are
+opaque callable values rather than JavaScript-style objects: user code cannot
+attach arbitrary properties to them. Direct-only `routine` and instance-method
+symbols do not become reifiable merely because `AnyCallable` exists; wrap a
+direct call in an explicit lambda when a callable value is required.
+
+### Guarded recursive callable aliases
+
+A non-generic type alias may refer directly to itself beneath a callable type
+boundary:
+
+```ores
+type cb = (cb) => void;
+```
+
+The compiler represents the recursive occurrence with a stable recursive binder;
+it never textually expands the alias forever. Recursive callable compatibility is
+checked coinductively. The first implementation deliberately remains narrow:
+unguarded aliases such as `type Loop = Loop;`, mutually recursive alias families,
+and generic recursive aliases are rejected.
+
+Use the alias name for recursion. `typeof` keeps its existing meaning of
+declaring a function type from a `fnc` signature, so `typeof cb` is not a
+recursive-reference spelling.
+
 The canonical lambda parameter syntax is pipe-delimited. The body may be a
 braced statement block or one returned expression:
 

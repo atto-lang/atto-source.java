@@ -517,6 +517,31 @@ final class CallableSemanticsTest {
                         """)));
         assertTrue(erasedCallable.getMessage().contains("AnyCallable"));
         assertTrue(erasedCallable.getMessage().contains("signature"));
+
+        IllegalArgumentException erasedMember = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(AnyCallable value): void {
+                          val member = value.user_property;
+                          return;
+                        }
+                        """)));
+        assertTrue(erasedMember.getMessage().contains("no statically known members"));
+
+        IllegalArgumentException reservedAlias = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type AnyCallable = int;
+                        """)));
+        assertTrue(reservedAlias.getMessage().contains("compiler-builtin erased type"));
+
+        IllegalArgumentException reservedClass = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Any as
+                        end
+                        """)));
+        assertTrue(reservedClass.getMessage().contains("compiler-builtin erased type"));
     }
 
     private static String run(String program) throws Exception {

@@ -56,3 +56,24 @@ Therefore `constructor(int)` conflicts with `constructor(self, int)`, and
 `constructor()` conflicts with `constructor(self)`. Constructor `self` remains
 an unpublished partial-object capability with the same no-escape rules as implicit
 constructor `self`. Actor constructors remain prohibited.
+
+
+## Constructor callbacks and partial self
+
+A constructor may accept ordinary callable parameters, including callables whose
+parameters use `AnyCallable`. That does **not** relax partial-construction
+ownership. A closure that captures constructor `self` cannot be passed to an
+ordinary callback because the callback may retain or asynchronously invoke it:
+
+```oreslang
+constructor(self, int value, ((AnyCallable cb) => void) cb) {
+  cb(|| -> {
+    self.value = value; // rejected: partial self would escape in the closure
+    return;
+  });
+}
+```
+
+A future explicitly scoped/no-escape callable contract may admit synchronous
+borrowed callbacks, but ordinary `Fnc`/`AnyCallable` parameters are escaping
+unless proven otherwise. No such no-escape exception is part of this change.
