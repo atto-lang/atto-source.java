@@ -1,6 +1,6 @@
 # Refinement types: Java/Graal implementation tracking
 
-**Status (2026-10-17): proposed design; not implemented.** This document does not declare any parser, compiler, runtime or CI support.
+**Status (2026-10-17): parser and normalized interval-rule prototypes exist on this draft branch; full refinement types are NOT executable.** Compiler execution still fails closed until checked construction, schema lowering, ownership and boundary enforcement are implemented and tested.
 
 Canonical proposed language contract: [oreslang-common-source/docs/REFINEMENT_TYPES.md](https://github.com/ores-truffle-oreslang/oreslang-common-source/blob/design/refinement-types-three-syntaxes-20261017/docs/REFINEMENT_TYPES.md).
 
@@ -38,3 +38,29 @@ type NonBlank = string where it.trim().length > 0;
 10. Emit reflection-free Zorde schema/validator descriptors from normalized refinements and route dynamic `try_from`, serialization, FFI, HTTP/RPC and actor DATA admission through the same generated predicate contract. Do not duplicate validation semantics in Java host code.
 
 Until these pass, the correct status is **unimplemented** rather than "supported by annotation" or "parser recognizes syntax".
+
+## Zorde standard-library convergence
+
+Zorde belongs in the Oreslang core/std-lib contract, with the public validation
+facade under `std/zorde`. `stdlib/zorde.ores` now provides the first pure,
+exact-integer scalar helpers as an incubating stdlib module. The full dynamic
+schema/serialization code stays in `oreslang-serialization-and-validation`
+until the promotion gates pass; this does not yet make `schema<T>()` or typed
+Zorde parsing an executable compiler feature.
+
+Parser normalization on aliases/newtypes recognizes the following contracts:
+
+```ores
+@MinLength(3) @MaxLength(32) type Username = string;
+@Min(1) @Max(65535) type Port = int;
+@Range(min=0,max=100) type Percentage = int;
+
+type Username2 = string with length gte 3 and length lte 32;
+type Port2 = int with value >= 1 and value <= 65535;
+```
+
+`@Size`, `@Length`, and `@NotEmpty` remain supported parser forms.
+All normalize to the same built-in `length`/`value` bounds. Constraints on
+unimplemented declaration sites (fields/functions/locals) must fail closed;
+no annotation may be silently ignored or treated as validation metadata without
+an enforcing validator.
