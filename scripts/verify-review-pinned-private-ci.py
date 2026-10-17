@@ -23,6 +23,7 @@ SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 SOURCE_REPO_ID = 1400792274
 CARRIER_REPO = "sagitta-stack/sagitta-infra"
 CARRIER_REPO_ID = 1357615104
+DISALLOWED_REVIEWER_IDS = frozenset({11139560, 2148448})
 EXPECTED_PRS = {
     "publisher": (SOURCE_REPO, 1123),
     "destination": (SOURCE_REPO, 1092),
@@ -68,7 +69,8 @@ def reviewer_policy(path):
     blocked = value.get("disallowedReviewerIds")
     if (type(blocked) is not list or not blocked
             or any(type(item) is not int or item <= 0 for item in blocked)
-            or len(set(blocked)) != len(blocked)):
+            or len(set(blocked)) != len(blocked)
+            or set(blocked) != DISALLOWED_REVIEWER_IDS):
         raise Denied("invalid disallowed reviewer IDs")
     if value.get("enabled") is not True:
         raise Denied("independent reviewer is not configured")
