@@ -140,7 +140,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         if route == pub.PROTECTED_RULES_ROUTE:
             return {"enforce_admins": {"enabled": True},
                     "required_status_checks": {"strict": True,
-                                               "contexts": ["preflight-regressions", "private-ci-policy"],
+                                               "contexts": [],
                                                "checks": [
                                                    {"context": "preflight-regressions", "app_id": 15368},
                                                    {"context": "private-ci-policy", "app_id": 15368}]},
@@ -200,7 +200,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             valid_checks = self.carrier_status_checks.pop(0)
             return {"enforce_admins": {"enabled": self.carrier_admin_enforced.pop(0)},
                     "required_status_checks": {"strict": valid_checks,
-                                               "contexts": ["verified-carrier-ci", "carrier-policy"] if valid_checks else [],
+                                               "contexts": [],
                                                "checks": [
                                                    {"context": "verified-carrier-ci", "app_id": 15368},
                                                    {"context": "carrier-policy", "app_id": 15368}] if valid_checks else []},
@@ -461,7 +461,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "collect_source",
                           side_effect=AssertionError("private source read before issuer policy")):
             with patch.object(pub, "gh_api", side_effect=unbound_context):
-                with self.assertRaisesRegex(pub.Denied, "exact issuer bindings"):
+                with self.assertRaisesRegex(pub.Denied, "legacy required status-check contexts"):
                     self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
@@ -993,28 +993,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                 self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 
     def test_required_check_issuer_set_must_exactly_match_contexts(self):
+        # The bootstrap auditor and publisher both reject legacy contexts.
+        # Multiple checks are allowed only with concrete positive app IDs.
         for expected in (pub.SOURCE_POLICY_CHECK, pub.CARRIER_POLICY_CHECK):
             baseline = [
                 {"context": expected, "app_id": pub.GITHUB_ACTIONS_APP_ID},
                 {"context": "other-reviewed-check", "app_id": 15368},
             ]
-            self.assertIsNone(pub.require_pinned_actions_check(
-                {"contexts": [expected, "other-reviewed-check"],
-                 "checks": baseline}, expected))
+            for empty_contexts in ([], None):
+                self.assertIsNone(pub.require_pinned_actions_check(
+                    {"contexts": empty_contexts, "checks": baseline}, expected))
             tampered = (
-                {"contexts": [expected, "unbound-status"], "checks": [baseline[0]]},
-                {"contexts": [expected, expected], "checks": [baseline[0]]},
-                {"contexts": [expected, "other-reviewed-check"], "checks": [baseline[0]]},
-                {"contexts": [expected], "checks": baseline},
-                {"contexts": [expected, 7], "checks": baseline},
-                {"contexts": [expected, "other-reviewed-check"],
-                 "checks": [baseline[0], {"context": "other-reviewed-check", "app_id": None}]},
+                {"contexts": [expected], "checks": [baseline[0]]},
+                {"contexts": ["unbound-status"], "checks": baseline},
+                {"contexts": [expected, expected], "checks": baseline},
+                {"contexts": "wrong-type", "checks": baseline},
+                {"contexts": [], "checks": [baseline[1]]},
+                {"contexts": [], "checks": [baseline[0], baseline[0]]},
+                {"contexts": [], "checks": [baseline[0],
+                    {"context": "other-reviewed-check", "app_id": None}]},
             )
             for policy in tampered:
                 with self.subTest(expected=expected, policy=policy):
                     with self.assertRaises(pub.Denied):
                         pub.require_pinned_actions_check(policy, expected)
-
     def test_protected_source_requires_issuer_bound_actions_check(self):
         original = self.fake_api
         forged = (
@@ -1049,7 +1051,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "collect_source",
                           side_effect=AssertionError("private source read before issuer policy")):
             with patch.object(pub, "gh_api", side_effect=unbound_context):
-                with self.assertRaisesRegex(pub.Denied, "exact issuer bindings"):
+                with self.assertRaisesRegex(pub.Denied, "legacy required status-check contexts"):
                     self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
 

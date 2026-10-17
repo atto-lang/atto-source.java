@@ -126,11 +126,13 @@ def require_pinned_actions_check(required_checks, expected_context):
         raise Denied("required status-check policy missing")
     checks = required_checks.get("checks")
     contexts = required_checks.get("contexts")
-    if (not isinstance(checks, list) or not checks
-            or not isinstance(contexts, list) or not contexts
-            or not all(isinstance(context, str) and context for context in contexts)
-            or len(set(contexts)) != len(contexts)):
-        raise Denied("required status-check issuer binding missing or ambiguous")
+    if not isinstance(checks, list) or not checks:
+        raise Denied("required status-check issuer binding missing")
+    # Legacy contexts can be satisfied by any status publisher and therefore
+    # cannot establish issuer provenance. Bootstrap policy requires these to
+    # be absent: only the app-bound checks[] representation is admissible.
+    if contexts is not None and (not isinstance(contexts, list) or contexts):
+        raise Denied("legacy required status-check contexts must be empty")
     seen = set()
     for check in checks:
         if not isinstance(check, dict):
@@ -142,11 +144,8 @@ def require_pinned_actions_check(required_checks, expected_context):
         seen.add(name)
         if name == expected_context and app_id != GITHUB_ACTIONS_APP_ID:
             raise Denied("required security status check has incorrect issuer")
-    # Every required status context must have an identical, app-bound check.
-    # Otherwise an extra legacy/unbound status can be spoofed even if the
-    # security policy check itself was bound to the correct GitHub App.
-    if seen != set(contexts) or expected_context not in seen:
-        raise Denied("required status-check contexts lack exact issuer bindings")
+    if expected_context not in seen:
+        raise Denied("required issuer-bound security status check missing")
 
 
 def valid_sha(value):
