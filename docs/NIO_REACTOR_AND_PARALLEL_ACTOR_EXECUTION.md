@@ -173,10 +173,21 @@ selector-side cold-lane rejection followed by trusted-host retry, and 48
 host NIO completions reusing one warm native pthread across three lanes.
 
 **Scope:** queue admission still uses ArrayBlockingQueue's short internal
-lock; this is a bounded no-bootstrap/no-monitor-wait submission contract, not
-a wait-free kernel-ready reactor or an RT/WCET guarantee. The transitional
-one-shot bootstrap submitter remains. New JUnit/JNI tests require executable
-source-head CI and are not qualified by older funded component runs.
+lock; this is a bounded no-bootstrap/no-admission-monitor-wait submission
+contract, not a wait-free kernel-ready reactor or an RT/WCET guarantee. The
+transitional one-shot bootstrap submitter remains. New JUnit/JNI tests require
+executable source-head CI and are not qualified by older funded component runs.
+
+The native and JVM non-affine (`ores.actor.affinity=none`) actor domains now
+use the same verified no-bootstrap/no-worker-growth admission from a reactor.
+Ordinary off-reactor work retains the normal demand-driven carrier startup.
+Unrecognized executor implementations cannot receive a selector-originated
+completion unless they implement a proven non-growth contract; a rejected
+record stays staged until the owning host scheduler retries. JNI termination
+census also waits for the outstanding startup-admission fence, and native
+shutdown queue-drain is serialized with enqueue without relying on arbitrary
+Runnable equality. Added integration fixtures exercise non-affine Java
+completion delivery under a blocked subscriber without spawning more workers.
 
 ## Implementation status on this draft branch (October 16)
 
