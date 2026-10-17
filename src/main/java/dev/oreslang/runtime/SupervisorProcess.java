@@ -52,6 +52,7 @@ public final class SupervisorProcess implements AutoCloseable {
     private final ActorRuntime.SupervisorId supervisorId;
     private final ActorRuntime.ActorGroupId groupId;
     private final Executor controlDispatcher;
+    private final Object decisionFence = new Object();
     private final int capacity;
     private final Function<SupervisorFailureControl.Notice,
             CompletionStage<Directive>> onFailure;
