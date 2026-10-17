@@ -336,6 +336,15 @@ final class RuntimePointerTest {
         assertTrue(field.getMessage().contains("place-aware move-out"), field.getMessage());
     }
 
+    @Test void pointerHandlesCannotEscapeIntoRepeatableClosures() {
+        reject("const p = rt ref new Box(); "
+                        + "const (() => int) read = || -> { const view = rt deref p; return view.value; };",
+                "closure cannot capture Pointer<T>");
+        reject("const p = rt ref new Box(); "
+                        + "const (() => Box) consume = || -> { return rt unref p; };",
+                "closure cannot capture Pointer<T>");
+    }
+
     @Test void pointerTypeCannotBeRedefinedOrSharedWithoutProof() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("define class Pointer as end")));
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(BOX + "fnc local(Channel<Pointer<Box>> messages): void { return; }")));
