@@ -21,10 +21,18 @@ import java.util.TreeMap;
 public final class ZordeSchemaGenerator {
     private ZordeSchemaGenerator() { }
 
-    public record Plan(Map<String, RefinementRules.Descriptor> schemas) {
-        public Plan {
-            schemas = Collections.unmodifiableMap(new LinkedHashMap<>(schemas));
+    /**
+     * Immutable compile-time descriptor registry. The constructor is private:
+     * callers cannot inject their own descriptors into a trusted plan.
+     */
+    public static final class Plan {
+        private final Map<String, RefinementRules.Descriptor> schemas;
+
+        private Plan(Map<String, RefinementRules.Descriptor> schemas) {
+            this.schemas = Collections.unmodifiableMap(new LinkedHashMap<>(schemas));
         }
+
+        public Map<String, RefinementRules.Descriptor> schemas() { return schemas; }
 
         /** Schema lookup requires a fully qualified compilation-unit identity. */
         public RefinementRules.Descriptor schema(String qualifiedTypeName) {
@@ -34,6 +42,68 @@ public final class ZordeSchemaGenerator {
                         "no generated Zorde scalar schema for " + qualifiedTypeName);
             }
             return found;
+        }
+
+        /**
+         * Reference checked conversion for immutable scalar values only.
+         * Guest T.try_from() remains unavailable until codegen/ownership
+         * enforcement creates a true guest-language nominal value.
+         */
+        public Conversion tryFrom(String qualifiedTypeName, Object raw) {
+            RefinementRules.Descriptor contract = schema(qualifiedTypeName);
+            if (!contract.accepts(raw)) {
+                return new Conversion(null, new ConstraintError(
+                        "constraint_violation", qualifiedTypeName, contract.fingerprint()));
+            }
+            return new Conversion(
+                    new CheckedScalar(qualifiedTypeName, contract.fingerprint(), raw), null);
+        }
+    }
+
+    /** Error data, not an exception that exposes raw untrusted content. */
+    public record ConstraintError(String code, String qualifiedTypeName,
+                                  String schemaFingerprint) { }
+
+    /**
+     * A checked host-side scalar payload. Constructors are inaccessible to
+     * consumers, values are Java String/Long (both immutable), and arbitrary
+     * objects or mutable containers cannot be wrapped by this API.
+     */
+    public static final class CheckedScalar {
+        private final String qualifiedTypeName;
+        private final String schemaFingerprint;
+        private final Object underlying;
+
+        private CheckedScalar(String qualifiedTypeName, String schemaFingerprint,
+                              Object underlying) {
+            this.qualifiedTypeName = qualifiedTypeName;
+            this.schemaFingerprint = schemaFingerprint;
+            this.underlying = underlying;
+        }
+
+        public String qualifiedTypeName() { return qualifiedTypeName; }
+        public String schemaFingerprint() { return schemaFingerprint; }
+        public Object intoInner() { return underlying; }
+    }
+
+    /** Result<T,E> substrate for the compiler, not the guest Oreslang API. */
+    public static final class Conversion {
+        private final CheckedScalar value;
+        private final ConstraintError error;
+
+        private Conversion(CheckedScalar value, ConstraintError error) {
+            this.value = value;
+            this.error = error;
+        }
+
+        public boolean ok() { return value != null; }
+        public CheckedScalar value() {
+            if (value == null) throw new IllegalStateException("checked conversion failed");
+            return value;
+        }
+        public ConstraintError error() {
+            if (error == null) throw new IllegalStateException("checked conversion succeeded");
+            return error;
         }
     }
 
