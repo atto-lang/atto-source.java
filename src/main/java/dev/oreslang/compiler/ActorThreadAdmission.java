@@ -13,6 +13,27 @@ import java.util.Objects;
 public final class ActorThreadAdmission {
     private ActorThreadAdmission() { }
 
+    /**
+     * Java adapter registration bridge. Reading an annotation does not create
+     * an actor or authorize an executing carrier; this validates metadata
+     * against the current backend capability before any adapter may use it.
+     */
+    public static Ast.ActorThreadPolicy fromJavaAnnotation(Class<?> adapterType) {
+        Objects.requireNonNull(adapterType, "Java actor adapter type");
+        dev.oreslang.runtime.ActorThreads annotation =
+                adapterType.getAnnotation(dev.oreslang.runtime.ActorThreads.class);
+        if (annotation == null) return Ast.ActorThreadPolicy.defaults();
+        Ast.ActorThreadPolicy requested =
+                new Ast.ActorThreadPolicy(annotation.min(), annotation.max());
+        if (requested.max() > 1) {
+            throw new IllegalArgumentException("Java actor adapter '"
+                    + adapterType.getName()
+                    + "' requests unsupported max=" + requested.max()
+                    + "; physical parallel actor execution is not yet enabled");
+        }
+        return requested;
+    }
+
     public static void requireExclusiveBackend(Ast.Program program) {
         Objects.requireNonNull(program, "program");
         for (Ast.ModuleDecl module : program.modules()) {
