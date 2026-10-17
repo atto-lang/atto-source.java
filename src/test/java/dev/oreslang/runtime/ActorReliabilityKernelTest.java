@@ -61,6 +61,7 @@ final class ActorReliabilityKernelTest {
             assertEquals(0, health.queuedContinuations());
             assertEquals(1, health.activeTurns());
             assertTrue(health.carrierActive());
+            assertEquals(1L, health.mailboxRejections());
             assertFalse(health.failed());
             assertTrue(health.parentId().isEmpty());
 
@@ -75,6 +76,57 @@ final class ActorReliabilityKernelTest {
             assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
         } finally {
             release.countDown();
+        }
+    }
+
+    @Test
+    void mailboxOverloadLoggingIsExponentiallySampledButCounterIsExact() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            CoreLog.configure(CoreLog.Level.WARN);
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var actor = runtime.<String>spawnShared(
+                        tinyMailboxPolicy(1),
+                        () -> (message, context) -> {
+                            entered.countDown();
+                            try {
+                                release.await(5, TimeUnit.SECONDS);
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new IllegalStateException(interrupted);
+                            }
+                        });
+                actor.send("active");
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                actor.send("queued");
+
+                for (int i = 0; i < 100; i++) {
+                    assertThrows(ActorRuntime.ActorMailboxFullException.class,
+                            () -> actor.send("rejected"));
+                }
+
+                assertEquals(100L,
+                        runtime.actorHealth(actor).orElseThrow().mailboxRejections());
+
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                CoreLog.dumpRetained(
+                        new PrintStream(bytes, true, StandardCharsets.UTF_8));
+                long samples = bytes.toString(StandardCharsets.UTF_8).lines()
+                        .filter(line -> line.contains(
+                                "\"event\":\"actor.mailbox.rejected\""))
+                        .count();
+                assertEquals(7L, samples,
+                        "100 rejections should log counts 1,2,4,8,16,32,64 only");
+
+                release.countDown();
+                actor.stop();
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            }
+        } finally {
+            release.countDown();
+            CoreLog.configure(CoreLog.Level.OFF);
         }
     }
 
