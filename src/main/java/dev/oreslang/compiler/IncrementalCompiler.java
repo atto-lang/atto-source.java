@@ -77,6 +77,22 @@ public final class IncrementalCompiler {
                 ImportGraph.resolveDependencies(parsed, normalized.keySet(), normalizedImportResolutions);
         List<List<String>> initializationGroups = ImportGraph.initializationGroups(dependencies);
 
+        // The exported ABI of a unit includes the identities and source ABIs of
+        // its resolved imports. In particular, remapping two import paths
+        // between the same dependency set must invalidate the importer's ABI
+        // and its reverse-import closure instead of merely rebuilding it.
+        Map<String, String> sourceAbiHashes = new LinkedHashMap<>(abiHashes);
+        for (String id : normalized.keySet()) {
+            abiHashes.put(
+                    id,
+                    linkedAbiDigest(
+                            id,
+                            parsed.get(id),
+                            normalized.keySet(),
+                            normalizedImportResolutions,
+                            sourceAbiHashes));
+        }
+
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
         LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
@@ -279,6 +295,40 @@ public final class IncrementalCompiler {
         for (Ast.TypeRef argument : ref.arguments()) {
             validatePortableContractType(argument, generics, targetId, member);
         }
+    }
+
+    private static String linkedAbiDigest(
+            String unitId,
+            Ast.Program program,
+            Set<String> availableUnits,
+            Map<String, Map<String, String>> importResolutions,
+            Map<String, String> sourceAbiHashes) {
+        StringBuilder canonical = new StringBuilder("ores-linked-abi-v1\\n");
+        appendLengthPrefixed(canonical, sourceAbiHashes.get(unitId));
+
+        List<String> importEntries = new ArrayList<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            StringBuilder entry = new StringBuilder();
+            appendLengthPrefixed(entry, imported.kind().name());
+            appendLengthPrefixed(entry, imported.path());
+            appendLengthPrefixed(entry, Boolean.toString(imported.wildcard()));
+            appendLengthPrefixed(entry, imported.namespace() == null ? "" : imported.namespace());
+            for (String name : imported.names()) {
+                appendLengthPrefixed(entry, name);
+                appendLengthPrefixed(entry, ImportRules.localName(imported, name));
+            }
+
+            String targetId = ImportGraph.resolveImportUnitId(
+                    unitId, imported, availableUnits, importResolutions);
+            appendLengthPrefixed(entry, targetId == null ? "<external>" : targetId);
+            if (targetId != null) {
+                appendLengthPrefixed(entry, sourceAbiHashes.getOrDefault(targetId, "<missing-abi>"));
+            }
+            importEntries.add(entry.toString());
+        }
+
+        importEntries.stream().sorted().forEach(entry -> appendLengthPrefixed(canonical, entry));
+        return digest(canonical.toString());
     }
 
     private static String abiDigest(Ast.Program program) {
