@@ -244,8 +244,9 @@ public final class NioReadinessGroup implements AutoCloseable {
 
     /** Called after an actor turn or accepted host notification retires,
      * so a temporarily full actor queue cannot strand accepted NIO work.
-     * At most 128 staged records are offered per retry. A supplied executor
-     * may be synchronous, so direct delivery is forbidden on the selector.
+     * Each dispatch pass offers at most 128 records; inline reentrant
+     * retries are coalesced into iterative, bounded dispatch leases. A
+     * supplied executor may be synchronous, so selector delivery is forbidden.
      */
     void retryStagedNotifications() {
         Executor target = boundCompletionExecutor;
@@ -270,26 +271,24 @@ public final class NioReadinessGroup implements AutoCloseable {
                         if (next.claimed.get()) continue;
                         try {
                             target.execute(next);
-                            // An inline executor may swallow the selector
-                            // rejection. Stop retrying until a trusted host
-                            // or carrier hook supplies fresh capacity.
                             if (next.queuedForRetry.get()) {
                                 rejected = true;
                                 break;
                             }
                         } catch (RejectedExecutionException full) {
-                            // Accept-then-reject is ambiguous: keep the
-                            // original single-claim token, never a fresh task.
-                            if (next.claimed.get()) continue;
+                            // Some Executors invoke a task inline before
+                            // propagating its rejection. Claimed work cannot
+                            // be requeued or have its permit released twice.
                             next.stageForRetry();
                             rejected = true;
                             break;
                         }
                     }
-                    // At most 8192 records per draining invocation. A full
-                    // actor pool returns rejection, not an unbounded retry
-                    // loop on the selector; independent retry hooks provide
-                    // subsequent capacity notifications.
+                    // Bound each dispatch lease to 64 x 128 records before
+                    // releasing it for competing callers. Reentrant inline
+                    // requests are iterated rather than recursively drained.
+                    // A full actor pool stops this pass on rejection; its
+                    // capacity hook must initiate the next attempt.
                 } while (!rejected && notificationRetryRequested.get()
                         && ++passes < 64);
             } finally {
