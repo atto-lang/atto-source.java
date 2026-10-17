@@ -54,7 +54,9 @@ REQUIRED_CODEOWNER_PATHS = (
     "/.github/CODEOWNERS",
     "/.github/private-ci-approved-repositories.txt",
     "/.github/private-ci-approved-source-snapshots.txt",
+    "/.github/private-ci-required-checks.json",
     "/.github/workflows/private-ci-mirror-preflight.yml",
+    "/.github/workflows/private-ci-policy.yml",
     "/.github/workflows/private-exact-candidate-validation.yml",
     "/.github/workflows/private-exact-main-validation.yml",
     "/.github/workflows/private-exact-publisher-validation.yml",
@@ -73,6 +75,11 @@ REQUIRED_CODEOWNER_PATHS = (
     "/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java",
 )
 REQUIRED_CODEOWNER = "@ORESoftware"
+# GitHub Actions is the sole accepted issuer for mandatory source/carrier checks.
+# These are a minimum: administrators may require additional trusted checks.
+GITHUB_ACTIONS_APP_ID = 15368
+SOURCE_POLICY_CHECK = "private-ci-policy"
+CARRIER_POLICY_CHECK = "carrier-policy"
 
 PROTECTED_RULES_ROUTE = PROTECTED_BRANCH_ROUTE + "/protection"
 
@@ -98,6 +105,35 @@ def safe_descriptor_flags_available():
 
 class Denied(RuntimeError):
     pass
+
+
+def require_pinned_actions_check(required_checks, expected_context):
+    """Do not trust a status name unless the required check is issuer-bound.
+
+    GitHub required_status_checks.contexts alone accepts statuses spoofed by
+    other apps. The branch-protection API also exposes the issuing app_id
+    under required_status_checks.checks; fail closed if missing/ambiguous.
+    """
+    if not isinstance(required_checks, dict):
+        raise Denied("required status-check policy missing")
+    checks = required_checks.get("checks")
+    contexts = required_checks.get("contexts")
+    if (not isinstance(checks, list) or not checks
+            or not isinstance(contexts, list)):
+        raise Denied("required status-check issuer binding missing")
+    seen = set()
+    for check in checks:
+        if not isinstance(check, dict):
+            raise Denied("malformed required status-check issuer")
+        name, app_id = check.get("context"), check.get("app_id")
+        if (not isinstance(name, str) or not name
+                or name in seen or type(app_id) is not int or app_id <= 0):
+            raise Denied("ambiguous or unbound required status-check issuer")
+        seen.add(name)
+        if name == expected_context and app_id != GITHUB_ACTIONS_APP_ID:
+            raise Denied("required security status check has incorrect issuer")
+    if expected_context not in seen or expected_context not in contexts:
+        raise Denied("required issuer-bound security status check missing")
 
 
 def valid_sha(value):
@@ -469,6 +505,7 @@ def require_protected_main_policy(approved_policy):
             or not required_checks["contexts"]
             or not all(isinstance(c, str) and c for c in required_checks["contexts"])):
         raise Denied("protected main must require strict source CI checks")
+    require_pinned_actions_check(required_checks, SOURCE_POLICY_CHECK)
     # An unresolved security review thread must be able to block the policy
     # change before the private publisher trusts it. Do not infer this from
     # required approving reviews: GitHub exposes the gate separately.
@@ -1001,6 +1038,7 @@ def publish(repository, source, branch, trusted_root, expected_source_tree,
                 or not checks["contexts"]
                 or not all(isinstance(c, str) and c for c in checks["contexts"])):
             raise Denied("private carrier main lacks enforced administrator and CI protections")
+        require_pinned_actions_check(checks, CARRIER_POLICY_CHECK)
         conversations = carrier_rules.get("required_conversation_resolution")
         if (not isinstance(conversations, dict)
                 or conversations.get("enabled") is not True):
