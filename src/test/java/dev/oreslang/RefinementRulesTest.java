@@ -67,11 +67,14 @@ final class RefinementRulesTest {
         assertFalse(RefinementRules.entails(
                 a.name(), a.target(), a.refinement(), plain.name(), plain.target(), plain.refinement()));
         assertTrue(RefinementRules.entails(
-                a.name(), a.target(), a.refinement(), a.name(), a.target(), a.refinement()));
-        var checked = RefinementRules.tryFrom(a.name(), a.target(), a.refinement(), "ok");
+                "app.A", a.target(), a.refinement(), "app.A", a.target(), a.refinement()));
+        assertThrows(IllegalArgumentException.class,
+                () -> RefinementRules.tryFrom(a.name(), a.target(), a.refinement(), "ok"));
+        var checked = RefinementRules.tryFrom("app.A", a.target(), a.refinement(), "ok");
         assertTrue(checked.ok());
         assertInstanceOf(RefinementRules.NominalValue.class, checked.value());
         assertEquals("ok", ((RefinementRules.NominalValue)checked.value()).intoInner());
+        assertEquals("app.A", ((RefinementRules.NominalValue)checked.value()).qualifiedTypeName());
     }
 
     @Test void realUnicodeScalarsNotUtf16Units() {
