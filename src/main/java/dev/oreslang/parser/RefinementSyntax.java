@@ -53,6 +53,7 @@ public final class RefinementSyntax {
                 case "MinLength", "MaxLength" -> {
                     if (!expected.equals("length")) bad("@" + annotation.name() + " requires string");
                     long bound = positionalBound(annotation);
+                    if (bound < 0) bad("@" + annotation.name() + " length must be nonnegative");
                     bounds.add(new Ast.RefinementBound("length",
                             annotation.name().equals("MinLength") ? "gte" : "lte", bound));
                 }
@@ -96,7 +97,9 @@ public final class RefinementSyntax {
                             }
                             default -> throw new IllegalArgumentException("unknown @" + annotation.name() + " bound " + key);
                         };
-                        bounds.add(new Ast.RefinementBound("length", op, argument.namedParameterValue().intLiteralValue()));
+                        long bound = argument.namedParameterValue().intLiteralValue();
+                        if (bound < 0) bad("@" + annotation.name() + " length must be nonnegative");
+                        bounds.add(new Ast.RefinementBound("length", op, bound));
                     }
                 }
                 default -> bad("@" + annotation.name() + " on type alias would be silently discarded; unsupported constraint annotation");
