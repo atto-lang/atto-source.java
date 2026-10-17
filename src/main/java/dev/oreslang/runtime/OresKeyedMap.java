@@ -173,6 +173,32 @@ public final class OresKeyedMap<K, V> {
         return valueDomain;
     }
 
+    /**
+     * Snapshot contents under this map's monitor, then perform value
+     * equality/hash outside the monitor. Guest values may implement nontrivial
+     * equality; never invoke that code while one or two mutable Map monitors
+     * are held.
+     */
+    private synchronized LinkedHashMap<K, V> equalitySnapshot() {
+        return new LinkedHashMap<>(entries);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) return true;
+        if (!(other instanceof OresKeyedMap<?, ?> that)) return false;
+        if (domain != that.domain || valueDomain != that.valueDomain) return false;
+        return equalitySnapshot().equals(that.equalitySnapshot());
+    }
+
+    @Override
+    public int hashCode() {
+        LinkedHashMap<K, V> snapshot = equalitySnapshot();
+        int result = domain.hashCode();
+        result = 31 * result + valueDomain.hashCode();
+        return 31 * result + snapshot.hashCode();
+    }
+
     public synchronized int size() {
         return entries.size();
     }
