@@ -119,3 +119,48 @@ unimplemented enforced annotation rather than preserve it as inert metadata.
    aliases, FFI or deserialization.
 7. Java, LLVM and other backends may not claim stdlib refinement support until
    the same conformance fixtures and trust-boundary gates execute successfully.
+
+## Current compiler-side schema planning milestone (October 17, 2026)
+
+`dev.oreslang.compiler.ZordeSchemaGenerator` now provides a **non-executable**
+compile-time plan over already parsed Oreslang aliases/newtypes:
+
+- `planSource(source)` parses declarations without bypassing
+  `OresCompiler.parseAndTypeCheck` (which still rejects executable
+  refinements).
+- `plan(program)` emits an immutable, deterministically ordered
+  `Map<qualifiedType, RefinementRules.Descriptor>`, rejects unresolved imports,
+  generic/parameterized refinements, duplicate schema identities, unsupported
+  predicates and malformed nominal identities.
+- `Plan.schema(qualifiedType)` retrieves a compiler-generated descriptor.
+- `Plan.tryFrom(qualifiedType, raw)` is a **host-side reference operation**
+  that accepts immutable `Long`/`String` only, checks the generated
+  descriptor and returns private-constructor `CheckedScalar` or structured
+  `ConstraintError`. It is **not** guest `T.try_from()`.
+
+Stable schema ABI v1 fingerprints SHA-256 over a canonical representation
+of normalized base, property, inclusive interval, sorted effective exclusions
+and compiler-qualified nominal identity. The independently implemented Python
+oracle contains matching fixed-fingerprint fixtures. Redundant exclusions
+outside an admissible interval are discarded so equivalent constraints do not
+receive different schema identities.
+
+Example *host compiler test harness* (not executable Oreslang syntax):
+
+```java
+var plan = ZordeSchemaGenerator.planSource(
+    "namespace app; @Range(min=1,max=65535) type Port = int;");
+var schema = plan.schema("app.Port");
+var result = plan.tryFrom("app.Port", 443L);
+assert result.ok();
+```
+
+A bare nominal `define newtype T(string);` also emits an identity-bearing
+schema for the full base domain. A nominal type must have an explicit source
+namespace to avoid cross-unit identity collisions.
+
+**Pending:** replace host-only `Plan.tryFrom` with compiler-generated guest
+`Result<T,ConstraintError>` constructors, enforce nominal ownership/casts,
+make `zorde.schema<T>()` an actual typed intrinsic, and connect generated
+schemas to stdlib codecs, actors and FFI. Importing arbitrary host plans or
+forging `Valid<T>` must never become a guest-language capability.
