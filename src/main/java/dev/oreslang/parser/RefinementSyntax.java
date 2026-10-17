@@ -84,13 +84,16 @@ public final class RefinementSyntax {
                 if (!prop.equals(expected)) bad("property " + prop + " not valid for " + base.name());
                 String cmp = operator(cursor.take());
                 boolean neg = cursor.accept("-");
-                String digits = cursor.take().replace("_", "");
-                if (!digits.matches("[0-9]+")) bad("refinement bound must be an integer constant");
+                String literal = cursor.take();
+                if (!literal.matches("[0-9]+(?:_[0-9]+)*")) {
+                    bad("refinement bound must be a well-formed integer constant");
+                }
+                // Parse the sign together with the magnitude: 9223372036854775808
+                // is not a positive long, but -9223372036854775808 is valid.
                 long value;
                 try {
-                    value = Long.parseLong(digits);
-                    if (neg) value = Math.negateExact(value);
-                } catch (ArithmeticException exc) {
+                    value = Long.parseLong((neg ? "-" : "") + literal.replace("_", ""));
+                } catch (NumberFormatException exc) {
                     throw new IllegalArgumentException("refinement bound overflow", exc);
                 }
                 bounds.add(new Ast.RefinementBound(prop, cmp, value));
