@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import java.util.ArrayDeque;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Actor-confined native scalar arena, backed by bounded FFM regions.
@@ -64,6 +65,30 @@ public final class ActorArena implements AutoCloseable {
     public ExplicitNativeI64Region.Loan borrowPersistent(ExplicitNativeI64Region.Slot slot) {
         requireOwner();
         return persistent.borrow(slot);
+    }
+
+    /**
+     * Register lifetime-only authority for work that may complete after this
+     * actor turn. The returned pin cannot dereference arena memory.
+     */
+    public ExplicitNativeI64Region.LifetimePin pinExternal() {
+        requireOwner();
+        return persistent.pinLifetime();
+    }
+
+    /**
+     * Register an asynchronous completion before yielding the actor turn and
+     * release its lifetime pin exactly once when that completion settles.
+     */
+    public <T> CompletableFuture<T> trackExternalCompletion(CompletableFuture<T> future) {
+        Objects.requireNonNull(future, "future");
+        var pin = pinExternal();
+        try {
+            return future.whenComplete((value, failure) -> pin.close());
+        } catch (RuntimeException | Error failure) {
+            pin.close();
+            throw failure;
+        }
     }
 
     public void dropPersistent(ExplicitNativeI64Region.Slot slot) {
@@ -138,6 +163,7 @@ public final class ActorArena implements AutoCloseable {
         return persistent.physicallyClosed() && scratch.physicallyClosed();
     }
     public int outstandingLoans() { return persistent.activeLoans(); }
+    public int outstandingExternalPins() { return persistent.activeLifetimePins(); }
 
     @Override public synchronized void close() {
         requireOwner();
