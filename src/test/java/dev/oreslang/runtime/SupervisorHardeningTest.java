@@ -30,8 +30,10 @@ final class SupervisorHardeningTest {
         AtomicInteger calls = new AtomicInteger();
         SupervisorFailureControl lane = new SupervisorFailureControl(
                 supervisor, group, Runnable::run, 2);
+        var terminal = notice(supervisor, group);
+        lane.reserve(terminal.actorId());
         lane.install(n -> calls.incrementAndGet());
-        lane.publish(notice(supervisor, group));
+        lane.publish(terminal);
         assertEquals(0, calls.get(), "inline control handler crossed a child carrier");
         assertFalse(lane.healthy());
         assertTrue(lane.failure().isPresent());
@@ -51,9 +53,10 @@ final class SupervisorHardeningTest {
                             SupervisorProcess.Directive.RESTART);
                 },
                 r -> calls.incrementAndGet())) {
-            assertThrows(IllegalStateException.class,
-                    () -> process.accept(notice(supervisor, group)),
-                    "synchronous CONTROL scheduling failure must reject admission");
+            var acknowledgement = process.accept(notice(supervisor, group)).toCompletableFuture();
+            assertTrue(acknowledgement.isCancelled()
+                            || acknowledgement.isCompletedExceptionally(),
+                    "synchronous CONTROL scheduling failure must reject acknowledgement");
             assertEquals(0, calls.get());
             assertFalse(process.healthy());
             assertTrue(process.failure().orElse("").contains("inline"));
@@ -209,8 +212,10 @@ final class SupervisorHardeningTest {
         SupervisorFailureControl control = new SupervisorFailureControl(
                 id, group, runnable -> new Thread(runnable).start(), 2);
         String malicious = "failure\nforged\r" + "🚀".repeat(600);
+        ActorRuntime.ActorId actorId = ActorRuntime.ActorId.create();
+        control.reserve(actorId);
         control.publish(new SupervisorFailureControl.Notice(
-                id, group, ActorRuntime.ActorId.create(), Optional.empty(),
+                id, group, actorId, Optional.empty(),
                 SupervisorFailureControl.Kind.TERMINAL_FAILURE, "Type",
                 malicious));
         var value = control.poll().orElseThrow();
