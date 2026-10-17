@@ -14,6 +14,84 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
+    @Test void vmSelectorTcpReadEnforcesLeaseAndRearmsAfterCancellation() throws Exception {
+        try (var group = new NioReadinessGroup(1, 32, 64);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                SocketChannel channel = null;
+                for (int attempt = 0; attempt < 1500 && channel == null; ++attempt) {
+                    channel = listener.accept();
+                    if (channel == null) Thread.sleep(1); // host driver only
+                }
+                assertNotNull(channel);
+                try (var incoming = channel) {
+                    incoming.configureBlocking(false);
+                    var first = group.readAsync(incoming, 8);
+                    var overlapping = group.readAsync(incoming, 8);
+                    var denied = assertThrows(ExecutionException.class,
+                            () -> overlapping.get(2, TimeUnit.SECONDS));
+                    assertInstanceOf(IllegalStateException.class, denied.getCause());
+                    assertEquals(1, group.activeReadLeases());
+                    peer.getOutputStream().write(new byte[] {10, 20, (byte) 255});
+                    assertArrayEquals(new byte[] {10, 20, (byte) 255},
+                            first.get(3, TimeUnit.SECONDS));
+
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (group.activeReadLeases() != 0 && System.nanoTime() < deadline)
+                        Thread.sleep(1);
+                    assertEquals(0, group.activeReadLeases());
+
+                    var cancelled = group.readAsync(incoming, 2);
+                    assertTrue(cancelled.cancel(false),
+                            "cancellation before kernel claim must be accepted");
+                    while ((group.activeReadLeases() != 0 || group.pendingCount() != 0)
+                            && System.nanoTime() < deadline)
+                        Thread.sleep(1);
+                    assertEquals(0, group.activeReadLeases());
+                    assertEquals(0, group.pendingCount());
+
+                    var next = group.readAsync(incoming, 2);
+                    peer.getOutputStream().write(new byte[] {42, 43});
+                    assertArrayEquals(new byte[] {42, 43}, next.get(3, TimeUnit.SECONDS));
+                    assertEquals(1, group.reactorCount(),
+                            "read cancellation does not provision more selectors");
+                }
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.activeReadLeases());
+            assertEquals(0, group.pendingNotifications());
+        }
+    }
+
+    @Test void vmSelectorTcpReadReportsEofWithoutBlockingCarrier() throws Exception {
+        try (var group = new NioReadinessGroup(1, 8, 8);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), port)) {
+                SocketChannel accepted = null;
+                for (int n = 0; n < 1000 && accepted == null; ++n) {
+                    accepted = listener.accept();
+                    if (accepted == null) Thread.sleep(1);
+                }
+                assertNotNull(accepted);
+                try (var incoming = accepted) {
+                    incoming.configureBlocking(false);
+                    var eof = group.readAsync(incoming, 32);
+                    peer.shutdownOutput();
+                    assertArrayEquals(new byte[0], eof.get(3, TimeUnit.SECONDS));
+                }
+            }
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void concurrentAcceptCannotOvertakeBlockedTerminalSubscriber() throws Exception {
         // The selector retires a watch before the Future's subscribers finish.
         // A second accept must NOT steal the listener during that interval.
