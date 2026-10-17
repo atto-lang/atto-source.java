@@ -80,38 +80,77 @@ final class ActorReliabilityKernelTest {
     }
 
     @Test
-    void backoffIsReplayableBoundedAndDesynchronizable() {
+    void backoffIsReplayableBoundedAndNeverBelowConfiguredBase() {
         var policy = new ActorReliabilityKernel.BackoffPolicy(10, 1_000);
         boolean observedDifferentSalt = false;
-        long previousUpperBound = 10;
-        for (int attempt = 0; attempt < 30; attempt++) {
+        for (int attempt = 1; attempt <= 30; attempt++) {
             long a = policy.delayNanos(attempt, 42);
             long replay = policy.delayNanos(attempt, 42);
             long other = policy.delayNanos(attempt, 43);
             assertEquals(a, replay);
-            assertTrue(a >= 1 && a <= 1_000);
+            assertTrue(a >= 10 && a <= 1_000);
             if (a != other) observedDifferentSalt = true;
-            previousUpperBound = Math.min(1_000, previousUpperBound * 2);
-            assertTrue(a <= previousUpperBound);
         }
         assertTrue(observedDifferentSalt);
+        assertThrows(IllegalArgumentException.class,
+                () -> policy.delayNanos(0, 42));
     }
 
     @Test
-    void telemetryRejectsClockRegressionRatherThanInventOrdering() {
-        var now = new AtomicLong(10);
+    void telemetryClockRegressionIsDroppedAndCountedNotInjectedIntoActorLogic() {
+        var now = new AtomicLong(-10);
         var kernel = new ActorReliabilityKernel(4, now::get);
         kernel.record(
                 ActorReliabilityKernel.EventKind.ACTOR_FAILED,
                 actor(1),
                 ActorReliabilityKernel.FaultClass.HANDLER_FAILURE,
                 0);
-        now.set(9);
-        assertThrows(IllegalStateException.class, () -> kernel.record(
+        now.set(-11);
+        assertDoesNotThrow(() -> kernel.record(
+                ActorReliabilityKernel.EventKind.ACTOR_FAILED,
+                actor(1),
+                ActorReliabilityKernel.FaultClass.HANDLER_FAILURE,
+                1));
+        var snapshot = kernel.snapshot();
+        assertEquals(1, snapshot.recentEvents().size());
+        assertEquals(-10, snapshot.recentEvents().getFirst().monotonicNanos());
+        assertEquals(1, snapshot.clockRegressions());
+        assertEquals(1, snapshot.droppedObserverEvents());
+        assertEquals(1L, snapshot.counters()
+                .get(ActorReliabilityKernel.EventKind.ACTOR_FAILED));
+    }
+
+    @Test
+    void telemetryClockProviderFailureCannotFailObservedOperation() {
+        var kernel = new ActorReliabilityKernel(
+                4, () -> { throw new IllegalStateException("observer clock failed"); });
+        assertDoesNotThrow(() -> kernel.record(
                 ActorReliabilityKernel.EventKind.ACTOR_FAILED,
                 actor(1),
                 ActorReliabilityKernel.FaultClass.HANDLER_FAILURE,
                 0));
+        assertEquals(1, kernel.snapshot().droppedObserverEvents());
+    }
+
+    @Test
+    void restartBudgetChargesWholeReplacementSpanAndKeepsCutoffInclusive() {
+        var now = new AtomicLong(10);
+        var budget = new ActorReliabilityKernel.RestartBudget(
+                4, 100, 50, now::get);
+        assertTrue(budget.tryAcquire(3).admitted());
+        assertEquals(3, budget.tryAcquire(0 + 1).restartsInWindow());
+
+        now.set(110);
+        var deniedAtCutoff = budget.tryAcquire();
+        assertFalse(deniedAtCutoff.admitted(),
+                "entries exactly at now-window must still count");
+
+        now.set(111);
+        // Quarantine from the denial remains authoritative even after the
+        // window entry expires; no busy retry loop is allowed.
+        assertFalse(budget.tryAcquire().admitted());
+        now.set(161);
+        assertTrue(budget.tryAcquire().admitted());
     }
 
     @Test
