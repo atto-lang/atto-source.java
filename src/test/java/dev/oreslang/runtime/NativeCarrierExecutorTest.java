@@ -50,6 +50,102 @@ final class NativeCarrierExecutorTest {
     }
 
     @Test
+    void noBootstrapAdmissionRejectsContendedFenceWithoutWaiting() throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var pool = new NativeCarrierExecutor(1, 1, 8, "ores-native-admission-lock-");
+        try {
+            var started = new CountDownLatch(1);
+            pool.execute(started::countDown);
+            assertTrue(started.await(3, TimeUnit.SECONDS));
+
+            var admission = NativeCarrierExecutor.class.getDeclaredField("queueAdmission");
+            admission.setAccessible(true);
+            var lock = (java.util.concurrent.locks.ReentrantLock) admission.get(pool);
+            var locked = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            Thread blocker = Thread.ofPlatform().start(() -> {
+                lock.lock();
+                try {
+                    locked.countDown();
+                    try { release.await(3, TimeUnit.SECONDS); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            });
+            try {
+                assertTrue(locked.await(2, TimeUnit.SECONDS));
+                long start = System.nanoTime();
+                assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                        () -> pool.executeWithoutBootstrap(() -> {}),
+                        "selector-originated admission cannot wait for the queue-admission lock");
+                assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 1000,
+                        "contended admission must reject rather than park a selector");
+                assertEquals(1, pool.getStartedCarrierCount());
+            } finally {
+                release.countDown();
+                blocker.join(3000L);
+                assertFalse(blocker.isAlive());
+            }
+
+            var delivered = new CountDownLatch(1);
+            pool.executeWithoutBootstrap(delivered::countDown);
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void shutdownDrainReturnsValueEqualDistinctQueuedTasksExactlyOnce() throws Exception {
+        String os = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT);
+        assumeTrue(os.contains("linux") || os.contains("mac") || os.contains("darwin"));
+        var pool = new NativeCarrierExecutor(1, 1, 4, "ores-native-equal-tasks-");
+        var occupied = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        final class EqualRunnable implements Runnable {
+            private final int id;
+            private EqualRunnable(int id) { this.id = id; }
+            @Override public void run() { fail("queued task " + id + " must not run"); }
+            @Override public boolean equals(Object other) {
+                return other instanceof EqualRunnable;
+            }
+            @Override public int hashCode() { return 1; }
+        }
+        try {
+            pool.execute(() -> {
+                occupied.countDown();
+                try { release.await(3, TimeUnit.SECONDS); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(occupied.await(3, TimeUnit.SECONDS));
+            Runnable first = new EqualRunnable(1);
+            Runnable second = new EqualRunnable(2);
+            pool.executeWithoutBootstrap(first);
+            pool.executeWithoutBootstrap(second);
+            var abandoned = pool.shutdownNow();
+            assertEquals(2, abandoned.size());
+            assertSame(first, abandoned.get(0),
+                    "native shutdown must not confuse value-equal task identities");
+            assertSame(second, abandoned.get(1));
+            assertThrows(java.util.concurrent.RejectedExecutionException.class,
+                    () -> pool.executeWithoutBootstrap(new EqualRunnable(3)));
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void noBootstrapAdmissionRespectsNativeReadyQueueSaturation() throws Exception {
         String os = System.getProperty("os.name", "")
                 .toLowerCase(java.util.Locale.ROOT);
