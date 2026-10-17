@@ -26,18 +26,40 @@ final class GenServerReplyLedger {
     static final class Ticket {
         private final GenServerReplyLedger ledger;
         private final Target target;
-        private final UUID correlation;
+        private final long correlation;
 
-        private Ticket(GenServerReplyLedger ledger, Target target, UUID correlation) {
+        private Ticket(GenServerReplyLedger ledger, Target target, long correlation) {
             this.ledger = ledger;
             this.target = target;
             this.correlation = correlation;
         }
+
+        long correlationForDiagnostics() {
+            return correlation;
+        }
     }
 
+    record Snapshot(
+            int capacity,
+            int pending,
+            boolean closed,
+            long nextCorrelation,
+            long registered,
+            long replyClaims,
+            long retireClaims,
+            long rejectedClaims,
+            long capacityRejected) { }
+
     private final int capacity;
-    private final Map<UUID, Ticket> pending = new HashMap<>();
+    private final Map<Long, Ticket> pending = new HashMap<>();
     private boolean closed;
+    /** Monotonic, process-local, never serialized. Zero means permanently exhausted. */
+    private long nextCorrelation = 1L;
+    private long registered;
+    private long replyClaims;
+    private long retireClaims;
+    private long rejectedClaims;
+    private long capacityRejected;
 
     GenServerReplyLedger(int capacity) {
         if (capacity < 1 || capacity > 1_000_000)
@@ -49,11 +71,18 @@ final class GenServerReplyLedger {
         Objects.requireNonNull(target, "target");
         synchronized (pending) {
             if (closed) throw new IllegalStateException("ledger is closed");
-            if (pending.size() >= capacity) throw new IllegalStateException("bounded call quota exceeded");
-            UUID correlation;
-            do { correlation = UUID.randomUUID(); } while (pending.containsKey(correlation));
+            if (pending.size() >= capacity) {
+                capacityRejected++;
+                throw new IllegalStateException("bounded call quota exceeded");
+            }
+            long correlation = nextCorrelation;
+            if (correlation <= 0) {
+                throw new IllegalStateException("GenServer correlation sequence exhausted");
+            }
+            nextCorrelation = correlation == Long.MAX_VALUE ? 0L : correlation + 1L;
             Ticket ticket = new Ticket(this, target, correlation);
             pending.put(correlation, ticket);
+            registered++;
             return ticket;
         }
     }
@@ -65,23 +94,49 @@ final class GenServerReplyLedger {
      */
     boolean tryReply(Ticket ticket, Target respondingActor) {
         Objects.requireNonNull(respondingActor, "respondingActor");
-        if (ticket == null || ticket.ledger != this || !ticket.target.equals(respondingActor))
+        if (ticket == null || ticket.ledger != this || !ticket.target.equals(respondingActor)) {
+            synchronized (pending) { rejectedClaims++; }
             return false;
+        }
         synchronized (pending) {
-            return pending.remove(ticket.correlation, ticket);
+            boolean won = pending.remove(ticket.correlation, ticket);
+            if (won) replyClaims++;
+            else rejectedClaims++;
+            return won;
         }
     }
 
     /** Timeout/cancel retire correlation; accepted server work may still run. */
     boolean retire(Ticket ticket) {
-        if (ticket == null || ticket.ledger != this) return false;
+        if (ticket == null || ticket.ledger != this) {
+            synchronized (pending) { rejectedClaims++; }
+            return false;
+        }
         synchronized (pending) {
-            return pending.remove(ticket.correlation, ticket);
+            boolean won = pending.remove(ticket.correlation, ticket);
+            if (won) retireClaims++;
+            else rejectedClaims++;
+            return won;
         }
     }
 
     int pendingCount() {
         synchronized (pending) { return pending.size(); }
+    }
+
+    Snapshot snapshot() {
+        synchronized (pending) {
+            return new Snapshot(
+                    capacity,
+                    pending.size(),
+                    closed,
+                    nextCorrelation,
+                    registered,
+                    replyClaims,
+                    retireClaims,
+                    rejectedClaims,
+                    capacityRejected);
+        }
     }
 
     /**
