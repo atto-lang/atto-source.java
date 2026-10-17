@@ -5042,6 +5042,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (pipelineFrame != null) {
+            // Independent of the high-level router: no internal caller may
+            // attach a valid frame to the wrong mailbox or to a private heap.
+            if (cell.kind != ActorKind.SHARED)
+                throw new SecurityException(
+                        "correlated actor DATA requires a SHARED receiver");
+            ActorPipelineRouteSession.verifyMailboxRecipient(
+                    pipelineFrame, ref.id());
+        }
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
