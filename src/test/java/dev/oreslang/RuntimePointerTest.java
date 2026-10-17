@@ -48,12 +48,18 @@ final class RuntimePointerTest {
     }
 
     @Test void hostCannotManufacturePointerOwnershipForRuntimeCapabilities() {
+        dev.oreslang.runtime.ActorRuntime.ForceCancellationHook forceCancel = request -> true;
+        AutoCloseable resource = () -> { };
         for (Object capability : java.util.List.of(
                 new dev.oreslang.runtime.ChannelRuntime.Channel<>(1),
                 dev.oreslang.runtime.OresMutex.local(7),
                 dev.oreslang.runtime.OresMutex.shared(7),
                 dev.oreslang.runtime.ChannelRuntime.SelectPlan.of(
                         dev.oreslang.runtime.ChannelRuntime.defaultCase()),
+                dev.oreslang.runtime.ActorRuntime.ControlDispatcher.unavailable(),
+                forceCancel,
+                dev.oreslang.runtime.AsyncRuntime.TurnExecutor.direct(),
+                resource,
                 new java.util.concurrent.CompletableFuture<Integer>())) {
             var error = assertThrows(IllegalArgumentException.class,
                     () -> new dev.oreslang.runtime.OresPointer(capability));
