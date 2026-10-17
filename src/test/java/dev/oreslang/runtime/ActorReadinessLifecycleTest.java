@@ -3,8 +3,10 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -84,4 +86,55 @@ final class ActorReadinessLifecycleTest {
             ref.done().get(5, TimeUnit.SECONDS);
         }
     }
+    @Test
+    void incompletePhysicalCloseKeepsRuntimeResourcesUntilCarrierExits() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        AtomicBoolean releaseCarrier = new AtomicBoolean(false);
+        CountDownLatch executing = new CountDownLatch(1);
+        try {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        executing.countDown();
+                        // Deliberately noncooperative guest turn: physical exit
+                        // must be observed, not inferred from logical STOP or
+                        // executor shutdownNow() interrupt delivery.
+                        while (!releaseCarrier.get()) {
+                            try {
+                                Thread.sleep(2);
+                            } catch (InterruptedException ignored) {
+                                // Simulates an untrusted turn ignoring interrupts.
+                            }
+                        }
+                    });
+            actor.send("block");
+            assertTrue(executing.await(5, TimeUnit.SECONDS));
+
+            IllegalStateException incomplete = assertThrows(
+                    IllegalStateException.class, runtime::close);
+            String diagnostic = incomplete.getMessage();
+            assertTrue(diagnostic.contains(actor.id().toString()), diagnostic);
+            assertTrue(diagnostic.contains("carrierActive=true"), diagnostic);
+            assertTrue(diagnostic.contains("activeTurns=1"), diagnostic);
+            assertTrue(diagnostic.contains("pendingActorStates="), diagnostic);
+            assertFalse(actor.done().isDone(),
+                    "logical STOP cannot publish get_done before physical guest exit");
+
+            // A rejected close must not clear actor registration/shared
+            // resources. Releasing the carrier permits a subsequent clean
+            // close without inventing a successful physical revocation.
+            releaseCarrier.set(true);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            runtime.close();
+        } finally {
+            releaseCarrier.set(true);
+            // If an assertion fails, leave the carrier able to exit so no
+            // noncooperative guest thread survives this test process.
+            try {
+                runtime.close();
+            } catch (IllegalStateException ignored) {
+                // The primary assertion failure remains authoritative.
+            }
+        }
+    }
+
 }
