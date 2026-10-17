@@ -5997,7 +5997,9 @@ public final class OresEvalRootNode extends RootNode {
                     && !hasFunctionFamily("Integer")
                     && !namedImports.containsKey("Integer")
                     && !namespaceImports.containsKey("Integer")
-                    && !hostClasses.containsKey("Integer");
+                    && !hostClasses.containsKey("Integer")
+                    && !hostFunctions.containsKey("Integer")
+                    && !hostSymbols.containsKey("Integer");
         }
 
         private static boolean isIntegerRuntimeValue(Object value) {
