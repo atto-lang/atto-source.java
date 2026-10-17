@@ -7370,6 +7370,14 @@ public final class TypeChecker {
             Ast.MethodDecl method) {
         if (pattern instanceof Ast.TypePattern typed) {
             rejectStaticClassGenericReference(typed.type(), classGenerics, klass, method);
+        } else if (pattern instanceof Ast.StructuralPattern structural) {
+            rejectStaticClassGenericReference(
+                    structural.target(), classGenerics, klass, method);
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern nested : tuple.elements()) {
+                rejectStaticClassGenericReferences(
+                        nested, classGenerics, klass, method);
+            }
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
             for (Ast.Pattern nested : constructor.arguments()) {
                 rejectStaticClassGenericReferences(nested, classGenerics, klass, method);
