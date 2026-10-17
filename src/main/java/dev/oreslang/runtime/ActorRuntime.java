@@ -665,6 +665,9 @@ public final class ActorRuntime implements AutoCloseable {
             new AtomicReferenceArray<>(SUPERVISION_EVENT_CAPACITY);
     private final AtomicLong supervisionEventsDropped = new AtomicLong();
     private final AtomicLong lifecyclePublicationFailures = new AtomicLong();
+    /** Authoritative finalization bodies that may still submit observer work. */
+    private final AtomicInteger finalizationPublicationsInFlight = new AtomicInteger();
+    private final Object finalizationPublicationDrain = new Object();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
     private final ThreadLocal<Boolean> forceCancellationCallback = new ThreadLocal<>();
 
@@ -7051,10 +7054,30 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
+        boolean finalizationPublicationsDrained = stillRunning.isEmpty();
         if (stillRunning.isEmpty()) {
-            // No further actor can publish a new terminal observer bundle once
-            // every authoritative finalization is complete.
-            lifecycleObserverDispatcher.shutdown();
+            synchronized (finalizationPublicationDrain) {
+                while (finalizationPublicationsInFlight.get() != 0) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) {
+                        finalizationPublicationsDrained = false;
+                        break;
+                    }
+                    try {
+                        TimeUnit.NANOSECONDS.timedWait(
+                                finalizationPublicationDrain, remaining);
+                    } catch (InterruptedException waitInterrupted) {
+                        interrupted = true;
+                        finalizationPublicationsDrained = false;
+                        break;
+                    }
+                }
+            }
+            if (finalizationPublicationsDrained) {
+                // No removed/in-flight ActorCell can submit another terminal
+                // observer bundle after this shutdown point.
+                lifecycleObserverDispatcher.shutdown();
+            }
         }
 
         boolean dispatchersTerminated = true;
@@ -7076,8 +7099,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        boolean lifecycleObserversTerminated = stillRunning.isEmpty();
-        if (stillRunning.isEmpty()) {
+        boolean lifecycleObserversTerminated =
+                stillRunning.isEmpty() && finalizationPublicationsDrained;
+        if (stillRunning.isEmpty() && finalizationPublicationsDrained) {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) {
                 lifecycleObserversTerminated = false;
@@ -7107,6 +7131,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty()
+                || !finalizationPublicationsDrained
                 || !dispatchersTerminated
                 || !lifecycleObserversTerminated
                 || actorCount.get() != 0
@@ -7122,6 +7147,8 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorRuntime close did not observe full actor termination/carrier exit: "
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated
+                            + ", finalizationPublicationsDrained="
+                            + finalizationPublicationsDrained
                             + ", lifecycleObserversTerminated="
                             + lifecycleObserversTerminated
                             + ", retainedActorSlots=" + actorCount.get());
@@ -7727,11 +7754,20 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void publishFinalization(FinalizationPlan plan) {
             if (plan == null) return;
-            // Authoritative cleanup and structured-parent progress contain no
-            // arbitrary guest/host observer callbacks and may therefore finish
-            // on the current runtime path. Terminal observers are always split
-            // onto the bounded lifecycle-observer domain below.
-            publishFinalizationNow(plan);
+            finalizationPublicationsInFlight.incrementAndGet();
+            try {
+                // Authoritative cleanup and structured-parent progress contain
+                // no arbitrary guest/host observer callbacks and may therefore
+                // finish on the current runtime path. Terminal observers are
+                // always split onto the bounded lifecycle-observer domain below.
+                publishFinalizationNow(plan);
+            } finally {
+                if (finalizationPublicationsInFlight.decrementAndGet() == 0) {
+                    synchronized (finalizationPublicationDrain) {
+                        finalizationPublicationDrain.notifyAll();
+                    }
+                }
+            }
         }
 
         private void publishFinalizationNow(FinalizationPlan plan) {
