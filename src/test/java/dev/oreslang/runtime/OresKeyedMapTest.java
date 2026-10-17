@@ -366,6 +366,62 @@ final class OresKeyedMapTest {
         assertNotEquals(a, b);
     }
 
+    @Test void hostileHostBatchCannotMutateDestinationDuringSizeOrIteration() {
+        OresKeyedMap<String, Integer> target = OresKeyedMap.stringKeys();
+        target.put("original", 11);
+        Map<String, Integer> sizeCallback = new java.util.AbstractMap<>() {
+            @Override public int size() {
+                target.put("injected", 99);
+                return 1;
+            }
+            @Override public java.util.Set<Map.Entry<String, Integer>> entrySet() {
+                return java.util.Set.of(Map.entry("accepted", 1));
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> target.putAll(sizeCallback));
+        assertEquals(Map.of("original", 11), target.shallowSnapshot(),
+                "reentrant Map.size() changed destination despite failed batch");
+        target.put("after-size", 12);
+        target.remove("after-size");
+
+        Map<String, Integer> iteratorCallback = new java.util.AbstractMap<>() {
+            @Override public int size() { return 1; }
+            @Override public java.util.Set<Map.Entry<String, Integer>> entrySet() {
+                return new java.util.AbstractSet<>() {
+                    @Override public int size() { return 1; }
+                    @Override public java.util.Iterator<Map.Entry<String, Integer>> iterator() {
+                        return new java.util.Iterator<>() {
+                            private boolean next = true;
+                            @Override public boolean hasNext() { return next; }
+                            @Override public Map.Entry<String, Integer> next() {
+                                if (!next) throw new java.util.NoSuchElementException();
+                                next = false;
+                                target.clear();
+                                return Map.entry("accepted", 2);
+                            }
+                        };
+                    }
+                };
+            }
+        };
+        assertThrows(IllegalStateException.class, () -> target.putAll(iteratorCallback));
+        assertEquals(Map.of("original", 11), target.shallowSnapshot(),
+                "host iterator cleared destination during failed batch");
+        target.putAll(Map.of("valid", 3));
+        assertEquals(Map.of("original", 11, "valid", 3), target.shallowSnapshot(),
+                "failed bulk admission left mutation fence engaged");
+    }
+
+    @Test void validBulkCommitUsesDetachedPublishedSnapshot() {
+        OresKeyedMap<String, Integer> target = OresKeyedMap.stringKeys();
+        target.put("a", 1);
+        var before = target.shallowSnapshot();
+        target.putAll(Map.of("a", 2, "b", 3));
+        assertEquals(Map.of("a", 1), before);
+        assertEquals(Map.of("a", 2, "b", 3), target.shallowSnapshot());
+        assertEquals(2, target.size());
+    }
+
     @Test void typedMapEqualityIncludesKeyAndValueDomains() {
         OresKeyedMap<Object, Integer> mixed =
                 OresKeyedMap.stringOrSymbolKeys(OresKeyedMap.ValueDomain.INT);
