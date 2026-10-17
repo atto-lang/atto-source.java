@@ -346,7 +346,7 @@ final class ProjectRootImportTest {
                 import_paths = ["vendor"]
                 """);
         for (Path file : java.util.List.of(source, vendor, modern, legacy)) {
-            Files.writeString(file, "pub fnc priority(): int { return 42; }\\n");
+            Files.writeString(file, "pub fnc priority(): int { return 42; }\n");
         }
         Map<String, String> environment = Map.of(
                 OresProjectConfig.ENV_ORES_PATHS,
@@ -371,7 +371,7 @@ final class ProjectRootImportTest {
         Path root = makeProject("empty-roots");
         Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
         Path marker = root.resolve("only-here.ores");
-        Files.writeString(marker, "pub fnc marker(): int { return 42; }\\n");
+        Files.writeString(marker, "pub fnc marker(): int { return 42; }\n");
         Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME), """
                 schema_version = "1"
                 [source]
