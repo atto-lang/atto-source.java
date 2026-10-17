@@ -242,9 +242,26 @@ class RunContract(unittest.TestCase):
         self.assertEqual(self.validate()["workflow_run_path"], ".github/workflows/ci.yml")
         self.assertEqual(self.validate()["event"], "push")
 
-    def test_inventory_has_all_five_distinct_pinned_repositories(self):
-        self.assertEqual(set(module.REPOS), {"java", "llvm", "net", "wasm", "forge"})
-        self.assertEqual(len({v[1] for v in module.REPOS.values()}), 5)
+    def test_inventory_has_all_eight_distinct_pinned_repositories(self):
+        self.assertEqual(set(module.REPOS), {"java", "llvm", "net", "wasm", "forge",
+                                                     "rx_pull", "rx_callbacks", "rx_channels"})
+        self.assertEqual(len({v[1] for v in module.REPOS.values()}), 8)
+
+    def test_rx_models_use_exact_pinned_private_repository_ids(self):
+        expected = {
+            "rx_pull": ("ores-truffle-oreslang/rx-ores", 1407870560),
+            "rx_callbacks": ("ores-truffle-oreslang/rx-ores-callbacks", 1407871059),
+            "rx_channels": ("ores-truffle-oreslang/rx-oreslang-channels", 1407757001),
+        }
+        self.assertEqual({key: module.REPOS[key] for key in expected}, expected)
+        self.assertEqual(len(set(expected.values())), 3)
+
+    def test_rx_repository_cannot_claim_java_proof(self):
+        for backend in ("rx_pull", "rx_callbacks", "rx_channels"):
+            with self.subTest(backend=backend):
+                self.setUp()
+                self.backend = backend
+                self.rejected()
 
     def test_wrong_repo_id(self):
         self.values[self.prefix]["id"] += 1
@@ -564,7 +581,7 @@ class RunContract(unittest.TestCase):
                                   self.tree, self.run_id, ["unit"],
                                   ["Execute test suite"], job_step_pairs=pairs)
 
-    def test_success_for_all_five_pinned_backend_ids(self):
+    def test_success_for_all_eight_pinned_repository_ids(self):
         for backend, (repo, numeric_id) in module.REPOS.items():
             with self.subTest(backend=backend):
                 self.setUp()
