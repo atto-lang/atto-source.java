@@ -142,6 +142,13 @@ public final class StructuralTuplePolicy {
             }
             return false;
         }
+        // Structural width views may hide positions but may never launder
+        // unsupported owned/borrowed values through the extra tail. Until a
+        // checked readonly ABI projection exists, require every source slot
+        // (including invisible extras) to satisfy the closed-slot proof.
+        for (int i = declaredPresent; i < count; i++) {
+            if (!certifiedSlotType(source.elements().get(i))) return false;
+        }
         return true;
     }
 
