@@ -43,3 +43,26 @@ mvn -q -Dtest=GenServerPendingCallsTest test
 ```
 
 Do not interpret a zero-step Actions failure as a runtime test failure.
+
+
+## Predictable correlation and failure isolation
+
+The runtime ledger uses a monotonically increasing **process-local opaque
+correlation sequence**, not random UUID generation. Correlations are never
+serialized or exposed as guest DATA. This keeps the hot path deterministic,
+cheap and replay-auditable while actor incarnation remains the authority fence.
+
+The ledger exposes host-only bounded pressure counters: registered calls,
+successful reply/retire claims, rejected stale/foreign/duplicate claims, quota
+rejections, pending count and next sequence. These are diagnostics, not
+capabilities.
+
+Registry/runtime shutdown never forwards the original host `Throwable` into
+caller Futures. Pending calls receive a fresh cause-free,
+suppression-disabled `GenServerCallClosedException` containing only the
+bounded host exception **class name**. Host messages, stack/cause graphs and
+suppressed exceptions cannot become cross-actor data through shutdown.
+
+These properties complement the one-shot arbitration rule: determinism and
+observability must not weaken isolation or let late replies revive retired
+calls.
