@@ -549,6 +549,8 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
         self.source.mkdir()
         (self.root / ".github").mkdir()
         (self.root / "scripts").mkdir()
+        (self.root / ".github/CODEOWNERS").write_text(
+            "\n".join(pub.REQUIRED_SECURITY_CODEOWNERS) + "\n")
         (self.root / ".github/private-ci-approved-repositories.txt").write_text(
             "trusted/ci 246810\n")
         (self.root / "scripts/publish-private-ci-source.py").write_bytes(
@@ -731,6 +733,63 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
                 pub.reviewed_source_main(self.root, "trusted/ci")
         self.assertEqual(inspections[0], 2)
 
+    def test_security_codeowners_terminal_rules_pass(self):
+        owners = (self.root / ".github/CODEOWNERS").read_bytes()
+        pub.require_security_codeowners(owners)
+        pub.require_security_codeowners(
+            b"# A comment before the rules\n" + owners + b"# End comment\n")
+
+    def test_security_codeowners_overrides_and_missing_paths_denied(self):
+        owners = (self.root / ".github/CODEOWNERS").read_bytes()
+        cases = (
+            ("no CODEOWNERS", b""),
+            ("removed entry", b"\n".join(owners.splitlines()[:-1]) + b"\n"),
+            ("weakened maintainer", owners.replace(b"@ORESoftware",
+                                                  b"@untrusted", 1)),
+            ("late wildcard", owners + b"* @untrusted\n"),
+            ("late security exception",
+             owners + b"/scripts/publish-private-ci-source.py @untrusted\n"),
+            ("reordered rules",
+             b"\n".join(reversed(owners.splitlines())) + b"\n"),
+            ("unrecognized override", owners + b"/.github/* @untrusted\n"),
+            ("trailing whitespace", owners.replace(b"@ORESoftware\n",
+                                                  b"@ORESoftware \n", 1)),
+            ("unparseable owner file", b"\xff" + owners),
+            ("oversized file", owners + b"# " + b"x" * (16 * 1024)),
+        )
+        for description, changed in cases:
+            with self.subTest(description=description):
+                with self.assertRaisesRegex(pub.Denied, "CODEOWNERS"):
+                    pub.require_security_codeowners(changed)
+        self.assertEqual(pub.REQUIRED_SECURITY_CODEOWNERS[0],
+                         "/.github/CODEOWNERS @ORESoftware")
+
+    def test_security_codeowners_rejected_before_source_snapshot_reads(self):
+        file = self.root / ".github/CODEOWNERS"
+        file.write_text(file.read_text() + "* @untrusted\n")
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            with self.assertRaisesRegex(pub.Denied, "CODEOWNERS"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+        self.assertFalse(any(method == "POST" for method, _ in self.routes))
+
+    def test_modified_local_security_codeowners_denied_against_protected_main(self):
+        file = self.root / ".github/CODEOWNERS"
+        original = file.read_bytes()
+        file.write_bytes(original + b"# locally changed policy\n")
+        def protected_source(route, method="GET", payload=None):
+            if "/contents/.github/CODEOWNERS?" in route:
+                return {
+                    "type": "file", "encoding": "base64",
+                    "content": base64.b64encode(original).decode(),
+                    "sha": hashlib.sha1(
+                        b"blob " + str(len(original)).encode() +
+                        b"\0" + original).hexdigest()
+                }
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=protected_source):
+            with self.assertRaisesRegex(pub.Denied, "differs from protected main"):
+                pub.reviewed_source_main(self.root, "trusted/ci")
+
     def test_protected_source_policy_matches_reviewed_main(self):
         with patch.object(pub, "gh_api", side_effect=self.remote):
             pub.reviewed_source_main(self.root, "trusted/ci")
@@ -740,7 +799,7 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
             result = pub.reviewed_source_main(self.root, "trusted/ci")
         self.assertEqual(result, self.commit)
         paths = [route for _, route in self.routes if "/contents/" in route]
-        self.assertEqual(len(paths), 4)
+        self.assertEqual(len(paths), 5)
         self.assertTrue(all(route.endswith("?ref=" + self.commit)
                             for route in paths))
 

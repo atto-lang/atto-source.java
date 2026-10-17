@@ -39,6 +39,16 @@ The exporter rechecks protected-source authority immediately before the
 isolated destination branch is created and rejects any approval-commit drift,
 even if individual policy files were unchanged.
 
+The protected `.github/CODEOWNERS` file must also be verified byte-for-byte
+against the same immutable, reviewed `main` commit. It must end with the
+nine exact `@ORESoftware` ownership rules for the private-source approval,
+publisher, guard, workflow, security documentation, tests and CODEOWNERS
+itself. This accounts for GitHub's last-matching-rule behavior: a later
+wildcard or explicit exception would otherwise override a supposed
+security-owner rule. Missing, reordered, replaced, or overridden rules deny
+export before any private source blob is uploaded. Comments after the final
+security rules do not change effective ownership.
+
 A GitHub `protected=true` branch is **not sufficient**: the exporter also
 requires readable, enforceable branch-protection details, at least one
 nonstale mandatory code-owner approval, administrative enforcement, strict

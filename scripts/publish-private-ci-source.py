@@ -32,6 +32,21 @@ SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
 PINNED_BRANCH = re.compile(r"^ci/oreslang-([0-9a-f]{40})$")
 
 
+# Terminal CODEOWNERS rules bind every private export authority and its tests
+# to the independently reviewed security maintainer. Later wildcard rules could
+# otherwise override an earlier protected path rule in GitHub CODEOWNERS.
+REQUIRED_SECURITY_CODEOWNERS = (
+    "/.github/CODEOWNERS @ORESoftware",
+    "/.github/private-ci-approved-repositories.txt @ORESoftware",
+    "/scripts/check-private-ci-destination.sh @ORESoftware",
+    "/scripts/run-in-private-ci-destination.sh @ORESoftware",
+    "/scripts/test-private-ci-destination.sh @ORESoftware",
+    "/.github/workflows/private-ci-mirror-preflight.yml @ORESoftware",
+    "/docs/security/CI_PRIVATE_SOURCE_MIRRORING.md @ORESoftware",
+    "/scripts/publish-private-ci-source.py @ORESoftware",
+    "/scripts/test-publish-private-ci-source.py @ORESoftware",
+)
+
 class Denied(RuntimeError):
     pass
 
@@ -196,6 +211,24 @@ def require_enforced_main_protection():
             raise Denied("source main allows destructive protection bypass")
 
 
+def require_security_codeowners(content):
+    """Bind private-source export policy to terminal, reviewed CODEOWNERS rules.
+
+    GitHub applies the *last matching* CODEOWNERS pattern. Checking only that
+    require_code_owner_reviews=true misses absent and overridden owner rules.
+    """
+    if not isinstance(content, bytes) or len(content) > 16 * 1024:
+        raise Denied("protected CODEOWNERS is missing or oversized")
+    try:
+        lines = content.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Denied("protected CODEOWNERS is not UTF-8") from exc
+    rules = tuple(line for line in lines
+                  if line.strip() and not line.lstrip().startswith("#"))
+    if rules[-len(REQUIRED_SECURITY_CODEOWNERS):] != REQUIRED_SECURITY_CODEOWNERS:
+        raise Denied("protected CODEOWNERS lacks terminal @ORESoftware export rules")
+
+
 def reviewed_source_main(root, repository):
     """Require the source's LIVE protected-main policy and publisher bytes.
 
@@ -212,7 +245,8 @@ def reviewed_source_main(root, repository):
         raise Denied("source main is not protected; no private export authorized")
     require_enforced_main_protection()
     pinned_main_sha = valid_sha(branch.get("commit", {}).get("sha"))
-    for rel in (".github/private-ci-approved-repositories.txt",
+    for rel in (".github/CODEOWNERS",
+                ".github/private-ci-approved-repositories.txt",
                 "scripts/publish-private-ci-source.py",
                 "scripts/check-private-ci-destination.sh",
                 "scripts/run-in-private-ci-destination.sh"):
@@ -233,6 +267,8 @@ def reviewed_source_main(root, repository):
                 b"blob " + str(len(content)).encode("ascii") + b"\0"
                 + content).hexdigest():
             raise Denied("protected source blob identity mismatch")
+        if rel == ".github/CODEOWNERS":
+            require_security_codeowners(content)
     # Only one immutable protected-main commit may authorize all files.
     branch_again = gh_api("repos/" + SOURCE_REPO + "/branches/main")
     if (branch_again.get("protected") is not True
