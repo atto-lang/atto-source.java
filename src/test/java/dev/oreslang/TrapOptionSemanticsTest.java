@@ -30,7 +30,7 @@ final class TrapOptionSemanticsTest {
                   return None;
                 }
 
-                trap fnc done(): void {
+                trap routine done(): void {
                   return;
                 }
 
