@@ -3883,6 +3883,26 @@ public final class ActorRuntime implements AutoCloseable {
         currentCorrelatedPipelineRouter("backward").backward(value);
     }
 
+    /** Fan-out is deliberately limited to immutable, independently reusable
+     * scalar DATA until the guest ownership/copy contract for aggregate
+     * Sendable values is implemented. This gate runs before any publication. */
+    public List<Map<String, Object>> routeCurrentPipelineForwardAll(Object value) {
+        ActorPipelineCorrelatedMailboxRouter<Object> router =
+                currentCorrelatedPipelineRouter("forward_all");
+        if (!(value instanceof String || value instanceof Boolean
+                || value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long
+                || value instanceof BigInteger)) {
+            throw new IllegalArgumentException(
+                    "self.forward_all currently requires immutable int/bool/string DATA");
+        }
+        return router.forwardAllGuest(value);
+    }
+
+    public void routeCurrentPipelineReply(Object value) {
+        currentCorrelatedPipelineRouter("reply").reply(value);
+    }
+
 
 
     private void requireBlockingHostContext(String operation) {
