@@ -118,6 +118,20 @@ final class NioReadinessGroupTest {
 
             group.bindVmCompletionExecutor(command -> {
                 int call = targetCalls.getAndIncrement();
+                if (call == 0) {
+                    long pendingDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (group.pendingCount() != 0 && System.nanoTime() < pendingDeadline) {
+                        try { Thread.sleep(1); }
+                        catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new RejectedExecutionException(
+                                    "bootstrap staging wait interrupted", interrupted);
+                        }
+                    }
+                    if (group.pendingCount() != 0)
+                        throw new RejectedExecutionException(
+                                "selector did not stage the second completion");
+                }
                 var ran = new java.util.concurrent.CountDownLatch(1);
                 Thread.ofPlatform().daemon(true)
                         .name("nio-bootstrap-race-target-" + call)
