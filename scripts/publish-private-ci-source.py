@@ -143,6 +143,11 @@ def reviewed_source_main(root, repository):
     A PR checkout or a modified local allowlist is not authority to export
     private source, even when its local policy text names a private target.
     """
+    origin = gh_api("repos/" + SOURCE_REPO)
+    if (origin.get("full_name") != SOURCE_REPO
+            or origin.get("id") != 1400792274
+            or origin.get("private") is not True):
+        raise Denied("source repository identity or private visibility changed")
     branch = gh_api("repos/" + SOURCE_REPO + "/branches/main")
     if branch.get("protected") is not True:
         raise Denied("source main is not protected; no private export authorized")
