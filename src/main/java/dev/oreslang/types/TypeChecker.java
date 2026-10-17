@@ -2767,10 +2767,63 @@ public final class TypeChecker {
                         && member.receiver() instanceof Ast.NameExpr selfName
                         && selfName.name().equals("self");
                 if (actorSelf && PIPELINE_ACTOR_INTRINSICS.contains(member.member())) {
-                    throw new IllegalArgumentException(
-                            "self." + member.member()
-                                    + " requires compiled typed pipeline actor routing and "
-                                    + "scheduler-owned admission; source lowering is not enabled");
+                    String operation = member.member();
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "self." + operation
+                                        + " does not accept call-site type arguments");
+                    }
+                    if (currentActorKind != Ast.ActorKind.SHARED) {
+                        throw new IllegalArgumentException(
+                                "self." + operation
+                                        + " currently requires a SHARED actor routed receive");
+                    }
+                    if (operation.equals("forward_all")) {
+                        throw new IllegalArgumentException(
+                                "self.forward_all requires the typed per-edge admission receipt ABI; "
+                                        + "source lowering remains fail-closed");
+                    }
+                    if (operation.equals("reply")) {
+                        throw new IllegalArgumentException(
+                                "self.reply requires compiler-owned full origin return-path lowering; "
+                                        + "source lowering remains fail-closed");
+                    }
+
+                    int payloadIndex;
+                    switch (operation) {
+                        case "forward", "forward_round_robin", "backward" -> {
+                            if (call.arguments().size() != 1) {
+                                throw new IllegalArgumentException(
+                                        "self." + operation + " expects exactly one value");
+                            }
+                            payloadIndex = 0;
+                        }
+                        case "forward_to", "forward_by_key" -> {
+                            if (call.arguments().size() != 2) {
+                                throw new IllegalArgumentException(
+                                        "self." + operation
+                                                + " expects a string selector and one value");
+                            }
+                            Type selector = typeOf(
+                                    call.arguments().getFirst(), env, generics, self);
+                            requireAssignable(
+                                    selector,
+                                    Primitive.STRING,
+                                    "self." + operation + " selector");
+                            payloadIndex = 1;
+                        }
+                        default -> throw new IllegalStateException(
+                                "unknown sealed pipeline intrinsic " + operation);
+                    }
+
+                    Type payload = typeOf(
+                            call.arguments().get(payloadIndex), env, generics, self);
+                    validateActorCallableBoundaryType(
+                            payload,
+                            currentActorKind,
+                            false,
+                            "self." + operation + " outbound value");
+                    return Primitive.VOID;
                 }
                 if (actorSelf && (member.member().equals("on_start")
                         || member.member().equals("receive"))) {
