@@ -531,6 +531,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+            ThrowStmt, RaiseStmt, PanicStmt, RecoverStmt,
             BlockStmt, BreakStmt, ContinueStmt, IfStmt, MatchStmt, SwitchStmt, TryStmt,
             ForOfStmt, ForOfDestructureStmt, ForStmt, LoopStmt, SelectStmt { }
 
@@ -596,17 +597,89 @@ public final class Ast {
 
     public enum DestructureKind { SEQUENCE, OBJECT }
 
-    public record DestructureStmt(DestructureKind kind, List<DestructureBinding> bindings, Expr initializer) implements Stmt {
-        public DestructureStmt {
-            bindings = List.copyOf(bindings);
-            validateRestBinding(bindings, "destructure");
+    public sealed interface DestructurePattern permits DestructureBindingPattern, NestedDestructurePattern { }
+
+    public record DestructureBindingPattern(DestructureBinding binding) implements DestructurePattern {
+        public DestructureBindingPattern {
+            if (binding == null) throw new IllegalArgumentException("destructure binding pattern cannot be null");
         }
+    }
+
+    public record NestedDestructurePattern(
+            DestructureKind kind,
+            List<DestructurePattern> children) implements DestructurePattern {
+        public NestedDestructurePattern {
+            if (kind == null) throw new IllegalArgumentException("nested destructure kind cannot be null");
+            children = List.copyOf(children);
+            if (children.isEmpty()) throw new IllegalArgumentException("nested destructure pattern cannot be empty");
+        }
+    }
+
+    public record DestructureStmt(
+            DestructureKind kind,
+            List<DestructureBinding> bindings,
+            Expr initializer,
+            DestructurePattern pattern) implements Stmt {
+        public DestructureStmt(DestructureKind kind, List<DestructureBinding> bindings, Expr initializer) {
+            this(kind, bindings, initializer, flatDestructurePattern(kind, bindings));
+        }
+
         public DestructureStmt(List<DestructureBinding> bindings, Expr initializer) {
             this(DestructureKind.SEQUENCE, bindings, initializer);
+        }
+
+        public DestructureStmt {
+            if (kind == null) throw new IllegalArgumentException("destructure kind cannot be null");
+            if (pattern == null) throw new IllegalArgumentException("destructure pattern cannot be null");
+            if (!(pattern instanceof NestedDestructurePattern root) || root.kind() != kind) {
+                throw new IllegalArgumentException("destructure root kind must match its pattern");
+            }
+            bindings = flattenDestructureBindings(pattern);
+            validateRestBinding(bindings, "destructure");
+        }
+    }
+
+    private static DestructurePattern flatDestructurePattern(
+            DestructureKind kind, List<DestructureBinding> bindings) {
+        return new NestedDestructurePattern(
+                kind,
+                bindings.stream().map(DestructureBindingPattern::new).map(p -> (DestructurePattern) p).toList());
+    }
+
+    private static List<DestructureBinding> flattenDestructureBindings(DestructurePattern pattern) {
+        List<DestructureBinding> result = new java.util.ArrayList<>();
+        flattenDestructureBindingsInto(pattern, result);
+        return List.copyOf(result);
+    }
+
+    private static void flattenDestructureBindingsInto(
+            DestructurePattern pattern, List<DestructureBinding> destination) {
+        if (pattern instanceof DestructureBindingPattern binding) {
+            destination.add(binding.binding());
+            return;
+        }
+        NestedDestructurePattern nested = (NestedDestructurePattern) pattern;
+        for (DestructurePattern child : nested.children()) {
+            flattenDestructureBindingsInto(child, destination);
         }
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
+    public record ThrowStmt(Expr value) implements Stmt {
+        public ThrowStmt {
+            if (value == null) throw new IllegalArgumentException("throw requires a value");
+        }
+    }
+    public record RaiseStmt(Expr value) implements Stmt {
+        public RaiseStmt {
+            if (value == null) throw new IllegalArgumentException("raise requires a value");
+        }
+    }
+    public record PanicStmt(Expr value) implements Stmt {
+        public PanicStmt {
+            if (value == null) throw new IllegalArgumentException("panic requires a value");
+        }
+    }
     public record YieldStmt(Expr value, boolean delegated) implements Stmt {
         public YieldStmt(Expr value) {
             this(value, false);
@@ -707,6 +780,22 @@ public final class Ast {
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
         public TryStmt {
             body = List.copyOf(body);
+            catchBody = List.copyOf(catchBody);
+            finallyBody = List.copyOf(finallyBody);
+        }
+    }
+
+    /** A recover boundary catches only deliberate raise/panic control signals. */
+    public record RecoverStmt(
+            List<Stmt> body,
+            String signalName,
+            List<Stmt> catchBody,
+            List<Stmt> finallyBody) implements Stmt {
+        public RecoverStmt {
+            body = List.copyOf(body);
+            if (signalName == null || signalName.isBlank()) {
+                throw new IllegalArgumentException("recover signal binding cannot be blank");
+            }
             catchBody = List.copyOf(catchBody);
             finallyBody = List.copyOf(finallyBody);
         }
