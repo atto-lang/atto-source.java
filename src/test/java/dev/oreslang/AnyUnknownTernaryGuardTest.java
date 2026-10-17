@@ -755,35 +755,26 @@ final class AnyUnknownTernaryGuardTest {
     }
 
     @Test
-    void erasedCheckedStructuralCastsAreReadOnlyIncludingNestedFields() {
-        // Opaque structural pattern matching remains fail-closed until that
-        // separate runtime contract is admitted. A checked cast already
-        // performs its explicit runtime shape test; it may grant only reads.
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub fnc readVerified(any source): int {
-                  val rec = source as { amount: int };
-                  return rec.amount;
-                }
-
-                pub fnc readUnverified(unknown source): int {
-                  val rec = source as { amount: int };
-                  return rec.amount;
-                }
-                """)));
-
+    void opaqueStructuralCastsAndNestedShapeTestsRemainFailClosed() {
+        // Runtime structural type descriptors are not admitted as cast/is
+        // targets yet. Do not mistake type-shape syntax for checked authority.
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub fnc bad(any source): int {
-                  val rec = source as { inner: { amount: int } };
-                  rec.inner.amount = 3;
-                  return 1;
+                  val rec = source as { amount: int };
+                  return rec.amount;
                 }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub fnc bad(unknown source): int {
-                  val rec = source as { amount: int };
-                  rec.amount = 3;
-                  return 1;
+                  val rec = source as { inner: { amount: int } };
+                  return rec.inner.amount;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub fnc bad(any source): bool {
+                  return source is type { amount: int };
                 }
                 """)));
     }
@@ -792,7 +783,7 @@ final class AnyUnknownTernaryGuardTest {
     void nullablePatternBindingsDoNotThrowHostMapExceptions() throws Exception {
         String output = run("""
                 pub fnc main(): void {
-                  stdio.stdout.write(null is type !int first ? 1 : 0);
+                  stdio.stdout.write(null matches is !int first ? 1 : 0);
                   stdio.stdout.write(null matches is !int second ? 1 : 0);
                   return;
                 }
