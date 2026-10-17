@@ -53,13 +53,23 @@ final class ImportGraph {
         }
 
         String raw = imported.path().replace('\\', '/');
+        // A verified resolution mapping is required for package aliases.
+        // Do not misclassify pkg: or the retired @/ spelling as an ambient
+        // bare package when the compilation did not resolve the source.
+        if (raw.startsWith("pkg:") || raw.startsWith("@/")) {
+            throw new IllegalArgumentException(
+                    "unverified or retired source import '" + imported.path()
+                            + "' from '" + unitId + "' requires a verified resolver mapping");
+        }
         if (raw.startsWith("+")) {
             throw new IllegalArgumentException(
                     "project-root import '" + imported.path() + "' from '" + unitId
                             + "' requires a resolved filesystem import mapping");
         }
         Path parent = Path.of(unitId).getParent();
-        Path candidatePath = raw.startsWith(".")
+        boolean explicitRelative = raw.equals(".") || raw.equals("..")
+                || raw.startsWith("./") || raw.startsWith("../");
+        Path candidatePath = explicitRelative
                 ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
                 : Path.of(raw).normalize();
         String candidate = normalizeUnitId(candidatePath.toString());
@@ -69,7 +79,7 @@ final class ImportGraph {
         }
         rejectSelfImport(normalizedUnitId, imported.path(), candidate);
         if (available.contains(candidate)) return candidate;
-        if (raw.startsWith(".")) {
+        if (explicitRelative) {
             throw new IllegalArgumentException("relative import '" + imported.path() + "' from '" + unitId
                     + "' does not resolve to a supplied Oreslang/mixed source unit");
         }
