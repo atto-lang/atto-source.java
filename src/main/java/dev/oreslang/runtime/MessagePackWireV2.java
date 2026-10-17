@@ -129,7 +129,7 @@ public final class MessagePackWireV2 {
         void byte1(int b) { require(out.size() < MAX_BYTES, "wire byte budget"); out.write(b & 255); }
         void raw(byte[] bytes) { require(bytes.length <= MAX_BYTES - out.size(), "wire byte budget"); out.writeBytes(bytes); }
         void uint(long x, int n) { for (int i = n - 1; i >= 0; i--) byte1((int)(x >>> (i * 8))); }
-        void array(int n) { require(n <= MAX_ELEMENTS, "array budget"); if (n <= 15) byte1(0x90 | n); else if (n <= 65535) { byte1(0xdc); uint(n,2); } else { byte1(0xdd); uint(n,4); } }
+        void array(int n) { require(n >= 0 && n <= MAX_ELEMENTS, "array budget"); if (n <= 15) byte1(0x90 | n); else if (n <= 65535) { byte1(0xdc); uint(n,2); } else { byte1(0xdd); uint(n,4); } }
         void integer(long x) {
             if (x >= -32 && x <= 127) byte1((int)x);
             else if (x >= 0 && x <= 255) { byte1(0xcc); uint(x,1); }
@@ -162,7 +162,7 @@ public final class MessagePackWireV2 {
             // List.size() after emitting the array header can produce a
             // noncanonical frame if a malicious/mutable list changes size.
             int count = values.size();
-            require(count <= MAX_ELEMENTS && (!fixed(shape.kind()) || count == shape.members().size()), "sequence arity");
+            require(count >= 0 && count <= MAX_ELEMENTS && (!fixed(shape.kind()) || count == shape.members().size()), "sequence arity");
             array(count);
             for (int i = 0; i < count; i++) value(shape.members().get(fixed(shape.kind()) ? i : 0), values.get(i), depth + 1);
         }
