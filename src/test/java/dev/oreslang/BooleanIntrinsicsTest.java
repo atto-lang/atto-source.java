@@ -23,7 +23,7 @@ final class BooleanIntrinsicsTest {
                 pub fnc main(): void {
                   stdio.println(Some(And(true, true)).unwrap());
                   stdio.println(Ok(Or(false, true)).unwrap());
-                  stdio.println(Xor(false, true, false));
+                  stdio.println(Xor(false, true));
                   stdio.println(None.is_none());
                   return;
                 }
@@ -57,7 +57,7 @@ final class BooleanIntrinsicsTest {
                         program.append("stdio.println(").append(prefix).append(name)
                                 .append("([").append(operands).append("]));\n");
                         expected.append(result).append('\n');
-                        if (size >= 2) {
+                        if (size >= 2 && (!name.equals("Xor") || size == 2)) {
                             program.append("stdio.println(").append(prefix).append(name)
                                     .append('(').append(operands).append("));\n");
                             expected.append(result).append('\n');
@@ -101,7 +101,7 @@ final class BooleanIntrinsicsTest {
         for (String prefix : new String[]{"", "BooleanOps."}) {
             for (String expression : new String[]{
                     "And([true][99], false)", "Or([false][99], true)",
-                    "Xor(false, false, [true][99])", "Xor(true, false, [true][99])",
+                    "Xor(false, [true][99])", "Xor(true, [true][99])",
                     "And([false, [true][99]])", "Or([true, [false][99]])"}) {
                 PolyglotException failure = assertThrows(PolyglotException.class,
                         () -> run("pub fnc main(): void { stdio.println(" + prefix + expression
@@ -124,6 +124,25 @@ final class BooleanIntrinsicsTest {
                 }
             }
         }
+    }
+
+    @Test
+    void scalarXorIsBinaryWhileLegacyArrayParityOverloadRemains() throws Exception {
+        for (String prefix : new String[]{"", "BooleanOps."}) {
+            for (String operands : new String[]{"true, false, true", "true, false, false, true"}) {
+                String call = prefix + "Xor(" + operands + ")";
+                IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                        () -> TypeChecker.check(Parser.parse(
+                                "fnc bad(): bool { return " + call + "; }")), call);
+                assertTrue(failure.getMessage().contains("exactly two"), failure.getMessage());
+            }
+        }
+        assertEquals("true\\ntrue\\n", run("""
+                pub fnc main(): void {
+                  stdio.println(Xor(true, false));
+                  stdio.println(BooleanOps.Xor([true, false, false]));
+                }
+                """, "binary-xor-array-compat.ores"));
     }
 
     @Test
@@ -307,7 +326,7 @@ final class BooleanIntrinsicsTest {
 
                   stdio.println(And(true, true, false));
                   stdio.println(BooleanOps.Or(false, false, true));
-                  stdio.println(Xor(true, false, true));
+                  stdio.println(Xor(true, false));
 
                   stdio.println(BooleanOps.And([]));
                   stdio.println(Or([]));
@@ -327,7 +346,7 @@ final class BooleanIntrinsicsTest {
                 """
                 false
                 true
-                false
+                true
                 true
                 false
                 false
