@@ -108,4 +108,18 @@ final class TernaryAnyGuardLanguageTest {
         reject("fnc bad(any v): bool { return Integer.is_int(v, v); }");
         reject("fnc bad(any v): int { return Integer.is_int(v) ? v : v; }");
     }
+
+    @Test
+    void integerNamespaceCannotBeSpoofedOrShadowed() {
+        reject("define class Integer as end");
+        reject("type Integer = int;");
+        reject("fnc bad(int Integer): bool { return Integer.is_int(Integer); }");
+        reject("fnc bad(): bool { val int Integer = 1; return Integer.is_int(1); }");
+    }
+
+    @Test
+    void lowercaseTypeTokensAreNotRuntimeValues() {
+        reject("fnc bad(): any { return any; }");
+        reject("fnc bad(): unknown { return unknown; }");
+    }
 }
