@@ -8,6 +8,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -28,6 +29,9 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
     private static final ThreadLocal<Boolean> FORBID_WORKER_START =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final int minimum;
+    /** Workers whose Java run loop has actually entered, not merely workers
+     * registered in ThreadPoolExecutor before Thread.start() returns. */
+    private final AtomicInteger startedWorkers;
     private final ReentrantLock admission = new ReentrantLock();
     // All submitted runnable turns, including queued and not-yet-active turns.
     // Guarded by admission: getActiveCount() is only an approximation and can
@@ -40,10 +44,21 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
 
     AdaptiveCarrierExecutor(int minimum, int maximum, int queueCapacity,
                             ThreadFactory factory) {
+        this(minimum, maximum, queueCapacity,
+                Objects.requireNonNull(factory, "factory"), new AtomicInteger());
+    }
+
+    private AdaptiveCarrierExecutor(
+            int minimum,
+            int maximum,
+            int queueCapacity,
+            ThreadFactory factory,
+            AtomicInteger startedWorkers) {
         super(validateMinimum(minimum), validateMaximum(minimum, maximum),
                 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(validateCapacity(queueCapacity)),
-                noGrowthGuard(Objects.requireNonNull(factory, "factory")), new AbortPolicy());
+                guardedTrackedFactory(factory, startedWorkers), new AbortPolicy());
         this.minimum = minimum;
+        this.startedWorkers = startedWorkers;
         allowCoreThreadTimeOut(false);
     }
 
@@ -64,12 +79,26 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         return capacity;
     }
 
-    private static ThreadFactory noGrowthGuard(ThreadFactory delegate) {
-        return task -> {
+    private static ThreadFactory guardedTrackedFactory(
+            ThreadFactory delegate, AtomicInteger startedWorkers) {
+        return workerLoop -> {
             if (Boolean.TRUE.equals(FORBID_WORKER_START.get()))
                 throw new RejectedExecutionException(
                         "carrier creation forbidden for no-growth admission");
-            return delegate.newThread(task);
+            Runnable trackedLoop = () -> {
+                startedWorkers.incrementAndGet();
+                try {
+                    workerLoop.run();
+                } finally {
+                    int remaining = startedWorkers.decrementAndGet();
+                    if (remaining < 0) {
+                        startedWorkers.incrementAndGet();
+                        throw new IllegalStateException(
+                                "JVM carrier started-worker accounting underflow");
+                    }
+                }
+            };
+            return delegate.newThread(trackedLoop);
         };
     }
 
@@ -87,8 +116,9 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
         try {
             if (isShutdown())
                 throw new RejectedExecutionException("carrier pool stopped");
-            if (getPoolSize() == 0)
-                throw new RejectedExecutionException("no warm JVM carrier available");
+            if (startedWorkers.get() == 0)
+                throw new RejectedExecutionException(
+                        "no fully started JVM carrier available");
             if (admittedTurns == Integer.MAX_VALUE)
                 throw new RejectedExecutionException("runnable admission counter exhausted");
 
@@ -98,7 +128,7 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             try {
                 super.execute(queued);
                 admittedTurns++;
-            } catch (RuntimeException rejected) {
+            } catch (RuntimeException | Error rejected) {
                 // A guarded ThreadFactory failure can happen after queue offer
                 // only if the last worker disappeared concurrently. NoGrowthTurn
                 // retains Object identity equality, so rollback cannot remove a
@@ -113,6 +143,12 @@ final class AdaptiveCarrierExecutor extends ThreadPoolExecutor {
             admission.unlock();
         }
     }
+
+    boolean readyForNoGrowthAdmission() {
+        return startedWorkers.get() > 0 && !isShutdown();
+    }
+
+    int startedWorkerCount() { return startedWorkers.get(); }
 
     int minimumCarriers() { return minimum; }
 
