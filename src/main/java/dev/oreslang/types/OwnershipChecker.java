@@ -2338,6 +2338,17 @@ public final class OwnershipChecker {
                             new VarState(source.type, false, source.kind, Origin.CAPTURE));
                     continue;
                 }
+                if (allowConstructionBorrowCapture
+                        && initializingClass != null
+                        && capture.name.equals("self")
+                        && source.kind == ValueKind.MUT_BORROW
+                        && source.type.isBorrow()
+                        && source.type.mutableBorrow()) {
+                    closure.define(
+                            capture.name,
+                            new VarState(source.type, false, source.kind, Origin.CAPTURE));
+                    continue;
+                }
                 throw error("closure cannot capture borrowed value '" + capture.name + "'; capture its owner by value or pass the borrow as a lambda parameter");
             }
             if (containsMutexGuardType(source.type)) {
