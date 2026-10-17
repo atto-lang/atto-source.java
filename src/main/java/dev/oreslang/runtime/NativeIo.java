@@ -67,15 +67,19 @@ public final class NativeIo {
      * on providers that support it; do not treat this as full path isolation.
      */
     static String readUtf8NoFollow(Path path) throws IOException {
-        try (var stream = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS);
-             var reader = new InputStreamReader(stream, StandardCharsets.UTF_8.newDecoder())) {
-            StringBuilder value = new StringBuilder();
-            char[] buffer = new char[8192];
-            int count;
-            while ((count = reader.read(buffer)) != -1) {
-                value.append(buffer, 0, count);
+        // Guest-controlled files previously streamed into an unbounded
+        // StringBuilder. One large file per admitted I/O worker could exhaust
+        // the host heap. Share the bounded source-reader byte limit, but keep
+        // the final-component NOFOLLOW admission used for guest files.
+        try (var stream = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = stream.readNBytes(BoundedSourceReader.MAX_BYTES + 1);
+            if (bytes.length > BoundedSourceReader.MAX_BYTES) {
+                throw new IOException("Oreslang fs.read_text exceeds 16 MiB limit");
             }
-            return value.toString();
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
         }
     }
 
