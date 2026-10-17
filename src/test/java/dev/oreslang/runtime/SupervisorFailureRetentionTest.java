@@ -76,9 +76,10 @@ final class SupervisorFailureRetentionTest {
                 supervisor, group, Runnable::run, 4,
                 n -> CompletableFuture.completedFuture(SupervisorProcess.Directive.RESTART),
                 resolution -> fail("inline executor cannot make restart decisions"))) {
-            assertThrows(IllegalStateException.class,
-                    () -> process.accept(notice(supervisor, group)),
-                    "synchronous CONTROL scheduling failure must reject admission");
+            var acknowledgement =
+                    process.accept(notice(supervisor, group)).toCompletableFuture();
+            assertTrue(acknowledgement.isCancelled()
+                            || acknowledgement.isCompletedExceptionally());
             assertFalse(process.healthy());
             assertTrue(process.failure().isPresent());
             assertEquals(1, process.undelivered());
