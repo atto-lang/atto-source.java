@@ -1967,8 +1967,7 @@ public final class ActorRuntime implements AutoCloseable {
                             creatorPolicy.maxMailboxMessages()));
             this.eventBus = new ActorEventBus(ActorRuntime.this, this);
             this.supervisorControl = new SupervisorFailureControl(
-                    supervisorId, id, privateDispatcher,
-                    Math.max(8, Math.min(256, memberLimit)));
+                    supervisorId, id, privateDispatcher, memberLimit);
             if (creator != null) members.add(creator);
         }
 
@@ -2008,7 +2007,7 @@ public final class ActorRuntime implements AutoCloseable {
                     supervisorId, id, privateDispatcher, mailboxCapacity,
                     onFailure, onDecision);
             try {
-                supervisorControl.install(process::accept);
+                supervisorControl.installAsync(process::accept);
             } catch (RuntimeException | Error admissionFailure) {
                 process.close();
                 throw admissionFailure;
