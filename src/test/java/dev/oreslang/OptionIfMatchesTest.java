@@ -148,6 +148,46 @@ final class OptionIfMatchesTest {
     }
 
     @Test
+    void nestedSomeBindingsResolveOwnershipThroughLeftAndScope() {
+        String program = """
+                define class Box as
+                end
+
+                fnc inspect(Option<Option<Box>> outer): int {
+                  if outer matches Some(inner) && inner matches Some(payload) then
+                    return 42;
+                  fi
+                  return 0;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
+    @Test
+    void nestedAndCannotMovePayloadThenMoveItsOptionOwner() {
+        String program = """
+                define class Box as
+                end
+
+                fnc consumeBox(Box box): void { return; }
+                fnc consumeInner(Option<Box> value): void { return; }
+
+                fnc bad(Option<Option<Box>> outer): void {
+                  if outer matches Some(inner) && inner matches Some(payload) then
+                    consumeBox(payload);
+                    consumeInner(inner);
+                  fi
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> OwnershipChecker.check(typed));
+        assertTrue(error.getMessage().contains("moved value"), error::getMessage);
+    }
+
+    @Test
     void ordinaryFooIsNotAutomaticallyOptional() {
         String program = FOO + """
                 fnc bad(Foo m2): int {
