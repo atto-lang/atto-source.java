@@ -26,10 +26,35 @@ directory, and a new isolated CI branch:
 ```bash
 scripts/run-in-private-ci-destination.sh trusted-org/private-ci \
   --source-dir ./verified-source-tree \
-  --branch ci/oreslang-verified-20261013
+  --source-commit "$PINNED_SOURCE_COMMIT_SHA" \
+  --branch "ci/oreslang-$PINNED_SOURCE_GIT_TREE_SHA"
 ```
 
-The checked-in policy file must explicitly list the destination. The
+The checked-in policy file must explicitly list the destination.
+The publisher must also fetch the **origin source repository's protected main**
+from GitHub, verify that the local approval and publisher/guard scripts are
+byte-for-byte identical to protected main, and reject if branch protection is
+not active. This is in addition to the separate required independent review;
+a developer cannot approve the destination by editing their PR checkout.
+
+The caller must pin an immutable origin source **commit**; the publisher
+independently obtains that commit's Git tree SHA. It computes the Git tree
+of the collected regular-file source snapshot (including nested names and
+executable modes) before any blob upload, requires a byte-identical match
+with the origin commit, and requires an isolated branch named exactly
+`ci/oreslang-<40-lowercase-character-source-tree-sha>`.
+It compares the actual newly created isolated destination subtree SHA to
+the expected source SHA before creating any destination commit or ref.
+The origin protected-main requirements and code-identity checks also mean
+a hardening PR cannot authorize itself merely by containing this code.
+
+**This is not yet authorized:** as of the audit, source `main` reports
+unprotected and the protected-main destination allowlist is empty.
+Do not run the exporter until an independent security review approves a
+protected-source policy, and do not interpret an unreviewed local checkout
+as authority to transfer private source.
+
+ The
 publisher checks the live GitHub identity and `visibility=private` /
 `private=true` before sending any private bytes and rechecks visibility
 immediately before each write. Every GitHub API write is constructed from
