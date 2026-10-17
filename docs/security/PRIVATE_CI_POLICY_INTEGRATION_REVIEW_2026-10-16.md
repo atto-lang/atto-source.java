@@ -336,3 +336,40 @@ This closes a confused-principal edge where a stale or caller-controlled
 single-token environments without logging token material. This change does not
 authorize source export: protected main, independent review, allowlists and the
 existing confidentiality hold remain mandatory.
+
+## Draft fail-closed exposure-incident gate (2026-10-17)
+
+The protected private-source publisher must not infer that changing the previously
+public carrier to `private` restores historical confidentiality. The exposed
+objects can survive in earlier history, cached references, public forks or clones.
+The exposure incident `oreslang-platform-conformance#22` is still OPEN.
+
+This review candidate adds an **additional necessary, not sufficient** export
+admission check. Before collecting private source and again ahead of each Git
+object/ref write, the authenticated GitHub API must confirm the incident's
+pinned repository/issue identity, `state=closed`, `state_reason=completed`,
+and a nonempty UTC `closed_at` value. Any missing authorization or private
+cross-repository metadata permission fails closed. Reopening the issue between
+writes must stop the next upload. No bypass flag or unsafe fallback is added.
+
+The publisher's source-main protection, independently approved destination ID,
+immutable source commit/tree tuple, trusted checkout, protected carrier main,
+CODEOWNER review, exact validation-workflow blob, and per-write approval checks
+remain mandatory even after incident closure. The API budget reserve increases
+by one read per write, from `25 * estimated_writes + 160` to
+`26 * estimated_writes + 160`.
+
+The publisher adversarial suite now declares **164 test methods**, with three
+new tests for open, spoofed/malformed, and reopened incident state. Both source
+preflight and private publisher validation workflows require at least 164 tests
+in each of three complete no-skip rounds. **The source CI has not executed
+these tests yet**, so source-local runner certification and any merge remain
+blocked. The independent funded-organization synthetic policy-model run
+[Scintilla #39051965620](https://github.com/scintilla-run-test/gleam-runner-conformance/actions/runs/39051965620)
+passed 27 source-free tests three times, including 8,192 synthetic authority
+assignments per round. That run does **not** contain or test the private
+publisher and does not authorize source export.
+
+An independently approved read-only GitHub credential able to inspect the
+private conformance incident is necessary for this extra publisher admission
+query; never include credentials or private source bytes in logs/artifacts.
