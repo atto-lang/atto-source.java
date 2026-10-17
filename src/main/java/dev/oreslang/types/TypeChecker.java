@@ -56,6 +56,8 @@ public final class TypeChecker {
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private record CallableTarget(Ast.ClassDecl owner, Ast.MethodDecl method) { }
     private final Map<String, LinkedHashMap<Integer, Ast.FunctionDecl>> functions = new HashMap<>();
+    // A single terminal-rest fallback per module/name. Exact arities win.
+    private final Map<String, Ast.FunctionDecl> variadicFunctions = new HashMap<>();
     private final Map<String, String> unqualifiedFunctionOwners = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -261,10 +263,19 @@ public final class TypeChecker {
         } else {
             ambiguousFunctions.add(fn.name());
             functions.remove(fn.name());
+            variadicFunctions.remove(fn.name());
         }
     }
 
     private void putFunctionSlot(String key, Ast.FunctionDecl fn) {
+        if (!fn.parameters().isEmpty() && fn.parameters().getLast().rest()) {
+            if (variadicFunctions.putIfAbsent(key, fn) != null) {
+                throw new IllegalArgumentException(
+                        "callable '" + key + "' already has a variadic rest overload; "
+                                + "a function family permits only one rest fallback");
+            }
+            return;
+        }
         LinkedHashMap<Integer, Ast.FunctionDecl> family =
                 functions.computeIfAbsent(key, ignored -> new LinkedHashMap<>());
         Ast.FunctionDecl previous = family.putIfAbsent(fn.parameters().size(), fn);
@@ -604,10 +615,21 @@ public final class TypeChecker {
                 fn.genericParameters(),
                 (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         validateFunctionGenericDefaults(fn);
+        boolean variadic = !fn.parameters().isEmpty() && fn.parameters().getLast().rest();
+        if (variadic && (fn.async() || fn.suspends() || fn.generator()
+                || fn.trapped() || fn.actorKind() != Ast.ActorKind.NONE
+                || !fn.genericParameters().isEmpty())) {
+            throw new IllegalArgumentException(
+                    "rest parameters currently require a synchronous, non-generic, non-actor source callable");
+        }
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         List<Type> argumentTypes = new ArrayList<>(fn.parameters().size());
         for (Ast.Param param : fn.parameters()) {
-            Type parameterType = resolveParam(param, generics, null);
+            Type elementType = resolveParam(param, generics, null);
+            if (param.rest() && elementType == Primitive.VOID) {
+                throw new IllegalArgumentException("rest element type cannot be void");
+            }
+            Type parameterType = param.rest() ? new ListType(elementType) : elementType;
             argumentTypes.add(parameterType);
             if (param.structural() && fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -7360,15 +7382,23 @@ public final class TypeChecker {
             Set<String> inferenceHoles) {
         List<ExpandedCallArgument> expanded =
                 expandFixedCallArguments(arguments, env, callerGenerics, callerSelf, label);
-        if (params.size() != expanded.size()) {
+        boolean hasRest = !params.isEmpty() && params.getLast().rest();
+        int minArity = hasRest ? params.size() - 1 : params.size();
+        if (expanded.size() < minArity || (!hasRest && params.size() != expanded.size())) {
             throw new IllegalArgumentException(
-                    label + " arity mismatch: expected " + params.size()
+                    label + " arity mismatch: expected "
+                            + (hasRest ? "at least " : "") + minArity
                             + " argument(s), got " + expanded.size());
         }
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
         Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
-        List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
+        List<Type> formalPatterns = params.stream()
+                .map(p -> resolveParam(p, unique, callableSelf)).toList();
+        List<Type> patterns = new ArrayList<>(expanded.size());
+        for (int i = 0; i < expanded.size(); i++) {
+            patterns.add(formalPatterns.get(Math.min(i, formalPatterns.size() - 1)));
+        }
 
         for (int i = 0; i < expanded.size(); i++) {
             Type actual = expandedCallArgumentType(
@@ -7397,14 +7427,15 @@ public final class TypeChecker {
             }
             Type actual = expandedCallArgumentType(
                     argument, expected, env, callerGenerics, callerSelf);
-            if (!params.get(i).structural()) {
+            Ast.Param formal = params.get(Math.min(i, params.size() - 1));
+            if (!formal.structural()) {
                 requireReadonlyCapabilityPreserved(
                         actual,
                         expected,
                         "argument " + (i + 1) + " to " + label);
             }
             requireMutableReferentCompatible(
-                    actual, params.get(i).mutable(),
+                    actual, formal.mutable(),
                     "argument " + (i + 1) + " to mutable parameter");
             requireAssignable(
                     actual,
@@ -8305,7 +8336,7 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
         }
-        return functions.containsKey(name);
+        return functions.containsKey(name) || variadicFunctions.containsKey(name);
     }
 
     private Ast.FunctionDecl findFunction(String name, int arity) {
@@ -8314,7 +8345,10 @@ public final class TypeChecker {
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
         }
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(name);
-        return family == null ? null : family.get(arity);
+        Ast.FunctionDecl fixed = family == null ? null : family.get(arity);
+        if (fixed != null) return fixed;
+        Ast.FunctionDecl rest = variadicFunctions.get(name);
+        return rest != null && arity >= rest.parameters().size() - 1 ? rest : null;
     }
 
     private Ast.FunctionDecl findSingleFunction(String name) {
@@ -8322,15 +8356,26 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "ambiguous function/routine name '" + name + "'; qualify it with its module");
         }
+        if (variadicFunctions.containsKey(name)) {
+            throw new IllegalArgumentException("variadic callable '" + name
+                    + "' requires call-site arity and cannot be reified as a fixed function value");
+        }
         return singleFunction(functions.get(name), name);
     }
 
     private Ast.FunctionDecl findQualifiedFunction(String qualifiedName, int arity) {
         LinkedHashMap<Integer, Ast.FunctionDecl> family = functions.get(qualifiedName);
-        return family == null ? null : family.get(arity);
+        Ast.FunctionDecl fixed = family == null ? null : family.get(arity);
+        if (fixed != null) return fixed;
+        Ast.FunctionDecl rest = variadicFunctions.get(qualifiedName);
+        return rest != null && arity >= rest.parameters().size() - 1 ? rest : null;
     }
 
     private Ast.FunctionDecl findSingleQualifiedFunction(String qualifiedName) {
+        if (variadicFunctions.containsKey(qualifiedName)) {
+            throw new IllegalArgumentException("variadic callable '" + qualifiedName
+                    + "' requires call-site arity and cannot be reified as a fixed function value");
+        }
         return singleFunction(functions.get(qualifiedName), qualifiedName);
     }
 
