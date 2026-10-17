@@ -90,7 +90,7 @@ final class NativeOtpBehaviorSlicesTest {
                       val Registry.Entry<String, String> registered =
                         Registry.entry("worker", "ref-1", 7).unwrap();
                       stdio.println(registered.name);
-                      stdio.println(registered.ref);
+                      stdio.println(registered.actor_ref);
                       stdio.println(registered.incarnation);
                       stdio.println(Registry.same_incarnation(7, 7));
                       stdio.println(Registry.same_incarnation(7, 8));
