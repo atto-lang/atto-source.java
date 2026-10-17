@@ -2047,6 +2047,10 @@ public final class OwnershipChecker {
             throw error(callable + " argument " + position + " must be an explicit borrow");
         }
         ValueInfo argument = checkExpr(arg, scope, true);
+        if (isBorrowValue(argument) || argument.type.isBorrow()) {
+            throw error(callable + " argument " + position
+                    + " cannot erase a borrow into an owned parameter; use an explicit borrowed parameter");
+        }
         if (containsMutexGuardType(argument.type)) {
             throw error(callable + " argument " + position + " cannot consume a guard-bearing value");
         }
