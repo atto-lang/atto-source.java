@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -70,6 +71,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_CONTINUATION_BURST = 32;
     private static final int SUPERVISION_EVENT_CAPACITY = 4_096;
     private static final int WATCHDOG_NOTICE_CAPACITY = 1_024;
+    private static final int MAX_LIFECYCLE_OBSERVER_WORKERS = 4;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -77,6 +79,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> LIFECYCLE_OBSERVER_CALLBACK =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
     /** Current actor-owned source task's logical quota, never a carrier's quota. */
     private static final ThreadLocal<UntrustedLogicalQuota> CURRENT_UNTRUSTED_QUOTA =
             new ThreadLocal<>();
@@ -630,6 +634,11 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
+    /**
+     * Lazy bounded host domain for terminal ready/DONE/output/exit observers.
+     * It is not an actor, CONTROL or selector carrier. No worker is prestarted.
+     */
+    private final ThreadPoolExecutor lifecycleObserverDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
@@ -726,7 +735,8 @@ public final class ActorRuntime implements AutoCloseable {
         this.controlDispatcher = Objects.requireNonNull(controlDispatcher);
         ExecutorService privatePool = null;
         ExecutorService sharedPool = null;
-        ExecutorService untrustedPool;
+        ExecutorService untrustedPool = null;
+        ThreadPoolExecutor lifecycleObservers = null;
         try {
             privatePool = newActorDispatcher(dispatcherConfig.privateParallelism(),
                     dispatcherConfig.maxActors(), "ores-private-actor-dispatcher-", carrierBudget);
@@ -734,15 +744,39 @@ public final class ActorRuntime implements AutoCloseable {
                     dispatcherConfig.maxActors(), "ores-shared-actor-dispatcher-", carrierBudget);
             untrustedPool = newActorDispatcher(Math.max(1, dispatcherConfig.privateParallelism()),
                     dispatcherConfig.maxActors(), "ores-untrusted-actor-dispatcher-", carrierBudget);
+
+            int observerWorkers = Math.max(
+                    1,
+                    Math.min(
+                            MAX_LIFECYCLE_OBSERVER_WORKERS,
+                            Math.min(
+                                    dispatcherConfig.maxActors(),
+                                    Math.max(
+                                            dispatcherConfig.privateParallelism(),
+                                            dispatcherConfig.sharedParallelism()))));
+            lifecycleObservers = new ThreadPoolExecutor(
+                    observerWorkers,
+                    observerWorkers,
+                    30L,
+                    TimeUnit.SECONDS,
+                    new ArrayBlockingQueue<>(dispatcherConfig.maxActors()),
+                    namedFactory("ores-lifecycle-observer-"),
+                    new ThreadPoolExecutor.AbortPolicy());
+            // Preserve the runtime's zero-thread cold start. Lifecycle workers
+            // exist only while terminal observers actually need execution.
+            lifecycleObservers.allowCoreThreadTimeOut(true);
         } catch (RuntimeException | Error failure) {
             CoreLog.record(CoreLog.Level.ERROR, CoreLog.ACTOR_DISPATCHER_FAILED, 1L);
             if (privatePool != null) privatePool.shutdownNow();
             if (sharedPool != null) sharedPool.shutdownNow();
+            if (untrustedPool != null) untrustedPool.shutdownNow();
+            if (lifecycleObservers != null) lifecycleObservers.shutdownNow();
             throw failure;
         }
         this.privateDispatcher = privatePool;
         this.sharedDispatcher = sharedPool;
         this.untrustedDispatcher = untrustedPool;
+        this.lifecycleObserverDispatcher = lifecycleObservers;
         CorePerf.end(CorePerf.ACTOR_POOLS_STARTUP, poolsPerf);
         if (CoreDebug.enabled()) {
             CoreDebug.event(CoreDebug.ACTOR_POOLS_CREATED, dispatcherConfig.privateParallelism());
@@ -5040,9 +5074,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         try {
             if (actors.remove(cell.ref.id(), cell)) {
-                int remaining = actorCount.decrementAndGet();
-                if (remaining < 0) {
-                    actorCount.incrementAndGet();
+                if (!cell.actorSlotReleasePending.compareAndSet(false, true)) {
                     lifecyclePublicationFailures.incrementAndGet();
                 }
             }
@@ -5050,9 +5082,39 @@ public final class ActorRuntime implements AutoCloseable {
             firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
             // ConcurrentHashMap removal should not fail under normal JVM
             // semantics. If the host itself is failing, finalization state and
-            // observers still progress below; the counter exposes the leak.
+            // observers still progress below; the retained actor slot exposes
+            // the leak rather than permitting unbounded replacement churn.
         }
         return firstFatal;
+    }
+
+    private void releaseActorSlotAfterLifecycleObservers(ActorCell<?> cell) {
+        if (!cell.actorSlotReleasePending.compareAndSet(true, false)) {
+            lifecyclePublicationFailures.incrementAndGet();
+            return;
+        }
+        int remaining = actorCount.decrementAndGet();
+        if (remaining < 0) {
+            actorCount.incrementAndGet();
+            lifecyclePublicationFailures.incrementAndGet();
+        }
+    }
+
+    private void submitLifecycleObservers(ActorCell<?> cell, Runnable observers) {
+        Objects.requireNonNull(cell, "cell");
+        Objects.requireNonNull(observers, "observers");
+        Runnable isolated = () -> {
+            boolean previous = Boolean.TRUE.equals(LIFECYCLE_OBSERVER_CALLBACK.get());
+            LIFECYCLE_OBSERVER_CALLBACK.set(Boolean.TRUE);
+            try {
+                observers.run();
+            } finally {
+                releaseActorSlotAfterLifecycleObservers(cell);
+                if (previous) LIFECYCLE_OBSERVER_CALLBACK.set(Boolean.TRUE);
+                else LIFECYCLE_OBSERVER_CALLBACK.remove();
+            }
+        };
+        lifecycleObserverDispatcher.execute(isolated);
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
@@ -6943,6 +7005,10 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
+        if (Boolean.TRUE.equals(LIFECYCLE_OBSERVER_CALLBACK.get())) {
+            throw new IllegalStateException(
+                    "ActorRuntime close requires an external host; lifecycle observer callbacks cannot self-join");
+        }
 
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
@@ -6985,6 +7051,12 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
+        if (stillRunning.isEmpty()) {
+            // No further actor can publish a new terminal observer bundle once
+            // every authoritative finalization is complete.
+            lifecycleObserverDispatcher.shutdown();
+        }
+
         boolean dispatchersTerminated = true;
         for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher, untrustedDispatcher)) {
             long remaining = deadline - System.nanoTime();
@@ -7004,6 +7076,23 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        boolean lifecycleObserversTerminated = stillRunning.isEmpty();
+        if (stillRunning.isEmpty()) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                lifecycleObserversTerminated = false;
+            } else {
+                try {
+                    lifecycleObserversTerminated =
+                            lifecycleObserverDispatcher.awaitTermination(
+                                    remaining, TimeUnit.NANOSECONDS);
+                } catch (InterruptedException waitInterrupted) {
+                    interrupted = true;
+                    lifecycleObserversTerminated = false;
+                }
+            }
+        }
+
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
@@ -7017,7 +7106,11 @@ public final class ActorRuntime implements AutoCloseable {
         sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
+        if (!stillRunning.isEmpty()
+                || !dispatchersTerminated
+                || !lifecycleObserversTerminated
+                || actorCount.get() != 0
+                || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
                     if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
@@ -7028,7 +7121,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException(
                     "ActorRuntime close did not observe full actor termination/carrier exit: "
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
-                            + dispatchersTerminated);
+                            + dispatchersTerminated
+                            + ", lifecycleObserversTerminated="
+                            + lifecycleObserversTerminated
+                            + ", retainedActorSlots=" + actorCount.get());
         }
         actors.clear();
         actorCount.set(0);
@@ -7181,6 +7277,11 @@ public final class ActorRuntime implements AutoCloseable {
          * runnable can never consume a newer scheduled=false->true claim. */
         private Object scheduledDispatchToken;
         private final AtomicBoolean stopped = new AtomicBoolean();
+        /**
+         * The global actor-capacity slot remains charged after logical
+         * finalization until the terminal observer bundle retires.
+         */
+        private final AtomicBoolean actorSlotReleasePending = new AtomicBoolean();
         /** Set under lifecycleLock by gracefulStop; no further user admissions. */
         private boolean sealing;
         // Lifetime-affine structured owner: never transferred before physical
@@ -7626,27 +7727,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void publishFinalization(FinalizationPlan plan) {
             if (plan == null) return;
-
-            ActorCell<?> caller = currentActor.get();
-            if (caller != null && caller != this) {
-                // Structured cancellation may make an idle child immediately
-                // finalizable while its parent is still executing. Never run
-                // the child's output/DONE observers on the parent's actor
-                // carrier: publish on the child's ordinary bounded dispatcher.
-                Runnable publication = () -> publishFinalizationNow(plan);
-                try {
-                    ExecutorService dispatcher = dispatcherFor(kind);
-                    if (dispatcher instanceof ActorAffinityDispatcher lanes)
-                        lanes.executeOnLane(dispatchLane, publication);
-                    else
-                        dispatcher.execute(publication);
-                    return;
-                } catch (RejectedExecutionException unavailable) {
-                    // Runtime shutdown may have retired dispatch admission.
-                    // Correct teardown beats observer isolation in this last-
-                    // resort path; publication is still outside lifecycleLock.
-                }
-            }
+            // Authoritative cleanup and structured-parent progress contain no
+            // arbitrary guest/host observer callbacks and may therefore finish
+            // on the current runtime path. Terminal observers are always split
+            // onto the bounded lifecycle-observer domain below.
             publishFinalizationNow(plan);
         }
 
@@ -7747,51 +7831,69 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
 
-                // Internal one-shot finalization barriers take precedence over
-                // public ready/done subscribers. Their callbacks may publish
-                // an invocation result, but they can no longer delay parent
-                // structured teardown because finalized=true is already set.
+                final Runnable deferredOutputNotifications = outputNotifications;
+                final Throwable terminal = plan.terminal;
                 try {
-                    finalizedFuture.completeFromRuntime(null);
+                    submitLifecycleObservers(this, () -> {
+                        Throwable observerFatal = null;
+                        // Internal one-shot finalization barriers take
+                        // precedence over public ready/done subscribers.
+                        try {
+                            finalizedFuture.completeFromRuntime(null);
+                        } catch (Throwable failure) {
+                            observerFatal = noteLifecyclePublicationFailure(
+                                    observerFatal, failure);
+                        }
+
+                        try {
+                            actorExitHook.accept(executionDomain);
+                        } catch (Throwable failure) {
+                            observerFatal = noteLifecyclePublicationFailure(
+                                    observerFatal, failure);
+                        }
+
+                        if (!ref.readyFuture.isDone()) {
+                            try {
+                                ref.readyFuture.failFromRuntime(
+                                        terminal == null
+                                                ? new ActorTerminatedException(
+                                                        ref.id(), kind, null)
+                                                : terminal);
+                            } catch (Throwable failure) {
+                                observerFatal = noteLifecyclePublicationFailure(
+                                        observerFatal, failure);
+                            }
+                        }
+
+                        try {
+                            if (terminal == null)
+                                ref.doneFuture.completeFromRuntime(null);
+                            else
+                                ref.doneFuture.failFromRuntime(terminal);
+                        } catch (Throwable failure) {
+                            observerFatal = noteLifecyclePublicationFailure(
+                                    observerFatal, failure);
+                        }
+
+                        try {
+                            deferredOutputNotifications.run();
+                        } catch (Throwable failure) {
+                            observerFatal = noteLifecyclePublicationFailure(
+                                    observerFatal, failure);
+                        }
+
+                        rethrowHostFatal(observerFatal);
+                    });
                 } catch (Throwable failure) {
+                    // Never fall back to inline observer execution on an actor,
+                    // CONTROL or selector carrier. Keeping the actor-capacity
+                    // slot charged is deliberate fail-closed backpressure.
                     firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
                 }
-
-                // Execution-domain retirement is allowed to lag logical
-                // finalization, but public DONE remains behind this host hook.
-                try {
-                    actorExitHook.accept(executionDomain);
-                } catch (Throwable failure) {
-                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
-                }
-
-                Throwable terminal = plan.terminal;
-                if (!ref.readyFuture.isDone()) {
-                    try {
-                        ref.readyFuture.failFromRuntime(
-                                terminal == null
-                                        ? new ActorTerminatedException(ref.id(), kind, null)
-                                        : terminal);
-                    } catch (Throwable failure) {
-                        firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
-                    }
-                }
-
-                try {
-                    if (terminal == null) ref.doneFuture.completeFromRuntime(null);
-                    else ref.doneFuture.failFromRuntime(terminal);
-                } catch (Throwable failure) {
-                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
-                }
-
-                // Channel close state was committed above; only synchronous
-                // waiter callbacks remain. They are explicitly last and can
-                // never delay parent progress or the actor's finalized state.
-                try {
-                    outputNotifications.run();
-                } catch (Throwable failure) {
-                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
-                }
+            } else if (actorSlotReleasePending.get()) {
+                // Duplicate/invalid publication cannot retain runtime capacity
+                // forever merely because there is no observer bundle to submit.
+                releaseActorSlotAfterLifecycleObservers(this);
             }
 
             // Preserve VM-fatal semantics, but only after best-effort terminal
