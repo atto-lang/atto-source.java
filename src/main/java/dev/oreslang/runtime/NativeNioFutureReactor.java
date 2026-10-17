@@ -77,7 +77,10 @@ public final class NativeNioFutureReactor implements AutoCloseable {
             server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), backlog);
             server.register(selector, 0);
             return new NativeNioFutureReactor(selector, server, maxConnections, maxPending);
-        } catch (IOException | RuntimeException failure) {
+        } catch (IOException | RuntimeException | Error failure) {
+            // Thread.start() can fail with an Error during native thread
+            // exhaustion. Even that bootstrap failure must close the
+            // just-created listener and selector descriptors.
             if (server != null) try { server.close(); } catch (IOException ignored) { }
             try { selector.close(); } catch (IOException ignored) { }
             throw failure;
