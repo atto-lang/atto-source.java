@@ -122,7 +122,7 @@ final class ActorReliabilityKernel {
             final long now;
             try {
                 now = monotonicNanos.getAsLong();
-            } catch (RuntimeException | Error observerFailure) {
+            } catch (RuntimeException observerFailure) {
                 droppedObserverEvents = saturatingIncrement(droppedObserverEvents);
                 return;
             }
