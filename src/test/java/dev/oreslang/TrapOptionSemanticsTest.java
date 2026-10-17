@@ -87,6 +87,58 @@ final class TrapOptionSemanticsTest {
     }
 
     @Test
+    void explicitTryCatchHandlesThrowBeforeTrapBoundary() throws Exception {
+        String source = """
+                trap fnc catches(): int {
+                  try {
+                    throw new Error("handled locally");
+                  } catch (err) {
+                    return 5;
+                  }
+                  return 0;
+                }
+
+                pub fnc main(): void {
+                  [const [value], const err] = catches();
+                  stdio.stdout.write(value.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.is_none());
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("5:true", run(source));
+    }
+
+    @Test
+    void recoverDoesNotCatchOrdinaryThrow() throws Exception {
+        String source = """
+                trap fnc ordinary(): int {
+                  recover {
+                    throw new Error("not a recover signal");
+                  } catch (signal) {
+                    return 99;
+                  }
+                  return 1;
+                }
+
+                pub fnc main(): void {
+                  [const [value], const err] = ordinary();
+                  stdio.stdout.write(value.is_none());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.unwrap().kind);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(err.unwrap().message);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(source));
+        assertEquals("true:Thrown:not a recover signal", run(source));
+    }
+
+    @Test
     void normalTrapDestructuringExposesSuccessBundleAndErrorOption() throws Exception {
         String program = """
                 trap fnc value(): int { return 17; }
