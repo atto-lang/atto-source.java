@@ -9,9 +9,10 @@ import java.math.BigInteger;
  * values encoded by their IEEE-754 inputs, then rounded once per output
  * component using round-to-nearest, ties-to-even. The integer widths are
  * bounded by the binary64 exponent/significand domain; there is no
- * precision-context heuristic. Exceptional-value behavior remains delegated
- * to the evaluator's existing IEEE-style fallback until that policy is
- * separately frozen by the language contract.
+ * precision-context heuristic. Exceptional NaN/Infinity/signed-zero and
+ * zero-divisor recovery follows the versioned complex128 IEEE-special contract
+ * and compiler-rt-style recovery rules; finite results still use the exact
+ * dyadic path above rather than the exceptional fallback.
  */
 public final class Complex128Math {
     private static final BigInteger TWO_POW_52 = BigInteger.ONE.shiftLeft(52);

@@ -179,3 +179,23 @@ uploaded short-lived [artifact #12110614229](https://github.com/cliptown/cliptow
 Its checks were not copied from the private Oreslang source tree;
 **the actual source finite/IEEE oracle files and Oreslang native guest
 compilers have not been tested successfully by that host**.
+
+
+## Refreshed Java IEEE-special implementation (2026-10-17)
+
+Java hardening branch `hardening/complex128-exceptional-refresh-20261017`
+reapplies the reviewed exceptional complex128 kernel from draft #1140 on top
+of the newest actor/serde/arena integration head, rather than rebasing by
+overwriting the newer frozen-input finite oracle. The finite verifier remains
+at 13 methods per round; the separate IEEE-special verifier adds eight
+source-free contract methods for signed zero, infinities, NaNs, zero divisors,
+subnormal divisor scaling and overflow recovery.
+
+The production Java scalar path now uses exact dyadic arithmetic with one
+nearest-even binary64 rounding per component for finite multiply/divide and a
+compiler-rt-style recovery path for exceptional operands. Guest tests and
+raw-bit runtime tests are included, but all evidence remains
+`unverified` until an allocated exact-head source runner executes the
+Maven/GraalVM and Native Image suites. This refresh does not authorize
+cross-organization source publication and does not merge the stale #120
+Matrix/Vector tree.

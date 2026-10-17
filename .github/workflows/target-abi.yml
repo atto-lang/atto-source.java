@@ -6,6 +6,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+
+env:
+  SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   target-abi:
     timeout-minutes: 30
@@ -15,7 +19,18 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.SOURCE_HEAD }}
+          persist-credentials: false
+      - name: Verify exact source revision and clean tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_HEAD"
+          git diff --quiet
+          git diff --cached --quiet
+          printf 'EXACT_SOURCE_HEAD=%s\n' "$SOURCE_HEAD"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
