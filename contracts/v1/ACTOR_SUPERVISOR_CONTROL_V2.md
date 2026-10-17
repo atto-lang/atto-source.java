@@ -34,7 +34,11 @@ separate from ordinary actor mail and from source continuations.
    keeps its state loan and therefore admits its continuation before any
    supervisor callback that would touch actor state.
 9. **Single-flight handling.** At most one supervisor CONTROL callback may be in
-   flight per parent lane. A retry retains the same immutable notice.
+   flight per parent lane. A retry retains the same immutable notice. Root
+   polling returns a settlement lease: dequeue is never acknowledgement.
+   Durable handling must explicitly `ack`; transient failure must `retry`.
+   Dropping/closing an unsettled root lease retries by default, so host failure
+   after dequeue cannot erase a terminal event.
 10. **Deterministic observability.** Every notice has a monotonic runtime-local
     sequence and stable failure class. Host-only metrics expose reserved,
     pending, in-flight, published, acknowledged, retried, transferred,
