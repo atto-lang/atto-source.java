@@ -3947,7 +3947,7 @@ public final class TypeChecker {
         // synchronization, I/O, cursor, or selection authority even when
         // wrapped in Option/Result/containers or hidden in nominal fields.
         if (Set.of(
-                "Channel", "Future", "Mutex", "MutexGuard", "SharedMutex",
+                "Object", "Channel", "Future", "Mutex", "MutexGuard", "SharedMutex",
                 "Iterator", "AsyncIterator", "SelectCase", "SelectSet",
                 "SelectResult", "TcpConnection", "HttpExchange",
                 "HttpServer", "HttpHandler", "ActorMail", "ActorOutput",
