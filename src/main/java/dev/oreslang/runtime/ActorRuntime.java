@@ -961,37 +961,42 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (bytes == 0) return new MemoryReservation(this, 0, false);
 
-            long current = usedBytes.get();
-            long next;
-            long nextRetained = retainedNativeBytes.get();
-            try {
-                next = Math.addExact(current, bytes);
-                if (retainPhysicalNativeBytes) {
-                    nextRetained = Math.addExact(nextRetained, bytes);
+            // Late FFM loan completion runs off-carrier. Serialize all actor
+            // memory counters with the aggregate runtime counters so physical
+            // close cannot race a new logical reservation and lose an update.
+            synchronized (memoryBudgetLock) {
+                long current = usedBytes.get();
+                long next;
+                long nextRetained = retainedNativeBytes.get();
+                try {
+                    next = Math.addExact(current, bytes);
+                    if (retainPhysicalNativeBytes) {
+                        nextRetained = Math.addExact(nextRetained, bytes);
+                    }
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException(purpose + " accounting overflow");
                 }
-            } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " accounting overflow");
-            }
-            long actorLimit = limitBytes;
-            if (sharedCell != null) {
-                actorLimit = Math.max(0L, limitBytes
-                        - sharedCell.sharedMailboxBytes.get()
-                        - sharedCell.outputBytes.get());
-            }
-            if (next > actorLimit) {
-                throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current
-                        + " limit=" + actorLimit);
-            }
+                long actorLimit = limitBytes;
+                if (sharedCell != null) {
+                    actorLimit = Math.max(0L, limitBytes
+                            - sharedCell.sharedMailboxBytes.get()
+                            - sharedCell.outputBytes.get());
+                }
+                if (next > actorLimit) {
+                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                            + ": requested=" + bytes + " used=" + current
+                            + " limit=" + actorLimit);
+                }
 
-            if (ownerKind == ActorKind.SHARED) {
-                reserveSharedActorLocalRuntimeBytes(bytes, owner, purpose);
-            } else {
-                reservePrivateRuntimeBytes(bytes, owner, purpose);
+                if (ownerKind == ActorKind.SHARED) {
+                    reserveSharedActorLocalRuntimeBytes(bytes, owner, purpose);
+                } else {
+                    reservePrivateRuntimeBytes(bytes, owner, purpose);
+                }
+                usedBytes.set(next);
+                if (retainPhysicalNativeBytes) retainedNativeBytes.set(nextRetained);
+                return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
             }
-            usedBytes.set(next);
-            if (retainPhysicalNativeBytes) retainedNativeBytes.set(nextRetained);
-            return new MemoryReservation(this, bytes, retainPhysicalNativeBytes);
         }
 
         private ActorCell<?> requireCurrentOwner() {
@@ -1006,17 +1011,18 @@ public final class ActorRuntime implements AutoCloseable {
 
         private synchronized void release(long bytes) {
             if (bytes == 0 || sliceClosed.get()) return;
-            long remaining = usedBytes.addAndGet(-bytes);
-            if (remaining < 0) {
-                usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
-            }
-            try {
-                if (ownerKind == ActorKind.SHARED) releaseSharedActorLocalRuntimeBytes(bytes, owner);
-                else releasePrivateRuntimeBytes(bytes, owner);
-            } catch (RuntimeException failure) {
-                usedBytes.addAndGet(bytes);
-                throw failure;
+            synchronized (memoryBudgetLock) {
+                long current = usedBytes.get();
+                if (bytes > current) {
+                    throw new IllegalStateException(
+                            "private actor memory accounting underflow for " + owner);
+                }
+                if (ownerKind == ActorKind.SHARED) {
+                    releaseSharedActorLocalRuntimeBytes(bytes, owner);
+                } else {
+                    releasePrivateRuntimeBytes(bytes, owner);
+                }
+                usedBytes.set(current - bytes);
             }
         }
 
@@ -1024,21 +1030,26 @@ public final class ActorRuntime implements AutoCloseable {
          * Native loan completion may happen after the actor turn and slice
          * have ended. Keep aggregate quota charged until physical FFM close.
          */
-        private synchronized void releasePhysicalNative(long bytes) {
+        private void releasePhysicalNative(long bytes) {
             if (bytes == 0) return;
-            long retained = retainedNativeBytes.get();
-            long used = usedBytes.get();
-            if (bytes < 0 || bytes > retained || bytes > used) {
-                throw new IllegalStateException(
-                        "actor native budget accounting underflow for " + owner);
+            // Deliberately do NOT acquire the slice monitor here. Loan.close()
+            // owns the FFM region monitor; slice retirement owns slice -> region.
+            // Taking region -> slice would deadlock those two paths.
+            synchronized (memoryBudgetLock) {
+                long retained = retainedNativeBytes.get();
+                long used = usedBytes.get();
+                if (bytes < 0 || bytes > retained || bytes > used) {
+                    throw new IllegalStateException(
+                            "actor native budget accounting underflow for " + owner);
+                }
+                if (ownerKind == ActorKind.SHARED) {
+                    releaseSharedActorLocalRuntimeBytes(bytes, owner);
+                } else {
+                    releasePrivateRuntimeBytes(bytes, owner);
+                }
+                retainedNativeBytes.addAndGet(-bytes);
+                usedBytes.addAndGet(-bytes);
             }
-            if (ownerKind == ActorKind.SHARED) {
-                releaseSharedActorLocalRuntimeBytes(bytes, owner);
-            } else {
-                releasePrivateRuntimeBytes(bytes, owner);
-            }
-            retainedNativeBytes.set(retained - bytes);
-            usedBytes.set(used - bytes);
         }
 
         @Override
@@ -1084,23 +1095,25 @@ public final class ActorRuntime implements AutoCloseable {
             // Ordinary logical/direct-buffer bytes are released only if all
             // destructors succeeded, so a failed scrub remains diagnosable.
             if (failure == null) {
-                long bytes = usedBytes.get();
-                long pinned = retainedNativeBytes.get();
-                if (pinned > bytes) {
-                    failure = new IllegalStateException(
-                            "physically pinned native memory exceeds actor accounting");
-                } else {
-                    long released = bytes - pinned;
-                    if (released != 0) {
-                        try {
-                            if (ownerKind == ActorKind.SHARED) {
-                                releaseSharedActorLocalRuntimeBytes(released, owner);
-                            } else {
-                                releasePrivateRuntimeBytes(released, owner);
+                synchronized (memoryBudgetLock) {
+                    long bytes = usedBytes.get();
+                    long pinned = retainedNativeBytes.get();
+                    if (pinned > bytes) {
+                        failure = new IllegalStateException(
+                                "physically pinned native memory exceeds actor accounting");
+                    } else {
+                        long released = bytes - pinned;
+                        if (released != 0) {
+                            try {
+                                if (ownerKind == ActorKind.SHARED) {
+                                    releaseSharedActorLocalRuntimeBytes(released, owner);
+                                } else {
+                                    releasePrivateRuntimeBytes(released, owner);
+                                }
+                                usedBytes.set(pinned);
+                            } catch (RuntimeException | Error error) {
+                                failure = error;
                             }
-                            usedBytes.set(pinned);
-                        } catch (RuntimeException | Error error) {
-                            failure = error;
                         }
                     }
                 }
