@@ -8,6 +8,7 @@ import java.net.*;
 import java.nio.file.*;
 import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 @Timeout(30)
@@ -243,4 +244,27 @@ class AsyncNativeIoTest {
             assertEquals("hello\nposted\nredirect-not-followed\n", output.replace("\r", ""));
         } finally { server.stop(0); }
     }
+    @Test
+    void resourceReleaseFailureIsRetainedAndRetriedAfterWorkerExit() throws Exception {
+        AsyncNativeIo io = new AsyncNativeIo(1);
+        AtomicInteger closes = new AtomicInteger();
+        AutoCloseable flakyResource = () -> {
+            if (closes.incrementAndGet() == 1) {
+                throw new IOException("synthetic first close failure");
+            }
+        };
+        io.register(flakyResource);
+
+        IllegalStateException first =
+                assertThrows(IllegalStateException.class, io::close);
+        assertTrue(first.getMessage().contains(
+                "native I/O resources did not release after worker exit"));
+        assertEquals(1, closes.get(),
+                "first failure must not silently retire the resource");
+
+        assertDoesNotThrow(io::close,
+                "second close must retry the retained resource");
+        assertEquals(2, closes.get());
+    }
+
 }

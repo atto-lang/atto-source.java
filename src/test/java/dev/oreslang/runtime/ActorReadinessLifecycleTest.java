@@ -3,8 +3,10 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -88,4 +90,40 @@ final class ActorReadinessLifecycleTest {
             ref.done().get(5, TimeUnit.SECONDS);
         }
     }
+    @Test
+    void incompletePhysicalClosePreservesActorUntilCarrierExitAndRetry() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        AtomicBoolean releaseCarrier = new AtomicBoolean(false);
+        CountDownLatch executing = new CountDownLatch(1);
+        try {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnShared(
+                    () -> (message, context) -> {
+                        executing.countDown();
+                        while (!releaseCarrier.get()) {
+                            try {
+                                Thread.sleep(2);
+                            } catch (InterruptedException ignored) {
+                                // Deliberately model a noncooperative guest turn.
+                            }
+                        }
+                    });
+            actor.send("block");
+            assertTrue(executing.await(5, TimeUnit.SECONDS));
+
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, runtime::close);
+            assertTrue(incomplete.getMessage().contains(actor.id().toString()));
+            assertTrue(incomplete.getMessage().contains("carrierActive=true"));
+            assertFalse(actor.done().isDone(),
+                    "logical STOP cannot publish done before physical guest exit");
+
+            releaseCarrier.set(true);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertDoesNotThrow(runtime::close);
+        } finally {
+            releaseCarrier.set(true);
+            try { runtime.close(); } catch (IllegalStateException ignored) { }
+        }
+    }
+
 }

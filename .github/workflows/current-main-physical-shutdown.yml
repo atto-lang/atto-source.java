@@ -1,0 +1,61 @@
+name: Current-main physical shutdown barriers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/AsyncRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/AsyncNativeIo.java"
+      - "src/main/java/dev/oreslang/runtime/OresVM.java"
+      - "src/test/java/dev/oreslang/runtime/ActorReadinessLifecycleTest.java"
+      - "src/test/java/dev/oreslang/runtime/AsyncRuntimeTest.java"
+      - "src/test/java/dev/oreslang/runtime/AsyncNativeIoTest.java"
+      - "src/test/java/dev/oreslang/runtime/OresVMTest.java"
+      - ".github/workflows/current-main-physical-shutdown.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: current-main-physical-shutdown-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  focused-and-full-jdk25:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Assert exact candidate head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          echo "Verified head SHA: $EXPECTED_SHA"
+          echo "Verified tree SHA: $(git rev-parse HEAD^{tree})"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Focused physical shutdown regressions
+        run: |
+          mvn -B -ntp -Dores.runtime.carriers=native             -Dtest=ActorReadinessLifecycleTest,AsyncRuntimeTest,AsyncNativeIoTest,OresVMTest             test
+      - name: Full Maven regression suite
+        run: mvn -B -ntp -Dores.runtime.carriers=native verify
+      - name: Archive JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: current-main-physical-shutdown-surefire
+          path: target/surefire-reports/
+          if-no-files-found: warn

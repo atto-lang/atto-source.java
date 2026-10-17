@@ -92,4 +92,36 @@ final class AsyncRuntimeTest {
         assertEquals(9, AsyncRuntime.await(ores));
     }
 
+    @Test
+    void failedPhysicalCloseCanBeRetriedAfterNoncooperativeTaskExits() throws Exception {
+        AsyncRuntime runtime = new AsyncRuntime();
+        CountDownLatch entered = new CountDownLatch(1);
+        AtomicBoolean release = new AtomicBoolean(false);
+        try {
+            runtime.submit(() -> {
+                entered.countDown();
+                while (!release.get()) {
+                    try {
+                        Thread.sleep(2);
+                    } catch (InterruptedException ignored) {
+                        // Model a host task that temporarily ignores cancellation.
+                    }
+                }
+                return 1;
+            });
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            IllegalStateException incomplete =
+                    assertThrows(IllegalStateException.class, runtime::close);
+            assertTrue(incomplete.getMessage().contains("did not terminate all tasks"));
+
+            release.set(true);
+            assertDoesNotThrow(runtime::close,
+                    "second close must re-check physical worker exit");
+        } finally {
+            release.set(true);
+            try { runtime.close(); } catch (IllegalStateException ignored) { }
+        }
+    }
+
 }
