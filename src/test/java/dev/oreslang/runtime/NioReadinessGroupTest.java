@@ -636,6 +636,47 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void saturatedBoundSchedulerStagesAndDrainsWithoutStrandingReservations()
+            throws Exception {
+        var saturated = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var rejected = new java.util.concurrent.CountDownLatch(1);
+        var delivered = new java.util.concurrent.CountDownLatch(1);
+        try (var carrier = java.util.concurrent.Executors.newSingleThreadExecutor(
+                    task -> new Thread(task, "test-actor-capacity-carrier"));
+             var group = new NioReadinessGroup(1, 8, 8)) {
+            java.util.concurrent.Executor dispatcher = task -> {
+                if (saturated.get()) {
+                    rejected.countDown();
+                    throw new java.util.concurrent.RejectedExecutionException("actor queue full");
+                }
+                carrier.execute(task);
+            };
+            group.bindVmCompletionExecutor(dispatcher);
+            var pipe = java.nio.channels.Pipe.open();
+            try {
+                pipe.source().configureBlocking(false);
+                var readiness = group.watch(pipe.source(), SelectionKey.OP_READ);
+                readiness.whenCompleteRuntime((events, failure) -> delivered.countDown());
+                pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {42}));
+                assertTrue(rejected.await(3, TimeUnit.SECONDS));
+                group.close();
+                assertFalse(group.awaitStopped(100, TimeUnit.MILLISECONDS),
+                        "shutdown must not report quiescence before accepted notifications run");
+                assertEquals(1, group.pendingNotifications());
+                assertEquals(0, group.completionCarrierCount());
+                saturated.set(false);
+                group.retryStagedNotifications();
+                assertTrue(delivered.await(3, TimeUnit.SECONDS));
+                assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+                assertEquals(0, group.pendingNotifications());
+                assertEquals(0, group.reactorCount());
+            } finally {
+                pipe.source().close();
+                pipe.sink().close();
+            }
+        }
+    }
+
     @Test void inlineHostExecutorNeverRunsOnReactorOrReplaysReentrantCompletion()
             throws Exception {
         var rejectedReactorInline = new java.util.concurrent.CountDownLatch(2);
