@@ -243,6 +243,23 @@ def reviewed_source_main(root, repository):
     return pinned_main_sha
 
 
+
+def require_live_source_authority(pinned_main_sha):
+    """Recheck protected source authorization before every private blob POST.
+
+    A final check before publishing a destination ref is too late to prevent
+    uploading private Git blob objects after source approval was revoked.
+    This uses the immutable protected-main SHA and enforcement status without
+    re-reading every approved policy/blob on each individual file.
+    """
+    branch = gh_api("repos/" + SOURCE_REPO + "/branches/main")
+    if (branch.get("protected") is not True
+            or branch.get("commit", {}).get("sha") != pinned_main_sha):
+        raise Denied("protected source authorization changed before private upload")
+    require_enforced_main_protection()
+
+
+
 def checked_git_tree(entries):
     """Compute exactly the native Git TREE object from bounded regular files."""
     node = {}
@@ -436,6 +453,10 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
     def authorize_write():
         if checked_policy_fingerprint(trusted_root, repository) != approved_policy:
             raise Denied("private CI destination approval policy changed during transfer")
+        # Blob API POSTs are already a private source export even if no branch is
+        # ever made reachable. Check the immutable protected-main authorization
+        # and enforced code-owner protection before *each* upload/write.
+        require_live_source_authority(approved_main_sha)
         checked_repo(repository, approved_policy[1])
 
     elements = []
