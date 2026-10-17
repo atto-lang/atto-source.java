@@ -120,6 +120,46 @@ final class NativeCoreLibraryTest {
 
 
     @Test
+    void namedOneArgumentBooleanOverloadsResolveFromPackagedSourceModule() throws Exception {
+        Path entry = Files.createTempFile("ores-native-core-overloads-", ".ores");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+        try {
+            Files.writeString(entry, """
+                    import module core from "std/core";
+
+                    pub routine main(): void {
+                      stdio.println(core.And([]));
+                      stdio.println(core.And([true, false]));
+                      stdio.println(core.Or([]));
+                      stdio.println(core.Or([false, true]));
+                      stdio.println(core.Xor([]));
+                      stdio.println(core.Xor([true, true, false]));
+                      stdio.println(core.Xor([true, false, false]));
+                      return;
+                    }
+                    """);
+
+            var build = LinkedProgramRunner.run(
+                    entry, IsolatePolicy.developer(), ExecutionProfile.serverJit(), out, err);
+            assertTrue(build.units().containsKey("@std/core.ores"));
+            assertEquals("""
+                    true
+                    false
+                    false
+                    true
+                    false
+                    false
+                    true
+                    """, out.toString(StandardCharsets.UTF_8),
+                    () -> "source-owned Boolean API overloads failed, stderr="
+                            + err.toString(StandardCharsets.UTF_8));
+        } finally {
+            Files.deleteIfExists(entry);
+        }
+    }
+
+    @Test
     void packagedBooleanReducersMatchPublicAggregateBuiltins() throws Exception {
         Path entry = Files.createTempFile("ores-native-core-bool-parity-", ".ores");
         ByteArrayOutputStream out = new ByteArrayOutputStream();
