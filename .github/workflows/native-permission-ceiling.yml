@@ -1,0 +1,121 @@
+name: Native permission ceiling proof
+
+on:
+  pull_request:
+    paths:
+      - "pom.xml"
+      - "src/main/java/dev/oreslang/runtime/NativeBuildPermissions.java"
+      - "src/main/java/dev/oreslang/runtime/RuntimePermissions.java"
+      - "src/main/java/dev/oreslang/runtime/OresContext.java"
+      - "src/main/java/dev/oreslang/runtime/IsolatePolicy.java"
+      - "src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java"
+      - "src/main/java/dev/oreslang/launcher/OresMain.java"
+      - "src/test/java/dev/oreslang/runtime/NativeBuildPermissionsTest.java"
+      - "src/test/java/dev/oreslang/runtime/RuntimePermissionCeilingTest.java"
+      - ".github/workflows/native-permission-ceiling.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-ceiling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Require exact source head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Unit-check ceiling composition before image build
+        run: >
+          mvn -B -ntp
+          '-Dtest=RuntimePermissionCeilingTest,NativeBuildPermissionsTest'
+          test
+      - name: Build AOT host with ENV ceiling sealed to PATH
+        run: >
+          mvn -B -ntp -DskipTests -Pnative-aot
+          -Dnative.permission.env=PATH
+          package
+      - name: Prove runtime grants cannot exceed native ceiling
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x target/ores-aot
+          cat > "$RUNNER_TEMP/path.ores" <<'ORES'
+          pub fnc main(): void {
+              val present = env.has("PATH");
+              return;
+          }
+          ORES
+          cat > "$RUNNER_TEMP/home.ores" <<'ORES'
+          pub fnc main(): void {
+              val present = env.has("HOME");
+              return;
+          }
+          ORES
+
+          # The sealed ceiling alone is not a runtime grant.
+          if target/ores-aot "$RUNNER_TEMP/path.ores"; then
+            echo "native binary inherited ENV authority without --allow-env" >&2
+            exit 1
+          fi
+
+          target/ores-aot --allow-env=PATH "$RUNNER_TEMP/path.ores"
+
+          # Explicit runtime grants, including a broad one, cannot widen PATH
+          # into HOME because the image's immutable ceiling excludes HOME.
+          if target/ores-aot --allow-env=HOME "$RUNNER_TEMP/home.ores"; then
+            echo "runtime grant widened native ENV ceiling to HOME" >&2
+            exit 1
+          fi
+          if target/ores-aot --allow-env "$RUNNER_TEMP/home.ores"; then
+            echo "runtime wildcard widened native ENV ceiling" >&2
+            exit 1
+          fi
+
+          target/ores-aot --check --permission-check=compile             --allow-env=PATH "$RUNNER_TEMP/path.ores"
+          if target/ores-aot --check --permission-check=compile               --allow-env=HOME "$RUNNER_TEMP/home.ores"; then
+            echo "compile-mode admission ignored native permission ceiling" >&2
+            exit 1
+          fi
+      - name: Write source-free exact-head native ceiling receipt
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess
+          receipt = {
+              "schema": "oreslang-native-permission-ceiling-ci-v1",
+              "tested_head_sha": os.environ["EXPECTED_SHA"],
+              "tested_tree_sha": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "build_ceiling": {"env": ["PATH"]},
+              "runtime_allowed": ["PATH"],
+              "runtime_widening_denied": ["HOME", "* -> HOME"],
+              "compile_mode_widening_denied": ["HOME"],
+              "native_image_executed": True,
+              "full_permission_parity_proven": False,
+          }
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "native-permission-ceiling-receipt.json"
+          out.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          print("NATIVE_PERMISSION_CEILING_RECEIPT_OK", out)
+          PY
+      - name: Upload source-free native ceiling receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-permission-ceiling-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-permission-ceiling-receipt.json
+          if-no-files-found: error
+          retention-days: 7
