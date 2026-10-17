@@ -60,6 +60,9 @@ final class ChannelCallableTransportTest {
     @Test
     void channelPayloadsRejectRuntimeCapabilitiesTransitively() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<Object> opaque): void { return; }
+                """)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad(Channel<Future<int>> pending): void { return; }
                 """)));
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
