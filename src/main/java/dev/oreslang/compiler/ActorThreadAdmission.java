@@ -22,16 +22,9 @@ public final class ActorThreadAdmission {
         Objects.requireNonNull(adapterType, "Java actor adapter type");
         dev.oreslang.runtime.ActorThreads annotation =
                 adapterType.getAnnotation(dev.oreslang.runtime.ActorThreads.class);
-        if (annotation == null) return Ast.ActorThreadPolicy.defaults();
-        Ast.ActorThreadPolicy requested =
-                new Ast.ActorThreadPolicy(annotation.min(), annotation.max());
-        if (requested.max() > 1) {
-            throw new IllegalArgumentException("Java actor adapter '"
-                    + adapterType.getName()
-                    + "' requests unsupported max=" + requested.max()
-                    + "; physical parallel actor execution is not yet enabled");
-        }
-        return requested;
+        // Both reflection-driven registration and build-time metadata
+        // processing go through exactly one fail-closed validation path.
+        return requireExclusiveJavaAnnotation(annotation);
     }
 
     /**
