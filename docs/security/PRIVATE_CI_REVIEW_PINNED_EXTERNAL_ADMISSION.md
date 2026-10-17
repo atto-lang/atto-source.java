@@ -37,9 +37,10 @@ the verifier fails closed and private-source export remains impossible.
 A private-source payload may be created only when an external trusted
 dispatcher proves all of the following from live GitHub API responses:
 
-1. publisher policy PR `oreslang-source.java#1123` is open and has exactly one
-   `APPROVED` review by the explicitly configured independent reviewer whose
-   login and numeric GitHub user ID match policy and whose `commit_id` equals\n   the PR's exact current head SHA;
+1. publisher policy PR `oreslang-source.java#1123` is open and the latest
+   review on its exact current head by the explicitly configured independent
+   reviewer is `APPROVED`; reviewer login and numeric GitHub user ID must
+   match policy;
 2. Sagitta destination approval PR `#1092` satisfies the same exact-head
    review rule;
 3. exact source snapshot approval PR `#1189` satisfies the same exact-head
@@ -47,15 +48,26 @@ dispatcher proves all of the following from live GitHub API responses:
    `source-commit source-tree destination-repository-id` tuple;
 4. Sagitta carrier policy PR `sagitta-infra#7` satisfies the same exact-head
    review rule;
-5. incident `oreslang-platform-conformance#22` contains exactly one
-   `PRIVATE_CI_RESUME_APPROVED` comment authored by that same configured\n   independent reviewer;
+5. incident `oreslang-platform-conformance#22` has an ordered authorization
+   history from that same reviewer whose latest state is
+   `PRIVATE_CI_RESUME_APPROVED`; `PRIVATE_CI_RESUME_REVOKED` immediately
+   revokes authorization until a later bound re-approval;
 6. the approved source commit exists in repository ID `1400792274` and its
    root Git tree equals the approved source tree;
 7. destination repository ID `1357615104` is still exactly
    `sagitta-stack/sagitta-infra`, private, active, non-archived and
    non-disabled;
-8. the exact carrier validation workflow bytes are read from the independently
+8. the reviewer policy explicitly disallows operator-controlled GitHub IDs
+   `11139560` and `2148448`, and live collaborator-permission responses
+   show at least the reviewed minimum permission on both source and carrier;
+9. the exact reviewer-policy bytes are bound into the authorization receipt by
+   Git blob SHA;
+10. the exact carrier validation workflow bytes are read from the independently
    approved carrier PR head and their Git blob SHA is recorded.
+
+The canonical authorization receipt uses schema v2 and records reviewer login,
+numeric GitHub ID, reviewer-policy blob SHA, and both live permission levels.
+A different username alone does not establish independent review.
 
 The source-side read-only checker
 `scripts/verify-review-pinned-private-ci.py` validates these inputs and emits
