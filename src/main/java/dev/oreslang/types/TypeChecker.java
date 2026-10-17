@@ -5146,6 +5146,9 @@ public final class TypeChecker {
         if (condition instanceof Ast.CallExpr call && isBuiltinIntegerPredicate(call, sourceEnv)
                 && call.arguments().size() == 1
                 && call.arguments().getFirst() instanceof Ast.NameExpr name) {
+            // Repeating the same trusted guard along an && chain reuses the
+            // already-proven local instead of creating a duplicate binding.
+            if (destination.bindings.containsKey(name.name())) return;
             Env.Binding binding = sourceEnv.lookup(name.name());
             // Only immutable/stable bindings are narrowed. Rebindable locations
             // retain their declared type so mutation cannot invalidate the proof.
