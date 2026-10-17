@@ -57,6 +57,29 @@ jobs:
         run: bash scripts/test-dop-planner-standalone.sh
       - name: Compile and test actual Maven project (DOP and graph)
         run: mvn -B -ntp -Dtest='Dop*,ExecutionGraphV1Test,ExecutionGraphChannelV1Test,ExecutionSurfaceV1Test' -DfailIfNoTests=true test
+      - name: Verify specific new zero-work integration tests executed
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+          report = pathlib.Path('target/surefire-reports/TEST-dev.oreslang.runtime.DopGraphCpuIntegrationV1Test.xml')
+          if not report.is_file():
+              raise SystemExit('Missing exact DOP integration Surefire XML')
+          root = ET.parse(report).getroot()
+          required = {'zeroRowOwnedCpuGraphCompletesWithoutAccessingStorage',
+                      'emptySliceOfPopulatedBufferDoesNotTouchOtherRows'}
+          methods = {node.attrib.get('name') for node in root.iter('testcase')}
+          if not required.issubset(methods):
+              raise SystemExit('Missing executed zero-work regression methods: ' + repr(sorted(required - methods)))
+          for field in ('failures', 'errors', 'skipped'):
+              if int(root.attrib.get(field, '0')) != 0:
+                  raise SystemExit('DOP integration contains nonpassing cases: ' + field)
+          if int(root.attrib.get('tests', '0')) < len(required):
+              raise SystemExit('Impossible DOP integration test count')
+          print('Verified executed DOP zero-work regression method names in Surefire XML')
+          PY
       - name: Record passing exact-head test suite
         shell: bash
         run: |
