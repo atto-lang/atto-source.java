@@ -87,6 +87,36 @@ pub pure routine normalize = || -> void {
 
 V1 deliberately rejects `pure async fnc`, `pure async routine`, and `pure actor fnc`. Async/future completion and actor execution are scheduler/effect boundaries. A synchronous pure helper may be called freely from async or actor code.
 
+### Actor-level `pure` is a separate reducer mode (design decision, 2026-10-16)
+
+An actor **class declaration** marked `pure` selects a reducer-based actor
+state machine. The reducer receives an explicit immutable state snapshot
+and a typed message, and returns a next-state value plus declarative
+commands. The reducer body and its transitive call graph must satisfy this
+document's observational `pure` contract; an actor runtime's later
+execution of checked command descriptions is **not** classified as a
+pure computation.
+
+This does **not** admit `pure actor fnc`: an actor callable itself has an
+actor/scheduler effect boundary. `define pure actor Name as ... end` is a
+different construct that makes the actor's state model reducer-driven.
+Actors **without** the actor-level `pure` modifier continue to use the
+compiler-sealed `self.handle_state` and equivalent scoped `using state`
+intrinsics; they do not implicitly gain reducer semantics.
+
+A reducer cannot directly read/write actor-owned `state` or call
+`handle_state`, `using state`, `await`, `select`, I/O, send/spawn or
+unknown FFI. Runtime validation, capacity reservation, atomic
+commit-and-command enqueue and supervision boundaries remain mandatory;
+purity is not a replacement for permissions or Sendable checking. No
+rollback or exactly-once external I/O is implied.
+
+**Implementation status:** current parser/AST and actor runtime do not yet
+accept/lower actor-level `pure` declarations. This is the normative
+target semantics, not working syntax. See
+[PERSISTENT_DATA_AND_PURE_ACTOR_TRANSITIONS.md](PERSISTENT_DATA_AND_PURE_ACTOR_TRANSITIONS.md)
+for the mode matrix, examples, admission and backend parity gates.
+
 The first implementation does not require public syntax for `pure` instance methods. The compiler must still infer method effects so calls from a pure callable cannot escape through an impure method. A later language revision may expose `pure` on methods/interfaces once method effect contracts are specified.
 
 Other callable modifiers such as the separately designed `trap` modifier may compose with `pure` only when their control-flow semantics preserve the effect contract. Modifier composition is checked semantically, not accepted merely because the parser can order the words.
