@@ -342,6 +342,8 @@ public final class ActorRuntime implements AutoCloseable {
             int queuedContinuations,
             long acceptedUserMessages,
             long processedUserMessages,
+            long contiguousProcessedUserMessages,
+            int outOfOrderCompletedMessages,
             int pendingDrainWaiters,
             int activeTurns,
             boolean carrierActive,
@@ -368,6 +370,9 @@ public final class ActorRuntime implements AutoCloseable {
                     || acceptedUserMessages < 0
                     || processedUserMessages < 0
                     || processedUserMessages > acceptedUserMessages
+                    || contiguousProcessedUserMessages < 0
+                    || contiguousProcessedUserMessages > processedUserMessages
+                    || outOfOrderCompletedMessages < 0
                     || pendingDrainWaiters < 0
                     || activeTurns < 0
                     || sharedMailboxBytes < 0
@@ -711,7 +716,9 @@ public final class ActorRuntime implements AutoCloseable {
                 queuedUser,
                 queuedControl,
                 cell.nextUserMessageSequence,
-                cell.lastProcessedUserMessageSequence + 1L,
+                cell.completionFrontier.completedCount(),
+                cell.completionFrontier.contiguousCount(),
+                cell.completionFrontier.outOfOrderCount(),
                 cell.pendingDrains.size(),
                 cell.activeTurns,
                 cell.carrierActive,
@@ -7006,7 +7013,10 @@ public final class ActorRuntime implements AutoCloseable {
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
         private long nextUserMessageSequence;
-        private long lastProcessedUserMessageSequence = -1L;
+        // 64 gaps is far above the currently intended actor execution max (3)
+        // while keeping the completion scoreboard fixed and allocation-free.
+        private final ActorCompletionFrontier completionFrontier =
+                new ActorCompletionFrontier(64);
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayDeque<DrainWaiter> pendingDrains = new ArrayDeque<>();
@@ -7192,7 +7202,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (lifecycleLock) {
                 if (stopped.get() || finalized) return OresFuture.failed(terminated(ref));
                 final long target = nextUserMessageSequence - 1L;
-                if (lastProcessedUserMessageSequence >= target)
+                if (completionFrontier.contiguousSequence() >= target)
                     return OresFuture.completed(null);
                 // Do this inside the admission monitor. Checking only for an
                 // active mail outside this lock races concurrent senders and
@@ -7222,22 +7232,19 @@ public final class ActorRuntime implements AutoCloseable {
         private void markMessageProcessed(long sequence) {
             ArrayList<OresFuture<Void>> completed = null;
             synchronized (lifecycleLock) {
-                if (sequence != lastProcessedUserMessageSequence + 1L) {
-                    throw new IllegalStateException(
-                            "nonsequential actor message completion for " + ref.id());
-                }
-                lastProcessedUserMessageSequence = sequence;
+                long contiguous = completionFrontier.complete(sequence);
                 for (;;) {
                     DrainWaiter waiter = pendingDrains.peekFirst();
-                    if (waiter == null || waiter.sequence() > sequence) break;
+                    if (waiter == null || waiter.sequence() > contiguous) break;
                     pendingDrains.removeFirst();
                     if (completed == null) completed = new ArrayList<>();
                     completed.add(waiter.completion());
                 }
             }
             // No allocation occurs in the common path with no drain observers.
-            // Complete outside the lifecycle monitor: Future callbacks may
-            // synchronously request actor stop or another lifecycle operation.
+            // A drain barrier is released only after the contiguous completion
+            // frontier reaches its captured target, even if later messages
+            // finished earlier on a future multi-turn actor.
             if (completed != null) {
                 for (OresFuture<Void> waiter : completed) {
                     waiter.completeFromRuntime(null);
