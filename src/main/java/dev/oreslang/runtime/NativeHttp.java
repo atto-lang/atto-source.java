@@ -109,6 +109,15 @@ public final class NativeHttp implements AutoCloseable {
         Thread t = new Thread(r, "ores-http-deadlines"); t.setDaemon(true); return t;
     });
     private volatile boolean closed;
+    // Admission sealing and physical executor retirement are separate phases.
+    // A failed actor close must leave already-authorized HTTP cleanup carriers
+    // alive so the host can resolve the actor and retry context shutdown.
+    private final Object retirementLock = new Object();
+    private List<Server> retiringServers;
+    private List<Handler> retiringHandlers;
+    private List<Exchange> retiringTransfers;
+    private boolean retired;
+    private Thread retirementOwner;
 
     public NativeHttp(OresContext context) {
         this.context = Objects.requireNonNull(context);
@@ -1038,40 +1047,91 @@ public final class NativeHttp implements AutoCloseable {
             cleanup.run();
         }
     }
-    @Override public void close() {
-        // Transport.stop can wait for live HTTP handlers. Never hold the
-        // NativeHttp monitor while waiting: handlers may call synchronized
-        // listener/registration methods on the way out.
-        final List<Server> snapshot;
-        final List<Handler> handlerSnapshot;
-        final List<Exchange> outstanding;
-        synchronized (this) {
-            if (closed) return;
-            // This seal is the shutdown/claim/publication linearization
-            // point. Publish or claim must finish before it, or fail afterward.
-            // Never take a State monitor while holding the gate.
-            outstanding = transfers.sealAndSnapshot();
-            closed = true;
-            snapshot = List.copyOf(servers);
-            handlerSnapshot = List.copyOf(handlers);
-        }
-        for (Server server : snapshot) server.close();
-        for (Handler handler : handlerSnapshot) {
-            synchronized (handler) {
-                if (handler.persistentActor != null) handler.persistentActor.cancel();
+    /**
+     * Phase 1 of context shutdown: seal new HTTP admission, stop listeners,
+     * revoke unclaimed transfer capabilities and request persistent actor
+     * termination. Keep I/O/timer executors alive for already-authorized actor
+     * cleanup until ActorRuntime has crossed its physical exit barrier.
+     */
+    void beginContextShutdown() {
+        synchronized (retirementLock) {
+            if (retired) return;
+            final List<Server> serversToClose;
+            final List<Handler> handlersToStop;
+            final List<Exchange> transfersToRevoke;
+            synchronized (this) {
+                if (retiringServers == null) {
+                    retiringTransfers = transfers.sealAndSnapshot();
+                    closed = true;
+                    retiringServers = List.copyOf(servers);
+                    retiringHandlers = List.copyOf(handlers);
+                }
+                serversToClose = retiringServers;
+                handlersToStop = retiringHandlers;
+                transfersToRevoke = retiringTransfers;
+            }
+            for (Server server : serversToClose) server.close();
+            for (Handler handler : handlersToStop) {
+                synchronized (handler) {
+                    if (handler.persistentActor != null) handler.persistentActor.cancel();
+                }
+            }
+            // Every entry came from the sealed registry snapshot, so revocation
+            // cannot race publication/claim of a newer capability.
+            for (Exchange exchange : transfersToRevoke) {
+                synchronized (exchange.state) {
+                    if (exchange.state.ticket != null) {
+                        exchange.state.revokeTransferLocked();
+                    }
+                }
             }
         }
-        handlers.clear();
-        timers.shutdownNow();
-        // Revoke all outstanding tokens while synchronized with each claim
-        // and callback. This releases budgets even if actor termination is late.
-        for (Exchange exchange : outstanding) {
-            synchronized (exchange.state) { exchange.state.revokeTransferLocked(); }
+    }
+
+    @Override public void close() {
+        synchronized (retirementLock) {
+            if (retired) return;
+            if (retirementOwner == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "HTTP retirement cannot re-enter from its own cleanup callback");
+            }
+            retirementOwner = Thread.currentThread();
+            try {
+                beginContextShutdown();
+
+                // ActorRuntime has already crossed its physical exit barrier
+                // when OresContext invokes this phase. No actor can now begin
+                // another HTTP operation or depend on these executors.
+                timers.shutdownNow();
+                io.shutdown();
+
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                try {
+                    long left = deadline - System.nanoTime();
+                    if (left <= 0 || !io.awaitTermination(left, TimeUnit.NANOSECONDS)) {
+                        throw new IllegalStateException(
+                                "HTTP I/O carriers did not physically exit during close");
+                    }
+                    left = deadline - System.nanoTime();
+                    if (left <= 0 || !timers.awaitTermination(left, TimeUnit.NANOSECONDS)) {
+                        throw new IllegalStateException(
+                                "HTTP timer carrier did not physically exit during close");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "interrupted before HTTP physical carrier exit", interrupted);
+                }
+
+                handlers.clear();
+                transfers.clear();
+                retiringServers = null;
+                retiringHandlers = null;
+                retiringTransfers = null;
+                retired = true;
+            } finally {
+                retirementOwner = null;
+            }
         }
-        // Shutdown without discarding accepted abort tasks: they own transport
-        // closure, semaphore release and exchange completion notifications.
-        // Late aborts after shutdown use executeAbortCleanup's inline fallback.
-        io.shutdown();
-        transfers.clear();
     }
 }
