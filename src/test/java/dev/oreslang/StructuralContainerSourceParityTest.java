@@ -82,6 +82,20 @@ final class StructuralContainerSourceParityTest {
                 end
                 """)));
 
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc empty(structural FixedArray[0 of int] xs): int { return xs.length; }
+                  fnc ok(FixedArray[0 of int] xs): int { return empty(xs); }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc empty(structural FixedArray[0 of int] xs): int { return xs.length; }
+                  fnc bad(FixedArray[0 of string] xs): int { return empty(xs); }
+                end
+                """)));
+
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
                   fnc head(structural FixedArray[2 of int] xs): int { return xs[0]; }
@@ -106,6 +120,23 @@ final class StructuralContainerSourceParityTest {
                   }
                   fnc pass(Map<string,int> values): Option<int> {
                     return lookup(values);
+                  }
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc read_list(structural List<string> values): string {
+                    return values[0];
+                  }
+                  fnc list_literal_projection(List<"literal"> values): string {
+                    return read_list(values);
+                  }
+                  fnc read_map(structural Map<string,string> values): Option<string> {
+                    return values.get("key");
+                  }
+                  fnc map_literal_projection(Map<string,"literal"> values): Option<string> {
+                    return read_map(values);
                   }
                 end
                 """)));
@@ -152,6 +183,22 @@ final class StructuralContainerSourceParityTest {
                   fnc bad(structural List<int> values): void {
                     values.add(1);
                     return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad(structural List<List<int>> values): int {
+                    return 0;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad(structural Map<string,List<int>> values): int {
+                    return 0;
                   }
                 end
                 """)));

@@ -4207,8 +4207,12 @@ public final class TypeChecker {
                         env, generics, self);
             }
             if (expected instanceof Tuple tupleExpected) {
-                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
-                        tupleExpected.kind());
+                List<Type> elements = list.elements().stream()
+                        .map(item -> typeOf(item, env, generics, self)).toList();
+                return new Tuple(
+                        elements,
+                        tupleExpected.kind(),
+                        elements.isEmpty() ? tupleExpected.homogeneousElement() : null);
             }
             if (expected instanceof Union union
                     && union.options().stream().allMatch(option -> option instanceof Tuple)) {
@@ -4342,7 +4346,14 @@ public final class TypeChecker {
                 elements.add(overlayReadonlyCapabilities(
                         sourceTuple.elements().get(i), targetTuple.elements().get(i)));
             }
-            return new Tuple(elements, targetTuple.kind());
+            Type homogeneous = targetTuple.homogeneousElement();
+            if (sourceTuple.elements().isEmpty()
+                    && sourceTuple.homogeneousElement() != null
+                    && homogeneous != null) {
+                homogeneous = overlayReadonlyCapabilities(
+                        sourceTuple.homogeneousElement(), homogeneous);
+            }
+            return new Tuple(elements, targetTuple.kind(), homogeneous);
         }
         if (source instanceof Named sourceNamed && target instanceof Named targetNamed
                 && sourceNamed.name().equals(targetNamed.name())
@@ -4503,7 +4514,11 @@ public final class TypeChecker {
             List<Type> result = new ArrayList<>(bindings.size());
             for (int i = 0; i < fixedArity; i++) result.add(tuple.elements().get(i));
             if (restIndex >= 0) {
-                result.add(new Tuple(tuple.elements().subList(fixedArity, tuple.elements().size()), tuple.kind()));
+                List<Type> rest = tuple.elements().subList(fixedArity, tuple.elements().size());
+                result.add(new Tuple(
+                        rest,
+                        tuple.kind(),
+                        rest.isEmpty() ? tuple.homogeneousElement() : null));
             }
             return List.copyOf(result);
         }
@@ -4732,7 +4747,14 @@ public final class TypeChecker {
                     bindReceiverSelf(map.key(), receiver),
                     bindReceiverSelf(map.value(), receiver));
         }
-        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
+        if (type instanceof Tuple tuple) {
+            Type homogeneous = tuple.homogeneousElement() == null
+                    ? null : bindReceiverSelf(tuple.homogeneousElement(), receiver);
+            return new Tuple(
+                    tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
+                    tuple.kind(),
+                    homogeneous);
+        }
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
                 named.name(), named.arguments().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
@@ -6031,7 +6053,13 @@ public final class TypeChecker {
                     resolveSharedGeneric(map.value(), bindings));
         }
         if (type instanceof Tuple tuple) {
-            return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList(), tuple.kind());
+            Type homogeneous = tuple.homogeneousElement() == null
+                    ? null : resolveSharedGeneric(tuple.homogeneousElement(), bindings);
+            return new Tuple(
+                    tuple.elements().stream()
+                            .map(element -> resolveSharedGeneric(element, bindings)).toList(),
+                    tuple.kind(),
+                    homogeneous);
         }
         if (type instanceof Union union) {
             return Types.unionOf(union.options().stream()
@@ -7244,17 +7272,12 @@ public final class TypeChecker {
             }
             return first;
         }
-
-        List<Ast.TypeRef> dimensions = sequenceShapeDimensions(sourceRef);
-        if (dimensions.size() == 1 && dimensions.getFirst().arguments().size() == 1) {
-            Ast.TypeRef only = dimensions.getFirst().arguments().getFirst();
-            if (only.isRepeatExact() && only.repeatExactCount() == 0) {
-                return resolve(only.arguments().getFirst(), generics, self);
-            }
+        if (tuple.homogeneousElement() != null) {
+            return tuple.homogeneousElement();
         }
         throw new IllegalArgumentException(
                 "zero-length structural " + sourceRef.name()
-                        + " must preserve its element type with '0 of T'");
+                        + " lost its declared element type");
     }
 
     private void rejectStaticClassGenericReferences(
@@ -7732,7 +7755,23 @@ public final class TypeChecker {
         if (pattern instanceof Tuple p && actual instanceof Tuple a
                 && p.kind() == a.kind()
                 && p.elements().size() == a.elements().size()) {
-            for (int i = 0; i < p.elements().size(); i++) inferGenericBindings(p.elements().get(i), a.elements().get(i), bindings, fixedBindings, label);
+            if (p.elements().isEmpty()
+                    && p.kind() != TupleKind.TUPLE
+                    && p.homogeneousElement() != null
+                    && a.homogeneousElement() != null) {
+                inferGenericBindings(
+                        p.homogeneousElement(),
+                        a.homogeneousElement(),
+                        bindings,
+                        fixedBindings,
+                        label);
+                return;
+            }
+            for (int i = 0; i < p.elements().size(); i++) {
+                inferGenericBindings(
+                        p.elements().get(i), a.elements().get(i),
+                        bindings, fixedBindings, label);
+            }
             return;
         }
         if (pattern instanceof Named p && actual instanceof Named a
@@ -7759,7 +7798,14 @@ public final class TypeChecker {
                     substituteGenerics(map.key(), bindings),
                     substituteGenerics(map.value(), bindings));
         }
-        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
+        if (type instanceof Tuple tuple) {
+            Type homogeneous = tuple.homogeneousElement() == null
+                    ? null : substituteGenerics(tuple.homogeneousElement(), bindings);
+            return new Tuple(
+                    tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(),
+                    tuple.kind(),
+                    homogeneous);
+        }
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Types.Not not) return Types.notOf(substituteGenerics(not.excluded(), bindings));
         if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
@@ -7788,7 +7834,12 @@ public final class TypeChecker {
             return (view.key() != null && containsUnknown(view.key()))
                     || containsUnknown(view.value());
         }
-        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(this::containsUnknown)
+                    || (tuple.elements().isEmpty()
+                        && tuple.homogeneousElement() != null
+                        && containsUnknown(tuple.homogeneousElement()));
+        }
         if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnknown);
         if (type instanceof Types.Not not) return containsUnknown(not.excluded());
         if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnknown);
@@ -7804,7 +7855,12 @@ public final class TypeChecker {
         if (type instanceof SelfType receiverSelf) return containsGenericNamed(receiverSelf.bound(), names);
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
-        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names))
+                    || (tuple.elements().isEmpty()
+                        && tuple.homogeneousElement() != null
+                        && containsGenericNamed(tuple.homogeneousElement(), names));
+        }
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
         if (type instanceof MapType map) {
@@ -7922,9 +7978,23 @@ public final class TypeChecker {
                 case "FixedList" -> TupleKind.FIXED_LIST;
                 default -> TupleKind.TUPLE;
             };
-            return new Tuple(exact.stream()
+            List<Type> resolved = exact.stream()
                     .map(element -> resolve(element, generics, self, allowNullMarker))
-                    .toList(), kind);
+                    .toList();
+            if (resolved.isEmpty()) {
+                Ast.TypeRef zeroPattern = shape.arguments().getFirst();
+                if (!zeroPattern.isRepeatExact()
+                        || zeroPattern.repeatExactCount() != 0
+                        || zeroPattern.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " zero extent requires the explicit form '0 of T'");
+                }
+                return new Tuple(
+                        resolved,
+                        kind,
+                        resolve(zeroPattern.arguments().getFirst(), generics, self, allowNullMarker));
+            }
+            return new Tuple(resolved, kind);
         }
 
         if (shape.arguments().size() != 1) {
@@ -8001,7 +8071,16 @@ public final class TypeChecker {
             }
         }
         if (expanded.isEmpty()) {
-            throw new IllegalArgumentException(collectionName + " sequence shape cannot expand to zero elements");
+            boolean explicitZeroFixed = (collectionName.equals("FixedArray")
+                            || collectionName.equals("FixedList"))
+                    && patterns.size() == 1
+                    && patterns.getFirst().isRepeatExact()
+                    && patterns.getFirst().repeatExactCount() == 0
+                    && patterns.getFirst().arguments().size() == 1;
+            if (!explicitZeroFixed) {
+                throw new IllegalArgumentException(
+                        collectionName + " sequence shape cannot expand to zero elements");
+            }
         }
         return List.copyOf(expanded);
     }
@@ -8589,10 +8668,16 @@ public final class TypeChecker {
                 case FIXED_LIST -> StructuralContainerPolicy.Kind.FIXED_LIST;
                 case TUPLE -> null;
             };
-            if (kind == null || tuple.elements().isEmpty()) return null;
-            Type first = tuple.elements().getFirst();
-            for (Type element : tuple.elements()) {
-                if (!element.equals(first)) return null;
+            if (kind == null) return null;
+            Type first;
+            if (tuple.elements().isEmpty()) {
+                first = tuple.homogeneousElement();
+                if (first == null) return null;
+            } else {
+                first = tuple.elements().getFirst();
+                for (Type element : tuple.elements()) {
+                    if (!element.equals(first)) return null;
+                }
             }
             return kind == StructuralContainerPolicy.Kind.FIXED_ARRAY
                     ? StructuralContainerPolicy.fixedArray(

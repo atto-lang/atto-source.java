@@ -119,14 +119,44 @@ public final class Types {
         FIXED_LIST
     }
 
-    public record Tuple(List<Type> elements, TupleKind kind) implements Type {
+    public record Tuple(
+            List<Type> elements,
+            TupleKind kind,
+            Type homogeneousElement) implements Type {
         public Tuple {
             elements = List.copyOf(elements);
             kind = Objects.requireNonNull(kind, "kind");
+            if (kind == TupleKind.TUPLE && homogeneousElement != null) {
+                throw new IllegalArgumentException(
+                        "ordinary Tuple cannot carry fixed-sequence element metadata");
+            }
+            if (homogeneousElement != null && !elements.isEmpty()) {
+                for (Type element : elements) {
+                    if (!element.equals(homogeneousElement)) {
+                        throw new IllegalArgumentException(
+                                "fixed-sequence homogeneous metadata disagrees with element slots");
+                    }
+                }
+            }
+        }
+
+        public Tuple(List<Type> elements, TupleKind kind) {
+            this(elements, kind, inferHomogeneousElement(elements, kind));
         }
 
         public Tuple(List<Type> elements) {
-            this(elements, TupleKind.TUPLE);
+            this(elements, TupleKind.TUPLE, null);
+        }
+
+        private static Type inferHomogeneousElement(
+                List<Type> elements,
+                TupleKind kind) {
+            if (kind == TupleKind.TUPLE || elements.isEmpty()) return null;
+            Type first = elements.getFirst();
+            for (Type element : elements) {
+                if (!element.equals(first)) return null;
+            }
+            return first;
         }
     }
 
@@ -226,7 +256,12 @@ public final class Types {
             return (view.key() != null && containsUncertainType(view.key()))
                     || containsUncertainType(view.value());
         }
-        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
+        if (type instanceof Tuple tuple) {
+            return tuple.elements().stream().anyMatch(Types::containsUncertainType)
+                    || (tuple.elements().isEmpty()
+                        && tuple.homogeneousElement() != null
+                        && containsUncertainType(tuple.homogeneousElement()));
+        }
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
                 || containsUncertainType(function.result());
         if (type instanceof Borrow borrow) return containsUncertainType(borrow.target());
@@ -320,6 +355,12 @@ public final class Types {
         if (from instanceof Tuple source && to instanceof Tuple target) {
             if (source.kind() != target.kind()) return false;
             if (source.elements().size() != target.elements().size()) return false;
+            if (source.elements().isEmpty() && source.kind() != TupleKind.TUPLE) {
+                return source.homogeneousElement() != null
+                        && target.homogeneousElement() != null
+                        && isAssignable(source.homogeneousElement(), target.homogeneousElement())
+                        && isAssignable(target.homogeneousElement(), source.homogeneousElement());
+            }
             for (int i = 0; i < source.elements().size(); i++) {
                 if (!isAssignable(source.elements().get(i), target.elements().get(i))) return false;
             }
