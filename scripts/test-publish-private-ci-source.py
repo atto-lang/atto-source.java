@@ -33,7 +33,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             b"blob " + str(len(approved_bytes)).encode("ascii")
             + b"\0" + approved_bytes
         ).hexdigest()
-        self.codeowners_text = "\n".join(
+        self.codeowners_text = "/.github/workflows/ @ORESoftware\n" + "\n".join(
             path + " " + pub.REQUIRED_CODEOWNER
             for path in pub.REQUIRED_CODEOWNER_PATHS
         ) + "\n"
@@ -933,6 +933,8 @@ class DestinationBoundPublisherTests(unittest.TestCase):
     def test_protected_codeowners_must_cover_export_and_source_snapshot_policy(self):
         baseline = self.codeowners_text
         cases = (
+            baseline.replace("/.github/workflows/ @ORESoftware\n", ""),
+            baseline.replace("/.github/workflows/ @ORESoftware\n", "/.github/workflows/ @Unreviewed\n"),
             baseline.replace(
                 "/.github/private-ci-approved-source-snapshots.txt @ORESoftware\n", ""),
             baseline.replace(
@@ -2495,6 +2497,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         required = [path + " " + pub.REQUIRED_CODEOWNER
                     for path in pub.REQUIRED_CODEOWNER_PATHS]
         self.assertEqual(effective[-len(required):], required)
+        self.assertEqual(effective[-len(required)-1], "/.github/workflows/ @ORESoftware")
         self.assertEqual(len(effective), len(set(effective)))
         self.assertGreaterEqual(len(required), 22)
 
