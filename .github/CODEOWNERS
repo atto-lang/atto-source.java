@@ -20,3 +20,4 @@
 /src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java @ORESoftware
 /src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java @ORESoftware
+/tests/test_ci_private_mirror_preflight.py @ORESoftware
