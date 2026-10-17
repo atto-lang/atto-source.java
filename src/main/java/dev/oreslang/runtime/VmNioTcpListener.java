@@ -40,7 +40,9 @@ public final class VmNioTcpListener implements AutoCloseable {
         ServerSocketChannel server = ServerSocketChannel.open();
         try {
             server.configureBlocking(false);
-            server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), backlog);
+            // The source facade explicitly accepts "127.0.0.1", not a
+            // platform-dependent IPv4/IPv6 loopback address.
+            server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), backlog);
             return new VmNioTcpListener(readiness, server, maxConnections, maxPending);
         } catch (IOException | RuntimeException | Error failure) {
             try { server.close(); }
