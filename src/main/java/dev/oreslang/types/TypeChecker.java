@@ -2201,29 +2201,54 @@ public final class TypeChecker {
                 targetType = memberType(member, env, generics, self, true);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
-                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
-                Type index = typeOf(indexed.index(), env, generics, self);
-                requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) {
-                    // Constant reads preserve individual slot types, so
-                    // writes must retain the same invariant.
-                    Long constant = constantTupleIndex(indexed.index());
-                    if (tuple.elements().isEmpty() || (constant != null
-                            && (constant < 0 || constant >= tuple.elements().size()))) {
-                        throw new IllegalArgumentException("fixed collection index outside arity "
-                                + tuple.elements().size());
+                Type receiverValue = deref(typeOf(indexed.receiver(), env, generics, self));
+                Type receiver = receiverDispatchType(receiverValue);
+                if (receiver instanceof Named named && findClass(named.name()) != null) {
+                    Ast.ClassDecl klass = findClass(named.name());
+                    List<Ast.Expr> setterArguments = new ArrayList<>(indexed.indices());
+                    setterArguments.add(assignment.value());
+                    Type protocolResult = checkIndexProtocol(
+                            klass, named, "Symbol.indexSet", setterArguments,
+                            env, generics, self, receiverValue);
+                    if (protocolResult == null) {
+                        throw new IllegalArgumentException(
+                                "class '" + named.name() + "' has no [Symbol.indexSet] with index arity "
+                                        + indexed.arity());
                     }
-                    if (constant != null) {
-                        targetType = tuple.elements().get(constant.intValue());
-                    } else {
-                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                        dynamicFixedSlots = tuple.elements();
+                    if (protocolResult != Primitive.VOID) {
+                        throw new IllegalArgumentException("[Symbol.indexSet] must return void");
                     }
+                    targetType = typeOf(assignment.value(), env, generics, self);
+                    where = "index";
+                } else {
+                    if (indexed.arity() != 1) {
+                        throw new IllegalArgumentException(
+                                "built-in indexed assignment requires exactly one index; got "
+                                        + indexed.arity());
+                    }
+                    Type index = typeOf(indexed.index(), env, generics, self);
+                    requireAssignable(index, Primitive.INT, "array/list index");
+                    if (receiver instanceof ListType list) targetType = list.element();
+                    else if (receiver instanceof Tuple tuple) {
+                        // Constant reads preserve individual slot types, so
+                        // writes must retain the same invariant.
+                        Long constant = constantTupleIndex(indexed.index());
+                        if (tuple.elements().isEmpty() || (constant != null
+                                && (constant < 0 || constant >= tuple.elements().size()))) {
+                            throw new IllegalArgumentException("fixed collection index outside arity "
+                                    + tuple.elements().size());
+                        }
+                        if (constant != null) {
+                            targetType = tuple.elements().get(constant.intValue());
+                        } else {
+                            targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                            dynamicFixedSlots = tuple.elements();
+                        }
+                    }
+                    else throw new IllegalArgumentException(
+                            "indexed assignment requires an array/list, tuple, or class [Symbol.indexSet] protocol");
+                    where = "index";
                 }
-                else throw new IllegalArgumentException(
-                        "indexed assignment requires an array/list or tuple; structs have a closed static field set");
-                where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
             requireReadonlyCapabilityPreserved(value, targetType, "assignment to " + where);
@@ -3559,7 +3584,26 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+            Type receiverValue = deref(typeOf(indexed.receiver(), env, generics, self));
+            Type receiver = receiverDispatchType(receiverValue);
+            if (receiver instanceof Named named) {
+                Ast.ClassDecl klass = findClass(named.name());
+                if (klass != null) {
+                    Type protocol = checkIndexProtocol(
+                            klass, named, "Symbol.index", indexed.indices(),
+                            env, generics, self, receiverValue);
+                    if (protocol == null) {
+                        throw new IllegalArgumentException(
+                                "class '" + named.name() + "' has no [Symbol.index] with index arity "
+                                        + indexed.arity());
+                    }
+                    return protocol;
+                }
+            }
+            if (indexed.arity() != 1) {
+                throw new IllegalArgumentException(
+                        "built-in indexing requires exactly one index; got " + indexed.arity());
+            }
             Type index = typeOf(indexed.index(), env, generics, self);
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
@@ -3587,7 +3631,7 @@ public final class TypeChecker {
                 return indexedElementUnion(tuple.elements());
             }
             throw new IllegalArgumentException(
-                    "indexing requires an array/list, tuple, or closed struct with a statically known string key");
+                    "indexing requires an array/list, tuple, closed struct, or class [Symbol.index] protocol");
         }
         if (expr instanceof Ast.NewExpr created) {
             // Guest Symbols are immutable keys, not fresh reference capabilities.
@@ -6208,6 +6252,47 @@ public final class TypeChecker {
         return iterableElementType(iterable);
     }
 
+    private Type checkIndexProtocol(
+            Ast.ClassDecl klass,
+            Named concreteType,
+            String symbol,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type receiverValueType) {
+        ResolvedMethod target = findMethodTarget(
+                klass, concreteType, symbol, arguments.size(), new LinkedHashSet<>());
+        if (target == null) return null;
+
+        Ast.MethodDecl method = target.method();
+        if (method.async() || method.suspends() || method.generator()) {
+            throw new IllegalArgumentException(
+                    "[" + symbol + "] must be synchronous and non-generator");
+        }
+        Ast.ClassDecl owner = target.owner();
+        requireClassMemberVisible(method.visibility(), owner, "method", method.name());
+
+        List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
+        callableGenerics.addAll(method.genericParameters());
+        Map<String, Type> bindings =
+                new HashMap<>(classGenericBindings(owner, target.ownerType()));
+        Type callableReceiver = receiverValueType instanceof SelfType
+                ? receiverValueType
+                : concreteType;
+        return checkGenericCallable(
+                callableGenerics,
+                method.parameters(),
+                method.returnType(),
+                arguments,
+                env,
+                callerGenerics,
+                callerSelf,
+                callableReceiver,
+                bindings,
+                "index protocol " + owner.name() + "." + symbol);
+    }
+
     private Type indexedElementUnion(java.util.Collection<Type> elements) {
         return elements.stream().map(this::widenCollectionElement)
                 .reduce(Types::unionOf).orElse(Unknown.INSTANCE);
@@ -7158,7 +7243,9 @@ public final class TypeChecker {
             rejectStaticClassGenericReferences(member.receiver(), classGenerics, klass, method);
         } else if (expression instanceof Ast.IndexExpr indexed) {
             rejectStaticClassGenericReferences(indexed.receiver(), classGenerics, klass, method);
-            rejectStaticClassGenericReferences(indexed.index(), classGenerics, klass, method);
+            for (Ast.Expr index : indexed.indices()) {
+                rejectStaticClassGenericReferences(index, classGenerics, klass, method);
+            }
         } else if (expression instanceof Ast.NewExpr created) {
             rejectStaticClassGenericReference(created.type(), classGenerics, klass, method);
             for (Ast.Expr argument : created.arguments()) {
