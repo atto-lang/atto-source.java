@@ -1,3 +1,16 @@
+# Actor-arena continuation forward-port note
+
+This branch selectively forward-ports the single-delivery continuation,
+deferred-cancellation, and lexical STOP-cleanup slice from Java #1150 onto the
+newer actor-arena/quiescence stack. It is **not** descended from Java #1149 and
+therefore does not claim that #1149's HTTP carrier-quiescence or the complete
+current-main physical-shutdown stack has been integrated here.
+
+The additional integration on this branch binds each admitted source task to
+lifetime-only leases for all actor arenas that exist at task admission. Those
+leases grant no read/write authority and are released exactly once when the
+source task settles; a failed native/accounting release remains retryable.
+
 # Source continuations / actor cancellation current-stack integration
 
 This reconciliation is stacked on the current physical-shutdown + HTTP carrier-quiescence candidate (#1149) at `3dac24bfba85ec560af97036d88523bdd331df92`, itself based on the current-main shutdown barriers in #1139. It forward-ports the independently safe #928/#823 continuation slice without replacing newer shutdown, HTTP, Future-retention, or notification-drain semantics.
