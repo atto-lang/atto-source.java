@@ -276,6 +276,21 @@ def branch_absent(r):
         raise Denied("private CI branch already exists")
     return branch
 
+def require_reviewed_ledgers(r):
+    # Destination and source-snapshot authority are independently reviewed
+    # security PRs. Read each ledger from the exact head that received that
+    # approval; never require those grants to be copied into the publisher PR.
+    require_exact_ledger(
+        SOURCE_REPO,
+        ".github/private-ci-approved-repositories.txt",
+        r["destination_approval_head_sha"],
+        f"{CARRIER_REPO} {CARRIER_REPO_ID}")
+    require_exact_ledger(
+        SOURCE_REPO,
+        ".github/private-ci-approved-source-snapshots.txt",
+        r["snapshot_approval_head_sha"],
+        f"{r['source_commit_sha']} {r['source_tree_sha']} {CARRIER_REPO_ID}")
+
 def refresh_authorization(r, require_new_ref=False):
     validate_receipt(r)
     repo_identity(SOURCE_REPO,SOURCE_REPO_ID); repo_identity(CARRIER_REPO,CARRIER_REPO_ID)
@@ -291,10 +306,7 @@ def refresh_authorization(r, require_new_ref=False):
         raise Denied("live reviewer permission below policy minimum")
     if content_blob(CARRIER_REPO,".github/workflows/private-oreslang-java-validation.yml",r["carrier_policy_head_sha"])!=r["carrier_workflow_blob_sha"]:
         raise Denied("carrier validation workflow changed")
-    require_exact_ledger(SOURCE_REPO,".github/private-ci-approved-repositories.txt",r["publisher_policy_head_sha"],
-                         f"{CARRIER_REPO} {CARRIER_REPO_ID}")
-    require_exact_ledger(SOURCE_REPO,".github/private-ci-approved-source-snapshots.txt",r["publisher_policy_head_sha"],
-                         f"{r['source_commit_sha']} {r['source_tree_sha']} {CARRIER_REPO_ID}")
+    require_reviewed_ledgers(r)
     commit=PUB.gh_api(f"repos/{SOURCE_REPO}/git/commits/{r['source_commit_sha']}")
     if commit.get("sha")!=r["source_commit_sha"] or PUB.nested_sha(commit,"tree")!=r["source_tree_sha"]:
         raise Denied("approved source commit/tree changed")
