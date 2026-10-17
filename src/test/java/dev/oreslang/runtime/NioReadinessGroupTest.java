@@ -32,6 +32,58 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void reactorCannotBootstrapColdActorLaneAndHostRetryCanDrain()
+            throws Exception {
+        // Exercise the actual selector context rather than mocking thread
+        // identity. When a binding bypasses the one-shot cold bootstrap
+        // helper, selector-originated admission must fail closed and retain
+        // its exact notification reservation for an external trusted retry.
+        var pools = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
+        var dispatcher = new ActorAffinityDispatcher(2, 16, new int[0], index -> {
+            var pool = new java.util.concurrent.ThreadPoolExecutor(
+                    1, 1, 60L, TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<Runnable>(16),
+                    task -> new Thread(task, "test-selector-safe-lane-" + index));
+            pools.add(pool);
+            return pool;
+        });
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            group.bindVmCompletionExecutor(dispatcher::executeHostOnWarmLane, false);
+            pipe.source().configureBlocking(false);
+            var delivered = new java.util.concurrent.CountDownLatch(1);
+            var ready = group.watch(pipe.source(), SelectionKey.OP_READ);
+            ready.whenCompleteRuntime((value, failure) -> delivered.countDown());
+            pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {42}));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while ((group.pendingCount() != 0 || group.stagedNotificationCount() == 0)
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(0, group.pendingCount());
+            assertEquals(1, group.stagedNotificationCount());
+            assertEquals(1, group.pendingNotifications(),
+                    "selector must retain accepted completion reservation after cold denial");
+            assertFalse(ready.isDone());
+            assertEquals(0, dispatcher.startedCarrierCount(),
+                    "selector must not synchronously initialize any actor carrier");
+            group.retryStagedNotifications(); // explicitly trusted host thread
+            assertTrue(delivered.await(3, TimeUnit.SECONDS));
+            assertEquals(1, dispatcher.startedCarrierCount());
+            assertEquals(0, pools.get(1).getPoolSize(),
+                    "host retry must deterministically bootstrap lane zero");
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        } finally {
+            pipe.source().close();
+            pipe.sink().close();
+            dispatcher.shutdownNow();
+            assertTrue(dispatcher.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void coldBoundExecutorBootstrapCannotBlockSelectorProgress() throws Exception {
         var bootstrapEntered = new java.util.concurrent.CountDownLatch(1);
         var releaseBootstrap = new java.util.concurrent.CountDownLatch(1);
