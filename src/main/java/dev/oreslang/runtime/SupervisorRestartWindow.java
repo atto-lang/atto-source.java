@@ -105,6 +105,12 @@ public final class SupervisorRestartWindow {
     }
 
     private boolean apply(long nowNanos) {
+        // Reject exhausted decisions before changing clock or ring state.
+        // Otherwise a failed admission could still expire timestamps or
+        // advance the observed clock, violating fail-atomicity.
+        if (decisionSequence == Long.MAX_VALUE) {
+            throw new IllegalStateException("restart decision sequence exhausted");
+        }
         long now = observeMonotonic(nowNanos);
         expire(now);
         nextSequence();
