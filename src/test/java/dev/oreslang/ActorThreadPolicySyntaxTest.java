@@ -165,4 +165,19 @@ final class ActorThreadPolicySyntaxTest {
         assertThrows(NullPointerException.class,
                 () -> ActorThreadAdmission.fromJavaAnnotation(null));
     }
+    @Test
+    void preResolvedHostMetadataCanBeValidatedWithoutReflection() {
+        assertEquals(Ast.ActorThreadPolicy.defaults(),
+                ActorThreadAdmission.requireExclusiveJavaAnnotation(
+                        ValidJavaAdapter.class.getAnnotation(ActorThreads.class)));
+        assertEquals(Ast.ActorThreadPolicy.defaults(),
+                ActorThreadAdmission.requireExclusiveJavaAnnotation(null));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorThreadAdmission.requireExclusiveJavaAnnotation(
+                        InvertedJavaAdapter.class.getAnnotation(ActorThreads.class)));
+        assertThrows(IllegalArgumentException.class,
+                () -> ActorThreadAdmission.requireExclusiveJavaAnnotation(
+                        ParallelJavaAdapter.class.getAnnotation(ActorThreads.class)));
+    }
+
 }
