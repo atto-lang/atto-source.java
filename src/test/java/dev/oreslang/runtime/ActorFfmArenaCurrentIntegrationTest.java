@@ -133,6 +133,59 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void directLifetimePinReleaseIsOffCarrierAndIdempotent() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var sliceRef = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+        var pinRef = new AtomicReference<ExplicitNativeI64Region.LifetimePin>();
+        var registered = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var memory = turn.localMemory().orElseThrow();
+                sliceRef.set(memory);
+                var arena = memory.newActorArena(1, 1);
+                arenaRef.set(arena);
+                arena.allocatePersistent(77L);
+                pinRef.set(arena.pinExternal());
+                registered.countDown();
+                turn.self().stop();
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("pin");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+
+            assertTrue(arenaRef.get().closed());
+            assertFalse(arenaRef.get().physicallyClosed());
+            assertEquals(1, arenaRef.get().outstandingExternalPins());
+            assertEquals(8L, sliceRef.get().usedBytes(),
+                    "scratch region may reclaim; persistent region stays pinned");
+
+            var releaseFailure = new AtomicReference<Throwable>();
+            Thread callbackCarrier = new Thread(() -> {
+                try {
+                    pinRef.get().close();
+                    pinRef.get().close();
+                } catch (Throwable failure) {
+                    releaseFailure.set(failure);
+                }
+            }, "actor-arena-pin-release");
+            callbackCarrier.start();
+            callbackCarrier.join(5000);
+            assertFalse(callbackCarrier.isAlive(), "lifetime pin release stalled");
+            assertNull(releaseFailure.get(), () -> "lifetime pin release failed: " + releaseFailure.get());
+            assertEquals(0, arenaRef.get().outstandingExternalPins());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, sliceRef.get().usedBytes());
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void scratchScopeCannotEscapeMailboxBoundary() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
