@@ -16,6 +16,17 @@ import static org.junit.jupiter.api.Assertions.*;
  * This does not yet route the older per-listener TCP transport through it.
  */
 final class OresVMNioLifecycleTest {
+    @Test void controlCarrierBoundsRejectInvalidBootstrapPolicies() {
+        assertDoesNotThrow(() -> OresVM.validateControlBounds(2, 20));
+        assertDoesNotThrow(() -> OresVM.validateControlBounds(20, 20));
+        for (int[] limits : new int[][] {
+                {0, 20}, {1, 20}, {2, 1}, {2, 21}, {21, 21}, {4, 3}
+        }) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> OresVM.validateControlBounds(limits[0], limits[1]));
+        }
+    }
+
     @Test void fivePendingIoWatchesShareOneVmReactor() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var pipes = new ArrayList<Pipe>();
