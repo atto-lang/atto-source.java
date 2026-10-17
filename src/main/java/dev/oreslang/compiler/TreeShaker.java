@@ -221,7 +221,8 @@ public final class TreeShaker {
             }
             if (expression instanceof Ast.MemberExpr member) return containsLambda(member.receiver());
             if (expression instanceof Ast.IndexExpr indexed) {
-                return containsLambda(indexed.receiver()) || containsLambda(indexed.index());
+                return containsLambda(indexed.receiver())
+                        || indexed.indices().stream().anyMatch(this::containsLambda);
             }
             if (expression instanceof Ast.NewExpr created) {
                 return created.arguments().stream().anyMatch(this::containsLambda);
@@ -353,9 +354,13 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
+                List<Ast.Expr> indices = new ArrayList<>(indexed.arity());
+                for (Ast.Expr index : indexed.indices()) {
+                    indices.add(substitute(index, substitutions, shadowed));
+                }
                 return new Ast.IndexExpr(
                         substitute(indexed.receiver(), substitutions, shadowed),
-                        substitute(indexed.index(), substitutions, shadowed));
+                        indices);
             }
             if (expression instanceof Ast.NewExpr created) {
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -945,9 +950,13 @@ public final class TreeShaker {
                         member.member());
             }
             if (expression instanceof Ast.IndexExpr indexed) {
+                List<Ast.Expr> indices = new ArrayList<>(indexed.arity());
+                for (Ast.Expr index : indexed.indices()) {
+                    indices.add(rewriteExpression(index, module, locals));
+                }
                 return new Ast.IndexExpr(
                         rewriteExpression(indexed.receiver(), module, locals),
-                        rewriteExpression(indexed.index(), module, locals));
+                        indices);
             }
             if (expression instanceof Ast.NewExpr created) {
                 List<Ast.Expr> arguments = new ArrayList<>();
@@ -1356,7 +1365,9 @@ public final class TreeShaker {
                 for (Ast.Expr argument : call.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.IndexExpr indexed) {
                 scanExpression(module, indexed.receiver(), locals);
-                scanExpression(module, indexed.index(), locals);
+                for (Ast.Expr index : indexed.indices()) {
+                    scanExpression(module, index, locals);
+                }
             } else if (expression instanceof Ast.NewExpr created) {
                 scanType(created.type());
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
