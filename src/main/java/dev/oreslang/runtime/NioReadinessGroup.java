@@ -273,6 +273,11 @@ public final class NioReadinessGroup implements AutoCloseable {
                     // requests are iterated rather than recursively drained.
                     // A full actor pool stops this pass on rejection; its
                     // capacity hook must initiate the next attempt.
+                    // A single admission may stage more than 128 deliveries.
+                    // Keep draining even without another external retry signal;
+                    // otherwise the tail can remain stranded indefinitely.
+                    if (!rejected && !stagedNotifications.isEmpty())
+                        notificationRetryRequested.set(true);
                 } while (!rejected && notificationRetryRequested.get()
                         && ++passes < 64);
             } finally {
