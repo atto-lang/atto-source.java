@@ -52,6 +52,19 @@ final class Complex128ExceptionalTest {
     }
 
     @Test
+    void exactFiniteDivisionPreservesSignedZeroQuadrants() {
+        Complex128Math.Value rotated = Complex128Math.divide(
+                0.0, 0.0, -0.0, 1.0);
+        assertRawBits(0x0000000000000000L, rotated.real());
+        assertRawBits(0x8000000000000000L, rotated.imaginary());
+
+        Complex128Math.Value imaginaryNegativeZero = Complex128Math.divide(
+                0.0, -0.0, 1.0, 0.0);
+        assertRawBits(0x0000000000000000L, imaginaryNegativeZero.real());
+        assertRawBits(0x8000000000000000L, imaginaryNegativeZero.imaginary());
+    }
+
+    @Test
     void infiniteOverInfiniteRemainsUnordered() {
         Complex128Math.Value value = Complex128Math.divide(
                 Double.POSITIVE_INFINITY,
