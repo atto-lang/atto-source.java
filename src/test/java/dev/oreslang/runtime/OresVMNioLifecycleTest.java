@@ -50,6 +50,32 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void mappingWorkerCannotJoinItsOwnControlExecutor() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        var outcome = new java.util.concurrent.CompletableFuture<Boolean>();
+        try {
+            vm.dispatchHostIoMapping(() -> {
+                if (!OresVM.onControlCarrier()) {
+                    outcome.completeExceptionally(
+                            new AssertionError("CONTROL host mapping worker lost identity"));
+                    return;
+                }
+                try {
+                    vm.close();
+                    outcome.complete(false);
+                } catch (IllegalStateException rejected) {
+                    outcome.complete(rejected.getMessage().contains("outside actor"));
+                }
+            });
+            assertTrue(outcome.get(3, TimeUnit.SECONDS),
+                    "host I/O mapping callback must not attempt executor self-join");
+            assertTrue(vm.started(), "rejected callback close cannot retire the VM");
+            assertEquals(1, vm.nioReactorCount());
+        } finally {
+            vm.close(); // external host owns the real teardown
+        }
+    }
+
     @Test void vmCloseRetiresReadinessAndRejectsNewRegistrations() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var nio = vm.nioReadiness();
