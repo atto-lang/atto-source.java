@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Negative/mutation tests for the common STATIC serde policy validator."""
 import copy
+import os
+from unittest import mock
 import json
 import tempfile
 import unittest
@@ -108,6 +110,64 @@ class SerdePolicyRegression(unittest.TestCase):
             with self.assertRaises(policy.ContractError):
                 policy.verify_file(bad)
 
+
+    def test_contract_read_uses_single_nofollow_nonblocking_fd(self):
+        actual_open = os.open
+        with mock.patch.object(policy.os, 'open', wraps=actual_open) as observed:
+            self.assertEqual(policy.verify_file(), policy.EXPECTED_SHA256)
+        self.assertEqual(observed.call_count, 1)
+        flags = observed.call_args.args[1]
+        self.assertTrue(flags & os.O_NOFOLLOW)
+        self.assertTrue(flags & os.O_NONBLOCK)
+
+    def test_reject_path_swapped_to_symlink_at_open(self):
+        with tempfile.TemporaryDirectory() as root:
+            location = Path(root) / 'contract.json'
+            actual = Path(root) / 'replacement.json'
+            content = policy.CONTRACT.read_bytes()
+            location.write_bytes(content)
+            actual.write_bytes(content)
+            true_open = os.open
+
+            def swap_then_open(path, flags, *args, **kwargs):
+                location.unlink()
+                location.symlink_to(actual)
+                return true_open(path, flags, *args, **kwargs)
+
+            with mock.patch.object(policy.os, 'open', side_effect=swap_then_open):
+                with self.assertRaises(policy.ContractError):
+                    policy.verify_file(location)
+
+
+    def test_reject_directory_and_release_open_descriptor(self):
+        with tempfile.TemporaryDirectory() as root:
+            real_open = os.open
+            opened = []
+
+            def track_open(path, flags, *args, **kwargs):
+                descriptor = real_open(path, flags, *args, **kwargs)
+                opened.append(descriptor)
+                return descriptor
+
+            with mock.patch.object(policy.os, 'open', side_effect=track_open):
+                with self.assertRaisesRegex(policy.ContractError, 'regular file'):
+                    policy.verify_file(Path(root))
+            self.assertEqual(len(opened), 1)
+            with self.assertRaises(OSError):
+                os.fstat(opened[0])
+
+    def test_reject_fifo_without_blocking_on_open(self):
+        if not hasattr(os, 'mkfifo'):
+            with self.assertRaises(policy.ContractError):
+                with mock.patch.object(policy.os, 'O_NOFOLLOW', 0):
+                    policy.verify_file()
+            return
+        with tempfile.TemporaryDirectory() as root:
+            fifo = Path(root) / 'policy.pipe'
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(policy.ContractError, 'regular file'):
+                policy.verify_file(fifo)
+
     def test_reject_symlinked_policy(self):
         with tempfile.TemporaryDirectory() as root:
             target = Path(root) / 'actual.json'
@@ -152,7 +212,7 @@ class SerdePolicyRegression(unittest.TestCase):
 if __name__ == '__main__':
     # unittest discover exits 0 even if no tests are discovered. A security
     # gate cannot treat a renamed/deleted suite or skipped test as green.
-    expected = 32
+    expected = 36
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(SerdePolicyRegression)
     if suite.countTestCases() != expected:
         raise SystemExit(f'FAIL: expected {expected} serde regressions, '
