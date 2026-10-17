@@ -924,7 +924,7 @@ public final class Parser {
         boolean mutableReferent = parseReferentMutability(kind);
         Ast.TypeRef type = null;
         String name;
-        if ((check(IDENT) || check(EQ)) && checkNext(EQUAL)) {
+        if (check(IDENT) && checkNext(EQUAL)) {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
@@ -1148,7 +1148,7 @@ public final class Parser {
             if (close != null) {
                 if (!check(close)) {
                     do {
-                        if (check(IDENT) && checkNext(EQUAL)) {
+                        if ((check(IDENT) || check(EQ)) && checkNext(EQUAL)) {
                             String parameterName = advance().lexeme();
                             consume(EQUAL, "expected '=' after named annotation parameter");
                             args.add(Ast.TypeRef.namedParameter(parameterName, parseMetaValue()));
