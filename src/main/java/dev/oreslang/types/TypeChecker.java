@@ -2220,6 +2220,10 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.TypeTestExpr test) {
             requireRuntimeReifiableType(test.targetType(), "is");
+            requireKnownRuntimeTarget(
+                    test.targetType(),
+                    new LinkedHashSet<>(),
+                    "is");
             Type source = deref(typeOf(test.value(), env, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
             if (!typesMayOverlap(source, target)) {
@@ -2233,7 +2237,12 @@ public final class TypeChecker {
             return Primitive.BOOL;
         }
         if (expr instanceof Ast.CastExpr cast) {
-            requireRuntimeReifiableType(cast.targetType(), cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as");
+            String castOperator = cast.mode() == Ast.CastMode.OPTIONAL ? "as?" : "as";
+            requireRuntimeReifiableType(cast.targetType(), castOperator);
+            requireKnownRuntimeTarget(
+                    cast.targetType(),
+                    new LinkedHashSet<>(),
+                    castOperator);
             Type source = deref(typeOf(cast.value(), env, generics, self));
             Type target = deref(resolve(cast.targetType(), generics, self));
             if (!typesMayOverlap(source, target)) {
@@ -5890,13 +5899,20 @@ public final class TypeChecker {
      * aliases cannot silently become a predicate that always returns false.
      */
     private void requireKnownRuntimePatternTarget(Ast.TypeRef ref, Set<String> aliases) {
+        requireKnownRuntimeTarget(ref, aliases, "type pattern");
+    }
+
+    private void requireKnownRuntimeTarget(
+            Ast.TypeRef ref,
+            Set<String> aliases,
+            String operator) {
         if (ref.isComplement()) {
-            requireKnownRuntimePatternTarget(ref.complementedType(), aliases);
+            requireKnownRuntimeTarget(ref.complementedType(), aliases, operator);
             return;
         }
         if (ref.isUnion()) {
             for (Ast.TypeRef member : ref.arguments()) {
-                requireKnownRuntimePatternTarget(member, aliases);
+                requireKnownRuntimeTarget(member, aliases, operator);
             }
             return;
         }
@@ -5913,18 +5929,19 @@ public final class TypeChecker {
         Ast.TypeAliasDecl alias = findTypeAlias(name);
         if (alias != null && alias.genericParameters().isEmpty()) {
             if (!aliases.add(name)) {
-                throw new IllegalArgumentException("cyclic type alias in runtime pattern '" + name + "'");
+                throw new IllegalArgumentException(
+                        "cyclic type alias in runtime " + operator + " target '" + name + "'");
             }
             try {
-                requireRuntimeReifiableType(alias.target(), "type pattern alias");
-                requireKnownRuntimePatternTarget(alias.target(), aliases);
+                requireRuntimeReifiableType(alias.target(), operator + " alias");
+                requireKnownRuntimeTarget(alias.target(), aliases, operator);
             } finally {
                 aliases.remove(name);
             }
             return;
         }
         throw new IllegalArgumentException(
-                "type pattern '" + name + "' has no known runtime identity; "
+                operator + " target '" + name + "' has no known runtime identity; "
                         + "declare/import a reifiable nominal type or use a supported scalar");
     }
 
