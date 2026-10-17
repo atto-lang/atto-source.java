@@ -238,6 +238,30 @@ final class DenoCliDefaultPermissionsTest {
         }));
     }
 
+    @Test
+    void flags2EnvDiagnosticsNeverBecomePermissionGrants() {
+        java.util.Map<String, String> ambient = java.util.Map.of(
+                "ORES_CORE_DEBUG", "yes",
+                "ORES_CHECK", "true",
+                "ORES_PERMISSION_CHECK", "compile",
+                "ORES_ALLOW_NET", "*",
+                "ORES_ALLOW_ENV", "*");
+        assertTrue(OresMain.envFlagEnabled(ambient, "ORES_CORE_DEBUG"));
+        assertTrue(OresMain.envFlagEnabled(ambient, "ORES_CHECK"));
+        assertEquals("compile", OresMain.envOrDefault(
+                ambient, "ORES_PERMISSION_CHECK", "runtime"));
+        // Environment values are non-authority preferences; the scoped
+        // permission builder remains unmodified and default-deny.
+        RuntimePermissions empty = RuntimePermissions.denyAll();
+        assertFalse(empty.allows(RuntimePermissions.Permission.NET, "127.0.0.1:443"));
+        assertFalse(empty.allows(RuntimePermissions.Permission.ENV, "PATH"));
+        assertThrows(IllegalArgumentException.class,
+                () -> OresMain.envFlagEnabled(
+                        java.util.Map.of("ORES_CHECK", "not-a-bool"), "ORES_CHECK"));
+        assertFalse(OresMain.envFlagEnabled(java.util.Map.of(
+                "ORES_CHECK", "false"), "ORES_CHECK"));
+    }
+
     private Path sourceReadingEnvironment() throws Exception {
         Path source = temp.resolve("permission-env.ores");
         Files.writeString(source, """
