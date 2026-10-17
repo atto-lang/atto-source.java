@@ -1,0 +1,29 @@
+name: Actor reliability kernel hardening
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/oreslang/runtime/ActorReliabilityKernel.java'
+      - 'src/main/java/dev/oreslang/runtime/GenServerReplyLedger.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorReliabilityKernel*'
+      - 'src/test/java/dev/oreslang/runtime/GenServerReplyLedgerHardeningTest.java'
+      - '.github/workflows/actor-reliability-kernel.yml'
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Exact JDK-only smoke
+        run: |
+          rm -rf /tmp/actor-kernel && mkdir -p /tmp/actor-kernel
+          javac -d /tmp/actor-kernel             src/main/java/dev/oreslang/runtime/ActorReliabilityKernel.java             src/test/java/dev/oreslang/runtime/ActorReliabilityKernelSmoke.java
+          java -cp /tmp/actor-kernel dev.oreslang.runtime.ActorReliabilityKernelSmoke
+      - name: Focused Maven tests
+        run: mvn -q -Dtest=ActorReliabilityKernelTest,GenServerReplyLedgerHardeningTest,GenServerPendingCallsTest test
