@@ -7163,7 +7163,17 @@ public final class ActorRuntime implements AutoCloseable {
             codeActorState = null;
             Throwable terminalOutput = ref.terminationCause.get();
             outputStream.close(terminalOutput);
-            if (memorySlice != null) memorySlice.retireFromRuntime();
+            if (memorySlice != null) {
+                try {
+                    memorySlice.retireFromRuntime();
+                } catch (RuntimeException retirementFailure) {
+                    // A corrupt/unavailable aggregate refund must not strand
+                    // doneFuture or child/supervisor finalization. The slice
+                    // stays revoked and retains unpaid bytes for diagnosis;
+                    // expose the failure rather than reporting graceful exit.
+                    ref.terminationCause.compareAndSet(null, retirementFailure);
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
