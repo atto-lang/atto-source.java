@@ -7261,8 +7261,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object unwrapHostArgument(Object value) {
             if (value instanceof HostObjectFacade host) return host.value();
-            if (value instanceof OresMap map) {
-                return context.asGuestHostValue(map.immutableSnapshot());
+            if (value instanceof OresMap) {
+                throw new IllegalArgumentException(
+                        "Map<K,V> cannot cross the Java host interop boundary until "
+                                + "explicit serialization/copy semantics are defined");
             }
             if (value instanceof Map<?, ?> map) {
                 // Never hand Java a mutable alias to anonymous struct storage.
@@ -8380,6 +8382,7 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
+            if (name.equals("Map")) return value instanceof OresMap;
             if (name.equals("Generator") || name.equals("Iterator")) return value instanceof GeneratorRuntime.Generator<?>;
             if (name.equals("AsyncGenerator") || name.equals("AsyncIterator")) return value instanceof GeneratorRuntime.AsyncGenerator<?>;
             if (name.equals("IteratorResult")) return value instanceof GeneratorRuntime.Step<?>;
@@ -8412,6 +8415,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof GeneratorRuntime.Generator<?>) return "Iterator";
             if (value instanceof GeneratorRuntime.AsyncGenerator<?>) return "AsyncIterator";
             if (value instanceof GeneratorRuntime.Step<?>) return "IteratorResult";
+            if (value instanceof OresMap) return "Map";
             if (value instanceof List<?>) return "List";
             if (value instanceof String) return "string";
             if (value instanceof Boolean) return "bool";
@@ -8538,8 +8542,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
-            // Class/actor instances have identity equality by default.
-            if (left instanceof OresObject || right instanceof OresObject) return false;
+            // Mutable identity-bearing values have identity equality by default.
+            // The same-object case returned true above; distinct maps/objects
+            // must never acquire host structural equality by accident.
+            if (left instanceof OresObject || right instanceof OresObject
+                    || left instanceof OresMap || right instanceof OresMap) {
+                return false;
+            }
 
             if (left instanceof ActorRuntime.ActorId || right instanceof ActorRuntime.ActorId) {
                 return left instanceof ActorRuntime.ActorId
@@ -8793,6 +8802,12 @@ public final class OresEvalRootNode extends RootNode {
                     shaped.add(shapeReturnedValue(declared.arguments().getFirst(), items.get(i), callable + "[" + i + "]", resolving));
                 }
                 return shaped;
+            }
+            if (declared.name().equals("Map")) {
+                if (!(value instanceof OresMap)) {
+                    throw returnTypeMismatch(callable, declared, value);
+                }
+                return value;
             }
 
             if (declared.name().equals("bool") || declared.name().equals("Bool")) {

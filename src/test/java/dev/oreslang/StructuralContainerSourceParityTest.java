@@ -235,9 +235,14 @@ final class StructuralContainerSourceParityTest {
                     return values.get(key);
                   }
 
-                  pub routine main(): void {
+                  fnc make(): Map<string,int> {
                     let mut Map<string,int> values = new Map<string,int>();
                     values.put("a", 7);
+                    return values;
+                  }
+
+                  pub routine main(): void {
+                    let mut Map<string,int> values = make();
                     values.put("b", 9);
                     stdio.stdout.write(values.size);
                     stdio.stdout.write(":");
