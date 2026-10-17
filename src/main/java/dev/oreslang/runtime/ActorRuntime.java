@@ -7649,16 +7649,38 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
 
+            ActorTerminalState retainedTerminal = null;
             try {
-                recordTerminationEvent(
-                        this,
-                        plan.terminal,
+                retainedTerminal = new ActorTerminalState(
+                        ref.id(),
+                        ref.generation(),
+                        kind,
+                        parent == null ? Optional.empty() : Optional.of(parent.ref.id()),
+                        classifyTermination(plan.terminal),
                         plan.acceptedUserMessages,
                         plan.processedUserMessages,
                         plan.abandonedUserMessages,
-                        plan.abandonedContinuations);
+                        plan.abandonedContinuations,
+                        plan.terminal == null ? "" : plan.terminal.getClass().getName());
+                if (!ref.terminalState.compareAndSet(null, retainedTerminal)) {
+                    lifecyclePublicationFailures.incrementAndGet();
+                    retainedTerminal = ref.terminalState.get();
+                }
             } catch (Throwable failure) {
                 firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+            }
+
+            if (retainedTerminal != null) {
+                try {
+                    recordTerminationEvent(retainedTerminal);
+                } catch (Throwable failure) {
+                    firstFatal = noteLifecyclePublicationFailure(firstFatal, failure);
+                }
+            } else {
+                // Per-ref post-mortem is more important than the global
+                // journal. If allocation itself failed, account a dropped
+                // journal record and continue authoritative teardown.
+                supervisionEventsDropped.incrementAndGet();
             }
 
             firstFatal = unregisterActor(this, firstFatal);
