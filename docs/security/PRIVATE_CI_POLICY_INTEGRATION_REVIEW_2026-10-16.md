@@ -197,7 +197,13 @@ branch ([Java #1121](https://github.com/ores-truffle-oreslang/oreslang-source.ja
 the reviewer/administrator must dispatch the pinned workflow on `main` with
 `candidate_sha=<reviewed #1121 immutable head>` and
 `verify_option_pattern=true`. The branch must be re-reviewed and its
-approved SHA/tree repinned if it changes. The security-integration candidate
+approved SHA/tree repinned if it changes. The administrator must also set
+`ORESLANG_PRIVATE_CANDIDATE_OPTION_TEST_BLOB` to the independently reviewed
+Git blob of `src/test/java/dev/oreslang/OptionIfMatchesTest.java`; for the
+current #1121 head that blob is
+`bae3a3f5506c5420b08c147610dba0d0b92ca7b5`. A missing, malformed or
+different blob fails **before candidate checkout** when Option verification is
+requested, and the checked-out test file is rehashed again before Maven runs. The security-integration candidate
 itself need not contain Option fixtures and may use
 `verify_option_pattern=false`; **such a run MUST NOT be reported as
 Option-conformance evidence**.
