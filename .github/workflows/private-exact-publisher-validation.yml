@@ -129,11 +129,12 @@ jobs:
         run: |
           set -euo pipefail
           bash -n scripts/check-private-ci-destination.sh scripts/test-private-ci-destination.sh scripts/run-in-private-ci-destination.sh
-          python3 -I -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/dispatch-review-pinned-private-ci.py tests/test_review_pinned_dispatcher.py
-      - name: Execute review-pinned dispatcher source-free adversarial suite
+          python3 -I -m py_compile scripts/publish-private-ci-source.py scripts/test-publish-private-ci-source.py scripts/verify-review-pinned-private-ci.py tests/test_review_pinned_private_ci.py scripts/dispatch-review-pinned-private-ci.py tests/test_review_pinned_dispatcher.py
+      - name: Execute review-pinned receipt and dispatcher source-free adversarial suites
         shell: bash
         run: |
           set -euo pipefail
+          python3 -I tests/test_review_pinned_private_ci.py -v
           python3 -I tests/test_review_pinned_dispatcher.py -v
       - name: Execute destination-policy fail-closed Bash suite
         shell: bash
