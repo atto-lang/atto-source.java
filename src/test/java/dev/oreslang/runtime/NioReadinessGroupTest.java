@@ -1087,6 +1087,7 @@ final class NioReadinessGroupTest {
             publish.invoke(group, (Runnable) callbacks::incrementAndGet);
             assertEquals(0, callbacks.get());
             assertEquals(1, group.stagedNotificationCount());
+            assertEquals(1, group.unexpectedSubmissionFailures());
             group.retryStagedNotifications();
             assertEquals(1, callbacks.get());
             assertEquals(0, group.stagedNotificationCount());
@@ -1110,6 +1111,7 @@ final class NioReadinessGroupTest {
             group.bindVmCompletionExecutor(unstable);
             publish.invoke(group, (Runnable) callbacks::incrementAndGet);
             assertEquals(1, group.stagedNotificationCount());
+            assertEquals(1, group.unexpectedSubmissionFailures());
             group.retryStagedNotifications();
             assertEquals(2, queued.size());
             Runnable first = queued.poll();
