@@ -51,6 +51,17 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
         return count;
     }
 
+    /** Prepare one fixed host/runtime lane before a reactor can hand work to it. */
+    void prepareLane(int lane) {
+        if (closed.get()) throw new RejectedExecutionException("actor lanes closed");
+        ExecutorService executor = lanes.get(Math.floorMod(lane, lanes.size()));
+        if (executor instanceof NativeCarrierExecutor nativeLane) {
+            nativeLane.prestartCoreThread();
+        } else if (executor instanceof java.util.concurrent.ThreadPoolExecutor pool) {
+            pool.prestartCoreThread();
+        }
+    }
+
     void executeOnLane(int lane, Runnable command) {
         Objects.requireNonNull(command);
         if (closed.get() || !queueSlots.tryAcquire()) throw new RejectedExecutionException("actor lane queue unavailable");
