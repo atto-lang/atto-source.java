@@ -174,7 +174,9 @@ public final class OwnershipChecker {
         // Actor state uses a distinct initialization/capability protocol and
         // is not included in this ordinary-class migration.
         if (klass.actorKind() == Ast.ActorKind.NONE) {
-            List<Ast.ConstructorDecl> initializerVariants = new ArrayList<>(klass.constructors());
+            List<Ast.ConstructorDecl> initializerVariants = klass.constructors().stream()
+                    .filter(candidate -> !ConstructorDelegation.isDelegating(candidate))
+                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
             if (initializerVariants.isEmpty()) initializerVariants.add(null);
             for (Ast.ConstructorDecl declaringConstructor : initializerVariants) {
             Scope initializerScope = new Scope(null);
