@@ -459,7 +459,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             "GITHUB_GRAPHQL_URL": "https://attacker.invalid/graphql",
             "GITHUB_SERVER_URL": "https://attacker.invalid",
             "GH_TOKEN": "reviewed-token",
-            "GITHUB_TOKEN": "actions-token",
+            "GITHUB_TOKEN": "reviewed-token",
         }
         with patch.dict(os.environ, suspicious):
             child = pub.verified_child_env()
@@ -475,7 +475,29 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual(child["GIT_CONFIG_GLOBAL"], "/dev/null")
         self.assertEqual(child["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(child["GH_TOKEN"], "reviewed-token")
-        self.assertEqual(child["GITHUB_TOKEN"], "actions-token")
+        self.assertNotIn("GITHUB_TOKEN", child)
+
+    def test_child_environment_denies_conflicting_auth_token_precedence(self):
+        with patch.dict(os.environ, {
+            "GH_TOKEN": "attacker-or-stale-token",
+            "GITHUB_TOKEN": "reviewed-actions-token",
+        }, clear=True):
+            with self.assertRaisesRegex(
+                    pub.Denied, "conflicting GitHub authentication token variables"):
+                pub.verified_child_env()
+
+        with patch.dict(os.environ, {
+            "GH_TOKEN": "same-token",
+            "GITHUB_TOKEN": "same-token",
+        }, clear=True):
+            child = pub.verified_child_env()
+        self.assertEqual(child["GH_TOKEN"], "same-token")
+        self.assertNotIn("GITHUB_TOKEN", child)
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "actions-only"}, clear=True):
+            child = pub.verified_child_env()
+        self.assertEqual(child["GH_TOKEN"], "actions-only")
+        self.assertNotIn("GITHUB_TOKEN", child)
 
     def test_real_preflight_never_executes_checkout_shell_or_inherited_bash_env(self):
         # Approval is now parsed strictly as data: even a script that
