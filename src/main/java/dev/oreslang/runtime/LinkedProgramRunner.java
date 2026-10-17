@@ -74,7 +74,7 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+                runtimePermissions, new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
 
         if (policy != null) {
@@ -213,7 +213,7 @@ public final class LinkedProgramRunner {
         LinkedHashMap<String, MixedSourceUnit> units = new LinkedHashMap<>();
         LinkedHashMap<String, Map<String, String>> importResolutions = new LinkedHashMap<>();
         collectImportClosure(entry, units, projectConfig, importResolutions,
-                new SourceAdmissionBudget(), 0);
+                effectivePermissions, new SourceAdmissionBudget(), 0);
         ensureJavaEntryContainsOres(entry, units);
         boolean hasJavaSource = units.values().stream().anyMatch(MixedSourceUnit::hasJavaSource);
         if (hasJavaSource) {
@@ -409,9 +409,21 @@ public final class LinkedProgramRunner {
             Map<String, MixedSourceUnit> units,
             OresProjectConfig projectConfig,
             Map<String, Map<String, String>> importResolutions,
+            RuntimePermissions importPermissions,
             SourceAdmissionBudget budget,
             int depth) throws IOException {
         Path normalized = unit.toAbsolutePath().normalize();
+        if (depth > 0 && importPermissions != null) {
+            // Re-resolve the selected source identity immediately before the
+            // file read. A symlinked import cannot retain authority merely
+            // because its lexical path was once under an allowed root.
+            normalized = normalized.toRealPath();
+            if (!importPermissions.allows(
+                    RuntimePermissions.Permission.IMPORT, normalized.toString())) {
+                throw new SecurityException(
+                        "source import denied by scoped IMPORT permission: " + normalized);
+            }
+        }
         String id = unitId(normalized);
         if (units.containsKey(id)) return;
         // Fail before any file I/O or parsing when import recursion is too deep.
@@ -437,7 +449,14 @@ public final class LinkedProgramRunner {
             }
 
             String raw = imported.path().replace('\\', '/');
-            java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
+            java.util.Optional<Path> target = importPermissions == null
+                    ? projectConfig.resolveImport(normalized, imported.path())
+                    : projectConfig.resolveImport(
+                            normalized,
+                            imported.path(),
+                            candidate -> importPermissions.allows(
+                                    RuntimePermissions.Permission.IMPORT,
+                                    candidate.toString()));
             if (target.isEmpty()) {
                 if (raw.startsWith(".") || Path.of(raw).isAbsolute()) {
                     throw new IllegalArgumentException(
@@ -457,7 +476,7 @@ public final class LinkedProgramRunner {
             String targetId = unitId(resolvedTarget);
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(resolvedTarget, units, projectConfig, importResolutions,
-                    budget, depth + 1);
+                    importPermissions, budget, depth + 1);
         }
     }
 
