@@ -166,6 +166,44 @@ final class RecursiveFutureFlattenTest {
     }
 
     @Test
+    void producerReturningFlattenedObserverFailsClosedWithoutSelfSubscription()
+            throws Exception {
+        OresFuture<Object> producer = new OresFuture<>();
+        OresFuture<Object> observer = OresFutures.flatten(producer);
+        assertEquals(1, producer.pendingRuntimeWaiterCount());
+        producer.completeFromRuntime(observer);
+
+        // A self-subscription otherwise leaves the returned observer pending
+        // indefinitely even though the producer has already settled.
+        assertTrue(observer.isDone(), "adopting the observer itself must fail");
+        CompletionException failure =
+                assertThrows(CompletionException.class, observer::join);
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertTrue(failure.getCause().getMessage().contains("cyclic"));
+        assertEquals(0, producer.pendingRuntimeWaiterCount());
+        assertEquals(0, observer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
+    void delayedObserverSelfCycleFailsClosedAndClearsTheIntermediateWaiter() {
+        OresFuture<Object> outer = new OresFuture<>();
+        OresFuture<Object> middle = new OresFuture<>();
+        OresFuture<Object> observer = OresFutures.flatten(outer);
+        outer.completeFromRuntime(middle);
+        assertFalse(observer.isDone());
+        assertEquals(1, middle.pendingRuntimeWaiterCount());
+
+        middle.completeFromRuntime(observer);
+        assertTrue(observer.isDone());
+        CompletionException failure =
+                assertThrows(CompletionException.class, observer::join);
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals(0, outer.pendingRuntimeWaiterCount());
+        assertEquals(0, middle.pendingRuntimeWaiterCount());
+        assertEquals(0, observer.pendingRuntimeWaiterCount());
+    }
+
+    @Test
     void cyclicNestedFutureFailsClosedInsteadOfWaitingForever() {
         OresFuture<Object> self = new OresFuture<>();
         OresFuture<Integer> flattened = OresFutures.flatten(self);
