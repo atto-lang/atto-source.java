@@ -98,7 +98,9 @@ public final class OresVM implements AutoCloseable {
             // publishing this VM to an OresContext or admitting guest turns.
             // Pending watches do not create threads: NIO scaling is separate
             // from runnable CONTROL/actor carrier expansion.
-            this.nioReadiness = new NioReadinessGroup();
+            this.nioReadiness = new NioReadinessGroup(4, 8192, 1024, controlExecutor);
+            ((AdaptiveCarrierExecutor) controlExecutor).onTaskCompleted(
+                    nioReadiness::retryStagedNotifications);
         } catch (IOException ioFailure) {
             rootScheduler.close();
             controlExecutor.shutdownNow();
