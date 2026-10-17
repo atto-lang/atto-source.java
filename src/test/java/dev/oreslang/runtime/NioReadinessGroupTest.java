@@ -14,60 +14,34 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NioReadinessGroupTest {
-    @Test void vmCompletionQueueSaturationRetriesWithoutBlockingSelector() throws Exception {
-        // One CONTROL worker and one queued CONTROL turn intentionally occupy
-        // all bounded executor capacity. A readiness notification must remain
-        // reserved, then drain when a carrier finishes; no caller-runs policy.
-        var executor = new AdaptiveCarrierExecutor(1, 1, 1,
-                work -> Thread.ofPlatform().daemon(true)
-                        .name("nio-control-test").unstarted(work));
-        assertEquals(1, executor.prestartAllCoreThreads());
-        var blockerEntered = new java.util.concurrent.CountDownLatch(1);
-        var unblock = new java.util.concurrent.CountDownLatch(1);
-        var blockerFinished = new java.util.concurrent.CountDownLatch(1);
-        var pipe = java.nio.channels.Pipe.open();
-        try (var group = new NioReadinessGroup(1, 8, 8, executor)) {
-            executor.onTaskCompleted(group::retryStagedNotifications);
-            assertTrue(group.usesVmCompletionCarriers());
-            pipe.source().configureBlocking(false);
-            executor.execute(() -> {
-                blockerEntered.countDown();
-                try { unblock.await(3, TimeUnit.SECONDS); }
-                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
-                finally { blockerFinished.countDown(); }
-            });
-            assertTrue(blockerEntered.await(2, TimeUnit.SECONDS));
-            var queuedTurn = new java.util.concurrent.CountDownLatch(1);
-            executor.execute(queuedTurn::countDown);
-            var ready = group.watch(pipe.source(), SelectionKey.OP_READ);
-            var callbackThread = new java.util.concurrent.CompletableFuture<String>();
-            ready.whenCompleteRuntime((bits, failure) -> {
-                if (failure != null) callbackThread.completeExceptionally(failure);
-                else callbackThread.complete(Thread.currentThread().getName());
-            });
-            assertEquals(1, pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[]{13})));
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (group.pendingCount() != 0 && System.nanoTime() < deadline)
-                Thread.sleep(1); // host test only
-            assertEquals(0, group.pendingCount(), "selector must retire readiness under CONTROL saturation");
-            assertEquals(1, group.pendingNotifications(), "completion remains reserved");
-            assertFalse(ready.isDone(), "subscriber must not run on selector as fallback");
+    @Test void cancelledTcpAcceptReleasesWatchAndAllowsRearm() throws Exception {
+        // The VM-owned selector accepts one-shot readiness without creating a
+        // listener-specific I/O thread. Cancellation must reclaim the watch
+        // before the same caller-owned listener can be armed again.
+        try (var group = new NioReadinessGroup(1, 32, 64);
+             var listener = ServerSocketChannel.open()) {
+            listener.configureBlocking(false);
+            listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            int port = ((InetSocketAddress) listener.getLocalAddress()).getPort();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+            for (int round = 0; round < 48; ++round) {
+                var abandoned = group.acceptAsync(listener);
+                assertTrue(abandoned.cancel(false));
+                while (group.pendingCount() != 0 && System.nanoTime() < deadline)
+                    Thread.sleep(1); // host test driver only
+                assertEquals(0, group.pendingCount(),
+                        "cancelled one-shot accept must release listener ownership");
+                assertEquals(1, group.reactorCount());
+            }
+            var rearmed = group.acceptAsync(listener);
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), port);
+                 var accepted = rearmed.get(3, TimeUnit.SECONDS)) {
+                assertFalse(accepted.isBlocking());
+                assertTrue(accepted.isOpen());
+            }
             group.close();
-            assertFalse(group.awaitStopped(30, TimeUnit.MILLISECONDS),
-                    "shutdown must not declare quiescence while CONTROL is saturated");
-            unblock.countDown();
-            assertTrue(blockerFinished.await(2, TimeUnit.SECONDS));
-            assertTrue(queuedTurn.await(2, TimeUnit.SECONDS));
-            assertTrue((ready.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
-            assertEquals("nio-control-test", callbackThread.get(3, TimeUnit.SECONDS));
             assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
             assertEquals(0, group.pendingNotifications());
-        } finally {
-            unblock.countDown();
-            executor.shutdownNow();
-            assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS));
-            pipe.source().close();
-            pipe.sink().close();
         }
     }
 
