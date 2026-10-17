@@ -179,6 +179,65 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void concurrentOffCarrierLeaseReleaseIsIdempotentAndRefundsOnce() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var firstRef = new AtomicReference<ActorArena.ExternalLease>();
+        var secondRef = new AtomicReference<ActorArena.ExternalLease>();
+        var sliceRef = new AtomicReference<ActorRuntime.ActorMemorySlice>();
+        var admitted = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var slice = turn.localMemory().orElseThrow();
+                sliceRef.set(slice);
+                var arena = slice.newActorArena(1, 1);
+                arenaRef.set(arena);
+                firstRef.set(arena.pinExternal());
+                secondRef.set(arena.pinExternal());
+                admitted.countDown();
+                turn.self().stop();
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("pin-twice");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertEquals(2, arenaRef.get().outstandingExternalPins());
+            assertFalse(arenaRef.get().physicallyClosed());
+            assertEquals(16L, sliceRef.get().usedBytes());
+
+            var release = new CountDownLatch(1);
+            var failure = new AtomicReference<Throwable>();
+            Thread[] closers = new Thread[8];
+            for (int i = 0; i < closers.length; i++) {
+                var lease = (i & 1) == 0 ? firstRef.get() : secondRef.get();
+                closers[i] = new Thread(() -> {
+                    try {
+                        release.await();
+                        lease.close();
+                        lease.close();
+                    } catch (Throwable error) {
+                        failure.compareAndSet(null, error);
+                    }
+                });
+                closers[i].start();
+            }
+            release.countDown();
+            for (Thread closer : closers) closer.join(5_000);
+            for (Thread closer : closers) assertFalse(closer.isAlive(), "lease closer hung");
+
+            assertNull(failure.get(), () -> "off-carrier lease close failed: " + failure.get());
+            assertEquals(0, arenaRef.get().outstandingExternalPins());
+            assertTrue(arenaRef.get().physicallyClosed());
+            assertEquals(0L, sliceRef.get().usedBytes(),
+                    "duplicate/concurrent close must refund native bytes exactly once");
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void scratchScopeCannotEscapeMailboxBoundary() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
