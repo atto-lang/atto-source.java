@@ -9,6 +9,7 @@ import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,6 +42,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private static volatile boolean nativeLibraryLoaded;
 
     private final ArrayBlockingQueue<Runnable> queue;
+    // Enqueue and shutdown-drain share one short admission fence. A separate
+    // tryLock path keeps reactor submissions from waiting behind shutdown or
+    // an ordinary admission. Never perform nativeStart while holding this.
+    private final ReentrantLock queueAdmission = new ReentrantLock();
     private final int maximumPoolSize;
     private final long nativeStackBytes;
     private final AtomicInteger corePoolSize;
@@ -257,21 +262,30 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         Objects.requireNonNull(task, "task");
         if (!readyForNoBootstrapAdmission())
             throw new RejectedExecutionException("native carrier has not finished bootstrap");
-        enqueueIfOpen(task);
+        enqueueIfOpen(task, true);
     }
 
-    /** Shutdown can win between an admission check and queue.offer().
-     * Remove the submitted identity after a concurrent shutdown so a task
-     * cannot be stranded behind shutdownNow()'s completed queue drain.
-     * An already running turn remains under the normal cooperative boundary.
+    /** Enqueue and shutdown drain are linearized by queueAdmission. This
+     * avoids removing the wrong runnable during rollback when different
+     * submitted tasks implement value-based equals(). An admission that wins
+     * before shutdown is accepted and will either run or be drained by
+     * shutdownNow(); no task can sneak in after its final drain.
      */
-    private void enqueueIfOpen(Runnable task) {
-        if (shutdown.get())
-            throw new RejectedExecutionException("native carrier executor is shut down");
-        if (!queue.offer(task))
-            throw new RejectedExecutionException("native carrier ready queue is full");
-        if (shutdown.get() && queue.remove(task))
-            throw new RejectedExecutionException("native carrier shut down during admission");
+    private void enqueueIfOpen(Runnable task, boolean noParking) {
+        if (noParking) {
+            if (!queueAdmission.tryLock())
+                throw new RejectedExecutionException("native carrier admission is busy");
+        } else {
+            queueAdmission.lock();
+        }
+        try {
+            if (shutdown.get())
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            if (!queue.offer(task))
+                throw new RejectedExecutionException("native carrier ready queue is full");
+        } finally {
+            queueAdmission.unlock();
+        }
     }
 
     @Override
@@ -280,7 +294,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         if (shutdown.get())
             throw new RejectedExecutionException("native carrier executor is shut down");
         ensureNativeStarted();
-        enqueueIfOpen(task);
+        enqueueIfOpen(task, false);
     }
 
     public boolean remove(Runnable task) {
@@ -317,7 +331,12 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private List<Runnable> beginShutdown(boolean interruptActiveCarriers) {
         if (!shutdown.compareAndSet(false, true)) return List.of();
         ArrayList<Runnable> abandoned = new ArrayList<>();
-        queue.drainTo(abandoned);
+        queueAdmission.lock();
+        try {
+            queue.drainTo(abandoned);
+        } finally {
+            queueAdmission.unlock();
+        }
 
         if (interruptActiveCarriers) {
             // Match ThreadPoolExecutor.shutdownNow(): signal any active carrier
