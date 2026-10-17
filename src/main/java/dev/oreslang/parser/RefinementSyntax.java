@@ -137,9 +137,9 @@ public final class RefinementSyntax {
             case "eq", "==" -> "eq";
             case "ne", "!=" -> "ne";
             case "gt", ">" -> "gt";
-            case "ge", "gte", ">=" -> "ge";
+            case "gte", ">=" -> "ge";
             case "lt", "<" -> "lt";
-            case "le", "lte", "<=" -> "le";
+            case "lte", "<=" -> "le";
             default -> throw new IllegalArgumentException("unknown refinement comparator " + token);
         };
     }
