@@ -328,4 +328,71 @@ final class ProjectRootImportTest {
                 () -> config.resolveImport(importer, "+/lib/escape"));
         assertTrue(error.getMessage().contains("symlink"), error.getMessage());
     }
+    @Test
+    void configuredRootsBeatOresPathsAndLegacyAmbientPaths() throws Exception {
+        Path root = makeProject("search-priority");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path source = root.resolve("src/priority.ores");
+        Path vendor = root.resolve("vendor/priority.ores");
+        Path modern = temp.resolve("modern-search/priority.ores");
+        Path legacy = temp.resolve("legacy-search/priority.ores");
+        Files.createDirectories(vendor.getParent());
+        Files.createDirectories(modern.getParent());
+        Files.createDirectories(legacy.getParent());
+        Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = ["src"]
+                import_paths = ["vendor"]
+                """);
+        for (Path file : java.util.List.of(source, vendor, modern, legacy)) {
+            Files.writeString(file, "pub fnc priority(): int { return 42; }\\n");
+        }
+        Map<String, String> environment = Map.of(
+                OresProjectConfig.ENV_ORES_PATHS,
+                ":" + modern.getParent() + "::",
+                OresProjectConfig.ENV_ORESLANG_PATH,
+                legacy.getParent().toString());
+        OresProjectConfig config = OresProjectConfig.discover(importer, environment);
+        assertEquals(source, config.resolveImport(importer, "priority").orElseThrow());
+        Files.delete(source);
+        assertEquals(vendor, config.resolveImport(importer, "priority").orElseThrow());
+        Files.delete(vendor);
+        assertEquals(modern, config.resolveImport(importer, "priority").orElseThrow());
+        Files.delete(modern);
+        assertEquals(legacy, config.resolveImport(importer, "priority").orElseThrow());
+        Files.delete(legacy);
+        assertTrue(config.resolveImport(importer, "priority").isEmpty(),
+                "empty ORES_PATHS components must never supply the working directory");
+    }
+
+    @Test
+    void explicitEmptySourceRootsNeverFallBackToManifestDirectory() throws Exception {
+        Path root = makeProject("empty-roots");
+        Path importer = root.resolve("src/routes/rest/foo/bar/baz/delete.ores");
+        Path marker = root.resolve("only-here.ores");
+        Files.writeString(marker, "pub fnc marker(): int { return 42; }\\n");
+        Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                roots = []
+                import_paths = []
+                """);
+        OresProjectConfig empty = OresProjectConfig.discover(importer, Map.of());
+        assertTrue(empty.sourceRoots().isEmpty());
+        assertTrue(empty.resolveImport(importer, "only-here").isEmpty());
+        OresProjectConfig explicit = OresProjectConfig.discover(importer,
+                Map.of(OresProjectConfig.ENV_ORES_PATHS, root.toString()));
+        assertEquals(marker, explicit.resolveImport(importer, "only-here").orElseThrow());
+
+        Files.writeString(root.resolve(OresProjectConfig.MANIFEST_NAME), """
+                schema_version = "1"
+                [source]
+                import_paths = []
+                """);
+        OresProjectConfig omitted = OresProjectConfig.discover(importer, Map.of());
+        assertEquals(root, omitted.sourceRoots().getFirst());
+        assertEquals(marker, omitted.resolveImport(importer, "only-here").orElseThrow());
+    }
+
 }
