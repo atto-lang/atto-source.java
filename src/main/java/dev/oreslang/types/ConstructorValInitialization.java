@@ -11,17 +11,18 @@ import java.util.Set;
 /**
  * Definite initialization of ordinary-class blank val fields.
  *
- * <p>Tracks MUST and MAY initialized fields on normal constructor paths.
- * A write is legal only when the field is not MAY-initialized; construction
- * completes only when every blank val field is MUST-initialized. Each explicit
- * constructor is checked independently. Conditions do not publish a partially
- * constructed receiver, and constructor writes are direct self.field = value
- * statements, not arbitrary expression side effects.</p>
+ * <p>The semantic state is an immutable per-field assignment-count interval
+ * supplied by {@link ConstructorFlowState}. A direct write is admitted only
+ * from [0,0]; successful constructor completion requires [1,1] for every
+ * blank val field. Branch joins take min(min) and max(max), which is the
+ * interval form of MUST-intersection/MAY-union.</p>
  *
- * <p>Loops, try/catch/finally, select, defer and match are conservatively
- * allowed only once all required val slots are initialized. This avoids
- * claiming exactly-once proofs across exceptional, suspended or iterative
- * edges that the current frontend does not model yet.</p>
+ * <p>if/else, switch and safely exhaustive match statements participate in
+ * dataflow. Repeating loops, try/catch/finally, select and defer remain
+ * fail-closed until their backedge/exception/cleanup effects are represented
+ * explicitly. Suspension is independently prohibited while constructing:
+ * await, blocking channel waits, blocking dynamic select and async iteration
+ * cannot carry a partial object across a scheduler boundary.</p>
  */
 public final class ConstructorValInitialization {
     private ConstructorValInitialization() { }
@@ -35,35 +36,24 @@ public final class ConstructorValInitialization {
                 required.add(field.name());
             }
         }
-        if (required.isEmpty()) return;
 
+        // Even classes without blank val fields are scanned so constructors
+        // cannot silently introduce suspension through await/select/channel
+        // forms while a construction receiver exists.
         for (Ast.ConstructorDecl constructor : klass.constructors()) {
-            State normalExit = block(constructor.body(), new State(), required, klass.name());
+            ConstructorFlowState entry = ConstructorFlowState.blank(required);
+            ConstructorFlowState normalExit = block(
+                    constructor.body(), entry, required, klass.name());
             if (normalExit != null) requireComplete(normalExit, required, klass.name());
         }
     }
 
-    private static final class State {
-        final LinkedHashSet<String> must;
-        final LinkedHashSet<String> may;
-
-        State() {
-            this.must = new LinkedHashSet<>();
-            this.may = new LinkedHashSet<>();
-        }
-
-        State(Set<String> must, Set<String> may) {
-            this.must = new LinkedHashSet<>(must);
-            this.may = new LinkedHashSet<>(may);
-        }
-
-        State copy() {
-            return new State(must, may);
-        }
-    }
-
     /** A null state has no normal continuation (every path returned). */
-    private static State block(List<Ast.Stmt> stmts, State state, Set<String> required, String klass) {
+    private static ConstructorFlowState block(
+            List<Ast.Stmt> stmts,
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass) {
         for (Ast.Stmt stmt : stmts) {
             if (state == null) return null;
             state = statement(stmt, state, required, klass);
@@ -71,20 +61,24 @@ public final class ConstructorValInitialization {
         return state;
     }
 
-    private static State statement(Ast.Stmt stmt, State state, Set<String> required, String klass) {
+    private static ConstructorFlowState statement(
+            Ast.Stmt stmt,
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass) {
         if (stmt instanceof Ast.ExprStmt expression) {
             if (expression.expression() instanceof Ast.AssignExpr assignment
                     && blankValTarget(assignment.target(), required) != null) {
                 String field = blankValTarget(assignment.target(), required);
-                // RHS executes before the slot is written: reject reads of a missing slot.
+                // RHS executes before the slot is written: reject premature reads,
+                // hidden writes and suspension before committing this assignment.
                 scan(assignment.value(), state, required, klass);
-                if (!state.may.add(field)) {
+                if (state.maybeInitialized(field)) {
                     throw error(klass, field, "is immutable; may be initialized more than once");
                 }
-                state.must.add(field);
-            } else {
-                scan(expression.expression(), state, required, klass);
+                return state.write(field);
             }
+            scan(expression.expression(), state, required, klass);
             return state;
         }
         if (stmt instanceof Ast.BindingStmt binding) {
@@ -104,54 +98,81 @@ public final class ConstructorValInitialization {
             return null;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
-            List<State> normalExits = new ArrayList<>();
+            List<ConstructorFlowState> normalExits = new ArrayList<>();
             for (Ast.IfBranch branch : conditional.branches()) {
-                // Branch conditions may read initialized slots, but not write them.
                 scan(branch.condition(), state, required, klass);
-                State exit = block(branch.body(), state.copy(), required, klass);
+                ConstructorFlowState exit = block(branch.body(), state, required, klass);
                 if (exit != null) normalExits.add(exit);
             }
-            State otherwise = block(conditional.elseBody(), state.copy(), required, klass);
+            ConstructorFlowState otherwise = block(
+                    conditional.elseBody(), state, required, klass);
             if (otherwise != null) normalExits.add(otherwise);
-            return merge(normalExits);
+            return ConstructorFlowState.join(normalExits);
         }
         if (stmt instanceof Ast.SwitchStmt switched) {
             scan(switched.subject(), state, required, klass);
-            List<State> normalExits = new ArrayList<>();
+            List<ConstructorFlowState> normalExits = new ArrayList<>();
             for (Ast.SwitchCase arm : switched.cases()) {
-                for (Ast.Expr constant : arm.constants()) scan(constant, state, required, klass);
-                State exit = block(arm.body(), state.copy(), required, klass);
+                for (Ast.Expr constant : arm.constants()) {
+                    scan(constant, state, required, klass);
+                }
+                ConstructorFlowState exit = block(arm.body(), state, required, klass);
                 if (exit != null) normalExits.add(exit);
             }
-            // An empty default may mean no case matches; include the entry path.
-            State defaultExit = block(switched.defaultBody(), state.copy(), required, klass);
+            // Empty default preserves the unmatched entry path.
+            ConstructorFlowState defaultExit = block(
+                    switched.defaultBody(), state, required, klass);
             if (defaultExit != null) normalExits.add(defaultExit);
-            return merge(normalExits);
+            return ConstructorFlowState.join(normalExits);
+        }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            scan(matched.subject(), state, required, klass);
+            List<ConstructorFlowState> normalExits = new ArrayList<>();
+            boolean catchAll = false;
+            for (Ast.MatchArm arm : matched.arms()) {
+                if (arm.guard() != null) scan(arm.guard(), state, required, klass);
+                ConstructorFlowState exit = block(arm.body(), state, required, klass);
+                if (exit != null) normalExits.add(exit);
+                if (arm.guard() == null && isCatchAll(arm.pattern())) catchAll = true;
+            }
+            // TypeChecker has richer finite-domain exhaustiveness analysis, but
+            // this standalone pass intentionally proves only an explicit catch-all.
+            if (!catchAll) normalExits.add(state);
+            return ConstructorFlowState.join(normalExits);
+        }
+        if (stmt instanceof Ast.ForOfStmt loop && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (stmt instanceof Ast.ForOfDestructureStmt loop && loop.asyncIteration()) {
+            throw constructionSuspension(klass, "async iteration");
+        }
+        if (stmt instanceof Ast.SelectStmt select
+                && select.mode() == Ast.WaitMode.BLOCKING) {
+            throw constructionSuspension(klass, "blocking select");
         }
 
         // Until the frontend has a sound CFG for loop backedges, exceptional
-        // completion, deferred cleanup and detached arms, initialize before
-        // entering those constructs. Scan their entire AST for illicit writes.
+        // completion, deferred cleanup and nonblocking detached arms, all
+        // required slots must already be complete before entering them.
         requireComplete(state, required, klass);
         scan(stmt, state, required, klass);
         return state;
     }
 
-    private static State merge(List<State> states) {
-        if (states.isEmpty()) return null;
-        State joined = states.getFirst().copy();
-        for (int i = 1; i < states.size(); i++) {
-            joined.must.retainAll(states.get(i).must);
-            joined.may.addAll(states.get(i).may);
-        }
-        return joined;
+    private static boolean isCatchAll(Ast.Pattern pattern) {
+        return pattern instanceof Ast.WildcardPattern
+                || pattern instanceof Ast.BindingPattern;
     }
 
-    private static void requireComplete(State state, Set<String> required, String klass) {
+    private static void requireComplete(
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass) {
         for (String field : required) {
-            if (!state.must.contains(field)) {
+            if (!state.count(field).exactlyOnce()) {
                 throw new IllegalArgumentException("constructor for " + klass
-                        + " did not initialize field '" + field + "' on every normal path");
+                        + " did not initialize field '" + field + "' exactly once on every normal path"
+                        + " (state " + state.count(field) + ")");
             }
         }
     }
@@ -172,8 +193,24 @@ public final class ConstructorValInitialization {
      * traverse their record components so new expression forms are scanned
      * instead of silently bypassing the checker.
      */
-    private static void scan(Object node, State state, Set<String> required, String klass) {
+    private static void scan(
+            Object node,
+            ConstructorFlowState state,
+            Set<String> required,
+            String klass) {
         if (node == null) return;
+
+        if (node instanceof Ast.AwaitExpr) {
+            throw constructionSuspension(klass, "await");
+        }
+        if (node instanceof Ast.ChannelOpExpr channel
+                && channel.mode() == Ast.WaitMode.BLOCKING) {
+            throw constructionSuspension(klass, "blocking channel operation");
+        }
+        if (node instanceof Ast.DynamicSelectExpr select
+                && select.mode() == Ast.WaitMode.BLOCKING) {
+            throw constructionSuspension(klass, "blocking dynamic select");
+        }
         if (node instanceof Ast.AssignExpr assignment) {
             String field = blankValTarget(assignment.target(), required);
             if (field != null) {
@@ -185,7 +222,7 @@ public final class ConstructorValInitialization {
                 && member.receiver() instanceof Ast.NameExpr receiver
                 && receiver.name().equals("self")
                 && required.contains(member.member())
-                && !state.must.contains(member.member())) {
+                && !state.definitelyInitialized(member.member())) {
             throw error(klass, member.member(), "is read before constructor initialization");
         }
         if (node instanceof Iterable<?> values) {
@@ -205,7 +242,8 @@ public final class ConstructorValInitialization {
                 scan(component.getAccessor().invoke(record), state, required, klass);
             } catch (ReflectiveOperationException e) {
                 throw new IllegalStateException(
-                        "unable to inspect constructor syntax " + record.getClass().getSimpleName(), e);
+                        "unable to inspect constructor syntax "
+                                + record.getClass().getSimpleName(), e);
             }
         }
     }
@@ -213,5 +251,11 @@ public final class ConstructorValInitialization {
     private static IllegalArgumentException error(String klass, String field, String message) {
         return new IllegalArgumentException(
                 "constructor for '" + klass + "': val field '" + field + "' " + message);
+    }
+
+    private static IllegalArgumentException constructionSuspension(String klass, String operation) {
+        return new IllegalArgumentException(
+                "constructor for '" + klass + "' cannot suspend through " + operation
+                        + "; construction-scoped self must not cross a scheduler boundary");
     }
 }
