@@ -120,6 +120,13 @@ final class NioReadinessGroupTest {
                             "host TCP read and write share a single selector");
                 }
             }
+            var closedChannel = SocketChannel.open();
+            closedChannel.configureBlocking(false);
+            closedChannel.close();
+            var closedWrite = group.writeAsync(closedChannel, new byte[0]);
+            var closedFailure = assertThrows(ExecutionException.class,
+                    () -> closedWrite.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(java.io.IOException.class, closedFailure.getCause());
             group.close();
             assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
             assertEquals(0, group.activeWriteLeases());
