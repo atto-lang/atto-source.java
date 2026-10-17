@@ -202,18 +202,30 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
         // occurs after successful sends have become externally visible.
         var completed = Collections.unmodifiableList(result);
         var children = session.forwardAll(frame);
-        // Pre-materialize EVERY successful branch receipt before the first
-        // mailbox send. An OOM on branch N cannot otherwise invalidate a
-        // previously-admitted branch's caller-visible receipt batch.
+        // Pre-materialize EVERY successful AND failed branch receipt before
+        // the first mailbox send. Allocation pressure must not turn a
+        // nontransactional branch rejection into loss of earlier receipts.
         List<Admission> prepared;
+        List<Admission> rejected;
         try {
             var all = new ArrayList<Admission>(children.size());
+            var allRejected = new ArrayList<Admission>(children.size());
             for (int i = 0; i < children.size(); i++) {
                 var child = children.get(i);
-                all.add(new Admission(edges.get(out.get(i)), child.receiver(),
+                int edgeIndex = edges.get(out.get(i));
+                all.add(new Admission(edgeIndex, child.receiver(),
                         child.flowId(), child.routeId(), true, null));
+                // Even failure receipts must be allocated BEFORE the first
+                // irreversible mailbox admission. The original rejection
+                // becomes this preallocated exception's cause, without
+                // creating a fresh receipt after an earlier send succeeded.
+                allRejected.add(new Admission(edgeIndex, child.receiver(),
+                        child.flowId(), child.routeId(), false,
+                        new IllegalStateException(
+                                "pipeline mailbox admission rejected for " + child.receiver())));
             }
             prepared = all;
+            rejected = allRejected;
         } catch (RuntimeException | Error preflight) {
             for (var unpublished : children)
                 ActorPipelineRouteSession.retireDelivered(unpublished);
@@ -231,8 +243,9 @@ final class ActorPipelineCorrelatedMailboxRouter<M> {
                     result.add(prepared.get(next));
                 } catch (RuntimeException failure) {
                     ActorPipelineRouteSession.retireDelivered(child);
-                    result.add(new Admission(edges.get(edge), child.receiver(),
-                            child.flowId(), child.routeId(), false, failure));
+                    var denied = rejected.get(next);
+                    denied.failure().initCause(failure);
+                    result.add(denied);
                 }
             }
             return completed;
