@@ -21,6 +21,7 @@ public final class Parser {
     private final List<Token> tokens;
     private final List<SyntaxWarning> warnings = new ArrayList<>();
     private int current;
+    private boolean maxActorThreadsEnumDeclared;
     private boolean suppressRefinementOperators;
     // A match guard's outer '->' delimits an arm, not a lambda that happens
     // to follow a parenthesized guard expression.
@@ -111,6 +112,13 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 modifiers = mergeModifiers(modifiers, parseModifiers());
+                if (match(ENUM)) {
+                    if (!annotations.isEmpty())
+                        throw error(previous(), "built-in MaxActorThreads enum cannot have annotations");
+                    validateOnlyVisibilityModifiers(modifiers, "built-in MaxActorThreads enum");
+                    parseBuiltInMaxActorThreadsEnum();
+                    continue;
+                }
                 if (match(ACTOR, ISOACTOR)) {
                     rootDeclarations.add(parseDefinedActorClass(previous(), modifiers, annotations));
                     continue;
@@ -689,6 +697,38 @@ public final class Parser {
      * allocation primitive. Actor construction/spawn must still be lowered by
      * the runtime before source programs may instantiate actor classes.
      */
+    /**
+     * Temporary source spelling for the language-owned actor thread tier.
+     * This is NOT a generic enum compiler. It validates the precise frozen
+     * built-in declaration and never permits user code to redefine the
+     * three scheduling constants. Runtime opt-in above LOW stays fail-closed.
+     */
+    private void parseBuiltInMaxActorThreadsEnum() {
+        if (maxActorThreadsEnumDeclared)
+            throw error(previous(), "duplicate built-in MaxActorThreads enum declaration");
+        String name = consume(IDENT, "expected MaxActorThreads enum name").lexeme();
+        if (!name.equals("MaxActorThreads"))
+            throw error(previous(), "general enum lowering is unsupported; only built-in MaxActorThreads is available");
+        consume(AS, "MaxActorThreads enum requires 'as'");
+        for (Ast.MaxActorThreads tier : Ast.MaxActorThreads.values()) {
+            String member = consume(IDENT, "expected MaxActorThreads." + tier.name()).lexeme();
+            if (!member.equals(tier.name()))
+                throw error(previous(), "built-in MaxActorThreads requires "
+                        + tier.name() + " in canonical order");
+            String type = consume(IDENT, "MaxActorThreads." + tier.name() + " requires int").lexeme();
+            if (!type.equals("int"))
+                throw error(previous(), "MaxActorThreads." + tier.name() + " must have int backing type");
+            consume(EQUAL, "expected '=' after MaxActorThreads." + tier.name() + " int");
+            String number = consume(INT, "expected canonical numeric value for "
+                    + tier.name()).lexeme();
+            if (!number.equals(Integer.toString(tier.value())))
+                throw error(previous(), "MaxActorThreads." + tier.name() + " must equal " + tier.value());
+            match(SEMICOLON);
+        }
+        consume(END, "expected 'end' after MaxActorThreads.HIGH");
+        maxActorThreadsEnumDeclared = true;
+    }
+
     private Ast.ClassDecl parseDefinedActorClass(
             Token actorToken,
             Modifiers modifiers,
