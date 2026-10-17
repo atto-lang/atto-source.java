@@ -35,9 +35,10 @@ final class NioReadinessGroupTest {
                             () -> overlapping.get(2, TimeUnit.SECONDS));
                     assertInstanceOf(IllegalStateException.class, denied.getCause());
                     assertEquals(1, group.activeReadLeases());
-                    peer.getOutputStream().write(new byte[] {10, 20, (byte) 255});
-                    assertArrayEquals(new byte[] {10, 20, (byte) 255},
-                            first.get(3, TimeUnit.SECONDS));
+                    // TCP is a byte stream, not a message transport: use
+                    // one byte so no test assumes a full multi-byte read.
+                    peer.getOutputStream().write(10);
+                    assertArrayEquals(new byte[] {10}, first.get(3, TimeUnit.SECONDS));
 
                     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                     while (group.activeReadLeases() != 0 && System.nanoTime() < deadline)
@@ -53,9 +54,9 @@ final class NioReadinessGroupTest {
                     assertEquals(0, group.activeReadLeases());
                     assertEquals(0, group.pendingCount());
 
-                    var next = group.readAsync(incoming, 2);
-                    peer.getOutputStream().write(new byte[] {42, 43});
-                    assertArrayEquals(new byte[] {42, 43}, next.get(3, TimeUnit.SECONDS));
+                    var next = group.readAsync(incoming, 1);
+                    peer.getOutputStream().write(42);
+                    assertArrayEquals(new byte[] {42}, next.get(3, TimeUnit.SECONDS));
                     assertEquals(1, group.reactorCount(),
                             "read cancellation does not provision more selectors");
                 }
@@ -112,9 +113,9 @@ final class NioReadinessGroupTest {
                     while (group.activeWriteLeases() != 0 && System.nanoTime() < deadline)
                         Thread.sleep(1);
                     assertEquals(0, group.activeWriteLeases());
-                    var response = group.readAsync(incoming, 2);
-                    peer.getOutputStream().write(new byte[]{7, 8});
-                    assertArrayEquals(new byte[]{7, 8}, response.get(3, TimeUnit.SECONDS));
+                    var response = group.readAsync(incoming, 1);
+                    peer.getOutputStream().write(7);
+                    assertArrayEquals(new byte[]{7}, response.get(3, TimeUnit.SECONDS));
                     assertEquals(1, group.reactorCount(),
                             "host TCP read and write share a single selector");
                 }
