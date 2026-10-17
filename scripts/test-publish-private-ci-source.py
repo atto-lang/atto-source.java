@@ -126,6 +126,20 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
 
+    def test_source_protection_revoked_before_publication_leaves_no_ref(self):
+        calls = [0]
+        def check_origin(*args):
+            calls[0] += 1
+            if calls[0] == 2:
+                raise pub.Denied("source main protection was revoked")
+        with patch.object(pub, "reviewed_source_main", side_effect=check_origin):
+            with self.assertRaisesRegex(pub.Denied, "revoked"):
+                self.publish()
+        self.assertEqual(calls[0], 2)
+        uploads = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertIn("repos/trusted/ci/git/commits", uploads)
+        self.assertNotIn("repos/trusted/ci/git/refs", uploads)
+
     def test_mid_transfer_policy_revocation_aborts_without_new_branch(self):
         original = self.fake_api
         def revoke_after_blob(route, method="GET", payload=None):
