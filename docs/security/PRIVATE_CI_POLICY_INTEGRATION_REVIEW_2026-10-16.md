@@ -283,3 +283,40 @@ is open, and sampled private source workflows end with **zero executed steps
 and zero artifacts**. The source-local candidate workflow itself has **not
 executed**. A successful source-free test carrier neither unlocks this
 candidate workflow nor authorizes confidential Git-tree mirroring.
+
+## October 17 follow-up: child environment transport/config hardening
+
+The protected publisher now treats caller environment as untrusted not only for
+shell/Git/loader injection, but also for authenticated GitHub CLI transport and
+configuration. `verified_child_env()` strips upper/lower HTTP(S)/ALL/NO proxy
+variables, custom TLS/CA/key-log variables, GitHub CLI config/debug/server
+overrides, XDG config selection and Go TLS debug state. It forces
+`HOME=/nonexistent`, `XDG_CONFIG_HOME=/nonexistent`,
+`GH_HOST=github.com`, a fixed system executable path and disabled Git global
+and system configuration. Only `GH_TOKEN`/`GITHUB_TOKEN` are intentionally
+preserved for authentication.
+
+The existing publisher adversarial suite remains **154 declared tests**; its
+child-environment regression was expanded to seed proxy, CA, `GH_CONFIG_DIR`,
+host/API overrides, shell hooks, loader injection and Git overrides together,
+then assert all are removed/overridden while only the authentication tokens
+survive. A source-derived focused logic execution confirmed no injected
+transport/config variable survives. The exact full 154-test checked-in suite
+still has **not** executed on the source repository because Actions jobs fail
+before runner allocation; do not call this CI green.
+
+A fresh source-free alternate-org capacity probe also succeeded:
+[Sagitta #39043359219](https://github.com/sagitta-stack/sagitta-infra/actions/runs/39043359219)
+proved GraalVM JDK 25 + Maven + public Truffle dependency/JUnit capacity, and
+[Sagitta #39043574704](https://github.com/sagitta-stack/sagitta-infra/actions/runs/39043574704)
+additionally built and executed a **source-free GraalVM Native Image** smoke.
+These contain no Oreslang source and authorize no private export. The separate
+source-free exact-tree gate
+[dummy-stack #38988696252](https://github.com/ores-dummy-org-oreslang-stack/ores-dummy-org-oreslang-stack-api-server.ores/actions/runs/38988696252)
+still proves synthetic branch/tree matching and sensitivity to changed content
+or file modes.
+
+The confidential source transfer hold remains unchanged: source `main` is
+unprotected, protected-main destination/snapshot allowlists are empty,
+independent review is absent, and the P0 prior exposure incident remains open.
+
