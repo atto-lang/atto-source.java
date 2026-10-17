@@ -28,9 +28,18 @@ import_paths = ["lib", "vendor"]
 main = "src/main.ores"
 ```
 
-All paths in the manifest resolve relative to `[project].root`; this value
-is relative to the manifest directory unless absolute. Omitting it uses the
-manifest directory. For new projects, prefer `root = "."` or omit it.
+All paths in the manifest resolve relative to `[project].root`. In a modern
+`.ores.pkg.toml`, that root must be `.` or a **canonical, existing, relative
+subdirectory** of the manifest directory. Absolute paths, `..`, redundant
+`.` segments, backslashes, control bytes and root symlinks that physically
+escape the manifest directory are rejected. Nested modern or legacy package
+markers along either the spelled or physical root path are also rejected.
+Omitting `root` selects the manifest directory.
+
+Existing legacy `.oreslangc.cfg.toml` root handling is retained separately
+for compatibility. Known manifest properties (`project.root`,
+`entrypoints.main`, `source.roots`, `source.import_paths`) must have the
+correct TOML type, rather than being silently ignored.
 
 Unrecognized schema versions are rejected. Only existing supported sections
 are interpreted; package registries, workspaces, and dependency pinning are
