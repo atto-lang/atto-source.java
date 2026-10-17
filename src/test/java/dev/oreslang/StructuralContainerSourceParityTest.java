@@ -255,6 +255,21 @@ final class StructuralContainerSourceParityTest {
                       stdio.stdout.write("=");
                       stdio.stdout.write(value);
                     done
+
+                    let mut Map<int,int> ints = new Map<int,int>();
+                    ints.put(-1, 11);
+                    ints.put(9223372036854775807, 12);
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(ints.get(-1).unwrap());
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(ints.get(9223372036854775807).unwrap());
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(values == values);
+                    let mut Map<string,int> other = new Map<string,int>();
+                    other.put("a", 7);
+                    other.put("b", 9);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(values == other);
                     return;
                   }
                 end
@@ -273,7 +288,7 @@ final class StructuralContainerSourceParityTest {
                 .build()) {
             context.eval(source);
         }
-        assertEquals("2:7:true|a=7|b=9",
+        assertEquals("2:7:true|a=7|b=9|11:12:true:false",
                 out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n"));
     }
 
@@ -428,6 +443,16 @@ final class StructuralContainerSourceParityTest {
                         """)));
         assertTrue(channelBorrow.getMessage().contains("cannot transport borrowed payloads"),
                 channelBorrow::getMessage);
+
+        IllegalArgumentException channelListBorrow = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Channel<FixedList[0 of &int]> payload): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(channelListBorrow.getMessage().contains("cannot transport borrowed payloads"),
+                channelListBorrow::getMessage);
 
         IllegalArgumentException actorFuture = assertThrows(
                 IllegalArgumentException.class,
