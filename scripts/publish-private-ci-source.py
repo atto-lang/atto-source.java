@@ -369,7 +369,7 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
-    reviewed_source_main(trusted_root, repository)
+    approved_main_sha = reviewed_source_main(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -431,7 +431,8 @@ def publish(repository, source, branch, trusted_root, source_commit=None):
     # The independently reviewed source permission may have been revoked while
     # bounded Git objects were uploaded. Recheck protected source authority
     # immediately before making a reachable destination branch.
-    reviewed_source_main(trusted_root, repository)
+    if reviewed_source_main(trusted_root, repository) != approved_main_sha:
+        raise Denied("protected source approval commit changed during publication")
     # CREATE a new CI ref, never UPDATE an existing branch, tag, or main.
     created = gh_api(f"repos/{repository}/git/refs", method="POST", payload={
         "ref": "refs/heads/" + branch, "sha": commit_sha
