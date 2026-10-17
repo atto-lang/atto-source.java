@@ -268,6 +268,21 @@ final class NestedTernaryInheritanceTest {
     }
 
     @Test
+    void doubleGuardRefinementSurvivesAndAndRepeatedOwnershipChecks() {
+        var program = Parser.parse("""
+                pub fnc positive(any v): float {
+                    return Double.is_double(v) && v > 0.0 ? v : 0.0;
+                }
+
+                pub fnc repeated(any v): float {
+                    return Double.is_double(v) && Double.is_double(v) ? v : 0.0;
+                }
+                """);
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+        assertDoesNotThrow(() -> dev.oreslang.types.OwnershipChecker.check(program));
+    }
+
+    @Test
     void noMissingTopLevelElseOrInvalidInheritancePosition() {
         reject("pub fnc bad(): int { return true ? 1; }");
         reject("pub fnc bad(): int { return true ? 1 : (false ? 2); }");
