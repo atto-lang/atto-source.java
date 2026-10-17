@@ -78,6 +78,20 @@ def restart_exhaustive(maximum=2, window=3, horizon=6, length=7):
     return checked
 
 
+def drain_waiter_model():
+    # Drain targets are captured from a monotonic accepted-message sequence.
+    targets = [0, 0, 2, 2, 2, 5, 8]
+    pending = deque(targets)
+    completed = []
+    for processed in range(9):
+        while pending and pending[0] <= processed:
+            completed.append(pending.popleft())
+        assert all(target > processed for target in pending)
+    assert completed == targets
+    assert not pending
+    return len(completed)
+
+
 def sampled_counts(limit=100):
     return [n for n in range(1, limit + 1) if n & (n - 1) == 0]
 
@@ -101,13 +115,15 @@ def mutation_probes():
 def main():
     states, transitions = mailbox_states()
     attempts = restart_exhaustive()
+    drains = drain_waiter_model()
     samples = sampled_counts()
     assert samples == [1, 2, 4, 8, 16, 32, 64]
     mutation_probes()
     print(
         "ACTOR_RELIABILITY_MODEL_PASS "
         f"mailbox_states={states} mailbox_transitions={transitions} "
-        f"restart_attempts={attempts} sampled_100={len(samples)}"
+        f"restart_attempts={attempts} drain_waiters={drains} "
+        f"sampled_100={len(samples)}"
     )
 
 
