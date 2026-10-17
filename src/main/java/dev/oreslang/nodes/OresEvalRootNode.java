@@ -1854,13 +1854,7 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeCleanupFailure(SourceFlow currentFlow, Throwable cleanupFailure) {
             Throwable earlier = currentFlow.failure();
             if (earlier == cleanupFailure) return currentFlow; // no self-suppression
-            if (earlier != null && (isUnmaskableFailure(earlier)
-                    || cleanupFailure instanceof ProcessExitSignal)) {
-                earlier.addSuppressed(cleanupFailure);
-                return currentFlow;
-            }
-            if (earlier != null) cleanupFailure.addSuppressed(earlier);
-            return SourceFlow.throwing(cleanupFailure);
+            return SourceFlow.throwing(mergeControlFailure(earlier, cleanupFailure));
         }
 
         /**
@@ -1871,17 +1865,13 @@ public final class OresEvalRootNode extends RootNode {
         private SourceFlow mergeFinallyFlow(SourceFlow pending, SourceFlow finallyFlow) {
             if (finallyFlow.kind() == SourceFlowKind.NORMAL) return pending;
             if (pending.kind() == SourceFlowKind.THROW) {
-                Throwable earlier = pending.failure();
-                if (isUnmaskableFailure(earlier)) {
-                    if (finallyFlow.kind() == SourceFlowKind.THROW
-                            && earlier != finallyFlow.failure()) {
-                        earlier.addSuppressed(finallyFlow.failure());
-                    }
-                    return pending;
-                }
                 if (finallyFlow.kind() == SourceFlowKind.THROW) {
                     return mergeCleanupFailure(pending, finallyFlow.failure());
                 }
+                // A return/break/continue in cleanup cannot downgrade an
+                // already pending failure. The parser/typechecker separately
+                // reject non-local control exits from finally blocks.
+                return pending;
             }
             return finallyFlow;
         }
@@ -5048,6 +5038,38 @@ public final class OresEvalRootNode extends RootNode {
                     && !isTrappableFailure(runtime);
         }
 
+        private int controlPriority(Throwable failure) {
+            if (failure instanceof ProcessExitSignal || failure instanceof Error) return 5;
+            if (failure instanceof OresPanic || failure instanceof GuestControlSignal.Panic) return 4;
+            if (failure instanceof GuestControlSignal.Raise) return 3;
+            if (failure instanceof GuestControlSignal.Throw) return 2;
+            if (failure instanceof RuntimeException runtime && isTrappableFailure(runtime)) return 2;
+            return 5; // unknown host/control failures fail closed
+        }
+
+        private Throwable mergeControlFailure(Throwable earlier, Throwable later) {
+            if (earlier == null) return later;
+            if (later == null || earlier == later) return earlier;
+            // An explicit process-exit attempt in cleanup must not turn an
+            // already failing execution into a successful exit.
+            if (later instanceof ProcessExitSignal) {
+                earlier.addSuppressed(later);
+                return earlier;
+            }
+            if (controlPriority(later) > controlPriority(earlier)) {
+                later.addSuppressed(earlier);
+                return later;
+            }
+            earlier.addSuppressed(later);
+            return earlier;
+        }
+
+        private void rethrowFailure(Throwable failure) {
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            if (failure instanceof Error error) throw error;
+            throw new RuntimeException(failure);
+        }
+
         // Explicit guest catch is intentionally broader than trap: callers
         // may handle a denied operation without weakening its authority.
         // Fatal panic and scheduler cancellation remain uncatchable.
@@ -5197,39 +5219,13 @@ public final class OresEvalRootNode extends RootNode {
                                 ? new Ast.CallExpr(cleanup, List.of())
                                 : cleanup, env);
                     } catch (RuntimeException | Error failure) {
-                        if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                            // Never let a deferred ordinary failure replace a panic,
-                            // denial, cancellation, host Error, or earlier process exit.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
-                        } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                            // A deferred exit(0) must not convert an earlier
-                            // unhandled failure into a successful process exit.
-                            // Keep the original failure authoritative; the exit
-                            // attempt is diagnostic only.
-                            if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
-                        } else {
-                            if (pendingFailure != null && pendingFailure != failure) {
-                                failure.addSuppressed(pendingFailure);
-                            }
-                            pendingFailure = failure;
-                        }
+                        pendingFailure = mergeControlFailure(pendingFailure, failure);
                     }
                 }
                 try {
                     env.releaseMutexGuards(abnormalExit || pendingFailure != null);
                 } catch (RuntimeException | Error failure) {
-                    if (pendingFailure != null && isUnmaskableFailure(pendingFailure)) {
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
-                    } else if (failure instanceof ProcessExitSignal && pendingFailure != null) {
-                        // Mutex cleanup cannot downgrade an already failing
-                        // root task into successful exit(0).
-                        if (failure != pendingFailure) pendingFailure.addSuppressed(failure);
-                    } else {
-                        if (pendingFailure != null && pendingFailure != failure) {
-                            failure.addSuppressed(pendingFailure);
-                        }
-                        pendingFailure = failure;
-                    }
+                    pendingFailure = mergeControlFailure(pendingFailure, failure);
                 }
                 // If only the body failed, Java will rethrow it naturally.
                 // If cleanup failed, the most recent failure takes precedence
