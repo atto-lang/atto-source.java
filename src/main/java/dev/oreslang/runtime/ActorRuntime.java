@@ -596,6 +596,12 @@ public final class ActorRuntime implements AutoCloseable {
         } else if (NioReadinessGroup.onReactorThread()
                 && privateDispatcher instanceof AdaptiveCarrierExecutor javaPool) {
             javaPool.executeWithoutCarrierGrowth(hostOnly);
+        } else if (NioReadinessGroup.onReactorThread()) {
+            // Never silently dispatch onto a future/custom ExecutorService
+            // whose execute() can bootstrap a worker or invoke host callbacks
+            // inline on this kernel readiness thread.
+            throw new RejectedExecutionException(
+                    "NIO reactor requires a verified no-bootstrap actor dispatcher");
         } else {
             privateDispatcher.execute(hostOnly);
         }
