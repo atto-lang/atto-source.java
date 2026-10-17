@@ -203,6 +203,61 @@ final class NativeNioFutureReactorTest {
         }
     }
 
+    @Test void guestByteMappingIsDispatchedOffSelectorAndCannotStarveOtherSockets() throws Exception {
+        var conversionTasks = new java.util.concurrent.ArrayBlockingQueue<Runnable>(4);
+        try (var reactor = NativeNioFutureReactor.loopback(
+                0, 16, 2, 16, task -> {
+                    if (!conversionTasks.offer(task))
+                        throw new RejectedExecutionException("mapping queue full");
+                })) {
+            var firstAccept = reactor.acceptAsync();
+            try (var firstPeer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var first = firstAccept.get(3, TimeUnit.SECONDS);
+                var secondAccept = reactor.acceptAsync();
+                try (var secondPeer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                    var second = secondAccept.get(3, TimeUnit.SECONDS);
+                    var mapped = first.readBytesAsync(3);
+                    firstPeer.getOutputStream().write(new byte[] {1, 2, (byte) 255});
+                    var conversion = conversionTasks.poll(3, TimeUnit.SECONDS);
+                    assertNotNull(conversion, "selector must enqueue guest conversion");
+                    assertFalse(mapped.isDone(), "guest conversion must not run on the selector");
+                    // The stalled CPU converter must not keep the unrelated
+                    // socket or its readiness future from progressing.
+                    var independent = second.readAsync(2);
+                    secondPeer.getOutputStream().write(new byte[] {42, 43});
+                    assertArrayEquals(new byte[] {42, 43}, independent.get(3, TimeUnit.SECONDS));
+                    conversion.run(); // test-owned CPU carrier, not a selector thread
+                    assertEquals(java.util.List.of(1L, 2L, 255L), mapped.get(3, TimeUnit.SECONDS));
+                    assertEquals(0, reactor.outstandingFutures());
+                    first.closeAsync().get(3, TimeUnit.SECONDS);
+                    second.closeAsync().get(3, TimeUnit.SECONDS);
+                }
+            }
+        }
+    }
+
+    @Test void rejectedGuestConversionSettlesFutureWithoutStoppingReactor() throws Exception {
+        try (var reactor = NativeNioFutureReactor.loopback(
+                0, 8, 1, 8, task -> {
+                    throw new RejectedExecutionException("conversion capacity exhausted");
+                })) {
+            var accepted = reactor.acceptAsync();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), reactor.localPort())) {
+                var connection = accepted.get(3, TimeUnit.SECONDS);
+                var mapped = connection.readBytesAsync(1);
+                peer.getOutputStream().write(17);
+                var error = assertThrows(ExecutionException.class,
+                        () -> mapped.get(3, TimeUnit.SECONDS));
+                assertInstanceOf(RejectedExecutionException.class, error.getCause());
+                var next = connection.readAsync(1);
+                peer.getOutputStream().write(18);
+                assertArrayEquals(new byte[] {18}, next.get(3, TimeUnit.SECONDS));
+                connection.closeAsync().get(3, TimeUnit.SECONDS);
+                assertEquals(0, reactor.outstandingFutures());
+            }
+        }
+    }
+
     @Test void guestByteArrayFutureCancellationRevokesUnderlyingRead() throws Exception {
         try (var reactor = NativeNioFutureReactor.loopback(0, 8, 1, 8)) {
             var accepted = reactor.acceptAsync();
