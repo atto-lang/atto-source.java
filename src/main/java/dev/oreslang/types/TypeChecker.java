@@ -2276,6 +2276,30 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            boolean complexOperand = left == Primitive.COMPLEX || right == Primitive.COMPLEX;
+            if (complexOperand && (binary.operator().equals("+")
+                    || binary.operator().equals("-")
+                    || binary.operator().equals("*")
+                    || binary.operator().equals("/"))) {
+                if (left == Primitive.INT) {
+                    Long literal = constantTupleIndex(binary.left());
+                    if (literal != null
+                            && (literal < -9_007_199_254_740_992L
+                                || literal > 9_007_199_254_740_992L)) {
+                        throw new IllegalArgumentException(
+                                "integer literal outside exact binary64 range requires explicit conversion before complex arithmetic");
+                    }
+                }
+                if (right == Primitive.INT) {
+                    Long literal = constantTupleIndex(binary.right());
+                    if (literal != null
+                            && (literal < -9_007_199_254_740_992L
+                                || literal > 9_007_199_254_740_992L)) {
+                        throw new IllegalArgumentException(
+                                "integer literal outside exact binary64 range requires explicit conversion before complex arithmetic");
+                    }
+                }
+            }
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -2301,13 +2325,25 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "<", "<=", ">", ">=" -> {
-                    if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
-                        throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
+                    if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) {
+                        throw new IllegalArgumentException(
+                                "complex ordering is undefined; use equality or an explicit ordering policy");
+                    }
+                    if (!(Types.isNumeric(left) && Types.isNumeric(right))
+                            && !(isStringLike(left) && isStringLike(right))) {
+                        throw new IllegalArgumentException(
+                                "comparison operands must both be numeric or both strings");
                     }
                     yield Primitive.BOOL;
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
-                case "-", "*", "%" -> numericJoin(left, right, binary.operator());
+                case "-", "*" -> numericJoin(left, right, binary.operator());
+                case "%" -> {
+                    if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) {
+                        throw new IllegalArgumentException("complex remainder is undefined");
+                    }
+                    yield numericJoin(left, right, "%");
+                }
                 case "/" -> {
                     // OresEvalRootNode.numeric evaluates real division as a Double,
                     // even for int/int. The result cannot be assigned to int without
