@@ -1,0 +1,85 @@
+name: Java MessagePack v2 portable codec (standalone only)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-messagepack-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-messagepack-v2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install Temurin JDK 25
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Record exact source and toolchain provenance
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          umask 077
+          evidence="$RUNNER_TEMP/portable-v2-evidence"
+          mkdir -p "$evidence"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
+            printf 'source_tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'workflow_ref=%s\n' "$GITHUB_WORKFLOW_REF"
+            printf 'workflow_sha=%s\n' "$GITHUB_WORKFLOW_SHA"
+          } > "$evidence/provenance.txt"
+          javac -version 2>&1 | tee "$evidence/javac-version.txt"
+          java -version 2>&1 | tee "$evidence/java-version.txt"
+          sha256sum src/main/java/dev/oreslang/runtime/MessagePackWireV2.java \
+            src/test/standalone/dev/oreslang/runtime/MessagePackWireV2Harness.java \
+            scripts/test-messagepack-wire-v2-standalone.sh \
+            .github/workflows/messagepack-v2-standalone.yml \
+            > "$evidence/source-sha256.txt"
+          for path in src/main/java/dev/oreslang/runtime/MessagePackWireV2.java \
+                      src/test/standalone/dev/oreslang/runtime/MessagePackWireV2Harness.java \
+                      scripts/test-messagepack-wire-v2-standalone.sh \
+                      .github/workflows/messagepack-v2-standalone.yml; do
+            printf '%s git_blob=%s\n' "$path" "$(git rev-parse "HEAD:$path")"
+          done > "$evidence/git-blobs.txt"
+      - name: Compile and execute strict portable codec golden and negative tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          bash scripts/test-messagepack-wire-v2-standalone.sh > "$RUNNER_TEMP/portable-v2.log" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/portable-v2.log"
+          printf 'portable_codec_exit=%s\n' "$code" >> "$RUNNER_TEMP/portable-v2-evidence/results.txt"
+          if grep -Eq '^PASS MessagePack v2 Java portable golden/negative assertions=[0-9]+$' "$RUNNER_TEMP/portable-v2.log"; then
+            grep -E '^PASS MessagePack v2 Java portable golden/negative assertions=[0-9]+$' "$RUNNER_TEMP/portable-v2.log" \
+              >> "$RUNNER_TEMP/portable-v2-evidence/results.txt"
+          else
+            printf 'portable_codec_assertions=unverified\n' >> "$RUNNER_TEMP/portable-v2-evidence/results.txt"
+            code=1
+          fi
+          exit "$code"
+      - name: Upload source-free codec test evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: portable-messagepack-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/portable-v2-evidence/
+          if-no-files-found: warn
+          retention-days: 7
