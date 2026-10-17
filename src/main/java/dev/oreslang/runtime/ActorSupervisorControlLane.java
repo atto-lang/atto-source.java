@@ -152,13 +152,14 @@ final class ActorSupervisorControlLane {
             throw new IllegalArgumentException("cannot transfer CONTROL to its own lane");
         }
 
-        for (Slot slot : slots.values()) {
+        for (var iterator = slots.values().iterator(); iterator.hasNext();) {
+            Slot slot = iterator.next();
             if (slot.inFlight) {
                 if (!root.publish(slot.notice)) {
                     throw new IllegalStateException(
                             "duplicate root CONTROL publication for " + slot.child);
                 }
-                slots.remove(slot.child);
+                iterator.remove();
                 slot.inFlight = false;
                 inFlight = 0;
                 transferred++;
