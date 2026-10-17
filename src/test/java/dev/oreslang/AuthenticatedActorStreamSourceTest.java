@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -115,6 +116,22 @@ final class AuthenticatedActorStreamSourceTest {
                 () -> execute(source));
         assertTrue(rejected.toString().contains("exactly one root flow"),
                 rejected.toString());
+    }
+
+    @Test
+    void failedStageTerminatesIdleSiblingsAndDoneDoesNotHang() throws Exception {
+        String source = fixture().replace(
+                "self.backward(0 - mail.value - 1);",
+                "self.forward(mail.value);");
+        assertTimeoutPreemptively(Duration.ofSeconds(8), () -> {
+            PolyglotException rejected = assertThrows(
+                    PolyglotException.class,
+                    () -> execute(source));
+            assertTrue(
+                    rejected.toString().contains("source has no connected downstream consumers")
+                            || rejected.toString().contains("ActorStream stage failed"),
+                    rejected.toString());
+        });
     }
 
     @Test
