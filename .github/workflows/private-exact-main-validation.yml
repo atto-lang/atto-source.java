@@ -34,6 +34,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, oreslang-private-ephemeral]
     timeout-minutes: 180
     env:
+      NODE_OPTIONS: '' # Job-level neutralization: GITHUB_ENV may not set NODE_OPTIONS.
       APPROVED_SHA: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_SHA }}
       APPROVED_TREE: ${{ vars.ORESLANG_PRIVATE_EPHEMERAL_APPROVED_TREE }}
     steps:
@@ -93,7 +94,7 @@ jobs:
             printf 'HTTP_PROXY=\nHTTPS_PROXY=\nALL_PROXY=\nNO_PROXY=\n'
             printf 'http_proxy=\nhttps_proxy=\nall_proxy=\nno_proxy=\n'
             printf 'SSL_CERT_FILE=\nSSL_CERT_DIR=\nSSLKEYLOGFILE=\nCURL_CA_BUNDLE=\nREQUESTS_CA_BUNDLE=\nNODE_EXTRA_CA_CERTS=\n'
-            printf 'OPENSSL_CONF=\nOPENSSL_MODULES=\nNODE_OPTIONS=\nNODE_TLS_REJECT_UNAUTHORIZED=\n'
+            printf 'OPENSSL_CONF=\nOPENSSL_MODULES=\nNODE_TLS_REJECT_UNAUTHORIZED=\n'
             printf 'GH_CONFIG_DIR=\nGH_HOST=\n'
             printf 'LD_PRELOAD=\nLD_LIBRARY_PATH=\n'
           } >> "$GITHUB_ENV"

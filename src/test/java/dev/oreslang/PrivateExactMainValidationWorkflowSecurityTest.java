@@ -1119,7 +1119,7 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\\n' \"$cleanroom/m2-repository\"",
                     "HTTP_PROXY=\\nHTTPS_PROXY=\\nALL_PROXY=\\nNO_PROXY=\\n",
                     "SSL_CERT_FILE=\\nSSL_CERT_DIR=\\nSSLKEYLOGFILE=\\nCURL_CA_BUNDLE=\\nREQUESTS_CA_BUNDLE=\\nNODE_EXTRA_CA_CERTS=\\n",
-                    "OPENSSL_CONF=\\nOPENSSL_MODULES=\\nNODE_OPTIONS=\\nNODE_TLS_REJECT_UNAUTHORIZED=\\n",
+                    "OPENSSL_CONF=\\nOPENSSL_MODULES=\\nNODE_TLS_REJECT_UNAUTHORIZED=\\n",
                     "GH_CONFIG_DIR=\\nGH_HOST=\\n",
                     "SSH_AUTH_SOCK=\\n",
                     "LD_PRELOAD=\\nLD_LIBRARY_PATH=\\n",
@@ -1134,6 +1134,43 @@ final class PrivateExactMainValidationWorkflowSecurityTest {
                     "mutation control must be able to weaken the trusted PATH guard");
             assertFalse(weakened.contains("printf 'PATH=/usr/bin:/bin\\n'"),
                     "an inherited runner PATH must not satisfy the clean-room contract");
+        }
+    }
+
+    @Test
+    void trustedRunnerMustNotWriteRestrictedNodeOptionsToGithubEnv() throws Exception {
+        for (Path workflow : new Path[] {
+                Path.of(".github/workflows/private-exact-main-validation.yml"),
+                Path.of(".github/workflows/private-exact-candidate-validation.yml"),
+                Path.of(".github/workflows/private-exact-publisher-validation.yml")
+        }) {
+            String text = Files.readString(workflow);
+            int jobEnv = text.indexOf("\n    env:\n");
+            int steps = text.indexOf("\n    steps:\n", jobEnv);
+            assertTrue(jobEnv >= 0 && steps > jobEnv,
+                    "privileged job must have a verified job-level environment: " + workflow);
+            String env = text.substring(jobEnv, steps);
+            assertEquals(1, env.lines().filter(l -> l.startsWith("      NODE_OPTIONS:")).count(),
+                    "privileged job must pin NODE_OPTIONS exactly once: " + workflow);
+            assertTrue(env.contains("\n      NODE_OPTIONS: '' # Job-level neutralization: GITHUB_ENV may not set NODE_OPTIONS.\n"),
+                    "untrusted Node startup hooks must be reset at job scope: " + workflow);
+
+            String marker = "      - name: Create isolated runner user/tool state\n";
+            int start = text.indexOf(marker);
+            int checkout = text.indexOf("      - uses: actions/checkout@", start);
+            assertTrue(start >= 0 && checkout > start,
+                    "trusted pre-checkout isolation step missing: " + workflow);
+            String step = text.substring(start, checkout);
+            assertFalse(step.contains("NODE_OPTIONS="),
+                    "GitHub runner rejects setting NODE_OPTIONS through GITHUB_ENV: " + workflow);
+            assertTrue(step.contains("OPENSSL_CONF=\\nOPENSSL_MODULES=\\nNODE_TLS_REJECT_UNAUTHORIZED=\\n"),
+                    "other Node/TLS controls must remain scrubbed: " + workflow);
+            String forbiddenMutation = step.replace(
+                    "OPENSSL_MODULES=\\nNODE_TLS_REJECT_UNAUTHORIZED=\\n",
+                    "OPENSSL_MODULES=\\nNODE_OPTIONS=\\nNODE_TLS_REJECT_UNAUTHORIZED=\\n");
+            assertNotEquals(step, forbiddenMutation, "negative mutation must modify the step");
+            assertTrue(forbiddenMutation.contains("NODE_OPTIONS="),
+                    "negative mutation must reintroduce the runner-rejected environment command");
         }
     }
 
