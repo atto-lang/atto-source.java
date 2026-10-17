@@ -7992,6 +7992,17 @@ public final class ActorRuntime implements AutoCloseable {
          * but at most one claims each actor's terminal publications.
          */
         private void publishFinalizedCarrierNotifications() {
+            // A source-task Future may settle synchronously while its caller
+            // still owns the (reentrant) actor lifecycle monitor. Merely
+            // leaving an inner synchronized block is not sufficient. Ensure
+            // terminal Future callbacks never execute under this actor's or
+            // an ancestor actor's lifecycle monitor.
+            for (ActorCell<?> cell = this; cell != null; cell = cell.parent) {
+                if (Thread.holdsLock(cell.lifecycleLock)) {
+                    CompletableFuture.runAsync(this::publishFinalizedCarrierNotifications);
+                    return;
+                }
+            }
             for (ActorCell<?> cell = this; cell != null; cell = cell.parent) {
                 List<OresFuture<Void>> ready;
                 boolean publishTerminal;
