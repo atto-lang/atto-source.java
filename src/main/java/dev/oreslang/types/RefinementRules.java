@@ -122,7 +122,7 @@ public final class RefinementRules {
         String identity = "";
         if (spec.nominal()) {
             if (qualifiedIdentity == null || !qualifiedIdentity.matches(
-                    "[A-Za-z_][A-Za-z_0-9]*(\\\\.[A-Za-z_][A-Za-z_0-9]*)+"))
+                    "[A-Za-z_][A-Za-z_0-9]*(\\.[A-Za-z_][A-Za-z_0-9]*)+"))
                 throw new IllegalArgumentException("nominal schema requires qualified identifier");
             identity = qualifiedIdentity;
         }
