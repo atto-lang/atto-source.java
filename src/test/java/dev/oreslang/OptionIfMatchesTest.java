@@ -165,6 +165,27 @@ final class OptionIfMatchesTest {
     }
 
     @Test
+    void independentAndPayloadsKeepDistinctOwners() {
+        // The right-hand condition must see left bindings without confusing
+        // independent roots. Moving both distinct Box payloads is valid.
+        String program = """
+                define class Box as
+                end
+                fnc consume(Box box): void { return; }
+
+                fnc good(Option<Box> left, Option<Box> right): void {
+                  if left matches Some(a) && right matches Some(b) then
+                    consume(a);
+                    consume(b);
+                  fi
+                  return;
+                }
+                """;
+        var typed = TypeChecker.check(Parser.parse(program));
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
+    @Test
     void nestedAndCannotMovePayloadThenMoveItsOptionOwner() {
         String program = """
                 define class Box as
