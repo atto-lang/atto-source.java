@@ -19,7 +19,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
@@ -69,6 +69,7 @@ public final class ActorRuntime implements AutoCloseable {
     // mail forever. This is a scheduling fairness bound, not mailbox capacity.
     private static final int MAX_CONTINUATION_BURST = 32;
     private static final int SUPERVISION_EVENT_CAPACITY = 4_096;
+    private static final int WATCHDOG_NOTICE_CAPACITY = 1_024;
     private static final int MAX_DIAGNOSTIC_MESSAGE_CHARS = 512;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
@@ -592,8 +593,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final AtomicLong watchdogOverruns = new AtomicLong();
     private final AtomicLong watchdogNoticesDropped = new AtomicLong();
-    private final ArrayBlockingQueue<WatchdogNotice> watchdogNotices =
-            new ArrayBlockingQueue<>(1024);
+    private final AtomicInteger watchdogNoticesQueued = new AtomicInteger();
+    private final ConcurrentLinkedQueue<WatchdogNotice> watchdogNotices =
+            new ConcurrentLinkedQueue<>();
     private final AtomicLong userMessagesAccepted = new AtomicLong();
     private final AtomicLong mailboxFullRejections = new AtomicLong();
     private final AtomicLong continuationAdmissionFailures = new AtomicLong();
@@ -841,7 +843,14 @@ public final class ActorRuntime implements AutoCloseable {
     /** Host-only nonblocking drain: actor code cannot steal another actor's diagnostics. */
     public Optional<WatchdogNotice> pollWatchdogNotice() {
         requireSupervisorContext("drain actor watchdog notices");
-        return Optional.ofNullable(watchdogNotices.poll());
+        WatchdogNotice notice = watchdogNotices.poll();
+        if (notice == null) return Optional.empty();
+        int remaining = watchdogNoticesQueued.decrementAndGet();
+        if (remaining < 0) {
+            watchdogNoticesQueued.incrementAndGet();
+            throw new IllegalStateException("watchdog diagnostic queue accounting underflow");
+        }
+        return Optional.of(notice);
     }
 
     /** Indicates a request, not a safe or completed suspension. */
@@ -854,10 +863,29 @@ public final class ActorRuntime implements AutoCloseable {
     private void recordWatchdogOverrun(ActorCell<?> cell, ActorTurnWatchdog.Lease lease) {
         long now = System.nanoTime();
         watchdogOverruns.incrementAndGet();
-        if (!watchdogNotices.offer(new WatchdogNotice(
-                cell.ref.id(), cell.kind,
-                lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)))) {
-            watchdogNoticesDropped.incrementAndGet();
+
+        for (;;) {
+            int queued = watchdogNoticesQueued.get();
+            if (queued >= WATCHDOG_NOTICE_CAPACITY) {
+                watchdogNoticesDropped.incrementAndGet();
+                return;
+            }
+            if (!watchdogNoticesQueued.compareAndSet(queued, queued + 1)) continue;
+            boolean published = false;
+            try {
+                watchdogNotices.add(new WatchdogNotice(
+                        cell.ref.id(), cell.kind,
+                        lease.elapsedNanos(now), lease.sinceCheckpointNanos(now)));
+                published = true;
+            } catch (Throwable diagnosticsFailure) {
+                watchdogNoticesDropped.incrementAndGet();
+            } finally {
+                if (!published) {
+                    int remaining = watchdogNoticesQueued.decrementAndGet();
+                    if (remaining < 0) watchdogNoticesQueued.set(0);
+                }
+            }
+            return;
         }
     }
 
