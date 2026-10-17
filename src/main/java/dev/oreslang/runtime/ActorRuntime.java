@@ -775,7 +775,7 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
-            return reserve(bytes, "actor-local heap");
+            return reserve(bytes, "actor-local heap", true);
         }
 
         /**
@@ -827,27 +827,31 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private MemoryReservation reserve(long bytes, String purpose) {
+            return reserve(bytes, purpose, false);
+        }
+
+        private MemoryReservation reserve(long bytes, String purpose, boolean ownerBound) {
             // SHARED mailbox/output admission holds lifecycleLock. Take that
             // lock *before* this slice monitor, also during local allocation,
             // so concurrent send and actor-local allocations cannot jointly
             // oversubscribe the actor's policy. Finalization uses this order.
             if (ownerKind != ActorKind.SHARED) {
-                return reserveUnderSliceLock(bytes, purpose, null);
+                return reserveUnderSliceLock(bytes, purpose, null, ownerBound);
             }
             ActorCell<?> cell = currentActor.get();
             if (cell == null || cell.memorySlice != this || cell.kind != ActorKind.SHARED) {
                 throw new IllegalStateException("shared actor-local allocation requires owner turn");
             }
             synchronized (cell.lifecycleLock) {
-                return reserveUnderSliceLock(bytes, purpose, cell);
+                return reserveUnderSliceLock(bytes, purpose, cell, ownerBound);
             }
         }
 
         private synchronized MemoryReservation reserveUnderSliceLock(
-                long bytes, String purpose, ActorCell<?> sharedCell) {
+                long bytes, String purpose, ActorCell<?> sharedCell, boolean ownerBound) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
+            if (bytes == 0) return new MemoryReservation(this, 0, ownerBound);
 
             long current = usedBytes.get();
             long next;
@@ -873,7 +877,7 @@ public final class ActorRuntime implements AutoCloseable {
                 reservePrivateRuntimeBytes(bytes, owner, purpose);
             }
             usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+            return new MemoryReservation(this, bytes, ownerBound);
         }
 
         private void requireCurrentOwner() {
@@ -1061,11 +1065,15 @@ public final class ActorRuntime implements AutoCloseable {
     public final class MemoryReservation implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final long bytes;
+        // Guest-visible heap reservations are owned capabilities. Runtime
+        // mailbox/direct-block reservations instead release on CONTROL paths.
+        private final boolean ownerBound;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private MemoryReservation(ActorMemorySlice slice, long bytes) {
+        private MemoryReservation(ActorMemorySlice slice, long bytes, boolean ownerBound) {
             this.slice = Objects.requireNonNull(slice);
             this.bytes = bytes;
+            this.ownerBound = ownerBound;
         }
 
         public ActorId owner() { return slice.owner(); }
@@ -1074,6 +1082,7 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (released.get()) return;
+            if (ownerBound) slice.requireCurrentOwner();
             slice.release(bytes);
             // Do not lose the ability to retry after failed aggregate release.
             released.set(true);
