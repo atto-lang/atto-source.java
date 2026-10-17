@@ -21,6 +21,7 @@ jobs:
         run: |
           python3 scripts/verify_actor_carrier_exclusivity.py
           python3 scripts/verify_actor_dispatch_tickets.py
+          python3 scripts/verify_actor_thread_policy_v2.py
 
   actor-runtime-exclusivity:
     runs-on: ubuntu-latest
@@ -39,7 +40,7 @@ jobs:
       - name: Compile and run actual actor execution boundary tests
         run: >
           mvn -B -ntp -Dores.runtime.carriers=native
-          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest
+          -Dtest=ActorDispatchIdentityTest,ActorMailboxExecutionBoundaryTest,ActorOffCarrierTurnExecutorTest,VersionedActorCellTest,ActorThreadPolicySyntaxTest,ActorThreadPolicyHardeningTest,ActorExecutionGrantGateTest
           test
 
   tla-plus-tlc:
