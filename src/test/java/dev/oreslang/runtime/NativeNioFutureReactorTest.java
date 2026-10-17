@@ -13,6 +13,31 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class NativeNioFutureReactorTest {
+    @Test void failedAcceptedSocketRegistrationClosesChannelWithoutKillingListener() throws Exception {
+        // Force an actual JDK registration failure without exhausting native
+        // file descriptors or relying on a timing-sensitive accept race.
+        try (var alreadyClosed = java.nio.channels.Selector.open();
+             var accepted = java.nio.channels.SocketChannel.open()) {
+            alreadyClosed.close();
+            assertThrows(java.nio.channels.ClosedSelectorException.class,
+                    () -> NativeNioFutureReactor.registerAcceptedChannel(
+                            accepted, alreadyClosed, new Object()));
+            assertFalse(accepted.isOpen(), "failed accepted socket must not leak a descriptor");
+        }
+
+        // A failed per-connection setup is recoverable; the next valid socket
+        // can still be accepted and used on a live listener.
+        try (var listener = NativeNioFutureReactor.loopback(0, 8, 2, 8)) {
+            var accepted = listener.acceptAsync();
+            try (var peer = new Socket(InetAddress.getLoopbackAddress(), listener.localPort())) {
+                var connection = accepted.get(2, TimeUnit.SECONDS);
+                peer.getOutputStream().write('r');
+                assertArrayEquals(new byte[]{(byte)'r'},
+                        connection.readAsync(1).get(2, TimeUnit.SECONDS));
+                connection.closeAsync().get(2, TimeUnit.SECONDS);
+            }
+        }
+    }
     @Test void futuresBridgeReadWriteAndPartialPeerTraffic() throws Exception {
         try (NativeNioFutureReactor reactor = NativeNioFutureReactor.loopback(0, 32, 8, 64)) {
             var accepted = reactor.acceptAsync();
