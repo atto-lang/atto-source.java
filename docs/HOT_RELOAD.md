@@ -98,6 +98,13 @@ only callable names/arities included by the module's contract set. The call stay
 bound to that exact generation, so an old generation can continue serving pinned
 callers during drain while new callers use the replacement.
 
+Contract-gated module generations do **not** expose their raw Graal `Context`
+through `Generation.context()`. Exposing that context would let host code parse
+and evaluate a separate source in the same runtime context, bypassing the
+module-specific admission/contract surface. Use the generation-scoped API instead.
+The legacy generic loader retains its historical raw-context accessor for
+compatibility; it is not covered by the narrower module contract guarantee.
+
 If candidate initialization fails, the previous generation remains active.
 Cleanup failures are recorded as suppressed failures and cannot prevent
 restoration of the previous active-generation mapping, including the manager's
