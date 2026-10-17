@@ -69,6 +69,7 @@ REQUIRED_CODEOWNER_PATHS = (
     "/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java",
     "/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java",
     "/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java",
+    "/tests/test_ci_private_mirror_preflight.py",
 )
 REQUIRED_CODEOWNER = "@ORESoftware"
 
