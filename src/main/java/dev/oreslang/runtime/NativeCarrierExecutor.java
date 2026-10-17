@@ -24,11 +24,12 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * native carrier set; no actor owns a carrier and carrier identity is never
  * actor identity.</p>
  *
- * <p>All max carriers are created up front so watchdog compensation never has
- * to allocate an OS thread while the runtime is already under pressure. Only
- * {@code corePoolSize} carrier slots are enabled at a time. Extra carriers are
- * parked in native code and are enabled/disabled by the bounded compensation
- * policy in {@link ActorRuntime}.</p>
+ * <p>The throughput profile allocates native pool metadata at construction but
+ * creates no pthread until the first runnable turn (or an explicit prestart).
+ * Once started, all bounded compensation slots for this executor are created
+ * together so watchdog compensation never allocates another OS thread while
+ * the runtime is already under pressure. Only {@code corePoolSize} carrier
+ * slots are enabled at a time; extras remain parked in native code.</p>
  */
 public final class NativeCarrierExecutor extends AbstractExecutorService implements AutoCloseable {
     private static final String LIBRARY = "oresthread";
@@ -48,7 +49,8 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicLong completedTaskCount = new AtomicLong();
     private final AtomicReferenceArray<Thread> carrierThreads;
     private final AtomicBoolean shutdown = new AtomicBoolean();
-    /** Serializes Java->native pool calls against asynchronous native retirement. */
+    private volatile boolean nativeStarted;
+    /** Serializes lazy native bootstrap and Java->native pool calls against retirement. */
     private final Object nativeLifecycleLock = new Object();
     private final long nativeHandle;
 
@@ -78,12 +80,28 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         if (handle == 0L) throw new IllegalStateException("native carrier pool returned a null handle");
         this.nativeHandle = handle;
 
-        boolean started = false;
-        try {
-            nativeStart(handle);
-            started = true;
-        } finally {
-            if (!started) nativeShutdown(handle);
+        // Throughput cold start deliberately stops here: nativeCreate owns only
+        // bounded pool metadata. First runnable admission calls nativeStart().
+    }
+
+    private boolean ensureNativeStarted() {
+        synchronized (nativeLifecycleLock) {
+            if (shutdown.get()) {
+                throw new RejectedExecutionException("native carrier executor is shut down");
+            }
+            if (nativeStarted) return false;
+            try {
+                nativeStart(nativeHandle);
+                nativeStarted = true;
+                return true;
+            } catch (RuntimeException | Error failure) {
+                // nativeStart may have created a partial/all carrier set before
+                // an attach failure. Fence admission and hand reclamation to
+                // native shutdown exactly once.
+                shutdown.set(true);
+                nativeShutdown(nativeHandle);
+                throw failure;
+            }
         }
     }
 
@@ -212,6 +230,10 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     @Override
     public void execute(Runnable task) {
         Objects.requireNonNull(task, "task");
+        if (shutdown.get()) {
+            throw new RejectedExecutionException("native carrier executor is shut down");
+        }
+        ensureNativeStarted();
         if (shutdown.get() || !queue.offer(task)) {
             throw new RejectedExecutionException(
                     shutdown.get() ? "native carrier executor is shut down"
@@ -313,6 +335,14 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     public int getQueueSize() { return queue.size(); }
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
     public int getLargestPoolSize() { return largestPoolSize.get(); }
+    /** Attached carrier count for diagnostics/tests; cold throughput startup is zero. */
+    public int getStartedCarrierCount() {
+        int count = 0;
+        for (int slot = 0; slot < carrierThreads.length(); slot++) {
+            if (carrierThreads.get(slot) != null) count++;
+        }
+        return count;
+    }
     public int getMaximumPoolSize() { return maximumPoolSize; }
     public long getNativeStackBytes() { return nativeStackBytes; }
     public int getCorePoolSize() { return corePoolSize.get(); }
@@ -350,11 +380,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     /**
-     * All bounded compensation carriers are physically created at pool
-     * construction and parked natively, so there is nothing to allocate here.
+     * Explicit warm/RT preparation hook. Throughput mode normally leaves the
+     * pool cold until execute(); this starts the bounded native carrier set now.
      */
     public boolean prestartCoreThread() {
-        return false;
+        return ensureNativeStarted();
     }
 
     public static boolean isNativeCarrierThread() {
@@ -380,7 +410,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     /** CPU consumed by a specific carrier slot in this pool, for watchdog accounting. */
     public long carrierCpuTimeNanos(int slot) {
-        if (slot < 0 || slot >= maximumPoolSize || shutdown.get()) return 0L;
+        if (slot < 0 || slot >= maximumPoolSize || shutdown.get() || !nativeStarted) return 0L;
         synchronized (nativeLifecycleLock) {
             if (shutdown.get()) return 0L;
             return nativeCarrierCpuTimeNanos(nativeHandle, slot);
