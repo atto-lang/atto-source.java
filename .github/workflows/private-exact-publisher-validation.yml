@@ -82,9 +82,12 @@ jobs:
             printf 'GIT_CONFIG_NOSYSTEM=1\n'
             printf 'GIT_CONFIG_GLOBAL=%s\n' "$cleanroom/home/.gitconfig"
             printf 'GIT_CONFIG_COUNT=0\n'
+            printf 'GIT_CONFIG_PARAMETERS=\nGIT_NO_REPLACE_OBJECTS=1\nGIT_ATTR_NOSYSTEM=1\n'
+            printf 'GIT_TRACE=\nGIT_TRACE2=\nGIT_TRACE2_EVENT=\nGIT_TRACE2_PERF=\nGIT_TRACE_PACKET=\nGIT_TRACE_CURL=\nGIT_CURL_VERBOSE=\n'
             printf 'GIT_DIR=\nGIT_WORK_TREE=\nGIT_INDEX_FILE=\n'
             printf 'GIT_OBJECT_DIRECTORY=\nGIT_ALTERNATE_OBJECT_DIRECTORIES=\nGIT_COMMON_DIR=\n'
             printf 'GIT_SSH=\nGIT_SSH_COMMAND=\nGIT_ASKPASS=\nSSH_ASKPASS=\n'
+            printf 'SSH_AUTH_SOCK=\n'
             printf 'GIT_SSL_CAINFO=\nGIT_SSL_NO_VERIFY=\nGIT_PROXY_COMMAND=\n'
             printf 'BASH_ENV=\nENV=\nCDPATH=\nGLOBIGNORE=\nPYTHONPATH=\nPYTHONHOME=\n'
             printf 'JAVA_HOME=\nJDK_HOME=\nGRAALVM_HOME=\n'
@@ -93,7 +96,9 @@ jobs:
             printf 'MAVEN_OPTS=-Dmaven.repo.local=%s\n' "$cleanroom/m2-repository"
             printf 'HTTP_PROXY=\nHTTPS_PROXY=\nALL_PROXY=\nNO_PROXY=\n'
             printf 'http_proxy=\nhttps_proxy=\nall_proxy=\nno_proxy=\n'
-            printf 'SSL_CERT_FILE=\nSSL_CERT_DIR=\nCURL_CA_BUNDLE=\nREQUESTS_CA_BUNDLE=\nNODE_EXTRA_CA_CERTS=\n'
+            printf 'SSL_CERT_FILE=\nSSL_CERT_DIR=\nSSLKEYLOGFILE=\nCURL_CA_BUNDLE=\nREQUESTS_CA_BUNDLE=\nNODE_EXTRA_CA_CERTS=\n'
+            printf 'OPENSSL_CONF=\nOPENSSL_MODULES=\nNODE_OPTIONS=\nNODE_TLS_REJECT_UNAUTHORIZED=\n'
+            printf 'GH_CONFIG_DIR=\nGH_HOST=\n'
             printf 'LD_PRELOAD=\nLD_LIBRARY_PATH=\n'
           } >> "$GITHUB_ENV"
           test -s "$GITHUB_ENV"
