@@ -413,6 +413,20 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final UUID runtimeInstanceId = UUID.randomUUID();
     private final AtomicLong nextActorGeneration = new AtomicLong(1);
+
+    /** Each runtime generation is single-use. Saturate on exhaustion rather
+     * than wrapping into stale actor-ref authority values. */
+    private long allocateActorGeneration() {
+        for (;;) {
+            long current = nextActorGeneration.get();
+            if (current <= 0 || current == Long.MAX_VALUE) {
+                throw new IllegalStateException("actor generation sequence exhausted");
+            }
+            if (nextActorGeneration.compareAndSet(current, current + 1)) {
+                return current;
+            }
+        }
+    }
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroup> actorGroups = new ConcurrentHashMap<>();
     /**
@@ -4276,10 +4290,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // inside the same rollback boundary as actor registration.
                 // Otherwise generation exhaustion leaks the reserved actor slot.
                 ActorId id = ActorId.create();
-                long generation = nextActorGeneration.getAndIncrement();
-                if (generation <= 0) {
-                    throw new IllegalStateException("actor generation sequence exhausted");
-                }
+                long generation = allocateActorGeneration();
                 ActorRef<M> ref = new ActorRef<>(id, kind, generation);
                 cell = new ActorCell<>(
                         ref,
