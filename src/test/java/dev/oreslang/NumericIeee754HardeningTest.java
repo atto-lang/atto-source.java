@@ -115,6 +115,23 @@ final class NumericIeee754HardeningTest {
     }
 
     @Test
+    void complexDivisionChecksNormalizedCancellationBeforeFinalRescaling() {
+        try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
+            assertTrue(context.eval(OresLanguage.ID, """
+                    pub routine main(): bool {
+                      val complex identicalExtreme =
+                          (1e200 + 1e-200i) / (1e200 + 1e-200i);
+                      val complex oppositeImaginary =
+                          (1e200 + 1e-200i) / (1e200 - 1e-200i);
+                      return identicalExtreme eq 1
+                        && !(oppositeImaginary eq 1)
+                        && (oppositeImaginary neq 1);
+                    }
+                    """).asBoolean());
+        }
+    }
+
+    @Test
     void complexDivisionAvoidsIntermediateOverflowAndUnderflow() {
         try (Context context = Context.newBuilder(OresLanguage.ID).allowAllAccess(false).build()) {
             assertTrue(context.eval(OresLanguage.ID, """
