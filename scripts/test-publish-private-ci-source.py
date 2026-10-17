@@ -169,6 +169,16 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         self.assertEqual([r for m, r, _ in self.route_calls if m == "POST"],
                          ["repos/trusted/ci/git/blobs"])
 
+    def test_origin_main_commit_changed_before_ref_denied(self):
+        with patch.object(pub, "reviewed_source_main",
+                          side_effect=["a" * 40, "b" * 40]):
+            with self.assertRaisesRegex(pub.Denied, "approval commit changed"):
+                self.publish()
+        writes = [route for method, route, _ in self.route_calls
+                  if method == "POST"]
+        self.assertIn("repos/trusted/ci/git/commits", writes)
+        self.assertNotIn("repos/trusted/ci/git/refs", writes)
+
     def test_source_protection_revoked_before_publication_leaves_no_ref(self):
         calls = [0]
         def check_origin(*args):
