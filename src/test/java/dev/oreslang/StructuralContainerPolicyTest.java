@@ -59,6 +59,26 @@ final class StructuralContainerPolicyTest {
                            map(Primitive.STRING, Primitive.INT, true)));
     }
 
+    @Test void fixedSequenceTypeCannotLoseOrContradictHomogeneousMetadata() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.Tuple(List.of(), Types.TupleKind.FIXED_ARRAY));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.Tuple(List.of(), Types.TupleKind.FIXED_LIST));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.Tuple(
+                        List.of(Primitive.INT, Primitive.STRING),
+                        Types.TupleKind.FIXED_ARRAY));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Types.Tuple(
+                        List.of(Primitive.INT),
+                        Types.TupleKind.FIXED_LIST,
+                        Primitive.STRING));
+        assertDoesNotThrow(() -> new Types.Tuple(
+                List.of(),
+                Types.TupleKind.FIXED_ARRAY,
+                Primitive.INT));
+    }
+
     @Test void fixedCollectionsRequireExactExtent() {
         assertTrue(admits(fixedArray(Primitive.STRING, 4, false),
                           fixedArray(Primitive.STRING, 4, true)));
