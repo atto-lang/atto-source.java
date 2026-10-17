@@ -1805,15 +1805,18 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ThrowStmt thrown) {
-            typeOf(thrown.value(), env, generics, self);
+            requireNonVoidControlPayload(
+                    typeOf(thrown.value(), env, generics, self), "throw");
             return;
         }
         if (stmt instanceof Ast.RaiseStmt raised) {
-            typeOf(raised.value(), env, generics, self);
+            requireNonVoidControlPayload(
+                    typeOf(raised.value(), env, generics, self), "raise");
             return;
         }
         if (stmt instanceof Ast.PanicStmt panicked) {
-            typeOf(panicked.value(), env, generics, self);
+            requireNonVoidControlPayload(
+                    typeOf(panicked.value(), env, generics, self), "panic");
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
@@ -1870,7 +1873,11 @@ public final class TypeChecker {
             }
             Map<Env.Binding, Set<String>> beforeDefer = env.initializationSnapshot();
             try {
-                typeOf(defer.expression(), env, generics, self);
+                Type deferredType = deref(typeOf(defer.expression(), env, generics, self));
+                if (isTrapResultType(deferredType)) {
+                    throw new IllegalArgumentException(
+                            "defer cannot discard a trap result; destructure it before deferring work");
+                }
             } finally {
                 // Defer executes later; checking its expression now must not
                 // establish definite-initialization facts for following code.
@@ -6931,6 +6938,12 @@ public final class TypeChecker {
 
     private Type trapResult(boolean trapped, Type result) {
         return trapped ? new Named("TrapResult", List.of(result)) : result;
+    }
+
+    private void requireNonVoidControlPayload(Type type, String keyword) {
+        if (type == Primitive.VOID) {
+            throw new IllegalArgumentException(keyword + " requires a non-void payload");
+        }
     }
 
     private boolean isTrapResultType(Type type) {
