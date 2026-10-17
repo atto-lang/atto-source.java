@@ -97,12 +97,19 @@ final class TrapOptionSemanticsTest {
                   stdio.stdout.write(results.unwrap()[0]);
                   stdio.stdout.write(":");
                   stdio.stdout.write(err.is_none());
+
+                  val TrapResult<int> stored = value();
+                  [const [nested], const stored_error] = stored;
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(nested.unwrap());
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(stored_error.is_none());
                   return;
                 }
                 """;
 
         assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck(program));
-        assertEquals("true:17:true", run(program));
+        assertEquals("true:17:true:17:true", run(program));
     }
 
     @Test
