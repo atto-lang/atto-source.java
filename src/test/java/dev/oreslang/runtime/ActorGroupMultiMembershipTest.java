@@ -287,7 +287,10 @@ final class ActorGroupMultiMembershipTest {
             for (Object payload : java.util.List.of(
                     capability,
                     java.util.List.of(capability),
-                    java.util.Map.of("invite", capability))) {
+                    java.util.Map.of("invite", capability),
+                    java.util.Set.of(capability),
+                    new Object[]{java.util.List.of("nested", java.util.Map.of("invite", capability))},
+                    java.util.Map.of(capability, "as-key"))) {
                 IllegalArgumentException sharedFailure = assertThrows(
                         IllegalArgumentException.class, () -> shared.send(payload));
                 assertTrue(sharedFailure.getMessage().contains("CONTROL invitation"),
@@ -298,6 +301,13 @@ final class ActorGroupMultiMembershipTest {
                 assertTrue(privateFailure.getMessage().contains("CONTROL invitation"),
                         privateFailure::getMessage);
             }
+
+            // Frozen/shared containers and reusable state are not an
+            // alternative path for raw join authority to reach DATA actors.
+            assertThrows(IllegalArgumentException.class,
+                    () -> ActorRuntime.freeze(java.util.Map.of("cap", capability)));
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.syncCell(java.util.List.of(capability)));
 
             shared.stop();
             privateActor.stop();

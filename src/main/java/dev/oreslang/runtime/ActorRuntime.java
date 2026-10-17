@@ -5614,12 +5614,13 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ActorRuntime.ActorGroupJoinCapability capability) {
-            if (!capability.ownedBy(this)) {
-                throw new IllegalArgumentException(
-                        "ActorGroup capability belongs to a different ActorRuntime");
-            }
-            return;
+        // Defense in depth: this walker is used only for SHARED transport,
+        // and must reject raw manager/CONTROL authority even if an upstream
+        // sender-ownership validation is later reordered or refactored.
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            throw new IllegalArgumentException(
+                    "ActorGroupJoinCapability cannot cross ordinary actor DATA mailboxes; "
+                            + "use a target-bound CONTROL invitation");
         }
         if (value instanceof Shared<?> shared) {
             if (!shared.ownedBy(this)) {
