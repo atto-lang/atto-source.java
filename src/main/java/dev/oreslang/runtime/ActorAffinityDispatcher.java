@@ -120,6 +120,14 @@ final class ActorAffinityDispatcher extends AbstractExecutorService {
                 nativeLane.executeWithoutBootstrap(task);
             else if (noBootstrap && executor instanceof AdaptiveCarrierExecutor javaLane)
                 javaLane.executeWithoutCarrierGrowth(task);
+            else if (noBootstrap && NioReadinessGroup.onReactorThread())
+                // A generic ExecutorService (including a regular
+                // ThreadPoolExecutor) cannot prove that execute() will not
+                // synchronously invoke ThreadFactory/Thread.start or run
+                // callbacks inline. An unverified host lane is not a legal
+                // selector submission destination.
+                throw new RejectedExecutionException(
+                        "reactor completion requires a verified no-bootstrap carrier lane");
             else
                 executor.execute(task);
         } catch (RuntimeException | Error failure) {
