@@ -142,6 +142,16 @@ public final class MessagePackWireV2Harness {
       }
     };
     reject(() -> new Shape(MessagePackWireV2.Kind.LIST, negativeDescriptor));
+    // Hostile collection sizes must not generate a negative MessagePack array
+    // header (0xff) or a successful malformed encoder result.
+    List<Object> negativeValues = new AbstractList<>() {
+      @Override public int size() { return -1; }
+      @Override public Object get(int index) {
+        throw new AssertionError("negative sequence traversed");
+      }
+    };
+    reject(() -> MessagePackWireV2.encode("demo.NegativeSequence.v1",
+        Shape.list(Shape.string()), negativeValues));
     System.out.println("PASS MessagePack v2 Java portable golden/negative assertions="+cases);
   }
 }
