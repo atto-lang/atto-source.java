@@ -51,20 +51,25 @@ final class SupervisorFailureRetentionTest {
         var group = ActorRuntime.ActorGroupId.create();
         try (var executor = Executors.newSingleThreadExecutor()) {
             var lane = new SupervisorFailureControl(supervisor, group, executor, 4);
-            lane.publish(notice(supervisor, group));
-            lane.publish(notice(supervisor, group));
+            var first = notice(supervisor, group);
+            var second = notice(supervisor, group);
+            lane.reserve(first.actorId());
+            lane.reserve(second.actorId());
+            lane.publish(first);
+            lane.publish(second);
             lane.install(n -> { throw new IllegalStateException("policy failure"); });
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (lane.failure().isEmpty() && System.nanoTime() < deadline)
                 Thread.sleep(2);
             assertTrue(lane.failure().orElse("").contains("policy failure"));
             assertEquals(2, lane.undelivered());
-            assertEquals(0, lane.queued());
+            assertEquals(2, lane.queued());
+            assertEquals(2, lane.pendingSnapshot().size());
         }
     }
 
     @Test
-    void failedSupervisorProcessDoesNotRetainQueuedMailbox() {
+    void failedSupervisorProcessRetainsQueuedMailbox() {
         var supervisor = ActorRuntime.SupervisorId.create();
         var group = ActorRuntime.ActorGroupId.create();
         try (var process = new SupervisorProcess(
