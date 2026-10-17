@@ -32,6 +32,56 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void reactorRejectsUnverifiedWarmGenericExecutorEvenWhenWorkerExists()
+            throws Exception {
+        // A plain ThreadPoolExecutor offers no proof that execute() will not
+        // synchronously create/recreate a worker (or run host code inline).
+        // A warm getPoolSize() observation is not an admission fence.
+        var javaPools = new java.util.ArrayList<java.util.concurrent.ThreadPoolExecutor>();
+        var lanes = new ActorAffinityDispatcher(1, 8, new int[0], index -> {
+            var pool = new java.util.concurrent.ThreadPoolExecutor(
+                    1, 2, 60L, TimeUnit.SECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<Runnable>(8),
+                    task -> new Thread(task, "test-unverified-warm-executor"));
+            javaPools.add(pool);
+            return pool;
+        });
+        var pipe = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 8, 8)) {
+            var warmed = new java.util.concurrent.CountDownLatch(1);
+            lanes.executeOnLane(0, warmed::countDown);
+            assertTrue(warmed.await(2, TimeUnit.SECONDS));
+            assertEquals(1, javaPools.get(0).getPoolSize());
+
+            group.bindVmCompletionExecutor(lanes::executeHostOnWarmLane, false);
+            pipe.source().configureBlocking(false);
+            var ready = group.watch(pipe.source(), SelectionKey.OP_READ);
+            var called = new java.util.concurrent.atomic.AtomicInteger();
+            ready.whenCompleteRuntime((events, failure) -> called.incrementAndGet());
+            pipe.sink().write(java.nio.ByteBuffer.wrap(new byte[] {17}));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while ((group.pendingCount() != 0 || group.stagedNotificationCount() == 0)
+                    && System.nanoTime() < deadline) Thread.sleep(1);
+            assertEquals(1, group.stagedNotificationCount());
+            assertEquals(0, called.get(), "generic pool cannot run host callback on selector");
+            assertEquals(1, javaPools.get(0).getPoolSize(),
+                    "selector must not trigger an unverified second worker");
+
+            group.retryStagedNotifications(); // trusted external host thread
+            assertTrue((ready.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertEquals(1, called.get());
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.pendingNotifications());
+        } finally {
+            pipe.source().close();
+            pipe.sink().close();
+            lanes.shutdownNow();
+            assertTrue(lanes.awaitTermination(3, TimeUnit.SECONDS));
+        }
+    }
+
     @Test void reactorCannotBootstrapColdActorLaneAndHostRetryCanDrain()
             throws Exception {
         // Exercise the actual selector context rather than mocking thread
