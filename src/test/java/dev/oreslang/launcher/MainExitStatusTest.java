@@ -41,6 +41,13 @@ final class MainExitStatusTest {
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow="}));
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow=PROCESS_EXIT,"}));
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--allow=,PROCESS_EXIT"}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {"--lambda-invoke="}));
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--lambda-invoke=handler.invoke", "--allow-env=PATH", temp.resolve("missing.ores").toString()
+        }), "lambda invocation cannot be privilege-widened with host permission flags");
+        assertEquals(2, OresMain.exitStatusForArgs(new String[] {
+                "--lambda-invoke=handler.invoke", "--check", temp.resolve("missing.ores").toString()
+        }), "lambda invocation is a runtime mode, not a check/build-analysis mode");
         assertEquals(2, OresMain.exitStatusForArgs(new String[] {
                 "--check", "--build-analysis", temp.resolve("missing.ores").toString()
         }), "mutually exclusive options are usage errors even if the input file is missing");
