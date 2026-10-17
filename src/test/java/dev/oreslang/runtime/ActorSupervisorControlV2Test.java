@@ -220,6 +220,19 @@ final class ActorSupervisorControlV2Test {
             assertThrows(ExecutionException.class,
                     () -> childRef.get().done().get(5, TimeUnit.SECONDS));
 
+            var pressured = runtime.actorDiagnostics(parent);
+            assertEquals(ActorRuntime.ActorLifecycleState.RUNNING, pressured.lifecycle());
+            assertEquals(1, pressured.userMailboxCapacity());
+            assertEquals(1, pressured.queuedUserMessages());
+            assertEquals(0, pressured.queuedContinuations());
+            assertEquals(1, pressured.supervisorControl().pending());
+            assertEquals(2, pressured.nextUserMessageSequence());
+            assertEquals(-1, pressured.lastProcessedUserMessageSequence());
+            assertEquals(1, runtime.runtimeDiagnostics().activeActors());
+            assertEquals(2, runtime.runtimeDiagnostics()
+                    .rootSupervisorControl().reserved(),
+                    "parent plus failed-child root fallback slots stay reserved");
+
             releaseParent.countDown();
             assertTrue(controlSeen.await(5, TimeUnit.SECONDS));
             assertTrue(userSeen.await(5, TimeUnit.SECONDS));
@@ -229,6 +242,12 @@ final class ActorSupervisorControlV2Test {
             assertEquals(1, stats.published());
             assertEquals(1, stats.acknowledged());
             assertEquals(0, stats.pending());
+
+            var drained = runtime.actorDiagnostics(parent);
+            assertEquals(0, drained.queuedUserMessages());
+            assertEquals(0, drained.supervisorControl().pending());
+            assertEquals(2, drained.nextUserMessageSequence());
+            assertEquals(1, drained.lastProcessedUserMessageSequence());
 
             parent.stop();
             assertTrue(parent.awaitTermination(5, TimeUnit.SECONDS));
