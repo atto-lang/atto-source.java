@@ -2276,6 +2276,37 @@ public final class TypeChecker {
                 return Primitive.BOOL;
             }
             Type right = typeOf(binary.right(), env, generics, self);
+            boolean decimalComplexMix =
+                    (left == Primitive.DECIMAL && right == Primitive.COMPLEX)
+                    || (left == Primitive.COMPLEX && right == Primitive.DECIMAL);
+            if (decimalComplexMix) {
+                throw new IllegalArgumentException(
+                        "explicit conversion required between Decimal and binary64 complex");
+            }
+            boolean complexOperand = left == Primitive.COMPLEX || right == Primitive.COMPLEX;
+            if (complexOperand && (binary.operator().equals("+")
+                    || binary.operator().equals("-")
+                    || binary.operator().equals("*")
+                    || binary.operator().equals("/"))) {
+                if (left == Primitive.INT) {
+                    Long literal = constantTupleIndex(binary.left());
+                    if (literal != null
+                            && (literal < -9_007_199_254_740_992L
+                                || literal > 9_007_199_254_740_992L)) {
+                        throw new IllegalArgumentException(
+                                "integer literal outside exact binary64 range requires explicit conversion before complex arithmetic");
+                    }
+                }
+                if (right == Primitive.INT) {
+                    Long literal = constantTupleIndex(binary.right());
+                    if (literal != null
+                            && (literal < -9_007_199_254_740_992L
+                                || literal > 9_007_199_254_740_992L)) {
+                        throw new IllegalArgumentException(
+                                "integer literal outside exact binary64 range requires explicit conversion before complex arithmetic");
+                    }
+                }
+            }
             return switch (binary.operator()) {
                 case "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -2301,13 +2332,25 @@ public final class TypeChecker {
                     yield Primitive.BOOL;
                 }
                 case "<", "<=", ">", ">=" -> {
-                    if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
-                        throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
+                    if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) {
+                        throw new IllegalArgumentException(
+                                "complex ordering is undefined; use equality or an explicit ordering policy");
+                    }
+                    if (!(Types.isNumeric(left) && Types.isNumeric(right))
+                            && !(isStringLike(left) && isStringLike(right))) {
+                        throw new IllegalArgumentException(
+                                "comparison operands must both be numeric or both strings");
                     }
                     yield Primitive.BOOL;
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
-                case "-", "*", "%" -> numericJoin(left, right, binary.operator());
+                case "-", "*" -> numericJoin(left, right, binary.operator());
+                case "%" -> {
+                    if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) {
+                        throw new IllegalArgumentException("complex remainder is undefined");
+                    }
+                    yield numericJoin(left, right, "%");
+                }
                 case "/" -> {
                     // OresEvalRootNode.numeric evaluates real division as a Double,
                     // even for int/int. The result cannot be assigned to int without
@@ -4119,6 +4162,15 @@ public final class TypeChecker {
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expected == Primitive.COMPLEX) {
+            Long literal = constantTupleIndex(expr);
+            if (literal != null
+                    && (literal < -9_007_199_254_740_992L
+                        || literal > 9_007_199_254_740_992L)) {
+                throw new IllegalArgumentException(
+                        "integer literal outside exact binary64 range requires explicit conversion before complex coercion");
+            }
+        }
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
@@ -8011,7 +8063,9 @@ public final class TypeChecker {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
-            case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
+            case "complex64" -> throw new IllegalArgumentException(
+                    "complex64 requires a dedicated binary32 complex precision contract");
+            case "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> {
                 if (!ref.arguments().isEmpty() || ref.inferArguments()) {
                     throw new IllegalArgumentException("bool/boolean does not accept type arguments or sequence shapes");

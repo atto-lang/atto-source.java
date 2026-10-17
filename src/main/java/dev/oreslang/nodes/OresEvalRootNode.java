@@ -870,7 +870,10 @@ public final class OresEvalRootNode extends RootNode {
             ArrayList<Object> tuple = new ArrayList<>(args.size());
             for (int i = 0; i < parameters.size(); i++) {
                 Ast.Param param = parameters.get(i);
-                Object value = args.get(i);
+                Object value = coerceDeclaredComplexValue(
+                        param.type(),
+                        args.get(i),
+                        label + " parameter " + param.name());
                 tuple.add(value);
                 env.define(
                         param.name(),
@@ -1954,7 +1957,13 @@ public final class OresEvalRootNode extends RootNode {
                                             SourceFlow.throwing(failure));
                                     return;
                                 }
-                                env.define(binding.name(), value, binding.kind());
+                                env.define(
+                                        binding.name(),
+                                        coerceDeclaredComplexValue(
+                                                binding.declaredType(),
+                                                value,
+                                                "binding " + binding.name()),
+                                        binding.kind());
                                 continuation.accept(t, SourceFlow.normal());
                             });
                     return;
@@ -5076,9 +5085,20 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                    env.initialize(
+                            binding.name(),
+                            coerceDeclaredComplexValue(
+                                    binding.declaredType(),
+                                    eval(binding.initializer(), env),
+                                    "binding " + binding.name()));
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(
+                            binding.name(),
+                            coerceDeclaredComplexValue(
+                                    binding.declaredType(),
+                                    eval(binding.initializer(), env),
+                                    "binding " + binding.name()),
+                            binding.kind());
                 }
                 return;
             }
@@ -8342,7 +8362,9 @@ public final class OresEvalRootNode extends RootNode {
             if (name.equals("string") || name.equals("String")) return value instanceof String;
             if (name.equals("Symbol") && findClass("Symbol") == null)
                 return value instanceof dev.oreslang.runtime.OresSymbol;
-            if (name.equals("complex") || name.equals("complex64") || name.equals("complex128")) return value instanceof Complex;
+            if (name.equals("complex64")) return false;
+            if (name.equals("complex") || name.equals("complex128"))
+                return value instanceof Complex;
             if (name.equals("Option")) return value instanceof OptionValue;
             if (name.equals("Result")) return value instanceof ResultValue;
             if (name.equals("Array") || name.equals("List")) return value instanceof List<?>;
@@ -8695,6 +8717,27 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
+        private Object coerceDeclaredComplexValue(
+                Ast.TypeRef declared,
+                Object value,
+                String where) {
+            if (declared == null || declared.isBorrow()) return value;
+            if (declared.name().equals("complex")
+                    || declared.name().equals("complex128")) {
+                try {
+                    return asComplex(value);
+                } catch (IllegalArgumentException failure) {
+                    throw new IllegalArgumentException(
+                            where + ": " + failure.getMessage(), failure);
+                }
+            }
+            if (declared.name().equals("complex64")) {
+                throw new IllegalArgumentException(
+                        where + ": complex64 requires a dedicated binary32 complex precision contract");
+            }
+            return value;
+        }
+
         private Complex asComplex(Object value) {
             if (value instanceof Complex c) return c;
             // Exact numeric carriers may require more than 53 bits; never
@@ -8703,7 +8746,17 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException(
                         "explicit conversion required from BigInt/Decimal to binary64 complex");
             }
-            if (value instanceof Number n) return new Complex(n.doubleValue(), 0.0);
+            if (value instanceof Number n) {
+                if (isIntegral(n)) {
+                    long integer = n.longValue();
+                    if (integer < -9_007_199_254_740_992L
+                            || integer > 9_007_199_254_740_992L) {
+                        throw new IllegalArgumentException(
+                                "explicit conversion required from integer outside exact binary64 range to complex");
+                    }
+                }
+                return new Complex(n.doubleValue(), 0.0);
+            }
             throw new IllegalArgumentException("value is not numeric");
         }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
@@ -8790,9 +8843,18 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(value instanceof Number)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
-            if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
-                if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
-                return value;
+            if (declared.name().equals("complex")
+                    || declared.name().equals("complex128")) {
+                if (!(value instanceof Number) && !(value instanceof Complex))
+                    throw returnTypeMismatch(callable, declared, value);
+                // Declared complex returns are a coercion boundary too. Route
+                // through the same guarded binary64 conversion as arithmetic
+                // so Decimal/BigInt and lossy integral values cannot bypass it.
+                return asComplex(value);
+            }
+            if (declared.name().equals("complex64")) {
+                throw new IllegalArgumentException(
+                        "complex64 return shaping requires a dedicated binary32 complex precision contract");
             }
             if (declared.name().equals("void")) {
                 if (value != null) throw returnTypeMismatch(callable, declared, value);
