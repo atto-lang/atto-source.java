@@ -1992,15 +1992,21 @@ public final class TypeChecker {
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
-            requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
+            requireAssignable(typeOfCondition(conditional.condition(), env, generics, self),
+                    Primitive.BOOL, "ternary condition");
             Map<Env.Binding, Set<String>> afterCondition = env.initializationSnapshot();
 
+            // A trusted runtime type predicate narrows only the true edge.
+            // Never mutate the outer environment: the false edge and code after
+            // the ternary must retain the original opaque/union type.
             env.restoreInitialization(afterCondition);
-            Type left = typeOf(conditional.whenTrue(), env, generics, self);
+            Env trueEnv = new Env(env);
+            defineConditionBindings(conditional.condition(), trueEnv, env, generics, self);
+            Type left = typeOf(conditional.whenTrue(), trueEnv, generics, self);
             Map<Env.Binding, Set<String>> leftExit = env.initializationSnapshot();
 
             env.restoreInitialization(afterCondition);
-            Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            Type right = typeOf(conditional.whenFalse(), new Env(env), generics, self);
             Map<Env.Binding, Set<String>> rightExit = env.initializationSnapshot();
 
             env.mergeInitialization(List.of(leftExit, rightExit));
@@ -4905,6 +4911,14 @@ public final class TypeChecker {
     private void defineConditionBindings(
             Ast.Expr condition, Env destination, Env sourceEnv, Set<String> generics, Type self) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
+            // Same-name flow binding is safe only when the tested local is not
+            // reassignable. A mutable local could change between validation
+            // and use, particularly across callbacks or suspension.
+            if (test.value() instanceof Ast.NameExpr tested
+                    && tested.name().equals(test.binding())) {
+                Env.Binding original = sourceEnv.lookup(tested.name());
+                if (original == null || original.kind() != Ast.BindingKind.VAL) return;
+            }
             Type source = deref(typeOf(test.value(), sourceEnv, generics, self));
             Type target = deref(resolve(test.targetType(), generics, self));
             requireResolvedRuntimeReifiableType(target, "is");
@@ -7611,11 +7625,12 @@ public final class TypeChecker {
                 yield Primitive.BOOL;
             }
             case "string", "String" -> Primitive.STRING;
-            case "Any", "Unknown" -> {
+            case "any", "unknown", "Any", "Unknown" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
                     throw new IllegalArgumentException(ref.name() + " does not accept type arguments");
                 }
-                yield ref.name().equals("Any") ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
+                yield ref.name().equals("any") || ref.name().equals("Any")
+                        ? Types.Any.INSTANCE : Types.UnknownValue.INSTANCE;
             }
             case "Symbol" -> {
                 if (ref.inferArguments() || !ref.arguments().isEmpty()) {
