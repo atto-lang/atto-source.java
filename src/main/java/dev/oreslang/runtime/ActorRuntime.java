@@ -70,7 +70,6 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_CONTINUATION_BURST = 32;
     private static final int SUPERVISION_EVENT_CAPACITY = 4_096;
     private static final int WATCHDOG_NOTICE_CAPACITY = 1_024;
-    private static final int MAX_DIAGNOSTIC_MESSAGE_CHARS = 512;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
