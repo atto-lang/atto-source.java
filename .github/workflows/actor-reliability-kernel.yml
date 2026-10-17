@@ -6,7 +6,10 @@ on:
       - 'src/main/java/dev/oreslang/runtime/ActorRuntime.java'
       - 'src/main/java/dev/oreslang/runtime/CoreLog.java'
       - 'src/main/java/dev/oreslang/runtime/SupervisorRestartWindow.java'
+      - 'src/main/java/dev/oreslang/runtime/ActorCompletionFrontier.java'
       - 'src/test/java/dev/oreslang/runtime/ActorReliabilityKernelTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorCompletionFrontierTest.java'
+      - 'src/test/java/dev/oreslang/runtime/ActorDrainObserverScalingTest.java'
       - 'src/test/java/dev/oreslang/runtime/SupervisorRestartWindowTest.java'
       - 'docs/ACTOR_RELIABILITY_KERNEL_V1.md'
       - 'scripts/verify_actor_reliability_kernel.py'
@@ -35,5 +38,5 @@ jobs:
       - name: Run reliability, watchdog, root-fault and send-contract tests
         run: >
           mvn -B -ntp
-          -Dtest=SupervisorRestartWindowTest,ActorReliabilityKernelTest,ActorTurnWatchdogTest,RootExitSupervisorFaultInjectionTest,ActorSendContractTest
+          -Dtest=SupervisorRestartWindowTest,ActorReliabilityKernelTest,ActorCompletionFrontierTest,ActorDrainObserverScalingTest,ActorTurnWatchdogTest,RootExitSupervisorFaultInjectionTest,ActorSendContractTest,ActorMailboxExecutionBoundaryTest,ActorStopMailboxRaceTest
           test
