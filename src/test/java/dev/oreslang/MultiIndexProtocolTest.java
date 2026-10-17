@@ -149,6 +149,55 @@ final class MultiIndexProtocolTest {
     }
 
     @Test
+    void indexProtocolStillChecksArgumentAndAssignedValueTypes() {
+        IllegalArgumentException getter = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Matrix as
+                          pub [Symbol.index](int row, int col): int { return row + col; }
+                        end
+
+                        fnc bad(Matrix matrix): int {
+                          return matrix[1, "wrong"];
+                        }
+                        """)));
+        assertTrue(getter.getMessage().contains("argument 2"), getter::getMessage);
+
+        IllegalArgumentException setter = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Matrix as
+                          pub [Symbol.indexSet](int row, int col, int value): void { return; }
+                        end
+
+                        fnc bad(): void {
+                          let mut matrix = new Matrix();
+                          matrix[1, 2] = "wrong";
+                          return;
+                        }
+                        """)));
+        assertTrue(setter.getMessage().contains("argument 3"), setter::getMessage);
+    }
+
+    @Test
+    void customIndexedWriteRequiresMutableReceiverAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Matrix as
+                          pub [Symbol.indexSet](int row, int col, int value): void { return; }
+                        end
+
+                        fnc bad(): void {
+                          val matrix = new Matrix();
+                          matrix[1, 2] = 7;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("read-only binding"), failure::getMessage);
+    }
+
+    @Test
     void malformedIndexProtocolDeclarationsFailClosed() {
         IllegalArgumentException zeroArity = assertThrows(
                 IllegalArgumentException.class,
