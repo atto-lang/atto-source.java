@@ -136,10 +136,9 @@ public final class Types {
         if (type instanceof Tuple tuple) return tuple.elements().stream().allMatch(Types::safelyHideConcreteType);
         if (type instanceof Union union) return union.options().stream().allMatch(Types::safelyHideConcreteType);
         if (type instanceof Record record) return record.members().values().stream().allMatch(Types::safelyHideConcreteType);
-        if (type instanceof Function function) {
-            return function.parameters().stream().allMatch(Types::safelyHideConcreteType)
-                    && safelyHideConcreteType(function.result());
-        }
+        // An erased callable needs an explicit ownership/effects witness before
+        // it can be boxed as any; its signature alone is not sufficient.
+        if (type instanceof Function) return false;
         if (type instanceof Named named) {
             String leaf = named.name();
             int qualifier = leaf.lastIndexOf('.');
