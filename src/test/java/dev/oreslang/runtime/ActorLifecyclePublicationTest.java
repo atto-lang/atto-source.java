@@ -22,8 +22,13 @@ final class ActorLifecyclePublicationTest {
         try (var runtime = new ActorRuntime()) {
             var actor = runtime.<String>spawnShared(() -> {
                 factoryEntered.countDown();
-                if (!releaseFactory.await(5, TimeUnit.SECONDS)) {
-                    throw new IllegalStateException("actor factory release timed out");
+                try {
+                    if (!releaseFactory.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("actor factory release timed out");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("actor factory interrupted", interrupted);
                 }
                 return (message, context) -> { };
             });
