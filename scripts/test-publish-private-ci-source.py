@@ -214,6 +214,40 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         with patch.object(pub, "gh_api", side_effect=self.fake_api):
             return pub.publish(repo, self.source, branch, self.root, self.expected_tree, D)
 
+    def test_zero_or_unavailable_open_flags_deny_before_policy_or_source_io(self):
+        # Some platform shims expose a flag name with value 0, silently
+        # defeating O_NOFOLLOW/O_NONBLOCK while hasattr still returns True.
+        self.assertTrue(pub.safe_descriptor_flags_available())
+        for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
+            for replacement in (0, None):
+                with self.subTest(flag=flag, replacement=replacement):
+                    with patch.object(pub.os, flag, replacement):
+                        self.assertFalse(pub.safe_descriptor_flags_available())
+                        with patch.object(pub.os, "open",
+                                          side_effect=AssertionError("unsafe file open")) as opened:
+                            with self.assertRaisesRegex(
+                                    pub.Denied, "OS cannot safely read"):
+                                pub.checked_policy_fingerprint(self.root, "trusted/ci")
+                            with self.assertRaisesRegex(
+                                    pub.Denied, "OS cannot enforce"):
+                                pub.collect_source(self.source, self.root)
+                            opened.assert_not_called()
+
+    def test_unusable_open_flags_deny_trusted_checkout_after_git_proof(self):
+        def safe_git(argv, **kwargs):
+            output = str(self.root) if "--show-toplevel" in argv else A
+            return subprocess.CompletedProcess(argv, 0, stdout=output + "\\n")
+        for flag in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"):
+            with self.subTest(flag=flag):
+                with patch.object(pub.os, flag, 0):
+                    with patch.object(pub.subprocess, "run", side_effect=safe_git):
+                        with patch.object(pub.os, "open",
+                                          side_effect=AssertionError("unsafe file open")) as opened:
+                            with self.assertRaisesRegex(
+                                    pub.Denied, "OS cannot safely authenticate"):
+                                pub.require_trusted_publisher_checkout(self.root, A)
+                            opened.assert_not_called()
+
     def test_unprotected_carrier_main_denies_before_source_read(self):
         self.carrier_main_protected = [False] * 100
         with patch.object(pub, "collect_source",
