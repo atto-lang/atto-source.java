@@ -64,6 +64,7 @@ public final class StructuralTuplePolicy {
             return true;
         }
         if (type instanceof Types.Union union) {
+            if (union.options().size() > MAX_ARITY) return false;
             for (Type alternative : union.options()) {
                 if (!certifiedSlotType(alternative, depth + 1)) return false;
             }
@@ -173,6 +174,9 @@ public final class StructuralTuplePolicy {
      */
     public static Selection selectExplicitTupleSpread(List<Candidate> family, Type source) {
         Objects.requireNonNull(family, "family");
+        if (family.size() > MAX_FAMILY) {
+            throw new IllegalArgumentException("tuple overload family exceeds 128 candidates");
+        }
         // Freeze the caller's candidate list once: validation and selection
         // must never traverse different snapshots of a mutable family.
         List<Candidate> candidates = List.copyOf(family);
