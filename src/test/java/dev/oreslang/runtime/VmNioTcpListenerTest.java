@@ -125,6 +125,30 @@ final class VmNioTcpListenerTest {
         }
     }
 
+    @Test void listenerCloseRevokesUnacceptedFutureWithoutLeakingOperations() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 2, 1)) {
+            var pending = listener.acceptAsync();
+            assertEquals(1, listener.pendingOperations());
+            listener.closeAsync().get(3, TimeUnit.SECONDS);
+            assertTrue(listener.isTerminated());
+            assertTrue(pending.isDone(), "closing listener must settle a pending accept");
+            assertThrows(java.util.concurrent.CancellationException.class,
+                    () -> pending.get(3, TimeUnit.SECONDS));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while ((listener.pendingOperations() != 0
+                    || vm.nioReadiness().activeAcceptLeases() != 0)
+                    && System.nanoTime() < deadline)
+                Thread.sleep(1);
+            assertEquals(0, listener.pendingOperations(),
+                    "closing listener must return its reserved accept credit");
+            assertEquals(0, vm.nioReadiness().activeAcceptLeases(),
+                    "close must fence the old listener key before VM teardown");
+        } finally {
+            vm.close();
+        }
+    }
+
     @Test void connectionCloseRevokesPendingReadAndReturnsListenerCapacity() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         try (var listener = VmNioTcpListener.loopback(vm.nioReadiness(), 0, 8, 1, 1)) {
