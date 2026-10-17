@@ -25,16 +25,19 @@ and cannot be overwritten by it. `let` permits later mutation; `const` needs a
 compile-time initializer. `final` is an accepted compatibility spelling for the
 same fixed slot kind as `val`.
 
-## Static proof obligation
+## Static proof obligation (immutable and mutable instance fields)
 
 For each explicit constructor independently, track two sets across normal
 control flow:
 
-- `must`: blank val fields initialized on every incoming path;
-- `may`: blank val fields initialized on any incoming path.
+- `must`: all declaration-uninitialized fields assigned on every incoming path;
+- `may`: all declaration-uninitialized fields assigned on any incoming path.
 
-An assignment `self.field = expr` is admitted only if the field is absent from
-`may`, and then added to both sets. At branch joins, `must` is the **intersection**
+For a blank immutable `val` field, an assignment `self.field = expr` is
+admitted only if the field is absent from `may`, and then added to both sets.
+For a blank mutable `let` field, first assignment is required on every normal
+path, but subsequent assignments are permitted. Both kinds of assignment
+establish `must` and `may` for that field. At branch joins, `must` is the **intersection**
 and `may` the **union** of normally continuing branches. Returning branches
 require complete `must` state *before* the return and do not contribute to
 later joins. An implicit fallthrough also requires complete `must` state.
@@ -61,21 +64,22 @@ fi
 self.count = 0;
 ```
 
-Reads of a blank `self.field` before definite initialization are rejected.
-Only a direct constructor statement can initialize a blank val slot; writes
+Reads of any blank `self.field` before definite initialization are rejected.
+Only a direct constructor statement establishes a first assignment; writes
 hidden inside expression forms, lambdas, or callbacks cannot establish the
 proof. Constructor `self` remains a construction-scoped, unpublished receiver
 that may not escape into borrowed, retained or asynchronous callbacks.
 
 This first Java slice intentionally fails closed for loops, `try/catch/finally`,
-`match`, `select`, and `defer` while a blank val slot remains incomplete.
-These constructs may appear after initialization but may not write blank val
-slots. Extending the checker to them requires sound normal/exceptional CFG,
+`match`, `select`, and `defer` while any required instance field remains
+uninitialized. These constructs may appear after initialization, but cannot
+write constructor-initialized immutable `val` slots. Mutable fields retain their
+normal reassignment permission. Extending the checker to them requires sound normal/exceptional CFG,
 suspension and deferred-effect handling—not a syntactic count of assignments.
 
 The interpreter separately rejects a second immutable-field write and refuses
-to return an instance with any uninitialized field, including ordinary mutable
-fields. A constructor may initialize only fields declared by its own class;
+to return an instance with any uninitialized field. The compiler now mirrors
+that all-fields initialization requirement for explicit constructors. A constructor may initialize only fields declared by its own class;
 initialization of inherited blank fields awaits explicit super-constructor
 chaining. No runtime field-default fabrication is permitted.
 
