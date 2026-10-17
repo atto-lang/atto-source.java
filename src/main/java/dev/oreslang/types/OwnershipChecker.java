@@ -1747,6 +1747,7 @@ public final class OwnershipChecker {
                 && !callableView.arguments().isEmpty()) {
             int parameterCount = callableView.arguments().size() - 1;
             if (parameterCount == call.arguments().size()) {
+                VarState constructionCallLoan = null;
                 for (int i = 0; i < call.arguments().size(); i++) {
                     Ast.Expr argumentExpr = call.arguments().get(i);
                     Ast.TypeRef parameterType = callableView.arguments().get(i);
