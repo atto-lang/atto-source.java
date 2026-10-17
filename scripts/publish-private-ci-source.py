@@ -65,6 +65,8 @@ REQUIRED_CODEOWNER_PATHS = (
     "/scripts/run-in-private-ci-destination.sh",
     "/scripts/test-private-ci-destination.sh",
     "/scripts/test-publish-private-ci-source.py",
+    "/scripts/ci_private_mirror_preflight.py",
+    "/tests/test_ci_private_mirror_preflight.py",
     "/src/test/java/dev/oreslang/PrivateExactMainValidationWorkflowSecurityTest.java",
     "/src/test/java/dev/oreslang/PrivateExactPublisherAdmissionMutationTest.java",
     "/src/test/java/dev/oreslang/PrivateExactPublisherValidationWorkflowSecurityTest.java",
