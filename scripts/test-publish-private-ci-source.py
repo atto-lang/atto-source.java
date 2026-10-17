@@ -2372,7 +2372,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
                     for path in pub.REQUIRED_CODEOWNER_PATHS]
         self.assertEqual(effective[-len(required):], required)
         self.assertEqual(len(effective), len(set(effective)))
-        self.assertGreaterEqual(len(required), 18)
+        self.assertGreaterEqual(len(required), 20)
 
     def test_source_local_runner_entrypoints_and_admission_tests_are_owned(self):
         required = set(pub.REQUIRED_CODEOWNER_PATHS)
