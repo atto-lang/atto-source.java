@@ -89,6 +89,8 @@ containing storage owner's ownership root. Moving `payload` therefore
 invalidates subsequent moves of the same `holder` in that control-flow
 path. The initial implementation intentionally treats separate fields on one
 owner conservatively; path-disjoint partial moves are not yet proven.
+Copy payloads, such as `Some(int)`, remain Copy even when the containing
+object is move-only; passing the copied integer does not consume its holder.
 Unstable or unresolved projected places must be rejected rather than
 inventing a detached move-only owner.
 
