@@ -948,7 +948,7 @@ public final class OresEvalRootNode extends RootNode {
          * current continuation is stored here and OresScheduler.Task returns
          * Await to unwind the carrier completely.
          */
-        private final class SourceTask implements OresScheduler.Task<Object> {
+        private final class SourceTask implements OresScheduler.CleanupAwareTask<Object> {
             // The trampoline prevents recursive loop iterations from retaining
             // interpreter Java frames until a quantum is exhausted.
             // The reduction counter and clock belong to the heap-owned
@@ -3301,22 +3301,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         null,
                                                         failure2);
                                             } else {
+                                                Object result;
                                                 try {
-                                                    Object result =
-                                                            binary(
-                                                                    binary.operator(),
-                                                                    left,
-                                                                    right);
-                                                    continuation.accept(
-                                                            t2,
-                                                            result,
-                                                            null);
+                                                    result = binary(binary.operator(), left, right);
                                                 } catch (RuntimeException | Error failure3) {
-                                                    continuation.accept(
-                                                            t2,
-                                                            null,
-                                                            failure3);
+                                                    continuation.accept(t2, null, failure3);
+                                                    return;
                                                 }
+                                                continuation.accept(t2, result, null);
                                             }
                                         });
                             });
@@ -3392,34 +3384,26 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
+                                Throwable castFailure = null;
                                 try {
-                                    boolean matches =
-                                            oresTypeMatches(
-                                                    value,
-                                                    cast.targetType());
-                                    if (cast.mode()
-                                            == Ast.CastMode.OPTIONAL) {
-                                        continuation.accept(
-                                                t,
-                                                new OptionValue(
-                                                        matches,
-                                                        matches ? value : null),
-                                                null);
+                                    boolean matches = oresTypeMatches(value, cast.targetType());
+                                    if (cast.mode() == Ast.CastMode.OPTIONAL) {
+                                        result = new OptionValue(matches, matches ? value : null);
                                     } else if (!matches) {
-                                        continuation.accept(
-                                                t,
-                                                null,
-                                                new OresCastError(
-                                                        "cannot cast runtime type "
-                                                                + oresRuntimeTypeName(value)
-                                                                + " to "
-                                                                + cast.targetType().name()));
+                                        result = null;
+                                        castFailure = new OresCastError(
+                                                "cannot cast runtime type "
+                                                        + oresRuntimeTypeName(value)
+                                                        + " to " + cast.targetType().name());
                                     } else {
-                                        continuation.accept(t, value, null);
+                                        result = value;
                                     }
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, castFailure);
                             });
                     return;
                 }
@@ -3439,17 +3423,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            member(
-                                                    receiver,
-                                                    member.member(),
-                                                    env),
-                                            null);
+                                    result = member(receiver, member.member(), env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3476,19 +3457,14 @@ public final class OresEvalRootNode extends RootNode {
                                                         failure2);
                                                 return;
                                             }
+                                            Object result;
                                             try {
-                                                continuation.accept(
-                                                        t2,
-                                                        indexValue(
-                                                                receiver,
-                                                                key),
-                                                        null);
+                                                result = indexValue(receiver, key);
                                             } catch (RuntimeException | Error failure3) {
-                                                continuation.accept(
-                                                        t2,
-                                                        null,
-                                                        failure3);
+                                                continuation.accept(t2, null, failure3);
+                                                return;
                                             }
+                                            continuation.accept(t2, result, null);
                                         });
                             });
                     return;
@@ -3504,17 +3480,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            assignEvaluated(
-                                                    assignment.target(),
-                                                    value,
-                                                    env),
-                                            null);
+                                    result = assignEvaluated(assignment.target(), value, env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -3538,17 +3511,14 @@ public final class OresEvalRootNode extends RootNode {
                                     continuation.accept(t, null, failure);
                                     return;
                                 }
+                                Object result;
                                 try {
-                                    continuation.accept(
-                                            t,
-                                            instantiateEvaluated(
-                                                    created,
-                                                    values,
-                                                    env),
-                                            null);
+                                    result = instantiateEvaluated(created, values, env);
                                 } catch (RuntimeException | Error failure2) {
                                     continuation.accept(t, null, failure2);
+                                    return;
                                 }
+                                continuation.accept(t, result, null);
                             });
                     return;
                 }
@@ -4274,45 +4244,36 @@ public final class OresEvalRootNode extends RootNode {
                 boolean declaredFuture,
                 Env env,
                 SourceValueCont continuation) {
+            // Invoke independently of downstream delivery. Guest cleanup or
+            // caller continuations may throw; they must not be delivered twice.
+            final Object result;
             try {
-                Object result = invoke(invocation);
-                if (result instanceof OresFuture<?> future
-                        && !declaredFuture) {
-                    // A settled Future is a value, not a suspension: do not
-                    // publish Await or relinquish the actor's execution lease.
-                    // In particular, no-yield guards can remain held across
-                    // this already-committed result without re-entering the
-                    // scheduler or running another actor's mailbox turn.
-                    if (future.isDone()) {
-                        Object completed;
-                        try {
-                            completed = future.join();
-                        } catch (RuntimeException | Error completedFailure) {
-                            continuation.accept(task, null, completedFailure);
-                            return;
-                        }
-                        continuation.accept(task, completed, null);
-                        return;
-                    }
-                    if (env.hasLiveMutexGuards()) {
-                        throw new IllegalStateException(
-                                "cannot suspend on an implicit Future while holding a live MutexGuard");
-                    }
-                    task.suspend(
-                            future,
-                            (t, value, failure) ->
-                                    continuation.accept(
-                                            t,
-                                            value,
-                                            failure));
-                } else {
-                    continuation.accept(
-                            task,
-                            result,
-                            null);
-                }
+                result = invoke(invocation);
             } catch (RuntimeException | Error failure) {
                 continuation.accept(task, null, failure);
+                return;
+            }
+            if (result instanceof OresFuture<?> future && !declaredFuture) {
+                if (future.isDone()) {
+                    final Object completed;
+                    try {
+                        completed = future.join();
+                    } catch (RuntimeException | Error completedFailure) {
+                        continuation.accept(task, null, completedFailure);
+                        return;
+                    }
+                    continuation.accept(task, completed, null);
+                    return;
+                }
+                if (env.hasLiveMutexGuards()) {
+                    continuation.accept(task, null, new IllegalStateException(
+                            "cannot suspend on an implicit Future while holding a live MutexGuard"));
+                    return;
+                }
+                task.suspend(future, (t, value, failure) ->
+                        continuation.accept(t, value, failure));
+            } else {
+                continuation.accept(task, result, null);
             }
         }
 
