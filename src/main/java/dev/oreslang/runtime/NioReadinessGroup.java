@@ -288,10 +288,13 @@ public final class NioReadinessGroup implements AutoCloseable {
                     if (admitted) boundCompletionBootstrapped = true;
                     boundCompletionBootstrapInFlight.set(false);
                     if (admitted) {
-                        // Full OresContext host completions invoke the capacity
-                        // hook after this accepted delivery retires; that hook
-                        // drains the remaining staged records on actor carriers.
+                        // The first delivery may finish and fire its actor
+                        // capacity hook before this helper publishes the
+                        // bootstrapped flag. That concurrent retry observes
+                        // bootstrapInFlight and returns. Retry once again only
+                        // after publication so no staged tail can be stranded.
                         ownedCompletionExecutor.shutdown();
+                        retryStagedNotifications();
                     }
                 }
             });
