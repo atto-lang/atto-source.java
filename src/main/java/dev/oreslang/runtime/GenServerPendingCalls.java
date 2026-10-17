@@ -23,14 +23,17 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
     static final class PendingCall<R> {
         private final GenServerPendingCalls<R> owner;
         private final GenServerReplyLedger.Ticket ticket;
+        private final GenServerReplyLedger.Target target;
         private final OresFuture<R> future;
 
         private PendingCall(
                 GenServerPendingCalls<R> owner,
                 GenServerReplyLedger.Ticket ticket,
+                GenServerReplyLedger.Target target,
                 OresFuture<R> future) {
             this.owner = owner;
             this.ticket = ticket;
+            this.target = target;
             this.future = future;
         }
 
@@ -40,12 +43,18 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
     }
 
     private final GenServerReplyLedger ledger;
+    private final ActorReliabilityKernel reliability;
     private final Map<GenServerReplyLedger.Ticket, PendingCall<R>> active =
             new IdentityHashMap<>();
     private boolean closed;
 
     GenServerPendingCalls(int capacity) {
+        this(capacity, null);
+    }
+
+    GenServerPendingCalls(int capacity, ActorReliabilityKernel reliability) {
         this.ledger = new GenServerReplyLedger(capacity);
+        this.reliability = reliability;
     }
 
     PendingCall<R> register(GenServerReplyLedger.Target target) {
@@ -55,9 +64,9 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
 
             GenServerReplyLedger.Ticket ticket = ledger.register(target);
             OresFuture<R> future = new OresFuture<>(
-                    () -> retireForConsumerCancel(ticket),
+                    () -> retireForConsumerCancel(ticket, target),
                     () -> { });
-            PendingCall<R> call = new PendingCall<>(this, ticket, future);
+            PendingCall<R> call = new PendingCall<>(this, ticket, target, future);
             active.put(ticket, call);
             return call;
         }
@@ -125,9 +134,15 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
         closePending(new IllegalStateException("GenServer pending calls closed"));
     }
 
-    private boolean retireForConsumerCancel(GenServerReplyLedger.Ticket ticket) {
+    private boolean retireForConsumerCancel(
+            GenServerReplyLedger.Ticket ticket,
+            GenServerReplyLedger.Target target) {
         boolean won = ledger.retire(ticket);
-        if (won) removeActive(ticket);
+        if (won) {
+            removeActive(ticket);
+            record(ActorReliabilityKernel.EventKind.CALL_CANCELLED, target,
+                    ActorReliabilityKernel.FaultClass.CANCELLED, pendingCount());
+        }
         return won;
     }
 
@@ -140,4 +155,17 @@ final class GenServerPendingCalls<R> implements AutoCloseable {
     private boolean owns(PendingCall<R> call) {
         return call != null && call.owner == this;
     }
+
+    private void record(
+            ActorReliabilityKernel.EventKind kind,
+            GenServerReplyLedger.Target target,
+            ActorReliabilityKernel.FaultClass fault,
+            long value) {
+        if (reliability == null) return;
+        reliability.record(kind,
+                new ActorReliabilityKernel.ActorKey(
+                        target.runtimeId(), target.actorId(), target.incarnation()),
+                fault, value);
+    }
 }
+
