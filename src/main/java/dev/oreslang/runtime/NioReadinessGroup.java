@@ -27,9 +27,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Process-capable, bounded NIO readiness manager. One dedicated reactor starts
- * initially; up to four can be created on sustained registration-command
- * pressure, never just because sockets are waiting for events.
+ * Process-capable, bounded NIO readiness manager. The normal throughput
+ * profile constructs with zero reactor threads. The first accepted readiness
+ * watch lazily starts reactor #0; up to four can be created on sustained
+ * registration-command pressure, never just because sockets are waiting.
  *
  * This is a low-level host substrate. It provides one-shot nonblocking
  * TCP accept on VM-owned selectors, but does not yet replace source-level
@@ -117,23 +118,10 @@ public final class NioReadinessGroup implements AutoCloseable {
             ownedCompletionExecutor = null;
             completionExecutor = vmCompletionExecutor;
         }
-        try {
-            Reactor first = new Reactor(0);
-            synchronized (lifecycle) {
-                reactors.add(first);
-                liveReactors.incrementAndGet();
-                try { first.start(); }
-                catch (RuntimeException | Error problem) {
-                    liveReactors.decrementAndGet();
-                    reactors.clear();
-                    first.abortUnstarted();
-                    throw problem;
-                }
-            }
-        } catch (IOException | RuntimeException | Error failure) {
-            if (ownedCompletionExecutor != null) ownedCompletionExecutor.shutdownNow();
-            throw failure;
-        }
+        // Reactor objects, selectors and threads are demand-driven in the
+        // throughput profile. Constructing a VM/readiness group therefore
+        // owns zero OS threads and opens no Selector. RT preallocation is a
+        // separate native profile; this Java manager starts on first watch.
     }
 
     public int reactorCount() {
@@ -577,7 +565,13 @@ public final class NioReadinessGroup implements AutoCloseable {
             if (pending.get() >= maxPending || notificationReservations.get() >= maxPending)
                 return OresFuture.failed(new RejectedExecutionException(
                         "NIO readiness or completion notification capacity exhausted"));
-            Reactor target = leastBacklogged();
+            final Reactor initial;
+            try {
+                initial = reactors.isEmpty() ? startReactorLocked() : null;
+            } catch (IOException | RuntimeException failure) {
+                return OresFuture.failed(failure);
+            }
+            Reactor target = initial == null ? leastBacklogged() : initial;
             // Reactor scaling is about *runnable registration work*, not the
             // number of pending network reads. The active kernel wait is idle.
             if (target.commands.size() >= Math.max(8, commandCapacity / 2)) {
@@ -586,24 +580,10 @@ public final class NioReadinessGroup implements AutoCloseable {
                 consecutiveCommandPressure = 0;
             }
             if (consecutiveCommandPressure >= 8 && reactors.size() < maxReactors) {
-                Reactor extra = null;
                 try {
-                    extra = new Reactor(reactors.size());
-                    liveReactors.incrementAndGet();
-                    try { extra.start(); }
-                    catch (RuntimeException | Error startFailure) {
-                        liveReactors.decrementAndGet();
-                        throw startFailure;
-                    }
-                    reactors.add(extra);
-                    target = extra;
+                    target = startReactorLocked();
                     consecutiveCommandPressure = 0;
-                } catch (IOException | RuntimeException | Error failure) {
-                    // Thread startup can fail after a selector was opened.
-                    // Never leak that kernel descriptor when the optional
-                    // expansion fails. Existing reactors can still serve or
-                    // explicitly reject the bounded request.
-                    if (extra != null) extra.abortUnstarted();
+                } catch (IOException | RuntimeException failure) {
                     // Admission may still use existing reactors; throttle
                     // retries rather than allocating a selector on every
                     // subsequent request during FD/thread exhaustion.
@@ -629,6 +609,26 @@ public final class NioReadinessGroup implements AutoCloseable {
             target.selector.wakeup();
             return watch.future;
         }
+    }
+
+    /** lifecycle monitor must be held. Opens/starts exactly one reactor or
+     * leaves the current reactor set unchanged on failure.
+     */
+    private Reactor startReactorLocked() throws IOException {
+        if (closed) throw new RejectedExecutionException("NIO reactor stopped");
+        if (reactors.size() >= maxReactors)
+            throw new RejectedExecutionException("NIO reactor limit reached");
+        Reactor reactor = new Reactor(reactors.size());
+        liveReactors.incrementAndGet();
+        try {
+            reactor.start();
+        } catch (RuntimeException | Error failure) {
+            liveReactors.decrementAndGet();
+            reactor.abortUnstarted();
+            throw failure;
+        }
+        reactors.add(reactor);
+        return reactor;
     }
 
     private Reactor leastBacklogged() {
@@ -815,6 +815,12 @@ public final class NioReadinessGroup implements AutoCloseable {
         synchronized (lifecycle) {
             if (closed) return;
             closed = true;
+            if (reactors.isEmpty()) {
+                // A never-used throughput VM owns no reactor thread, so no
+                // Reactor.finally block exists to retire this lazy executor.
+                if (ownedCompletionExecutor != null) ownedCompletionExecutor.shutdown();
+                return;
+            }
             for (Reactor reactor : reactors) reactor.requestStop();
         }
     }
