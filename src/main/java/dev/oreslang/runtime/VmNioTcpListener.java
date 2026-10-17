@@ -85,16 +85,22 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
     }
 
-    private void releaseOperation() {
-        boolean quiesced;
+    private void completeListenerCloseIfQuiesced() {
+        final boolean quiesced;
         synchronized (gate) {
-            if (admittedOperations <= 0)
-                throw new IllegalStateException("TCP operation reservation underflow");
-            --admittedOperations;
             quiesced = closed && admittedOperations == 0
                     && pendingAccept == null && connections.isEmpty();
         }
         if (quiesced) listenerClosed.completeFromRuntime(null);
+    }
+
+    private void releaseOperation() {
+        synchronized (gate) {
+            if (admittedOperations <= 0)
+                throw new IllegalStateException("TCP operation reservation underflow");
+            --admittedOperations;
+        }
+        completeListenerCloseIfQuiesced();
     }
 
     public OresFuture<Connection> acceptAsync() {
@@ -114,7 +120,7 @@ public final class VmNioTcpListener implements AutoCloseable {
             try {
                 source = readiness.acceptAsync(server);
                 exported = new OresFuture<>(
-                        () -> source.cancel(false),
+                        (Runnable) () -> source.cancel(false),
                         this::releaseOperation);
                 pendingAccept = exported;
             } catch (RuntimeException | Error failure) {
@@ -157,6 +163,11 @@ public final class VmNioTcpListener implements AutoCloseable {
                 synchronized (gate) {
                     if (pendingAccept == exported) pendingAccept = null;
                 }
+                // Normal source completion settles exported before this finally
+                // block, so its notification-drained credit can reach zero
+                // while pendingAccept still names the operation. Recheck after
+                // clearing that last listener-lifecycle identity.
+                completeListenerCloseIfQuiesced();
             }
         });
         return exported;
@@ -181,12 +192,7 @@ public final class VmNioTcpListener implements AutoCloseable {
         try { server.close(); } catch (IOException ignored) { }
         if (pending != null) pending.cancel(false);
         for (Connection connection : snapshot) connection.close();
-        boolean quiesced;
-        synchronized (gate) {
-            quiesced = admittedOperations == 0
-                    && pendingAccept == null && connections.isEmpty();
-        }
-        if (quiesced) listenerClosed.completeFromRuntime(null);
+        completeListenerCloseIfQuiesced();
     }
 
     public final class Connection implements AutoCloseable {
