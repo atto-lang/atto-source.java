@@ -9079,7 +9079,9 @@ public final class OresEvalRootNode extends RootNode {
         private boolean containsNestedDestructure(Ast.DestructurePattern pattern) {
             if (pattern instanceof Ast.DestructureBindingPattern) return false;
             Ast.NestedDestructurePattern nested = (Ast.NestedDestructurePattern) pattern;
-            return nested.children().stream().anyMatch(this::containsNestedDestructure);
+            return nested.children().stream().anyMatch(child ->
+                child instanceof Ast.NestedDestructurePattern
+                        || containsNestedDestructure(child));
         }
 
         private void bindTrapResultDestructure(
