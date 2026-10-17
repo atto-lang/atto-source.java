@@ -306,7 +306,7 @@ final class ActorPipelineRouteSession {
             throw new IllegalStateException(
                     "pipeline reconfiguration requires a quiescent message barrier");
         }
-        roundRobin.clear();
+        roundRobin.replaceAll((source, cursor) -> 0);
         generation = successor;
     }
 
@@ -318,7 +318,7 @@ final class ActorPipelineRouteSession {
         validateSuccessor(successor);
         int cancelled = active.size();
         active.clear();
-        roundRobin.clear();
+        roundRobin.replaceAll((source, cursor) -> 0);
         generation = successor;
         return cancelled;
     }
@@ -384,9 +384,13 @@ final class ActorPipelineRouteSession {
 
     private MailFrame newFrame(long flowId, List<String> path) {
         reserveRouteIds(1);
+        // An IdentityHashMap.put can allocate and fail. Never consume a
+        // monotonic route identity before the new frame enters the ledger.
+        long candidateRouteId = nextRouteId;
         MailFrame frame = new MailFrame(this, generation, flowId,
-                nextRouteId++, path);
+                candidateRouteId, path);
         active.put(frame, Boolean.TRUE);
+        nextRouteId = candidateRouteId + 1;
         return frame;
     }
 
