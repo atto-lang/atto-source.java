@@ -15,6 +15,29 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ParserTest {
     @Test
+    void binary64AndImaginarySeparatorsRequireDigitsOnBothSides() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub fnc main(): complex {
+                    return 1_2.5_0 + 9_007_199_254_740_993i;
+                }
+                """));
+
+        for (String literal : List.of(
+                "1__2.0", "1_.0", "1.0_", "1e2_", "1__2i", "1_i", "1.0_i")) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> Parser.parse("""
+                            pub fnc main(): complex {
+                                return %s;
+                            }
+                            """.formatted(literal)),
+                    literal);
+            assertTrue(failure.getMessage().contains("malformed numeric separator"),
+                    failure::toString);
+        }
+    }
+
+    @Test
     void inlineTrapCannotHideExpressionBodiedLambdaMissingTerminator() {
         String invalid = """
                 pub fnc main(): void {
