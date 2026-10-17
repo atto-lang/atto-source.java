@@ -50,6 +50,12 @@ final class RefinementRulesTest {
                 () -> RefinementRules.unicodeScalarCount(String.valueOf((char)0xD800)));
         assertThrows(IllegalArgumentException.class,
                 () -> RefinementRules.unicodeScalarCount(String.valueOf((char)0xDC00)));
+        for (char invalid : new char[] { (char) 0xD800, (char) 0xDC00 }) {
+            String source = String.valueOf(invalid);
+            assertFalse(RefinementRules.accepts(exactOne.target(), exactOne.refinement(), source));
+            assertFalse(RefinementRules.tryFrom(
+                    exactOne.name(), exactOne.target(), exactOne.refinement(), source).ok());
+        }
     }
 
     @Test void runtimeCheckedConstructionRejectsInvalidValue() {
