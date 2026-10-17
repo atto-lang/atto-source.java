@@ -73,6 +73,7 @@ public final class OresEvalRootNode extends RootNode {
 
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
+        dev.oreslang.compiler.ActorThreadAdmission.requireExclusiveBackend(program);
         CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
