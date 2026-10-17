@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.ast.CallableSelector;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ProcessExitSignal;
@@ -26,6 +27,7 @@ import dev.oreslang.runtime.SourceCooperationQuantum;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.SharedCodeImageStore;
 import dev.oreslang.runtime.GeneratorRuntime;
+import dev.oreslang.stdlib.CoreLibrarySources;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -4225,11 +4227,9 @@ public final class OresEvalRootNode extends RootNode {
                                             + " must be lowered to logical AST before suspendable evaluation"));
                     return;
                 }
-                // Aggregate Boolean reducers are compatibility glue until the
-                // packaged core source functions own this call surface. Their
-                // single aggregate expression may itself suspend, so evaluate
-                // it on the SourceTask before folding its already-materialized
-                // bool elements.
+                // Materialize the aggregate on the current SourceTask first.
+                // Reduction itself is then executed by the compiler-owned
+                // packaged std/core Oreslang function, never by a Java fold.
                 evalSuspendableExpr(
                         task,
                         call.arguments().getFirst(),
@@ -4240,30 +4240,13 @@ public final class OresEvalRootNode extends RootNode {
                                 return;
                             }
                             try {
-                                if (aggregate instanceof List<?> list) {
-                                    continuation.accept(
-                                            t,
-                                            foldBooleanValues(booleanIntrinsic, list),
-                                            null);
-                                    return;
-                                }
-                                if (aggregate instanceof Object[] array) {
-                                    continuation.accept(
-                                            t,
-                                            foldBooleanValues(
-                                                    booleanIntrinsic,
-                                                    java.util.Arrays.asList(array)),
-                                            null);
-                                    return;
-                                }
                                 continuation.accept(
                                         t,
-                                        null,
-                                        new IllegalArgumentException(
-                                                booleanIntrinsic
-                                                        + " arity 1 selects the List<bool> overload"));
-                            } catch (RuntimeException | Error foldFailure) {
-                                continuation.accept(t, null, foldFailure);
+                                        invokePackagedBooleanReducer(
+                                                booleanIntrinsic, aggregate),
+                                        null);
+                            } catch (RuntimeException | Error reducerFailure) {
+                                continuation.accept(t, null, reducerFailure);
                             }
                         });
                 return;
@@ -6116,39 +6099,67 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Object aggregate = eval(arguments.getFirst(), env);
-            if (aggregate instanceof List<?> list) return foldBooleanValues(name, list);
-            if (aggregate instanceof Object[] array) {
-                return foldBooleanValues(name, java.util.Arrays.asList(array));
+            return invokePackagedBooleanReducer(name, aggregate);
+        }
+
+        private boolean invokePackagedBooleanReducer(String name, Object aggregate) {
+            Object values;
+            if (aggregate instanceof List<?>) {
+                values = aggregate;
+            } else if (aggregate instanceof Object[] array) {
+                values = java.util.Arrays.asList(array);
+            } else {
+                throw new IllegalArgumentException(
+                        name + " arity 1 selects the List<bool> overload");
             }
-            throw new IllegalArgumentException(name + " arity 1 selects the List<bool> overload");
-        }
 
-        private boolean foldBooleanValues(String name, Iterable<?> values) {
-            return switch (name) {
-                case "And" -> {
-                    for (Object value : values) {
-                        if (!booleanIntrinsicValue(name, value)) yield false;
-                    }
-                    yield true;
-                }
-                case "Or" -> {
-                    for (Object value : values) {
-                        if (booleanIntrinsicValue(name, value)) yield true;
-                    }
-                    yield false;
-                }
-                case "Xor" -> {
-                    boolean parity = false;
-                    for (Object value : values) parity ^= booleanIntrinsicValue(name, value);
-                    yield parity;
-                }
-                default -> throw new IllegalStateException("unknown boolean intrinsic " + name);
+            String reducer = switch (name) {
+                case "And" -> "all_bool";
+                case "Or" -> "any_bool";
+                case "Xor" -> "xor_parity_bool";
+                default -> throw new IllegalStateException(
+                        "unknown boolean intrinsic " + name);
             };
+
+            Evaluator core = packagedCoreEvaluator();
+            Ast.FunctionDecl function = core.findFunction(reducer, 1);
+            if (function == null) {
+                throw new IllegalStateException(
+                        "packaged std/core is missing Boolean reducer " + reducer);
+            }
+            Object result = core.invoke(
+                    core.functionInvocation(function, List.of(values)));
+            if (result instanceof Boolean bool) return bool;
+            throw new IllegalStateException(
+                    "packaged std/core Boolean reducer " + reducer
+                            + " returned non-bool value");
         }
 
-        private boolean booleanIntrinsicValue(String name, Object value) {
-            if (value instanceof Boolean bool) return bool;
-            throw new IllegalArgumentException(name + " operands must be bool");
+        private Evaluator packagedCoreEvaluator() {
+            final String coreUnitId = CoreLibrarySources.unitId("std/core");
+            synchronized (context) {
+                Object existing = context.linkedCodeUnit(coreUnitId);
+                if (existing != null) {
+                    if (existing instanceof Evaluator evaluator) return evaluator;
+                    throw new IllegalStateException(
+                            "reserved packaged core unit id is occupied by "
+                                    + existing.getClass().getName());
+                }
+
+                final String source;
+                try {
+                    source = CoreLibrarySources.source("std/core");
+                } catch (java.io.IOException failure) {
+                    throw new IllegalStateException(
+                            "cannot load packaged std/core source", failure);
+                }
+
+                Ast.Program coreProgram = OresCompiler.parseAndTypeCheck(source);
+                Evaluator evaluator = new Evaluator(coreProgram, context, coreUnitId);
+                evaluator.link();
+                evaluator.initialize();
+                return evaluator;
+            }
         }
 
         private Object applyRuntimeOwnership(String operation, Object value) {
