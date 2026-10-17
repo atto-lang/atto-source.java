@@ -55,6 +55,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     private final AtomicReferenceArray<Thread> carrierThreads;
     private final AtomicBoolean shutdown = new AtomicBoolean();
     private volatile boolean nativeStarted;
+    // Includes callers waiting to enter nativeLifecycleLock. Shutdown may
+    // publish its flag while pthread attach/publication is still in flight;
+    // termination observers must not mistake temporarily empty Java carrier
+    // slots for a completed native startup/shutdown barrier.
+    private final AtomicInteger bootstrapAdmissions = new AtomicInteger();
     /** Serializes lazy native bootstrap and Java->native pool calls against retirement. */
     private final Object nativeLifecycleLock = new Object();
     private final long nativeHandle;
@@ -90,23 +95,28 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
     }
 
     private boolean ensureNativeStarted() {
-        synchronized (nativeLifecycleLock) {
-            if (shutdown.get()) {
-                throw new RejectedExecutionException("native carrier executor is shut down");
+        bootstrapAdmissions.incrementAndGet();
+        try {
+            synchronized (nativeLifecycleLock) {
+                if (shutdown.get()) {
+                    throw new RejectedExecutionException("native carrier executor is shut down");
+                }
+                if (nativeStarted) return false;
+                try {
+                    nativeStart(nativeHandle);
+                    nativeStarted = true;
+                    return true;
+                } catch (RuntimeException | Error failure) {
+                    // nativeStart may have created a partial/all carrier set
+                    // before an attach failure. Fence all further admission
+                    // and hand reclamation to native shutdown exactly once.
+                    shutdown.set(true);
+                    nativeShutdown(nativeHandle);
+                    throw failure;
+                }
             }
-            if (nativeStarted) return false;
-            try {
-                nativeStart(nativeHandle);
-                nativeStarted = true;
-                return true;
-            } catch (RuntimeException | Error failure) {
-                // nativeStart may have created a partial/all carrier set before
-                // an attach failure. Fence admission and hand reclamation to
-                // native shutdown exactly once.
-                shutdown.set(true);
-                nativeShutdown(nativeHandle);
-                throw failure;
-            }
+        } finally {
+            bootstrapAdmissions.decrementAndGet();
         }
     }
 
@@ -370,14 +380,11 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
         long nanos = unit.toNanos(timeout);
         long deadline = System.nanoTime() + nanos;
         for (;;) {
-            boolean anyAttached = false;
-            for (int slot = 0; slot < carrierThreads.length(); slot++) {
-                if (carrierThreads.get(slot) != null) {
-                    anyAttached = true;
-                    break;
-                }
-            }
-            if (!anyAttached) return true;
+            // Neither "no attached carriers" nor a finished Java loop alone
+            // suffices while nativeStart() is still inside its publication
+            // barrier. Await termination only after shutdown and the end of
+            // every potentially native-starting admission.
+            if (isTerminated()) return true;
             if (nanos == 0L || System.nanoTime() >= deadline) return false;
             long remaining = deadline - System.nanoTime();
             long millis = Math.max(1L, Math.min(10L, TimeUnit.NANOSECONDS.toMillis(remaining)));
@@ -417,7 +424,7 @@ public final class NativeCarrierExecutor extends AbstractExecutorService impleme
 
     @Override
     public boolean isTerminated() {
-        if (!shutdown.get()) return false;
+        if (!shutdown.get() || bootstrapAdmissions.get() != 0) return false;
         for (int slot = 0; slot < carrierThreads.length(); slot++) {
             if (carrierThreads.get(slot) != null) return false;
         }
