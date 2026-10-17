@@ -67,6 +67,37 @@ public final class PortableRegistryHarness {
         Shape rejectDepth=tooDeep;
         reject(()->register(new Registry(),Format.JSON,Purpose.NETWORK_DATA,"app.Deep","app.DeepSchema",1,rejectDepth),"nesting depth budget");
         reject(()->new Field("a".repeat(129),0,scalar()),"field name overlong");
+        Field stableField=f("safe",0,scalar());
+        List<Field> hostileRecordFields=new java.util.AbstractList<>() {
+          int sizes;
+          @Override public int size(){return ++sizes==1?1:1_000_000;}
+          @Override public Field get(int index) {
+            if(index!=0)throw new AssertionError("record snapshot exceeded checked size");
+            return stableField;
+          }
+          @Override public Object[] toArray(){
+            throw new AssertionError("hostile record toArray must not run");
+          }
+          @Override public <E> E[] toArray(E[] target){
+            throw new AssertionError("hostile record typed toArray must not run");
+          }
+        };
+        ObjectShape safeSnapshot=new ObjectShape(hostileRecordFields);
+        check(safeSnapshot.fields().equals(List.of(stableField)),
+              "hostile list cannot escape bounded record snapshot");
+        reject(()->new ObjectShape(new java.util.AbstractList<>() {
+          @Override public int size(){return 2;}
+          @Override public Field get(int index) {
+            if(index==0)return stableField;
+            throw new IndexOutOfBoundsException("record source changed");
+          }
+        }),"record shrink while copying denied");
+        reject(()->new ObjectShape(new java.util.AbstractList<>() {
+          @Override public int size(){return -1;}
+          @Override public Field get(int index) {
+            throw new AssertionError("negative-size list must never be traversed");
+          }
+        }),"negative reported record size denied");
         ExecutorService ex=Executors.newFixedThreadPool(8);
         try {
           Registry concurrent=new Registry();
