@@ -5439,14 +5439,19 @@ public final class TypeChecker {
 
     private void requireRuntimeStructuralShapeReifiable(Type type, String where) {
         type = deref(type);
+        if (type instanceof Function) {
+            // Named structural contracts encode methods in their Record shape,
+            // but the runtime validates those methods by exact source signature
+            // in structuralInterfaceMatches rather than oresTypeMatches.
+            return;
+        }
         if (type == Unknown.INSTANCE
                 || type == Types.Any.INSTANCE
                 || type == Types.UnknownValue.INSTANCE
                 || type instanceof Generic
-                || type instanceof Function
                 || type instanceof SelfType) {
             throw new IllegalArgumentException(
-                    where + " contains a field/member type without a concrete runtime predicate: " + type);
+                    where + " contains a data-member type without a concrete runtime predicate: " + type);
         }
         if (type instanceof Primitive primitive) {
             if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
