@@ -4,11 +4,12 @@
 
 - `and` is a reserved, case-sensitive, short-circuit alias for `&&`.
 - `or` is a reserved, case-sensitive, short-circuit alias for `||`.
-- Both use precisely the same AST operators (`&&` and `||`), Boolean-only type checking, evaluation order, associativity and definite-initialization treatment as their symbolic spellings.
+- `xor` is a reserved, case-sensitive alias for Boolean `^^`. It evaluates both operands exactly once, left to right; unlike `and` / `or`, it does not short-circuit.
+- All three word operators use precisely the same AST operators (`&&` and `||`), Boolean-only type checking, evaluation order, associativity and definite-initialization treatment as their symbolic spellings.
 - Evaluation proceeds left to right; `and` does not evaluate its right expression when its left side is false, and `or` does not evaluate its right expression when its left side is true.
-- There is **no implicit truthiness** and no implicit integer-to-Boolean conversion. `and` and `or` are not callable names. Capitalized `And` and `Or` remain distinct builtin functions.
-- Precedence, high to low: comparison/equality, bitwise `&`, bitwise `^`, bitwise `|`, logical `and`/`&&`, logical `^^`, logical `or`/`||`, ternary `?:`, assignment `=`. Operators of the same precedence are left-associative. Mixing word and symbol spellings must not change meaning.
-- After `.`, `and` and `or` can still be member names; declaring bindings or callable names `and` or `or` is invalid, consistent with `eq`/`neq`.
+- There is **no implicit truthiness** and no implicit integer-to-Boolean conversion. `and`, `or`, and `xor` are not callable names. Capitalized `And`, `Or`, and `Xor` remain distinct callable builtin families.
+- Precedence, high to low: comparison/equality, bitwise `&`, bitwise `^`, bitwise `|`, logical `and`/`&&`, logical `xor`/`^^`, logical `or`/`||`, ternary `?:`, assignment `=`. Operators of the same precedence are left-associative. Mixing word and symbol spellings must not change meaning.
+- After `.`, `and`, `or`, and `xor` can still be member names; declaring bindings or callable names `and`, `or`, or `xor` is invalid, consistent with `eq`/`neq`.
 
 ## Boolean intrinsics
 
@@ -72,6 +73,25 @@ Scalar calls do not need variadic source functions. After name resolution and ty
 - Aggregate one-argument calls are the remaining bootstrap path. Their semantic implementation now exists in packaged Oreslang source; the final step is to route the builtin aggregate surface to those linked source functions without introducing a shadowable implicit user binding.
 
 Rest/variadic parameters should therefore be designed independently for general language use; Boolean scalar builtins are not a justification for weakening name+arity overload identity or adding a special variadic exception.
+
+### Arity-selected source/API signatures
+
+The public callable family is modeled as distinct overload slots, **not** runtime dispatch by argument types:
+
+```ores
+pub fnc Or(List<bool> values): bool { ... }
+pub fnc Or(bool a, bool b, rest ...bool): bool { ... }
+
+pub fnc And(List<bool> values): bool { ... }
+pub fnc And(bool a, bool b, rest ...bool): bool { ... }
+
+pub fnc Xor(List<bool> values): bool { ... }
+pub fnc Xor(bool a, bool b): bool { ... }
+```
+
+The `rest ...bool` line above is the **intended public signature notation**, not a claim that general source-defined variadic callables have already been implemented. The current compiler executes the scalar 2+ `And/Or` family through call-site AST lowering; the single-list source overloads now exist in packaged `std/core.ores`. Defining a user `Or(List<bool>)` at arity one does not hide builtin `Or(bool,bool,...)` calls at other arities; a user-defined function at the **exact requested arity** takes precedence. A user-defined module named `BooleanOps` shadows that builtin namespace as a whole.
+
+A general rest-parameter implementation must reserve a distinct **arity range** `[minArity, infinity)`, reject overlapping declared signatures (including a fixed arity within the range), bind rest values to a readonly `List<T>`, and implement consistent selection in the type checker, interpreter, AOT, callable values, and linked import ABI. The virtual/intrinsic builtins already accept these arities but must not be mistaken for ordinary eager variadic functions: scalar `And`/`Or` short-circuit by compiler lowering, whereas ordinary Oreslang calls eagerly evaluate all actual arguments. No special variadic grammar or user-function execution is introduced before those conformance gates pass.
 
 ## Backend conformance gates
 
