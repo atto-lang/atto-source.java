@@ -39,6 +39,16 @@ final class RuntimePermissionCeilingTest {
     }
 
     @Test
+    void boundedPolicyCannotBeSerializedWithoutExplicitCeilingChannel() {
+        RuntimePermissions bounded = RuntimePermissions.denyAll()
+                .allowAll(RuntimePermissions.Permission.ENV)
+                .boundedBy(RuntimePermissions.denyAll()
+                        .withAllowed(RuntimePermissions.Permission.ENV, "SAFE"));
+        assertThrows(IllegalStateException.class, bounded::applicationArguments);
+        assertThrows(IllegalStateException.class, bounded::buildCeilingApplicationArguments);
+    }
+
+    @Test
     void selectedIpAuthorizationMustPassBuildCeilingAndRuntimeGrant() {
         RuntimePermissions ceiling = RuntimePermissions.denyAll()
                 .withAllowed(RuntimePermissions.Permission.NET, "api.example.com:443")
