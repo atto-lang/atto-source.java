@@ -226,6 +226,48 @@ final class ActorReliabilityKernelTest {
     }
 
     @Test
+    void racingCancellationProducesOneAuthoritativeTerminalLog() throws Exception {
+        CoreLog.configure(CoreLog.Level.OFF);
+        try {
+            CoreLog.configure(CoreLog.Level.INFO);
+            try (ActorRuntime runtime = new ActorRuntime()) {
+                var actor = runtime.<String>spawnShared(
+                        () -> (message, context) -> { });
+                actor.ready().get(5, TimeUnit.SECONDS);
+
+                java.util.concurrent.CountDownLatch start =
+                        new java.util.concurrent.CountDownLatch(1);
+                java.util.ArrayList<java.util.concurrent.Future<?>> tasks =
+                        new java.util.ArrayList<>();
+                try (var pool = java.util.concurrent.Executors.newFixedThreadPool(16)) {
+                    for (int i = 0; i < 64; i++) {
+                        tasks.add(pool.submit(() -> {
+                            start.await();
+                            actor.cancel();
+                            return null;
+                        }));
+                    }
+                    start.countDown();
+                    for (var task : tasks) task.get(5, TimeUnit.SECONDS);
+                }
+                assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                CoreLog.dumpRetained(
+                        new PrintStream(bytes, true, StandardCharsets.UTF_8));
+                long terminalLogs = bytes.toString(StandardCharsets.UTF_8).lines()
+                        .filter(line -> line.contains(
+                                "\"event\":\"actor.cancelled\""))
+                        .count();
+                assertEquals(1L, terminalLogs,
+                        "one actor incarnation must have one winning terminal cause");
+            }
+        } finally {
+            CoreLog.configure(CoreLog.Level.OFF);
+        }
+    }
+
+    @Test
     void terminalHealthSurvivesCellRetirementWithoutRetainingFailureText() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var failing = runtime.<String>spawnShared(() -> (message, context) -> {
