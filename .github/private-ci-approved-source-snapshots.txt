@@ -1,4 +1,4 @@
 # Independently reviewed immutable source snapshots for private CI.
 # Each active entry pins one source commit, its root Git tree, and the numeric private destination repository ID.
 # Format: <40-hex source commit> <40-hex source root tree> <numeric destination repo ID>
-ecc5449b24fda078f52db8f5891b8fc7af7293f1 278961198eb85d0758dbf6bc5f20106227a4261d 1357615104
+ea2131fcef323cc3b507efd79a11f42c803fa3a4 ce5fc550cc8b6ff60614c7bd49944df1de82ecb1 1357615104
