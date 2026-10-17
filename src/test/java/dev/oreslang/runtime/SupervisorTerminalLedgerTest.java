@@ -21,6 +21,7 @@ final class SupervisorTerminalLedgerTest {
         var b = ledger.reserve(ActorRuntime.ActorId.create(), 2);
         assertThrows(IllegalStateException.class,
                 () -> ledger.reserve(ActorRuntime.ActorId.create(), 3));
+        assertEquals(1L, ledger.stats().reservationRejections());
 
         ledger.publish(a, SupervisorTerminalLedger.Kind.FAILURE);
         ledger.publish(b, SupervisorTerminalLedger.Kind.CANCELLED);
@@ -40,6 +41,27 @@ final class SupervisorTerminalLedgerTest {
         assertNotNull(replacement);
         assertEquals(2, ledger.stats().inUse());
         assertEquals(1, ledger.stats().ready());
+    }
+
+    @Test
+    void prepaidPublicationHasNoGlobalOrdinalExhaustionFailureMode() {
+        var ledger = new SupervisorTerminalLedger(4);
+        var reservations = new ArrayList<SupervisorTerminalLedger.Reservation>();
+        for (int i = 0; i < 4; i++) {
+            reservations.add(ledger.reserve(ActorRuntime.ActorId.create(), i + 1));
+        }
+        for (var reservation : reservations) {
+            assertDoesNotThrow(() -> ledger.publish(
+                    reservation, SupervisorTerminalLedger.Kind.FAILURE));
+        }
+        assertEquals(4, ledger.stats().ready());
+        assertEquals(4L, ledger.stats().published());
+
+        while (ledger.peek().isPresent()) {
+            ledger.ack(ledger.peek().orElseThrow());
+        }
+        assertEquals(4L, ledger.stats().acknowledged());
+        assertEquals(0, ledger.stats().inUse());
     }
 
     @Test
@@ -92,7 +114,7 @@ final class SupervisorTerminalLedgerTest {
         assertFalse(rendered.contains("Throwable"));
         assertFalse(rendered.contains("Exception"));
         assertFalse(rendered.contains("message="));
-        assertEquals(1, receipt.sequence());
+        assertFalse(rendered.contains("sequence="));
     }
 
     @Test
@@ -145,7 +167,8 @@ final class SupervisorTerminalLedgerTest {
         // Simulate policy failure: no ack.
         var afterRestart = ledger.peek().orElseThrow();
         assertSame(beforeCrash, afterRestart);
-        assertEquals(beforeCrash.sequence(), afterRestart.sequence());
+        assertEquals(beforeCrash.actorId(), afterRestart.actorId());
+        assertEquals(beforeCrash.incarnation(), afterRestart.incarnation());
         assertEquals(1, ledger.stats().ready());
 
         ledger.ack(afterRestart);
