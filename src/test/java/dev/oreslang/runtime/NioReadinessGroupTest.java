@@ -103,6 +103,65 @@ final class NioReadinessGroupTest {
         }
     }
 
+    @Test void earlyCapacitySignalDuringBootstrapCannotStrandStagedTail() throws Exception {
+        var firstRanBeforeBootstrapReturned = new java.util.concurrent.CountDownLatch(1);
+        var targetCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var first = java.nio.channels.Pipe.open();
+        var second = java.nio.channels.Pipe.open();
+        try (var group = new NioReadinessGroup(1, 16, 16);
+             var firstSource = first.source();
+             var firstSink = first.sink();
+             var secondSource = second.source();
+             var secondSink = second.sink()) {
+            firstSource.configureBlocking(false);
+            secondSource.configureBlocking(false);
+
+            group.bindVmCompletionExecutor(command -> {
+                int call = targetCalls.getAndIncrement();
+                var ran = new java.util.concurrent.CountDownLatch(1);
+                Thread.ofPlatform().daemon(true)
+                        .name("nio-bootstrap-race-target-" + call)
+                        .start(() -> {
+                            try {
+                                command.run();
+                                // Model ActorRuntime's completion-capacity hook:
+                                // this first retry intentionally happens before
+                                // target.execute() returns to the bootstrap helper.
+                                group.retryStagedNotifications();
+                                if (call == 0) firstRanBeforeBootstrapReturned.countDown();
+                            } finally {
+                                ran.countDown();
+                            }
+                        });
+                try {
+                    if (!ran.await(2, TimeUnit.SECONDS))
+                        throw new RejectedExecutionException("target delivery timed out");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new RejectedExecutionException("target delivery interrupted", interrupted);
+                }
+            }, true);
+
+            var one = group.watch(firstSource, SelectionKey.OP_READ);
+            var two = group.watch(secondSource, SelectionKey.OP_READ);
+            firstSink.write(java.nio.ByteBuffer.wrap(new byte[] {1}));
+            secondSink.write(java.nio.ByteBuffer.wrap(new byte[] {2}));
+
+            assertTrue(firstRanBeforeBootstrapReturned.await(2, TimeUnit.SECONDS),
+                    "first capacity retry must race before bootstrap publication");
+            assertTrue((one.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0);
+            assertTrue((two.get(3, TimeUnit.SECONDS) & SelectionKey.OP_READ) != 0,
+                    "post-publication helper retry must drain the staged tail");
+            assertEquals(0, group.pendingNotifications());
+            assertEquals(0, group.stagedNotificationCount());
+
+            group.close();
+            assertTrue(group.awaitStopped(3, TimeUnit.SECONDS));
+            assertEquals(0, group.completionCarrierCount(),
+                    "bootstrap helper must be gone at NIO quiescence");
+        }
+    }
+
     @Test void repeatedSameSocketReadRearmsAfterCancelledKeyPurge() throws Exception {
         // A producer can enqueue the next watch as soon as a Future settles.
         // Every next command must register AFTER the old cancelled key is
