@@ -117,6 +117,16 @@ final class ActorPipelineRouteSession {
         requireActive(frame);
     }
 
+    /** Fail-closed ownership predicate used when pairing a route frame with
+     * its opaque mailbox turn authority. No caller receives the frame itself. */
+    synchronized boolean ownsLive(MailFrame frame) {
+        return frame != null
+                && !closed
+                && frame.session == this
+                && frame.generation == generation
+                && active.containsKey(frame);
+    }
+
     /** Called ONLY after supervisor authenticates the entering source actor. */
     synchronized MailFrame ingress(String source) {
         graph.requireIngressRoot(source); // ingress must begin at a graph root
