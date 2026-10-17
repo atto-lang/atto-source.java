@@ -248,3 +248,28 @@ mailboxes, and .net/.wasm/.forge parity remain pending. A host return
    partial-pressure and physical STOP/DONE ordering.
 6. Keep compiler rejection for unsupported guest methods until they genuinely
    execute; never silently reinterpret them as ordinary methods.
+
+## Final mailbox recipient binding — 2026-10-17
+
+The trusted Java router now captures an immutable mapping from checked graph
+**instance ID** to real, same-runtime `ActorId` at supervisor registration.
+The `ActorPipelineRouteSession` binds that mapping to its sealed frames.
+At the **last `ActorRuntime.sendWithPipelineFrame` DATA admission boundary**,
+the runtime independently enforces: (1) live SHARED receiver kind,
+(2) authenticated active frame and generation, and (3) exact equality of
+the frame receiver's bound `ActorId` and the target `ActorRef.id()`.
+The guard runs **before mailbox slot reservation** and payload copying.
+
+Selector-only standalone route sessions remain useful for pure routing
+contract tests, but deliberately lack runtime bindings and **cannot**
+publish mail envelopes. A wrong target, foreign/stale frame, private
+recipient, and unbound selector frame must fail closed without consuming
+a mailbox slot or route credit. Added standalone JDK21 smoke coverage
+and real ActorRuntime JUnit tests. Null forward/reverse DATA is also
+rejected **before** route selection or one-shot frame consumption.
+
+This does not grant guest-accessible routing: compiler guest lowering,
+fully typed forward/backward payload contracts, and exact-tree CI remain
+separate release gates. These new tests are committed, not claimed as
+successfully executed on the latest exact PR head.
+
