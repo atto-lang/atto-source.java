@@ -35,8 +35,14 @@ HOUSEKEEPING_STEPS = frozenset({
 def executable_step_name(name):
     # Runner-generated lifecycle steps cannot substitute for a required
     # build, test, or native guest-execution step.
-    return (isinstance(name, str) and name not in HOUSEKEEPING_STEPS
-            and not name.startswith(("Post ", "Pre ")))
+    if not isinstance(name, str):
+        return False
+    normalized = name.strip().casefold()
+    # A blank or disguised runner-generated step is not build/test execution.
+    # Normalize padding and case before excluding housekeeping and pre/post.
+    return (bool(normalized)
+            and normalized not in {step.casefold() for step in HOUSEKEEPING_STEPS}
+            and re.match(r"^(pre|post)\\s", normalized) is None)
 
 
 class Denied(ValueError):
