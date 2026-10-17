@@ -70,7 +70,8 @@ public final class NioReadinessGroup implements AutoCloseable {
                     private final AtomicInteger ids = new AtomicInteger();
                     @Override public Thread newThread(Runnable work) {
                         return Thread.ofPlatform().daemon(true)
-                                .name("ores-nio-completion-" + ids.getAndIncrement()).unstarted(work);
+                                .name("ores-nio-completion-" + ids.getAndIncrement())
+                                .unstarted(() -> OresVM.runAsNioWorker(work));
                     }
                 });
         try {
@@ -216,7 +217,8 @@ public final class NioReadinessGroup implements AutoCloseable {
             selector = Selector.open();
             commands = new ArrayBlockingQueue<>(commandCapacity);
             thread = Thread.ofPlatform().daemon(true)
-                    .name("ores-nio-reactor-" + index).unstarted(this);
+                    .name("ores-nio-reactor-" + index)
+                    .unstarted(() -> OresVM.runAsNioWorker(this));
         }
         void start() { thread.start(); }
         // Only for a reactor whose Thread.start() failed. Never called after
