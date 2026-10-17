@@ -13,11 +13,21 @@ public final class DopRegionSchedule {
 
     public enum Mode { READ, WRITE, DISCARD, REDUCE, ATOMIC }
 
-    /** Reject embedded C0 controls and DEL in diagnostic/operation labels. */
-    private static boolean hasAsciiControl(String label) {
-        for (int i = 0; i < label.length(); ++i) {
-            char value = label.charAt(i);
-            if (value < 0x20 || value == 0x7f) return true;
+    /** Exclude hidden/control/confusable Unicode metadata while keeping ordinary UTF-8 labels. */
+    private static boolean unsafeCodePoint(int c) {
+        return c < 0x20 || (c >= 0x7f && c <= 0x9f)
+                || c == 0xad || c == 0xa0 || c == 0x034f || c == 0x061c
+                || c == 0x1680 || c == 0x180e || (c >= 0x2000 && c <= 0x200f)
+                || (c >= 0x2028 && c <= 0x202f) || c == 0x205f
+                || (c >= 0x2060 && c <= 0x206f) || c == 0x3000
+                || c == 0xfeff || (c >= 0xd800 && c <= 0xdfff);
+    }
+
+    private static boolean hasUnsafeLabelCharacters(String label) {
+        for (int i = 0; i < label.length();) {
+            int cp = label.codePointAt(i);
+            if (unsafeCodePoint(cp)) return true;
+            i += Character.charCount(cp);
         }
         return false;
     }
@@ -47,7 +57,7 @@ public final class DopRegionSchedule {
             }
             if ((mode == Mode.REDUCE && (reduction == null || reduction.isBlank()
                     || !reduction.equals(reduction.trim())
-                    || hasAsciiControl(reduction)))
+                    || hasUnsafeLabelCharacters(reduction)))
                     || (mode != Mode.REDUCE && reduction != null)) {
                 throw new IllegalArgumentException("reduction requires exactly one named operator");
             }
@@ -68,7 +78,7 @@ public final class DopRegionSchedule {
     public record Task(String name, List<Access> accesses) {
         public Task {
             if (name == null || name.isBlank() || !name.equals(name.trim())
-                    || hasAsciiControl(name))
+                    || hasUnsafeLabelCharacters(name))
                 throw new IllegalArgumentException("invalid DOP task name");
             accesses = List.copyOf(Objects.requireNonNull(accesses, "accesses"));
         }
