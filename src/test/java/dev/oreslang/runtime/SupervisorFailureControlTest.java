@@ -127,6 +127,7 @@ final class SupervisorFailureControlTest {
             assertTrue(twoDelivered.await(5, TimeUnit.SECONDS));
             assertEquals(2, delivered.get());
             assertEquals(1, maximum.get(), "supervisor callbacks must not overlap");
+            for (int i = 0; i < 100 && lane.reserved() != 0; i++) TimeUnit.MILLISECONDS.sleep(10);
             assertEquals(0, lane.queued());
             assertEquals(0, lane.reserved());
             lane.reserve(actorId3);
