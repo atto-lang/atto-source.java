@@ -254,10 +254,21 @@ public final class ExplicitNativeI64Region implements AutoCloseable {
     private void finishPhysicalClose() {
         if (!closed.get() || loanCount != 0 || physicalClosed.get()) return;
         if (!nativeScopeClosed) {
+            // Actor isolation requires explicit scrubbing before returning the
+            // native allocation to the process allocator. Arena.close() gives
+            // deterministic lifetime, but it does not constitute our
+            // cross-backend zeroization contract. With no outstanding loans,
+            // overwrite every slot (including currently-free slots) before
+            // physical release so a later native allocation cannot inherit
+            // another actor's residual bytes.
+            for (int index = 0; index < live.length; index++) {
+                put(index, 0L);
+            }
             try {
                 closeArena.invoke(nativeArena);
             } catch (IllegalAccessException | InvocationTargetException error) {
                 // Keep the reservation pinned if native memory was not closed.
+                // A retry will scrub again before attempting close.
                 throw new IllegalStateException("failed physically releasing actor-native region", error);
             }
             nativeScopeClosed = true;
