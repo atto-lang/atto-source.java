@@ -14,8 +14,25 @@ final class ActorPipelineRoutingAdmissionTest {
     };
 
     @Test
-    void unsupportedSourceRoutesFailWithSpecificCompilerDiagnostic() {
-        for (String method : BUILTINS) {
+    void sealedSingleDestinationRoutesTypeCheckOnlyAsDirectSelfIntrinsics() {
+        String program = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward(mail.value);
+                    self.forward_round_robin(mail.value);
+                    self.forward_to("worker-a", mail.value);
+                    self.forward_by_key("customer-7", mail.value);
+                    self.backward(mail.value);
+                    return;
+                  }
+                end
+                """;
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+    }
+
+    @Test
+    void fanoutReceiptsAndFullPathReplyRemainFailClosed() {
+        for (String method : new String[] {"forward_all", "reply"}) {
             String program = """
                     define actor Worker as
                       receive(ActorMail<int> mail): void {
@@ -26,16 +43,37 @@ final class ActorPipelineRoutingAdmissionTest {
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(program)), method);
-            assertTrue(error.getMessage().contains("self." + method
-                    + " requires compiled typed pipeline actor routing"),
+            assertTrue(error.getMessage().contains("next typed pipeline routing phase"),
                     method + ": " + error.getMessage());
         }
     }
 
     @Test
+    void routedSelectorSignaturesAreCheckedAtCompileTime() {
+        String wrongTarget = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward_to(42, mail.value);
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(wrongTarget)));
+        String missingKey = """
+                define actor Worker as
+                  receive(ActorMail<int> mail): void {
+                    self.forward_by_key(mail.value);
+                  }
+                end
+                """;
+        assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(missingKey)));
+    }
+
+    @Test
     void actorSelfAliasesDoNotEnableUnloweredRoutingIntrinsics() {
-        // Direct self.* calls are already denied. Aliased actor references
-        // must not be interpreted as ordinary user-callable methods either.
+        // The compiler owns direct self.* intrinsics. Aliased actor values
+        // must never acquire the same authority-bearing dispatch path.
         for (String method : BUILTINS) {
             String program = """
                     define actor Worker as
