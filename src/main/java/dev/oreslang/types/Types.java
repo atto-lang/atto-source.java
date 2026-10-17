@@ -196,7 +196,11 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
-        if (to == Any.INSTANCE) return from != Primitive.VOID;
+        if (to == Any.INSTANCE) {
+            return from != Primitive.VOID
+                    && !(from instanceof Borrow)
+                    && !(from instanceof ClassNamespace);
+        }
         if (from == Any.INSTANCE) return false;
         if (to == AnyCallable.INSTANCE) {
             return from instanceof Function || from == AnyCallable.INSTANCE;
