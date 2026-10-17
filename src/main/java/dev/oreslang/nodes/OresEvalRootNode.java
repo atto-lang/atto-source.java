@@ -1429,6 +1429,15 @@ public final class OresEvalRootNode extends RootNode {
                 return expressionContainsPotentialSuspension(
                         destructure.initializer(), seen);
             }
+            if (stmt instanceof Ast.ThrowStmt thrown) {
+                return expressionContainsPotentialSuspension(thrown.value(), seen);
+            }
+            if (stmt instanceof Ast.RaiseStmt raised) {
+                return expressionContainsPotentialSuspension(raised.value(), seen);
+            }
+            if (stmt instanceof Ast.PanicStmt panicked) {
+                return expressionContainsPotentialSuspension(panicked.value(), seen);
+            }
             if (stmt instanceof Ast.ReturnStmt ret) {
                 return ret.value() != null
                         && expressionContainsPotentialSuspension(
@@ -1498,6 +1507,14 @@ public final class OresEvalRootNode extends RootNode {
                         || attempted.finallyBody().stream().anyMatch(
                                 nested ->
                                         statementContainsPotentialSuspension(nested, seen));
+            }
+            if (stmt instanceof Ast.RecoverStmt recovered) {
+                return recovered.body().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen))
+                        || recovered.catchBody().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen))
+                        || recovered.finallyBody().stream().anyMatch(
+                                nested -> statementContainsPotentialSuspension(nested, seen));
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 return loop.asyncIteration() || expressionContainsPotentialSuspension(loop.iterable(), seen)
@@ -1727,6 +1744,10 @@ public final class OresEvalRootNode extends RootNode {
                 return tried.body().stream().anyMatch(this::containsSourceLoop)
                         || tried.catchBody().stream().anyMatch(this::containsSourceLoop)
                         || tried.finallyBody().stream().anyMatch(this::containsSourceLoop);
+            if (stmt instanceof Ast.RecoverStmt recovered)
+                return recovered.body().stream().anyMatch(this::containsSourceLoop)
+                        || recovered.catchBody().stream().anyMatch(this::containsSourceLoop)
+                        || recovered.finallyBody().stream().anyMatch(this::containsSourceLoop);
             return false;
         }
 
@@ -1943,6 +1964,42 @@ public final class OresEvalRootNode extends RootNode {
                 ArrayDeque<Ast.Expr> defers,
                 SourceFlowCont continuation) {
             try {
+                if (stmt instanceof Ast.ThrowStmt thrown) {
+                    evalSuspendableExpr(
+                            task,
+                            thrown.value(),
+                            env,
+                            (t, value, failure) -> continuation.accept(
+                                    t,
+                                    SourceFlow.throwing(failure == null
+                                            ? new GuestControlSignal.Throw(value)
+                                            : failure)));
+                    return;
+                }
+                if (stmt instanceof Ast.RaiseStmt raised) {
+                    evalSuspendableExpr(
+                            task,
+                            raised.value(),
+                            env,
+                            (t, value, failure) -> continuation.accept(
+                                    t,
+                                    SourceFlow.throwing(failure == null
+                                            ? new GuestControlSignal.Raise(value)
+                                            : failure)));
+                    return;
+                }
+                if (stmt instanceof Ast.PanicStmt panicked) {
+                    evalSuspendableExpr(
+                            task,
+                            panicked.value(),
+                            env,
+                            (t, value, failure) -> continuation.accept(
+                                    t,
+                                    SourceFlow.throwing(failure == null
+                                            ? new GuestControlSignal.Panic(value)
+                                            : failure)));
+                    return;
+                }
                 if (stmt instanceof Ast.BindingStmt binding) {
                     evalSuspendableExpr(
                             task,
@@ -1974,6 +2031,16 @@ public final class OresEvalRootNode extends RootNode {
                                     return;
                                 }
                                 try {
+                                    if (value instanceof TrapResultValue trapResult) {
+                                        bindTrapResultDestructure(
+                                                destructure.pattern(), trapResult, env);
+                                        continuation.accept(t, SourceFlow.normal());
+                                        return;
+                                    }
+                                    if (containsNestedDestructure(destructure.pattern())) {
+                                        throw new IllegalArgumentException(
+                                                "nested destructuring is currently supported only for TrapResult values");
+                                    }
                                     if (destructure.kind()
                                             == Ast.DestructureKind.SEQUENCE) {
                                         List<?> items = asSequence(value);
@@ -2144,6 +2211,46 @@ public final class OresEvalRootNode extends RootNode {
                                         switched.defaultBody(),
                                         env,
                                         continuation);
+                            });
+                    return;
+                }
+
+                if (stmt instanceof Ast.RecoverStmt recovered) {
+                    runBlock(
+                            task,
+                            recovered.body(),
+                            env,
+                            (t, flow) -> {
+                                if (flow.kind() == SourceFlowKind.THROW
+                                        && isRecoverSignal(flow.failure())) {
+                                    Env caught = new Env(env);
+                                    caught.define(
+                                            recovered.signalName(),
+                                            recoverySignal(flow.failure()),
+                                            Ast.BindingKind.VAL);
+                                    runBlock(
+                                            t,
+                                            recovered.catchBody(),
+                                            caught,
+                                            (t2, catchFlow) ->
+                                                    runBlock(
+                                                            t2,
+                                                            recovered.finallyBody(),
+                                                            env,
+                                                            (t3, finallyFlow) ->
+                                                                    continuation.accept(
+                                                                            t3,
+                                                                            mergeFinallyFlow(catchFlow, finallyFlow))));
+                                } else {
+                                    runBlock(
+                                            t,
+                                            recovered.finallyBody(),
+                                            env,
+                                            (t2, finallyFlow) ->
+                                                    continuation.accept(
+                                                            t2,
+                                                            mergeFinallyFlow(flow, finallyFlow)));
+                                }
                             });
                     return;
                 }
@@ -5346,6 +5453,10 @@ public final class OresEvalRootNode extends RootNode {
                         selected,
                         env,
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                return;
+            }
+            if (stmt instanceof Ast.RecoverStmt recovered) {
+                executeRecoverStatement(recovered, env);
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
