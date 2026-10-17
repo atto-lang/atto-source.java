@@ -132,6 +132,106 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void directReplyBypassesIntermediateActorsButPreservesFanInBranches()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var bound = new AtomicReference<ActorPipelineCorrelatedMailboxRouter<String>>();
+            var replies = new CountDownLatch(2);
+            var sourceReplyFrames = Collections.synchronizedList(
+                    new ArrayList<ActorPipelineCorrelatedMailboxRouter.Correlation>());
+            var sinkFrames = Collections.synchronizedList(
+                    new ArrayList<ActorPipelineCorrelatedMailboxRouter.Correlation>());
+            var deniedAtIngress = new AtomicInteger();
+            var deniedReplay = new AtomicInteger();
+            var unexpected = new AtomicReference<Throwable>();
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
+                try {
+                    if (!value.equals("fan-in")) {
+                        throw new AssertionError("unexpected sink mail");
+                    }
+                    sinkFrames.add(bound.get().currentCorrelation());
+                    bound.get().reply("origin-ack");
+                    try {
+                        bound.get().reply("replayed-ack");
+                        throw new AssertionError("completed reply frame reused");
+                    } catch (IllegalStateException expected) {
+                        deniedReplay.incrementAndGet();
+                    }
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            var workerA = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (!value.equals("broadcast")) throw new AssertionError();
+                bound.get().forward("fan-in");
+            });
+            var workerB = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (!value.equals("broadcast")) throw new AssertionError();
+                bound.get().forward("fan-in");
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                try {
+                    if (value.equals("begin")) {
+                        try {
+                            bound.get().reply("forged");
+                            throw new AssertionError("ingress replied to itself");
+                        } catch (IllegalStateException expected) {
+                            deniedAtIngress.incrementAndGet();
+                        }
+                        var batch = bound.get().forwardAll("broadcast");
+                        if (batch.size() != 2 ||
+                                batch.stream().anyMatch(a -> !a.admitted())) {
+                            throw new AssertionError("fan-out branch admission failed");
+                        }
+                    } else if (value.equals("origin-ack")) {
+                        sourceReplyFrames.add(bound.get().currentCorrelation());
+                        replies.countDown();
+                    } else {
+                        throw new AssertionError("unexpected source mail");
+                    }
+                } catch (Throwable failure) {
+                    unexpected.compareAndSet(null, failure);
+                }
+            });
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, fanInGraph(),
+                    Map.of("source", source, "worker-a", workerA,
+                           "worker-b", workerB, "sink", sink), 31, 12);
+            bound.set(router);
+            router.ingress("source", "begin");
+            assertTrue(replies.await(8, TimeUnit.SECONDS),
+                    "two direct origin replies did not arrive");
+            source.drain().get(5, TimeUnit.SECONDS);
+            workerA.drain().get(5, TimeUnit.SECONDS);
+            workerB.drain().get(5, TimeUnit.SECONDS);
+            sink.drain().get(5, TimeUnit.SECONDS);
+            assertNull(unexpected.get(), "actor routing callback failed");
+            assertEquals(1, deniedAtIngress.get());
+            assertEquals(2, deniedReplay.get());
+            assertEquals(2, sinkFrames.size());
+            assertEquals(2, sourceReplyFrames.size());
+            assertEquals(sinkFrames.get(0).flowId(), sinkFrames.get(1).flowId());
+            assertNotEquals(sinkFrames.get(0).routeId(), sinkFrames.get(1).routeId());
+            assertEquals(sinkFrames.get(0).flowId(), sourceReplyFrames.get(0).flowId());
+            assertEquals(sinkFrames.get(1).flowId(), sourceReplyFrames.get(1).flowId());
+            assertNotEquals(sourceReplyFrames.get(0).routeId(),
+                            sourceReplyFrames.get(1).routeId());
+            assertTrue(sourceReplyFrames.stream().allMatch(c ->
+                            c.receiver().equals("source") && c.generation() == 31));
+            assertEquals(0, router.outstanding(), "origin-directed replies leaked frames");
+            router.close();
+            source.stop();
+            workerA.stop();
+            workerB.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            workerA.getDone().get(5, TimeUnit.SECONDS);
+            workerB.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void ordinaryActorMailCannotBorrowAnEarlierOrDifferentRouteFrame()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
