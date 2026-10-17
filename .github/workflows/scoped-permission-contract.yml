@@ -11,6 +11,14 @@ on:
       - "src/test/java/dev/oreslang/runtime/ScopedPermissionV1GoldenTest.java"
       - "src/main/java/dev/oreslang/runtime/RuntimePermissions.java"
       - "src/main/java/dev/oreslang/runtime/IsolatePolicy.java"
+      - "src/main/java/dev/oreslang/runtime/NativeIo.java"
+      - "src/main/java/dev/oreslang/runtime/CapabilityChecker.java"
+      - "src/main/java/dev/oreslang/runtime/LinkedProgramRunner.java"
+      - "src/main/java/dev/oreslang/launcher/OresMain.java"
+      - "src/test/java/dev/oreslang/runtime/ScopedCompileTimePermissionTest.java"
+      - "src/test/java/dev/oreslang/runtime/NativeIoSymlinkBoundaryTest.java"
+      - "src/test/java/dev/oreslang/runtime/NativeIoPinnedNetworkTest.java"
+      - "src/test/java/dev/oreslang/launcher/DenoCliDefaultPermissionsTest.java"
   workflow_dispatch:
 
 permissions:
@@ -56,3 +64,40 @@ jobs:
           distribution: 'graalvm'
       - name: Execute all 52 reviewed cases against RuntimePermissions and IsolatePolicy
         run: mvn -B -ntp -Dtest=ScopedPermissionV1GoldenTest test
+      - name: Execute guest CLI compile/runtime and real host I/O boundary regressions
+        run: >
+          mvn -B -ntp
+          '-Dtest=DenoCliDefaultPermissionsTest,ScopedCompileTimePermissionTest,NativeIoSymlinkBoundaryTest,NativeIoPinnedNetworkTest,NativeSocketBoundaryTest,ScopedPermissionInteropTest'
+          test
+      - name: Write exact-head source-free Java security test receipt
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          expected = "de3594482d10623241a94cf531fd9e4fe71c49769dd68b2098f4ed5363870ac5"
+          corpus = pathlib.Path("contracts/v1/scoped-permissions-v1.json").read_bytes()
+          if hashlib.sha256(corpus).hexdigest() != expected:
+              raise SystemExit("canonical permission corpus changed after tests")
+          receipt = {
+              "schema": "oreslang-scoped-java-host-security-ci-v1",
+              "tested_head_sha": os.environ["EXPECTED_SHA"],
+              "tested_tree_sha": os.popen("git rev-parse HEAD^{tree}").read().strip(),
+              "canonical_vectors_sha256": expected,
+              "canonical_vectors": 52,
+              "policy_vectors_and_host_boundary_suites_completed": True,
+              "guest_host_io_parity_proven": False,
+              "native_image_tested": False,
+          }
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "ores-scoped-java-receipt.json"
+          out.write_text(json.dumps(receipt, sort_keys=True, indent=2)+"\n", encoding="utf-8")
+          print("JAVA_HOST_BOUNDARY_RECEIPT_OK", out)
+          PY
+      - name: Upload source-free Java permission test receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scoped-java-host-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ores-scoped-java-receipt.json
+          if-no-files-found: error
+          retention-days: 7
