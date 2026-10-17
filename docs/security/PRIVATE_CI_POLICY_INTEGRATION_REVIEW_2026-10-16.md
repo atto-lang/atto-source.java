@@ -151,3 +151,75 @@ GraalVM, or publisher test evidence.
 - Production test gate remains blocked by unprotected source main, empty
   destination and snapshot allowlists, missing independent reviewer sign-off
   and zero-step source organization Actions runs. Do not mark ready or merge.
+
+## Source-local actor candidate runner handoff (October 16, 2026)
+
+This is a **draft code-review handoff**, not permission to activate a runner,
+merge protected workflow code, publish private source, or assert tests passed.
+
+The trusted `.github/workflows/private-exact-candidate-validation.yml`
+workflow now runs three required actor regression JUnit classes on the exact
+independently approved candidate commit:
+
+- `dev.oreslang.runtime.PersistentActorMapTest` — persistent HAMT invariants
+- `dev.oreslang.runtime.ActorSharedLocalMemoryTest` — SHARED actor-local
+  owner-bound heap and carrier authority
+- `dev.oreslang.types.ActorStateModeContractsTest` — actor-state contract
+
+It deletes stale focused Surefire reports, executes the three classes with
+JDK 25/GraalVM and tests enabled, rejects missing/failed/skipped/flaky or
+misidentified direct JUnit cases, then requires those same classes again
+in the fresh full `mvn clean verify` report set. The separately protected
+`PrivateExactMainValidationWorkflowSecurityTest` statically checks these
+required workflow gates and the final identity-only artifact step.
+
+Only **after** the full candidate suite and AOT/hybrid/isolate guest checks
+succeed, the job writes a bounded metadata-only
+`private-candidate-identity-<run_id>-<attempt>` artifact (3-day retention).
+It contains source repository ID, trusted workflow commit, candidate commit
+and Git tree, run ID/attempt and expected test classes; it has explicit
+`verified_execution_claim=false` and
+`native_guest_parity_certified=false`. Neither raw private source nor
+compiled binaries nor Surefire XML are uploaded. Independent reviewer must
+check GitHub run/job/step and JUnit logs; an artifact by itself is **not**
+runtime or release certification.
+
+### Administrator-controlled prerequisites (not satisfied by this PR)
+
+1. Address open private-source exposure incident
+   `oreslang-platform-conformance#22` and obtain independent incident-owner
+   containment evidence. Do not use the previously public carrier or assert
+   that merely hiding a branch restores historical confidentiality.
+2. Configure **enforced** Java source `main` protection and required
+   independent CODEOWNER review. Review this PR's trusted workflow, runner
+   conditions, admission test and evidence metadata before merging it
+   under protected-main policy. CODEOWNERS text alone cannot protect a branch.
+3. Register an isolated, disposable, repository-scoped Linux x64 self-hosted
+   runner matching labels `self-hosted, linux, x64,
+   oreslang-private-ephemeral`. No org-shared host or GitHub-hosted fallback,
+   reused working directory, repository secrets or third-party private mirror.
+   Ensure source-local network egress and runner lifecycle are independently
+   audited.
+4. From **reviewed protected main**, independently pin repository variable
+   `ORESLANG_PRIVATE_EPHEMERAL_RUNNER=true`,
+   `ORESLANG_PRIVATE_CANDIDATE_WORKFLOW_SHA=<reviewed protected-main SHA>`,
+   `ORESLANG_PRIVATE_CANDIDATE_APPROVED_SHA=<exact approved actor PR commit>`,
+   `ORESLANG_PRIVATE_CANDIDATE_APPROVED_TREE=<Git tree of that commit>`.
+   The branch/ref and exact tree must come from a trusted independent review,
+   not unreviewed PR-supplied input or candidate-controlled GitHub Actions logs.
+   Keep the cross-org destination and snapshot export allowlists **empty**.
+5. Dispatch the approved workflow on `main` with
+   `candidate_sha=<exact approved actor PR commit>`. Confirm the positive
+   gate assigned the repository-scoped disposable runner and the denial
+   gate was skipped. Verify checkout HEAD/tree, all focused actor classes,
+   fresh complete JUnit reports, AOT/hybrid/isolate guest execution, clean
+   job completion, run attempt and metadata-only artifact *independently*
+   from GitHub's API/job logs before considering the snapshot tested.
+   Re-review and reapprove the exact tuple whenever the candidate head moves.
+
+As of this audit, all five source `main` branches are reported unprotected,
+the two publisher/export approval files remain empty, the exposure incident
+is open, and sampled private source workflows end with **zero executed steps
+and zero artifacts**. The source-local candidate workflow itself has **not
+executed**. A successful source-free test carrier neither unlocks this
+candidate workflow nor authorizes confidential Git-tree mirroring.
