@@ -137,11 +137,11 @@ public final class SupervisorProcess implements AutoCloseable {
     }
 
     private void beginCallback() {
-        SupervisorFailureControl.Notice notice;
+        Pending current;
         synchronized (this) {
             if (state != State.RUNNING) return;
-            notice = mailbox.peekFirst();
-            if (notice == null) {
+            current = mailbox.peekFirst();
+            if (current == null) {
                 callbackActive = false;
                 return;
             }
@@ -149,7 +149,7 @@ public final class SupervisorProcess implements AutoCloseable {
         final CompletionStage<Directive> pending;
         try {
             pending = Objects.requireNonNull(
-                    onFailure.apply(notice),
+                    onFailure.apply(current.notice),
                     "supervisor failure handler returned null completion");
         } catch (Throwable failure) {
             synchronized (this) { failLocked(failure); }
@@ -162,7 +162,7 @@ public final class SupervisorProcess implements AutoCloseable {
                 try {
                     SupervisorDispatchGuard.enqueue(
                             controlDispatcher,
-                            () -> finishCallback(notice, decision, failure));
+                            () -> finishCallback(current, decision, failure));
                 } catch (Throwable schedulingFailure) {
                     synchronized (this) { failLocked(schedulingFailure); }
                 }
