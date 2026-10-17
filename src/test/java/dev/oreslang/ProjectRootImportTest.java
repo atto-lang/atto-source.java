@@ -407,7 +407,7 @@ final class ProjectRootImportTest {
                     () -> config.resolveImport(importer, specifier), specifier);
             assertTrue(failure.getMessage().contains(specifier), failure.getMessage());
             Files.writeString(importer, "import fnc message from \"" + specifier +
-                    "\";\\npub fnc main(): void { return; }\\n");
+                    "\";\npub fnc main(): void { return; }\n");
             assertThrows(IllegalArgumentException.class,
                     () -> LinkedProgramRunner.validate(importer), specifier);
         }
