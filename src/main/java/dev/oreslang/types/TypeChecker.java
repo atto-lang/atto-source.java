@@ -10,10 +10,13 @@ import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
+import dev.oreslang.types.Types.MapType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.SequenceKind;
 import dev.oreslang.types.Types.SelfType;
+import dev.oreslang.types.Types.StructuralContainerView;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.TupleKind;
@@ -41,7 +44,7 @@ public final class TypeChecker {
             "int", "uint", "bigint", "f32", "f64", "float",
             "decimal", "complex64", "complex128", "complex",
             "bool", "Bool", "string", "String", "void", "null",
-            "Symbol", "Array", "List", "Vector", "Slice",
+            "Symbol", "Array", "List", "Vector", "Slice", "Map",
             "Tuple", "FixedArray", "FixedList",
             "ActorId", "ActorKind", "ActorMail", "ActorOutput",
             "ActorOutputStream", "Option", "Result", "Mutex",
@@ -608,7 +611,7 @@ public final class TypeChecker {
                         "structural parameter '" + param.name() + "' cannot cross an actor mailbox boundary; "
                                 + "pass an owned/sendable nominal value instead");
             }
-            if (param.structural() && (fn.async() || fn.generator())) {
+            if (param.structural() && (fn.async() || fn.generator() || fn.suspends())) {
                 throw new IllegalArgumentException(
                         "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                 + "pass an owned nominal value or copy the required fields");
@@ -1407,7 +1410,7 @@ public final class TypeChecker {
                             "structural parameter '" + param.name() + "' cannot cross actor method mailbox boundaries; "
                                     + "actor APIs require owned/sendable nominal message values");
                 }
-                if (param.structural() && method.async()) {
+                if (param.structural() && (method.async() || method.suspends())) {
                     throw new IllegalArgumentException(
                             "structural parameter '" + param.name() + "' cannot outlive a synchronous call across await/suspension; "
                                     + "pass an owned nominal value or copy the required fields");
@@ -1714,7 +1717,7 @@ public final class TypeChecker {
                                 "int", "uint", "bigint", "f32", "f64", "float", "decimal",
                                 "complex64", "complex128", "complex", "bool", "Bool",
                                 "boolean", "string", "String", "void", "null", "self",
-                                "Tuple", "Array", "List", "Vector", "Slice",
+                                "Tuple", "Array", "List", "Vector", "Slice", "Map",
                                 "FixedArray", "FixedList", "DynamicStruct", "Option",
                                 "Result", "Future", "ActorId", "ActorKind",
                                 "ActorMail", "ActorOutput", "ActorOutputStream",
@@ -2151,6 +2154,10 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
+                if (receiver instanceof StructuralContainerView) {
+                    throw new IllegalArgumentException(
+                            "structural collection views are readonly and cannot be mutated");
+                }
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
                 else if (receiver instanceof Tuple tuple) {
@@ -3496,6 +3503,24 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
+            if (receiver instanceof StructuralContainerView view) {
+                if (view.kind() == StructuralContainerPolicy.Kind.MAP) {
+                    throw new IllegalArgumentException(
+                            "structural Map<K,V> uses get(key) so missing keys remain Option<V>; "
+                                    + "direct indexing is not enabled");
+                }
+                requireAssignable(index, Primitive.INT, "structural array/list index");
+                if (view.extent() >= 0) {
+                    Long constant = constantTupleIndex(indexed.index());
+                    if (constant != null
+                            && (constant < 0 || constant >= view.extent())) {
+                        throw new IllegalArgumentException(
+                                "fixed structural collection index " + constant
+                                        + " outside extent " + view.extent());
+                    }
+                }
+                return view.value();
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
@@ -4128,6 +4153,36 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof StructuralContainerView structuralExpected) {
+                if (structuralExpected.kind() == StructuralContainerPolicy.Kind.ARRAY) {
+                    return contextualSequenceLiteral(
+                            list, SequenceKind.ARRAY, structuralExpected.value(),
+                            env, generics, self);
+                }
+                if (structuralExpected.kind() == StructuralContainerPolicy.Kind.LIST) {
+                    return contextualSequenceLiteral(
+                            list, SequenceKind.LIST, structuralExpected.value(),
+                            env, generics, self);
+                }
+                if (structuralExpected.kind() == StructuralContainerPolicy.Kind.FIXED_ARRAY
+                        || structuralExpected.kind() == StructuralContainerPolicy.Kind.FIXED_LIST) {
+                    TupleKind kind = structuralExpected.kind()
+                            == StructuralContainerPolicy.Kind.FIXED_ARRAY
+                                    ? TupleKind.FIXED_ARRAY : TupleKind.FIXED_LIST;
+                    if (list.elements().isEmpty() && structuralExpected.extent() == 0) {
+                        return structuralExpected;
+                    }
+                    return new Tuple(
+                            list.elements().stream()
+                                    .map(item -> typeOf(item, env, generics, self)).toList(),
+                            kind);
+                }
+            }
+            if (expected instanceof ListType sequenceExpected) {
+                return contextualSequenceLiteral(
+                        list, sequenceExpected.kind(), sequenceExpected.element(),
+                        env, generics, self);
+            }
             if (expected instanceof Tuple tupleExpected) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList(),
                         tupleExpected.kind());
@@ -4146,6 +4201,27 @@ public final class TypeChecker {
             }
         }
         return typeOf(expr, env, generics, self);
+    }
+
+    private ListType contextualSequenceLiteral(
+            Ast.ListExpr list,
+            SequenceKind kind,
+            Type contextualElement,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (list.elements().isEmpty()) {
+            return new ListType(contextualElement, kind);
+        }
+        Type element = widenCollectionElement(
+                typeOf(list.elements().getFirst(), env, generics, self));
+        for (int i = 1; i < list.elements().size(); i++) {
+            element = collectionElementJoin(
+                    element,
+                    widenCollectionElement(typeOf(
+                            list.elements().get(i), env, generics, self)));
+        }
+        return new ListType(element, kind);
     }
 
     /**
@@ -4224,8 +4300,16 @@ public final class TypeChecker {
             }
             return new Record(members, sourceRecord.readOnly() || targetRecord.readOnly());
         }
-        if (source instanceof ListType sourceList && target instanceof ListType targetList) {
-            return new ListType(overlayReadonlyCapabilities(sourceList.element(), targetList.element()));
+        if (source instanceof ListType sourceList && target instanceof ListType targetList
+                && sourceList.kind() == targetList.kind()) {
+            return new ListType(
+                    overlayReadonlyCapabilities(sourceList.element(), targetList.element()),
+                    targetList.kind());
+        }
+        if (source instanceof MapType sourceMap && target instanceof MapType targetMap) {
+            return new MapType(
+                    overlayReadonlyCapabilities(sourceMap.key(), targetMap.key()),
+                    overlayReadonlyCapabilities(sourceMap.value(), targetMap.value()));
         }
         if (source instanceof Tuple sourceTuple && target instanceof Tuple targetTuple
                 && sourceTuple.kind() == targetTuple.kind()
@@ -4393,7 +4477,7 @@ public final class TypeChecker {
         if (source instanceof ListType list) {
             List<Type> result = new ArrayList<>(bindings.size());
             for (int i = 0; i < fixedArity; i++) result.add(list.element());
-            if (restIndex >= 0) result.add(new ListType(list.element()));
+            if (restIndex >= 0) result.add(new ListType(list.element(), list.kind()));
             return List.copyOf(result);
         }
 
@@ -4606,7 +4690,14 @@ public final class TypeChecker {
     private Type bindReceiverSelf(Type type, Type receiver) {
         if (type instanceof SelfType) return receiver;
         if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
+        if (type instanceof ListType list) {
+            return new ListType(bindReceiverSelf(list.element(), receiver), list.kind());
+        }
+        if (type instanceof MapType map) {
+            return new MapType(
+                    bindReceiverSelf(map.key(), receiver),
+                    bindReceiverSelf(map.value(), receiver));
+        }
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
         if (type instanceof Named named) return new Named(
@@ -4828,6 +4919,23 @@ public final class TypeChecker {
         }
         Type receiver = receiverDispatchType(
                 unwrapMutexGuard(deref(rawReceiver)));
+        if (receiver instanceof StructuralContainerView view) {
+            if (writing) {
+                throw new IllegalArgumentException(
+                        "structural collection views are readonly and cannot expose writable members");
+            }
+            if (member.member().equals("size") || member.member().equals("length")) {
+                return Primitive.INT;
+            }
+            if (view.kind() == StructuralContainerPolicy.Kind.MAP
+                    && member.member().equals("get")) {
+                return new Function(
+                        List.of(view.key()),
+                        new Named("Option", List.of(view.value())));
+            }
+            throw new IllegalArgumentException(
+                    "unknown readonly structural collection member '" + member.member() + "'");
+        }
         if (writing && receiver instanceof Record record && record.readOnly()) {
             throw new IllegalArgumentException(
                     "cannot mutate a infer struct value; inferred structs are closed and readonly");
@@ -5880,7 +5988,14 @@ public final class TypeChecker {
             return new Named(named.name(), named.arguments().stream()
                     .map(argument -> resolveSharedGeneric(argument, bindings)).toList());
         }
-        if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
+        if (type instanceof ListType list) {
+            return new ListType(resolveSharedGeneric(list.element(), bindings), list.kind());
+        }
+        if (type instanceof MapType map) {
+            return new MapType(
+                    resolveSharedGeneric(map.key(), bindings),
+                    resolveSharedGeneric(map.value(), bindings));
+        }
         if (type instanceof Tuple tuple) {
             return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList(), tuple.kind());
         }
@@ -6940,6 +7055,9 @@ public final class TypeChecker {
         }
 
         Type concrete = resolve(param.type(), generics, self);
+        StructuralContainerView containerView =
+                structuralContainerView(param.type(), concrete, generics, self);
+        if (containerView != null) return containerView;
         if (concrete instanceof Tuple tuple && tuple.kind() == TupleKind.TUPLE) {
             // A positional width view requires runtime index masking,
             // absent-tail Option projection and borrow/escape proofs; neither
@@ -6987,7 +7105,94 @@ public final class TypeChecker {
         }
 
         throw new IllegalArgumentException(
-                "structural requires a known local class or interface contract, got '" + param.type().name() + "'");
+                "structural requires a known local class/interface contract or supported collection shape, got '"
+                        + param.type().name() + "'");
+    }
+
+    private StructuralContainerView structuralContainerView(
+            Ast.TypeRef sourceRef,
+            Type concrete,
+            Set<String> generics,
+            Type self) {
+        StructuralContainerPolicy.Shape shape;
+        switch (sourceRef.name()) {
+            case "Array" -> {
+                if (!(concrete instanceof ListType sequence)
+                        || sequence.kind() != SequenceKind.ARRAY) {
+                    throw new IllegalArgumentException("structural Array<T> must resolve to an Array<T>");
+                }
+                shape = StructuralContainerPolicy.array(sequence.element(), true);
+            }
+            case "List" -> {
+                if (!(concrete instanceof ListType sequence)
+                        || sequence.kind() != SequenceKind.LIST) {
+                    throw new IllegalArgumentException("structural List<T> must resolve to a List<T>");
+                }
+                shape = StructuralContainerPolicy.list(sequence.element(), true);
+            }
+            case "FixedArray" -> {
+                if (!(concrete instanceof Tuple tuple)
+                        || tuple.kind() != TupleKind.FIXED_ARRAY) {
+                    throw new IllegalArgumentException(
+                            "structural FixedArray requires a fixed-array source type");
+                }
+                Type element = structuralFixedElement(sourceRef, tuple, generics, self);
+                shape = StructuralContainerPolicy.fixedArray(
+                        element, tuple.elements().size(), true);
+            }
+            case "FixedList" -> {
+                if (!(concrete instanceof Tuple tuple)
+                        || tuple.kind() != TupleKind.FIXED_LIST) {
+                    throw new IllegalArgumentException(
+                            "structural FixedList requires a fixed-list source type");
+                }
+                Type element = structuralFixedElement(sourceRef, tuple, generics, self);
+                shape = StructuralContainerPolicy.fixedList(
+                        element, tuple.elements().size(), true);
+            }
+            case "Map" -> {
+                if (!(concrete instanceof MapType map)) {
+                    throw new IllegalArgumentException(
+                            "structural Map<K,V> must resolve to a Map<K,V>");
+                }
+                shape = StructuralContainerPolicy.map(map.key(), map.value(), true);
+            }
+            default -> {
+                return null;
+            }
+        }
+        return new StructuralContainerView(
+                shape.kind(), shape.key(), shape.value(), shape.extent());
+    }
+
+    private Type structuralFixedElement(
+            Ast.TypeRef sourceRef,
+            Tuple tuple,
+            Set<String> generics,
+            Type self) {
+        if (!tuple.elements().isEmpty()) {
+            Type first = tuple.elements().getFirst();
+            for (Type element : tuple.elements()) {
+                if (!element.equals(first)) {
+                    throw new IllegalArgumentException(
+                            "structural " + sourceRef.name()
+                                    + " requires a homogeneous fixed collection; got "
+                                    + tuple.elements());
+                }
+            }
+            return first;
+        }
+
+        List<Ast.TypeRef> dimensions = sequenceShapeDimensions(sourceRef);
+        if (dimensions.size() == 1 && dimensions.getFirst().arguments().size() == 1) {
+            Ast.TypeRef only = dimensions.getFirst().arguments().getFirst();
+            if (only.isRepeatExact() && only.repeatExactCount() == 0) {
+                return resolve(only.arguments().getFirst(), generics, self);
+            }
+        }
+        throw new IllegalArgumentException(
+                "zero-length structural " + sourceRef.name()
+                        + " must preserve its element type with '0 of T'");
     }
 
     private void rejectStaticClassGenericReferences(
@@ -7478,7 +7683,14 @@ public final class TypeChecker {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
         if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
-        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
+        if (type instanceof ListType list) {
+            return new ListType(substituteGenerics(list.element(), bindings), list.kind());
+        }
+        if (type instanceof MapType map) {
+            return new MapType(
+                    substituteGenerics(map.key(), bindings),
+                    substituteGenerics(map.value(), bindings));
+        }
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList(), tuple.kind());
         if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
         if (type instanceof Types.Not not) return Types.notOf(substituteGenerics(not.excluded(), bindings));
@@ -7520,6 +7732,10 @@ public final class TypeChecker {
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Types.Not not) return containsGenericNamed(not.excluded(), names);
+        if (type instanceof MapType map) {
+            return containsGenericNamed(map.key(), names)
+                    || containsGenericNamed(map.value(), names);
+        }
         if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
         if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
                 || containsGenericNamed(fn.result(), names);
@@ -7571,13 +7787,17 @@ public final class TypeChecker {
                         + " requires an explicit finite sequence shape, for example "
                         + (ref.name().equals("Tuple") ? "Tuple[int, string]" : ref.name() + "[4 of int]"));
             }
-            if (ref.inferArguments()) return new ListType(Unknown.INSTANCE);
+            if (ref.inferArguments()) {
+                return new ListType(Unknown.INSTANCE, sequenceKindFor(ref.name()));
+            }
             if (positional.size() != 1) {
                 throw new IllegalArgumentException(ref.name()
                         + " requires one element type when using legacy '<T>' syntax; "
                         + "prefer " + ref.name() + "[T]");
             }
-            return new ListType(resolve(positional.getFirst(), generics, self, allowNullMarker));
+            return new ListType(
+                    resolve(positional.getFirst(), generics, self, allowNullMarker),
+                    sequenceKindFor(ref.name()));
         }
 
         if (!positional.isEmpty()) {
@@ -7612,7 +7832,9 @@ public final class TypeChecker {
             }
             Type nested = resolve(base, generics, self, allowNullMarker);
             int rank = declaredRank == null ? dimensions.size() : declaredRank;
-            for (int i = 0; i < rank; i++) nested = new ListType(nested);
+            for (int i = 0; i < rank; i++) {
+                nested = new ListType(nested, sequenceKindFor(ref.name()));
+            }
             return nested;
         }
 
@@ -7652,8 +7874,21 @@ public final class TypeChecker {
 
         int rank = declaredRank == null ? 1 : declaredRank;
         Type result = element;
-        for (int i = 0; i < rank; i++) result = new ListType(result);
+        for (int i = 0; i < rank; i++) {
+            result = new ListType(result, sequenceKindFor(ref.name()));
+        }
         return result;
+    }
+
+    private SequenceKind sequenceKindFor(String name) {
+        return switch (name) {
+            case "Array" -> SequenceKind.ARRAY;
+            case "List" -> SequenceKind.LIST;
+            case "Vector" -> SequenceKind.VECTOR;
+            case "Slice" -> SequenceKind.SLICE;
+            default -> throw new IllegalArgumentException(
+                    "not a runtime-extent sequence kind: " + name);
+        };
     }
 
     private Ast.TypeRef singleHomogeneousDimensionElement(Ast.TypeRef shape, String collectionName) {
@@ -7990,6 +8225,15 @@ public final class TypeChecker {
                 }
                 yield resolveCollectionType(ref, generics, self, allowNullMarker);
             }
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Map requires exactly two explicit type arguments: Map<K,V>");
+                }
+                yield new MapType(
+                        resolve(ref.arguments().get(0), generics, self),
+                        resolve(ref.arguments().get(1), generics, self));
+            }
             case "DynamicStruct" -> throw new IllegalArgumentException(
                     "DynamicStruct has been removed for AOT-safe static shape semantics; "
                             + "use infer struct{...} or struct{field: Type,...}{...}");
@@ -8176,6 +8420,13 @@ public final class TypeChecker {
             return structuralRecordAssignable(sourceShape, targetShape);
         }
 
+        if (expected instanceof StructuralContainerView targetView) {
+            return structuralContainerAssignable(actual, targetView);
+        }
+        if (actual instanceof StructuralContainerView) {
+            return false;
+        }
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
@@ -8231,6 +8482,58 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private boolean structuralContainerAssignable(
+            Type actual,
+            StructuralContainerView expected) {
+        StructuralContainerPolicy.Shape source = structuralContainerShape(actual);
+        if (source == null) return false;
+        StructuralContainerPolicy.Shape target = new StructuralContainerPolicy.Shape(
+                expected.kind(), expected.key(), expected.value(), expected.extent(), true);
+        return StructuralContainerPolicy.admits(source, target);
+    }
+
+    private StructuralContainerPolicy.Shape structuralContainerShape(Type type) {
+        if (type instanceof StructuralContainerView view) {
+            return new StructuralContainerPolicy.Shape(
+                    view.kind(), view.key(), view.value(), view.extent(), true);
+        }
+        if (type instanceof ListType sequence) {
+            return switch (sequence.kind()) {
+                case ARRAY -> StructuralContainerPolicy.array(
+                        sequence.element(), false);
+                case LIST -> StructuralContainerPolicy.list(
+                        sequence.element(), false);
+                case VECTOR, SLICE -> null;
+            };
+        }
+        if (type instanceof Tuple tuple) {
+            StructuralContainerPolicy.Kind kind = switch (tuple.kind()) {
+                case FIXED_ARRAY -> StructuralContainerPolicy.Kind.FIXED_ARRAY;
+                case FIXED_LIST -> StructuralContainerPolicy.Kind.FIXED_LIST;
+                case TUPLE -> null;
+            };
+            if (kind == null || tuple.elements().isEmpty()) return null;
+            Type first = tuple.elements().getFirst();
+            for (Type element : tuple.elements()) {
+                if (!element.equals(first)) return null;
+            }
+            return kind == StructuralContainerPolicy.Kind.FIXED_ARRAY
+                    ? StructuralContainerPolicy.fixedArray(
+                            first, tuple.elements().size(), false)
+                    : StructuralContainerPolicy.fixedList(
+                            first, tuple.elements().size(), false);
+        }
+        if (type instanceof MapType map) {
+            try {
+                return StructuralContainerPolicy.map(
+                        map.key(), map.value(), false);
+            } catch (IllegalArgumentException rejected) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private boolean structuralRecordAssignable(Record actual, Record expected) {

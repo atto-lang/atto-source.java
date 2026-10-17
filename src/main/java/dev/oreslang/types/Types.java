@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
+    public sealed interface Type permits Primitive, Named, SelfType, Borrow, ClassNamespace, Record, Function, ListType, MapType, StructuralContainerView, Tuple, Union, Generic, StringLiteral, BoolLiteral, Not, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -70,7 +70,48 @@ public final class Types {
         }
     }
 
-    public record ListType(Type element) implements Type { }
+    public enum SequenceKind {
+        ARRAY,
+        LIST,
+        VECTOR,
+        SLICE
+    }
+
+    /**
+     * Runtime-extent homogeneous sequence. Kind is static identity: Array<T>
+     * and List<T> may share a runtime representation, but they are not
+     * implicitly interchangeable in the type system.
+     */
+    public record ListType(Type element, SequenceKind kind) implements Type {
+        public ListType {
+            Objects.requireNonNull(element, "sequence element");
+            Objects.requireNonNull(kind, "sequence kind");
+        }
+        public ListType(Type element) { this(element, SequenceKind.LIST); }
+    }
+
+    /** First-class static map type; mutation/ownership policy is checked by callers. */
+    public record MapType(Type key, Type value) implements Type {
+        public MapType {
+            Objects.requireNonNull(key, "map key");
+            Objects.requireNonNull(value, "map value");
+        }
+    }
+
+    /**
+     * Expected-only readonly structural collection loan. This type must never
+     * manufacture ownership or write authority; TypeChecker admits sources
+     * only through StructuralContainerPolicy.
+     */
+    public record StructuralContainerView(
+            StructuralContainerPolicy.Kind kind,
+            Type key,
+            Type value,
+            int extent) implements Type {
+        public StructuralContainerView {
+            new StructuralContainerPolicy.Shape(kind, key, value, extent, true);
+        }
+    }
 
     public enum TupleKind {
         TUPLE,
@@ -178,6 +219,13 @@ public final class Types {
         if (type instanceof Named named) return named.arguments().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Record record) return record.members().values().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof ListType list) return containsUncertainType(list.element());
+        if (type instanceof MapType map) {
+            return containsUncertainType(map.key()) || containsUncertainType(map.value());
+        }
+        if (type instanceof StructuralContainerView view) {
+            return (view.key() != null && containsUncertainType(view.key()))
+                    || containsUncertainType(view.value());
+        }
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(Types::containsUncertainType);
         if (type instanceof Function function) return function.parameters().stream().anyMatch(Types::containsUncertainType)
                 || containsUncertainType(function.result());
@@ -257,7 +305,16 @@ public final class Types {
         }
 
         if (from instanceof ListType source && to instanceof ListType target) {
-            return isAssignable(source.element(), target.element()) && isAssignable(target.element(), source.element());
+            return source.kind() == target.kind()
+                    && isAssignable(source.element(), target.element())
+                    && isAssignable(target.element(), source.element());
+        }
+
+        if (from instanceof MapType source && to instanceof MapType target) {
+            return isAssignable(source.key(), target.key())
+                    && isAssignable(target.key(), source.key())
+                    && isAssignable(source.value(), target.value())
+                    && isAssignable(target.value(), source.value());
         }
 
         if (from instanceof Tuple source && to instanceof Tuple target) {
