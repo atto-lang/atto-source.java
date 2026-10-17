@@ -20,6 +20,7 @@ final class RefinementRulesTest {
         var db = RefinementRules.descriptor(null, b.target(), b.refinement());
         assertEquals(da, db);
         assertEquals(64, da.fingerprint().length());
+        assertEquals("6162f74ca5d074640b2415eae37297ce299c6e1d1c77b6e9afb76ad686049cd2", da.fingerprint());
         assertTrue(da.accepts(1L));
         assertTrue(da.accepts(65535L));
         assertFalse(da.accepts(0L));
@@ -31,6 +32,7 @@ final class RefinementRulesTest {
         var one = RefinementRules.descriptor("app.Username", n.target(), n.refinement());
         var two = RefinementRules.descriptor("other.Username", n.target(), n.refinement());
         assertNotEquals(one.fingerprint(), two.fingerprint());
+        assertEquals("8b8a65194fb051d69d27590862fe4522d5e8be3dcfb263e1445f8982f5203540", one.fingerprint());
         assertFalse(one.accepts(String.valueOf((char) 0xD800)));
     }
 
