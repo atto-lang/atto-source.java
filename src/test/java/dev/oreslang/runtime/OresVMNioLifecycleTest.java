@@ -103,6 +103,38 @@ final class OresVMNioLifecycleTest {
         }
     }
 
+    @Test void vmOwnedTcpAcceptUsesOneSelectorAndReturnsNonblockingChannel() throws Exception {
+        OresVM vm = OresVM.create(Runnable::run);
+        try (var first = java.nio.channels.ServerSocketChannel.open();
+             var second = java.nio.channels.ServerSocketChannel.open()) {
+            first.configureBlocking(false);
+            second.configureBlocking(false);
+            first.bind(new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0));
+            second.bind(new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0));
+            int firstPort = ((java.net.InetSocketAddress) first.getLocalAddress()).getPort();
+            int secondPort = ((java.net.InetSocketAddress) second.getLocalAddress()).getPort();
+            var firstAccepted = vm.nioReadiness().acceptAsync(first);
+            var secondAccepted = vm.nioReadiness().acceptAsync(second);
+            assertEquals(1, vm.nioReactorCount(),
+                    "two listeners share the VM selector instead of launching listener reactors");
+            try (var firstPeer = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), firstPort);
+                 var secondPeer = new java.net.Socket(java.net.InetAddress.getLoopbackAddress(), secondPort);
+                 var firstChannel = firstAccepted.get(3, TimeUnit.SECONDS);
+                 var secondChannel = secondAccepted.get(3, TimeUnit.SECONDS)) {
+                assertFalse(firstChannel.isBlocking());
+                assertFalse(secondChannel.isBlocking());
+                assertEquals(1, vm.nioReactorCount());
+            }
+
+            // A cancelled accept must revoke its pending readiness ticket.
+            var cancelled = vm.nioReadiness().acceptAsync(first);
+            assertTrue(cancelled.cancel(false));
+            assertTrue(cancelled.isCancelled());
+        } finally {
+            vm.close();
+        }
+    }
+
     @Test void mappingWorkerCannotJoinItsOwnControlExecutor() throws Exception {
         OresVM vm = OresVM.create(Runnable::run);
         var outcome = new java.util.concurrent.CompletableFuture<Boolean>();
