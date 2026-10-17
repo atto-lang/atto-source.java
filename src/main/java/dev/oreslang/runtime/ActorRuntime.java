@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -63,6 +64,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
+    /** Reserved host/supervisor USER capacity; NORMAL can never consume it. */
+    private static final int URGENT_USER_MESSAGE_SLOTS = 16;
+    /** Sustained URGENT traffic yields to one runnable NORMAL message. */
+    private static final int URGENT_USER_BURST = 8;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
     private static final int UNTRUSTED_TIMED_SOURCE_ADMISSION_SLOTS = 32;
     private static final long UNTRUSTED_FUEL_PER_MILLI = 256L;
@@ -714,7 +719,53 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         return cell != null
                 && cell.mailbox instanceof ChannelRuntime.Channel<?>
+                && cell.urgentMailbox instanceof ChannelRuntime.Channel<?>
                 && cell.continuationMailbox instanceof ChannelRuntime.Channel<?>;
+    }
+
+    /** Host/supervisor-only bounded mailbox telemetry; never exposes payloads. */
+    public record ActorMailboxSnapshot(
+            ActorId actorId,
+            int normalQueued,
+            int urgentQueued,
+            int controlQueued,
+            int normalCapacity,
+            int urgentCapacity,
+            int controlCapacity,
+            int normalHighWater,
+            int urgentHighWater,
+            int controlHighWater,
+            long normalRejected,
+            long urgentRejected,
+            long controlRejected,
+            long lastContiguouslyProcessedSequence,
+            long nextAdmissionSequence,
+            boolean sourceReceiveSuspended,
+            boolean sealing,
+            boolean stopped) { }
+
+    public Optional<ActorMailboxSnapshot> mailboxSnapshot(ActorRef<?> ref) {
+        requireSupervisorContext("inspect actor mailbox state");
+        Objects.requireNonNull(ref, "ref");
+        if (!ref.ownedBy(this)) {
+            throw new ActorInvalidReferenceException(
+                    "ActorRef belongs to a different ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return Optional.empty();
+        synchronized (cell.lifecycleLock) {
+            synchronized (cell.mailboxAccountingLock) {
+                return Optional.of(new ActorMailboxSnapshot(
+                        ref.id(), cell.queuedUserMessages, cell.queuedUrgentMessages,
+                        cell.queuedContinuations, cell.policy.maxMailboxMessages(),
+                        URGENT_USER_MESSAGE_SLOTS, INTERNAL_CONTINUATION_SLOTS,
+                        cell.maxQueuedUserMessages, cell.maxQueuedUrgentMessages,
+                        cell.maxQueuedContinuations, cell.rejectedUserMessages,
+                        cell.rejectedUrgentMessages, cell.rejectedContinuations,
+                        cell.lastProcessedUserMessageSequence, cell.nextUserMessageSequence,
+                        cell.sourceReceiveSuspended, cell.sealing, cell.stopped.get()));
+            }
+        }
     }
 
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
@@ -979,16 +1030,18 @@ public final class ActorRuntime implements AutoCloseable {
             Runnable release,
             Runnable continuation,
             ActorId sender,
-            long sequence) implements AutoCloseable {
+            long sequence,
+            boolean urgent) implements AutoCloseable {
         private static MessageEnvelope message(
                 Object value,
                 Runnable release,
                 ActorId sender,
-                long sequence) {
+                long sequence,
+                boolean urgent) {
             if (sequence < 0) {
                 throw new IllegalArgumentException("actor mailbox sequence cannot be negative");
             }
-            return new MessageEnvelope(value, release, null, sender, sequence);
+            return new MessageEnvelope(value, release, null, sender, sequence, urgent);
         }
 
         private static MessageEnvelope continuation(Runnable continuation) {
@@ -997,11 +1050,16 @@ public final class ActorRuntime implements AutoCloseable {
                     null,
                     Objects.requireNonNull(continuation, "continuation"),
                     null,
-                    -1L);
+                    -1L,
+                    false);
         }
 
         private boolean isContinuation() {
             return continuation != null;
+        }
+
+        private boolean isUrgent() {
+            return urgent;
         }
 
         @Override
@@ -1973,6 +2031,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
+        }
+
+        /** Host/supervisor-only URGENT user mail, never runtime CONTROL. */
+        public void sendUrgent(M message) {
+            ActorRuntime.this.sendUrgent(this, message);
         }
 
         /** Successful completion covers messages admitted before this call.
@@ -4927,6 +4990,20 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        sendWithPriority(ref, message, false);
+    }
+
+    /**
+     * Host/supervisor-only priority admission. URGENT remains USER mail: it
+     * cannot forge STOP, CANCEL, lifecycle, or scheduler CONTROL authority.
+     */
+    public <M> void sendUrgent(ActorRef<M> ref, M message) {
+        requireSupervisorContext("send urgent actor messages");
+        sendWithPriority(ref, message, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <M> void sendWithPriority(ActorRef<M> ref, M message, boolean urgent) {
         requireCallerRuntimeAffinity("send messages");
         if (currentActorKind() == ActorKind.UNTRUSTED) {
             throw new SecurityException("untrusted actors cannot send actor messages");
@@ -4942,7 +5019,7 @@ public final class ActorRuntime implements AutoCloseable {
         synchronized (cell.lifecycleLock) {
             if (cell.stopped.get() || cell.finalized) throw terminated(ref);
             if (cell.sealing) throw new ActorSealedException(ref.id());
-            if (!cell.reserveMailboxSlot()) {
+            if (!(urgent ? cell.reserveUrgentMailboxSlot() : cell.reserveMailboxSlot())) {
                 throw new ActorMailboxFullException(ref.id());
             }
         }
@@ -5037,8 +5114,10 @@ public final class ActorRuntime implements AutoCloseable {
                                 exhausted);
                     }
                     envelope = MessageEnvelope.message(
-                            prepared, release, sender, sequence);
-                    if (!cell.mailbox.tryWrite(envelope)) {
+                            prepared, release, sender, sequence, urgent);
+                    ChannelRuntime.Channel<MessageEnvelope> destination =
+                            urgent ? cell.urgentMailbox : cell.mailbox;
+                    if (!destination.tryWrite(envelope)) {
                         throw new ActorMailboxFullException(ref.id());
                     }
                     cell.nextUserMessageSequence = nextSequence;
@@ -5056,7 +5135,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         cell.schedule();
         } finally {
-            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false);
+            if (!mailboxSlotTransferred) cell.releaseMailboxSlot(false, urgent);
         }
     }
 
@@ -6651,10 +6730,20 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object mailboxAccountingLock = new Object();
         private int queuedMessages;
         private int queuedUserMessages;
+        private int queuedUrgentMessages;
         /** Separate control-lane quota; never borrow user mailbox headroom. */
         private int queuedContinuations;
+        private int consecutiveUrgentMessages;
+        private int maxQueuedUserMessages;
+        private int maxQueuedUrgentMessages;
+        private int maxQueuedContinuations;
+        private long rejectedUserMessages;
+        private long rejectedUrgentMessages;
+        private long rejectedContinuations;
         private long nextUserMessageSequence;
         private long lastProcessedUserMessageSequence = -1L;
+        /** Completed priority messages waiting for an earlier sequence gap. */
+        private final TreeSet<Long> processedOutOfOrder = new TreeSet<>();
         private record DrainWaiter(long sequence, OresFuture<Void> completion) { }
         private static final int MAX_PENDING_DRAIN_WAITERS = 1_024;
         private final ArrayList<DrainWaiter> pendingDrains = new ArrayList<>();
@@ -6662,6 +6751,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Bounded control channel: completion threads enqueue, never invoke guest code. */
         private final ChannelRuntime.Channel<MessageEnvelope> continuationMailbox =
                 new ChannelRuntime.Channel<>(INTERNAL_CONTINUATION_SLOTS);
+        /** Independently bounded supervisor USER priority lane, never CONTROL. */
+        private final ChannelRuntime.Channel<MessageEnvelope> urgentMailbox =
+                new ChannelRuntime.Channel<>(URGENT_USER_MESSAGE_SLOTS);
         /** True while one source receive owns actor state across suspension. */
         private boolean sourceReceiveSuspended;
         private final Object lifecycleLock = new Object();
@@ -6718,11 +6810,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.codeExecutor = codeExecutor;
             this.codeActorType = codeActorType;
             this.parent = parent;
-            int mailboxCapacity = policy.maxMailboxMessages() >
-                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
-                    ? Integer.MAX_VALUE
-                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
-            this.mailbox = new ChannelRuntime.Channel<>(mailboxCapacity);
+            this.mailbox = new ChannelRuntime.Channel<>(Math.max(1, policy.maxMailboxMessages()));
             this.outputChannel = new ChannelRuntime.Channel<>(
                     Math.max(1, policy.maxMailboxMessages()));
             this.outputStream = new ActorOutputStream<>(
@@ -6743,72 +6831,74 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private int mailboxCapacityWithControlHeadroom() {
-            return policy.maxMailboxMessages() >
-                            Integer.MAX_VALUE - INTERNAL_CONTINUATION_SLOTS
-                    ? Integer.MAX_VALUE
-                    : policy.maxMailboxMessages() + INTERNAL_CONTINUATION_SLOTS;
+        private int mailboxCapacityWithReservedHeadroom() {
+            long total = (long) policy.maxMailboxMessages()
+                    + URGENT_USER_MESSAGE_SLOTS + INTERNAL_CONTINUATION_SLOTS;
+            return (int) Math.min(Integer.MAX_VALUE, total);
         }
 
-        /**
-         * User-message capacity and runtime-control capacity are distinct.
-         * Continuations may consume only the reserved control headroom; they
-         * must never reduce the actor's configured user mailbox allowance.
-         */
+        /** NORMAL cannot borrow URGENT or CONTROL message credits. */
         private boolean reserveMailboxSlot() {
             synchronized (mailboxAccountingLock) {
-                if (queuedUserMessages >= policy.maxMailboxMessages()) return false;
-                if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                if (queuedUserMessages >= policy.maxMailboxMessages()
+                        || queuedMessages >= mailboxCapacityWithReservedHeadroom()) {
+                    rejectedUserMessages++;
+                    return false;
+                }
                 queuedUserMessages++;
                 queuedMessages++;
+                maxQueuedUserMessages = Math.max(maxQueuedUserMessages, queuedUserMessages);
+                return true;
+            }
+        }
+
+        private boolean reserveUrgentMailboxSlot() {
+            synchronized (mailboxAccountingLock) {
+                if (queuedUrgentMessages >= URGENT_USER_MESSAGE_SLOTS
+                        || queuedMessages >= mailboxCapacityWithReservedHeadroom()) {
+                    rejectedUrgentMessages++;
+                    return false;
+                }
+                queuedUrgentMessages++;
+                queuedMessages++;
+                maxQueuedUrgentMessages = Math.max(maxQueuedUrgentMessages, queuedUrgentMessages);
                 return true;
             }
         }
 
         private boolean reserveContinuationSlot() {
             synchronized (mailboxAccountingLock) {
-                if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS) return false;
-                if (queuedMessages >= mailboxCapacityWithControlHeadroom()) return false;
+                if (queuedContinuations >= INTERNAL_CONTINUATION_SLOTS
+                        || queuedMessages >= mailboxCapacityWithReservedHeadroom()) {
+                    rejectedContinuations++;
+                    return false;
+                }
                 queuedContinuations++;
                 queuedMessages++;
+                maxQueuedContinuations = Math.max(maxQueuedContinuations, queuedContinuations);
                 return true;
             }
         }
 
         private void releaseMailboxSlot(boolean continuation) {
+            releaseMailboxSlot(continuation, false);
+        }
+
+        private void releaseMailboxSlot(boolean continuation, boolean urgent) {
             synchronized (mailboxAccountingLock) {
-                // Validate every counter before changing any of them: a failed
-                // invariant must not partially release another lane's capacity.
-                if (queuedMessages <= 0
-                        || queuedMessages != queuedUserMessages + queuedContinuations) {
+                if ((continuation && urgent)
+                        || queuedMessages <= 0
+                        || queuedMessages != queuedUserMessages + queuedUrgentMessages + queuedContinuations
+                        || (continuation && queuedContinuations <= 0)
+                        || (urgent && queuedUrgentMessages <= 0)
+                        || (!continuation && !urgent && queuedUserMessages <= 0)) {
                     throw new IllegalStateException(
                             "actor mailbox accounting invariant violation for " + ref.id());
                 }
-                if (continuation && queuedContinuations <= 0) {
-                    throw new IllegalStateException(
-                            "actor continuation accounting underflow for " + ref.id());
-                }
-                if (!continuation && queuedUserMessages <= 0) {
-                    throw new IllegalStateException(
-                            "actor user-mailbox accounting underflow for " + ref.id());
-                }
                 queuedMessages--;
-
-                if (continuation) {
-                    if (queuedContinuations <= 0) {
-                        queuedMessages++;
-                        throw new IllegalStateException(
-                                "actor continuation accounting underflow for " + ref.id());
-                    }
-                    queuedContinuations--;
-                } else {
-                    if (queuedUserMessages <= 0) {
-                        queuedMessages++;
-                        throw new IllegalStateException(
-                                "actor user-mailbox accounting underflow for " + ref.id());
-                    }
-                    queuedUserMessages--;
-                }
+                if (continuation) queuedContinuations--;
+                else if (urgent) queuedUrgentMessages--;
+                else queuedUserMessages--;
             }
         }
 
@@ -6845,14 +6935,33 @@ public final class ActorRuntime implements AutoCloseable {
         private void markMessageProcessed(long sequence) {
             List<OresFuture<Void>> completed = new ArrayList<>();
             synchronized (lifecycleLock) {
-                if (sequence != lastProcessedUserMessageSequence + 1L) {
+                if (sequence <= lastProcessedUserMessageSequence) {
                     throw new IllegalStateException(
-                            "nonsequential actor message completion for " + ref.id());
+                            "duplicate or stale actor message completion for " + ref.id());
                 }
-                lastProcessedUserMessageSequence = sequence;
+                long next = lastProcessedUserMessageSequence + 1L;
+                if (sequence == next) {
+                    lastProcessedUserMessageSequence = sequence;
+                    while (!processedOutOfOrder.isEmpty()
+                            && processedOutOfOrder.first() == lastProcessedUserMessageSequence + 1L) {
+                        processedOutOfOrder.pollFirst();
+                        lastProcessedUserMessageSequence++;
+                    }
+                } else {
+                    if (!processedOutOfOrder.add(sequence)) {
+                        throw new IllegalStateException(
+                                "duplicate out-of-order actor message completion for " + ref.id());
+                    }
+                    if (processedOutOfOrder.size() > URGENT_USER_MESSAGE_SLOTS) {
+                        throw new IllegalStateException(
+                                "actor priority completion window exceeded reserved urgent capacity for "
+                                        + ref.id());
+                    }
+                }
+                long contiguous = lastProcessedUserMessageSequence;
                 for (int i = pendingDrains.size() - 1; i >= 0; --i) {
                     DrainWaiter waiter = pendingDrains.get(i);
-                    if (waiter.sequence() <= sequence) {
+                    if (waiter.sequence() <= contiguous) {
                         pendingDrains.remove(i);
                         completed.add(waiter.completion());
                     }
@@ -6870,7 +6979,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private boolean hasQueuedWorkLocked() {
-            return !continuationMailbox.isEmpty() || (!sourceReceiveSuspended && !mailbox.isEmpty());
+            return !continuationMailbox.isEmpty()
+                    || (!sourceReceiveSuspended
+                            && (!urgentMailbox.isEmpty() || !mailbox.isEmpty()));
         }
 
         private OresScheduler sourceScheduler() {
@@ -7395,15 +7506,29 @@ public final class ActorRuntime implements AutoCloseable {
                         // Stop closes the user mailbox under this same lock.
                         if (stopped.get() || finalized) break;
 
-                        // Continuations always outrank user mail. While a
-                        // source receive is suspended, user mail is not runnable.
+                        // Continuations retain absolute priority: URGENT user
+                        // mail cannot overtake an unfinished logical actor task.
+                        // Fairness applies only between URGENT and NORMAL.
                         envelope = continuationMailbox.tryRead().orElse(null);
                         if (envelope == null && !sourceReceiveSuspended) {
-                            envelope = mailbox.tryRead().orElse(null);
+                            if (consecutiveUrgentMessages >= URGENT_USER_BURST) {
+                                envelope = mailbox.tryRead().orElse(null);
+                            }
+                            if (envelope == null) {
+                                envelope = urgentMailbox.tryRead().orElse(null);
+                            }
+                            if (envelope == null) {
+                                envelope = mailbox.tryRead().orElse(null);
+                            }
+                            if (envelope != null && !envelope.isContinuation()) {
+                                consecutiveUrgentMessages = envelope.isUrgent()
+                                        ? Math.min(URGENT_USER_BURST, consecutiveUrgentMessages + 1)
+                                        : 0;
+                            }
                         }
                     }
                     if (envelope == null) break;
-                    releaseMailboxSlot(envelope.isContinuation());
+                    releaseMailboxSlot(envelope.isContinuation(), envelope.isUrgent());
                     // The local is assigned from both continuation and user-mail
                     // queues above, so it is not effectively final. Bind the
                     // selected envelope to a final resource for deterministic
@@ -7531,6 +7656,13 @@ public final class ActorRuntime implements AutoCloseable {
                 sourceHandoffRequested = false;
             }
 
+            while (urgentMailbox.drainOne(envelope -> {
+                releaseMailboxSlot(false, true);
+                envelope.close();
+            })) {
+                // Reclaim URGENT admission credits on every terminal path.
+            }
+
             while (mailbox.drainOne(envelope -> {
                 releaseMailboxSlot(false);
                 envelope.close();
@@ -7571,6 +7703,7 @@ public final class ActorRuntime implements AutoCloseable {
                 pendingDrains.clear();
                 if (cause == null) mailbox.close();
                 else mailbox.close(cause);
+                urgentMailbox.close(cause);
                 continuationMailbox.close(cause);
                 drainMailboxReservations();
                 descendants = List.copyOf(children);
