@@ -217,6 +217,49 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void arenaCreatedAfterSourceTaskAdmissionIsDynamicallyPinned() throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+
+        var arenaRef = new AtomicReference<ActorArena>();
+        var taskRef = new AtomicReference<OresFuture<Integer>>();
+        var sourceGate = new OresFuture<Integer>();
+        var admitted = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                taskRef.set(runtime.startActorTask(resume -> {
+                    if (resume.initial()) {
+                        admitted.countDown();
+                        return OresScheduler.await(sourceGate);
+                    }
+                    return OresScheduler.done(resume.value());
+                }));
+
+                // Deliberately allocate after task admission. The active task
+                // lease must be extended to this arena before it is returned.
+                var arena = turn.localMemory().orElseThrow().newActorArena(1, 1);
+                arena.allocatePersistent(88L);
+                arenaRef.set(arena);
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("start");
+            assertTrue(admitted.await(5, TimeUnit.SECONDS));
+            assertNotNull(arenaRef.get());
+            assertEquals(1, arenaRef.get().outstandingExternalLeases(),
+                    "allocation order must not bypass source-task quiescence");
+
+            sourceGate.completeFromRuntime(12);
+            assertEquals(12, taskRef.get().get(5, TimeUnit.SECONDS));
+            assertEquals(0, arenaRef.get().outstandingExternalLeases());
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(arenaRef.get().physicallyClosed());
+        }
+    }
+
+    @Test
     void stoppedLexicalCleanupRetainsArenaLeaseUntilCleanupSettles() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
