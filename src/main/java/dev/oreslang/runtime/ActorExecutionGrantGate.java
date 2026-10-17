@@ -3,6 +3,8 @@ package dev.oreslang.runtime;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Host-side foundation for the proposed v2 actor execution admission protocol.
@@ -14,11 +16,17 @@ import java.util.Map;
  *
  * <p>All transitions are linearized under one private monitor. Grants bind an
  * actor incarnation, unique monotonically increasing grant sequence, and
- * physical owner Thread. A retired/stale ticket can never release a successor
+ * physical owner platform Thread. A retired/stale ticket can never release a successor
  * ticket, even if the same carrier is reused. No monitor is held during guest
  * execution, suspension or callbacks.
  */
 public final class ActorExecutionGrantGate {
+    // A physical thread may hold exactly one actor's execution grant at once,
+    // even when it tries to enter another actor through a synchronous callback.
+    // This protects against cross-actor nested guest execution in the prototype.
+    private static final ThreadLocal<ActorExecutionGrantGate.Grant> CARRIER_GRANT =
+            new ThreadLocal<>();
+
     private final long incarnation;
     private final int maxSlots;
     private final Map<Long, Grant> active = new HashMap<>();
@@ -42,12 +50,21 @@ public final class ActorExecutionGrantGate {
     public synchronized int activeSlots() { return active.size(); }
     public synchronized long incarnation() { return incarnation; }
     public synchronized boolean isSealed() { return sealed; }
-    public synchronized boolean isRetired() { return retired; }
+    /** Retiring this physical gate does NOT complete actor logical-task teardown. */
+    public synchronized boolean isPhysicalGateRetired() { return retired; }
 
     /** Returns null when the bounded gate is full or sealed (no blocking). */
     public synchronized Grant tryAcquire() {
         if (sealed || retired) return null;
         Thread worker = Thread.currentThread();
+        if (worker.isVirtual()) {
+            throw new IllegalStateException(
+                    "actor physical execution grants require platform carrier threads");
+        }
+        if (CARRIER_GRANT.get() != null) {
+            throw new IllegalStateException(
+                    "a carrier cannot execute two actors or claim nested execution grants");
+        }
         if (owners.containsKey(worker)) {
             throw new IllegalStateException(
                     "a carrier cannot claim a second independent grant for the same actor");
@@ -57,8 +74,19 @@ public final class ActorExecutionGrantGate {
             throw new IllegalStateException("actor grant sequence exhausted; do not wrap");
         }
         Grant grant = new Grant(++lastSequence, worker);
-        active.put(grant.sequence, grant);
-        owners.put(worker, grant);
+        // Initialize carrier ownership before publishing a ticket. If
+        // publication fails, the caller must never retain a half-admitted
+        // permit (the monotonic sequence is intentionally not reused).
+        CARRIER_GRANT.set(grant);
+        try {
+            active.put(grant.sequence, grant);
+            owners.put(worker, grant);
+        } catch (RuntimeException | Error failure) {
+            active.remove(grant.sequence);
+            owners.remove(worker);
+            CARRIER_GRANT.remove();
+            throw failure;
+        }
         return grant;
     }
 
@@ -68,11 +96,16 @@ public final class ActorExecutionGrantGate {
                 || active.get(grant.sequence) != grant) {
             throw new SecurityException("stale or foreign actor execution grant");
         }
-        if (grant.owner != Thread.currentThread()) {
+        if (grant.owner != Thread.currentThread() || CARRIER_GRANT.get() != grant) {
             throw new SecurityException("actor execution grant belongs to another carrier");
+        }
+        if (owners.get(grant.owner) != grant) {
+            throw new SecurityException("actor grant ledger inconsistency");
         }
         active.remove(grant.sequence);
         owners.remove(grant.owner);
+        CARRIER_GRANT.remove();
+        notifyAll();
     }
 
     /**
@@ -83,8 +116,34 @@ public final class ActorExecutionGrantGate {
         sealed = true;
     }
 
-    /** True exactly once, only after physical grants have quiesced. */
-    public synchronized boolean tryRetire() {
+    /**
+     * Await physical execution-grant drainage after admission is sealed.
+     * This is not a lifecycle await: suspended logical tasks, pending mailbox
+     * work, foreign callbacks and outstanding state loans must be checked by
+     * the supervising runtime separately. Never call while holding a grant.
+     *
+     * @return true if all physical grants drained; false on timeout.
+     */
+    public synchronized boolean awaitPhysicalDrain(long timeout, TimeUnit unit)
+            throws InterruptedException {
+        Objects.requireNonNull(unit, "unit");
+        if (timeout < 0) throw new IllegalArgumentException("negative timeout");
+        if (!sealed) throw new IllegalStateException("seal actor admission before waiting");
+        if (CARRIER_GRANT.get() != null) {
+            throw new IllegalStateException("a carrier cannot wait while holding an actor execution grant");
+        }
+        long budgetNanos = unit.toNanos(timeout);
+        long started = System.nanoTime();
+        while (!active.isEmpty()) {
+            long remaining = budgetNanos - (System.nanoTime() - started);
+            if (remaining <= 0) return false;
+            TimeUnit.NANOSECONDS.timedWait(this, remaining);
+        }
+        return true;
+    }
+
+    /** True exactly once, only after *physical* grants have quiesced. */
+    public synchronized boolean tryRetirePhysicalGate() {
         if (!sealed || retired || !active.isEmpty()) return false;
         retired = true;
         return true;
