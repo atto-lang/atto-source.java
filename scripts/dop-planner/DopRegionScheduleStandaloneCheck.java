@@ -60,6 +60,17 @@ public final class DopRegionScheduleStandaloneCheck {
                         DopRegionSchedule.Mode.READ, "sum"));
         reject(NullPointerException.class,
                 () -> new DopRegionSchedule.Task("null-access", Arrays.asList((DopRegionSchedule.Access) null)));
+        // Reject internal control bytes (NUL, newline, DEL) in both names and
+        // reduction labels, even when the first/last characters are printable.
+        for (String bad : new String[] {"a\u0000b", "a\nb", "a\u007fb"}) {
+            reject(IllegalArgumentException.class,
+                    () -> new DopRegionSchedule.Task(bad, List.of()));
+            reject(IllegalArgumentException.class,
+                    () -> new DopRegionSchedule.Access(root, 0, 0, 1,
+                            DopRegionSchedule.Mode.REDUCE, bad));
+        }
+        check(new DopRegionSchedule.Task("phase one", List.of()).name().equals("phase one"),
+                "legitimate diagnostic task label accepted");
         var mutable = new ArrayList<DopRegionSchedule.Access>();
         mutable.add(all);
         var task = new DopRegionSchedule.Task("stable", mutable);
