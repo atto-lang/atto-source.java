@@ -60,7 +60,9 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_ACTOR_GROUPS_PER_ACTOR = 64;
     private static final int MAX_ACTOR_GROUP_MEMBERSHIPS_PER_ACTOR = 64;
     private static final int MAX_EVENT_TOPICS_PER_GROUP = 1_024;
-    private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    // Physical guest/carrier exit is a bounded shutdown barrier. Repeated
+    // native-carrier HTTP teardown showed 250 ms can be too tight under load.
+    private static final long CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(1);
     private static final long MAILMAN_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
     private static final int INTERNAL_CONTINUATION_SLOTS = 1_024;
     /** A single UNTRUSTED actor cannot monopolize all global timed slots. */
@@ -6478,6 +6480,36 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        // Re-sample the final physical barrier. A cell may finish while
+        // another dispatcher is being awaited; stale intermediate state must
+        // not become a false shutdown failure.
+        stillRunning.clear();
+        List<String> pendingActorStates = new ArrayList<>();
+        for (ActorCell<?> cell : snapshot) {
+            if (!cell.finalized()) {
+                stillRunning.add(cell.ref.id());
+                pendingActorStates.add(cell.closeDiagnostic());
+            }
+        }
+        dispatchersTerminated = privateDispatcher.isTerminated()
+                && sharedDispatcher.isTerminated()
+                && untrustedDispatcher.isTerminated();
+
+        if (interrupted) Thread.currentThread().interrupt();
+        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
+            // Never revoke resources while a guest carrier may still execute.
+            // The host may resolve the carrier and retry this bounded barrier.
+            throw new IllegalStateException(
+                    "ActorRuntime close did not observe full actor termination/carrier exit: "
+                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
+                            + dispatchersTerminated
+                            + ", privateDispatcherTerminated=" + privateDispatcher.isTerminated()
+                            + ", sharedDispatcherTerminated=" + sharedDispatcher.isTerminated()
+                            + ", untrustedDispatcherTerminated=" + untrustedDispatcher.isTerminated()
+                            + ", interrupted=" + interrupted
+                            + ", pendingActorStates=" + pendingActorStates);
+        }
+
         for (ActorGroup group : List.copyOf(actorGroups.values())) group.closeFromRuntime();
         actorGroups.clear();
         for (ActorOutputStream<?> stream : List.copyOf(actorOutputStreams)) {
@@ -6489,21 +6521,6 @@ public final class ActorRuntime implements AutoCloseable {
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
-
-        if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
-            if (interrupted) {
-                for (ActorCell<?> cell : snapshot) {
-                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
-                        stillRunning.add(cell.ref.id());
-                    }
-                }
-            }
-            throw new IllegalStateException(
-                    "ActorRuntime close did not observe full actor termination/carrier exit: "
-                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
-                            + dispatchersTerminated);
-        }
         actors.clear();
         actorCount.set(0);
     }
@@ -7045,6 +7062,21 @@ public final class ActorRuntime implements AutoCloseable {
                     long millis = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
                     lifecycleLock.wait(millis);
                 }
+            }
+        }
+
+        /** Metadata-only state used when physical close cannot complete. */
+        private String closeDiagnostic() {
+            synchronized (lifecycleLock) {
+                return "{actor=" + ref.id()
+                        + ", kind=" + kind
+                        + ", stopped=" + stopped.get()
+                        + ", finalized=" + finalized
+                        + ", scheduled=" + scheduled.get()
+                        + ", carrierActive=" + carrierActive
+                        + ", activeTurns=" + activeTurns
+                        + ", children=" + children.size()
+                        + "}";
             }
         }
 
