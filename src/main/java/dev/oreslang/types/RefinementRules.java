@@ -129,7 +129,13 @@ public final class RefinementRules {
         long value;
         if (base.name().equals("string") || base.name().equals("String")) {
             if (!(raw instanceof String s)) return false;
-            value = unicodeScalarCount(s);
+            try {
+                value = unicodeScalarCount(s);
+            } catch (IllegalArgumentException invalidUnicodeScalar) {
+                // Explicit checked construction must report failure, not throw
+                // on untrusted host strings containing unpaired surrogates.
+                return false;
+            }
         } else if (base.name().equals("int")) {
             if (!(raw instanceof Long l)) return false;
             value = l;
