@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** JDK-only exact-source smoke; no Oreslang guest feature claim. */
@@ -52,6 +54,28 @@ public final class ActorReliabilityKernelSmoke {
             yes(a == b, "backoff replay must be deterministic");
             yes(a >= 1 && a <= 1_000, "backoff bounded");
         }
+
+
+        var concurrentClock = new AtomicLong(1_000);
+        var concurrentKernel = new ActorReliabilityKernel(32, concurrentClock::getAndIncrement);
+        try (var pool = Executors.newFixedThreadPool(4)) {
+            var tasks = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int w = 0; w < 4; w++) {
+                tasks.add(pool.submit(() -> {
+                    for (int i = 0; i < 1_000; i++) {
+                        concurrentKernel.record(
+                                ActorReliabilityKernel.EventKind.ACTOR_FAILED,
+                                actor,
+                                ActorReliabilityKernel.FaultClass.HANDLER_FAILURE,
+                                i);
+                    }
+                }));
+            }
+            for (var task : tasks) task.get(10, TimeUnit.SECONDS);
+        }
+        yes(concurrentKernel.snapshot().counters()
+                .get(ActorReliabilityKernel.EventKind.ACTOR_FAILED) == 4_000L,
+                "concurrent recorder count");
 
         System.out.println("ACTOR_RELIABILITY_KERNEL_PASS");
     }
