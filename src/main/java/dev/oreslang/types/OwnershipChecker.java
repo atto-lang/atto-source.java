@@ -2584,16 +2584,39 @@ public final class OwnershipChecker {
         }
     }
 
+    /**
+     * A pattern over a stable field or index still belongs to its enclosing
+     * owner. Merely checking direct names would create a fresh, independent
+     * move-only owner for the projected payload and allow moving it twice.
+     * Reuse borrowPlace's conservative stability/type checks; calls and other
+     * temporaries have no caller-owned place and cannot invent one here.
+     */
+    private record RefinementPlace(VarState owner, Ast.TypeRef type) { }
+
+    private RefinementPlace refinementPlace(Ast.Expr value, Scope source) {
+        if (value instanceof Ast.NameExpr name) {
+            VarState original = source.lookup(name.name());
+            return original == null ? null : new RefinementPlace(original, original.type);
+        }
+        if (value instanceof Ast.MemberExpr || value instanceof Ast.IndexExpr) {
+            BorrowPlace projected = borrowPlace(value, source);
+            return new RefinementPlace(projected.owner(), projected.type());
+        }
+        return null;
+    }
+
     private void defineConditionAliases(Ast.Expr condition, Scope destination, Scope source) {
         if (condition instanceof Ast.TypeTestExpr test && test.binding() != null) {
-            VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
-            defineRefinementAlias(test.binding(), test.targetType(), original, destination);
+            RefinementPlace place = refinementPlace(test.value(), source);
+            defineRefinementAlias(test.binding(), test.targetType(),
+                    place == null ? null : place.owner(), destination);
             return;
         }
         if (condition instanceof Ast.PatternTestExpr test) {
-            VarState original = test.value() instanceof Ast.NameExpr name ? source.lookup(name.name()) : null;
-            Ast.TypeRef type = original == null ? Ast.TypeRef.inferred() : original.type;
-            definePatternAliases(test.pattern(), type, original, destination);
+            RefinementPlace place = refinementPlace(test.value(), source);
+            Ast.TypeRef type = place == null ? Ast.TypeRef.inferred() : place.type();
+            definePatternAliases(test.pattern(), type,
+                    place == null ? null : place.owner(), destination);
             return;
         }
         if (condition instanceof Ast.BinaryExpr binary && binary.operator().equals("&&")) {
