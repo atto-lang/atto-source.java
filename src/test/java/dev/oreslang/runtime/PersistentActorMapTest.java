@@ -343,4 +343,57 @@ final class PersistentActorMapTest {
             isolated.getDone().get(5, TimeUnit.SECONDS);
         }
     }
+    @Test
+    void transportQuotaPreflightChargesObservedMapEntriesNotReportedSize() throws Exception {
+        var backing = new java.util.LinkedHashMap<String, Object>();
+        for (int i = 0; i < 100; i++) backing.put("k" + i, i);
+
+        Map<String, Object> lying = new java.util.AbstractMap<>() {
+            @Override
+            public java.util.Set<Entry<String, Object>> entrySet() {
+                return backing.entrySet();
+            }
+
+            @Override
+            public int size() {
+                return 0; // Host containers are not trusted quota authorities.
+            }
+        };
+
+        var shared = ActorRuntime.class.getDeclaredMethod(
+                "estimateSharedTransportBytes",
+                Object.class, java.util.IdentityHashMap.class, int.class, long.class);
+        var isolated = ActorRuntime.class.getDeclaredMethod(
+                "estimatePrivateTransportBytes",
+                Object.class, java.util.IdentityHashMap.class, int.class, long.class);
+        shared.setAccessible(true);
+        isolated.setAccessible(true);
+
+        long sharedHonest = (long) shared.invoke(
+                null, backing, new java.util.IdentityHashMap<>(), 0, Long.MAX_VALUE);
+        long sharedLying = (long) shared.invoke(
+                null, lying, new java.util.IdentityHashMap<>(), 0, Long.MAX_VALUE);
+        long privateHonest = (long) isolated.invoke(
+                null, backing, new java.util.IdentityHashMap<>(), 0, Long.MAX_VALUE);
+        long privateLying = (long) isolated.invoke(
+                null, lying, new java.util.IdentityHashMap<>(), 0, Long.MAX_VALUE);
+
+        assertEquals(sharedHonest, sharedLying,
+                "shared preflight must charge structural bytes for entries actually iterated");
+        assertEquals(privateHonest, privateLying,
+                "private preflight must charge structural bytes for entries actually iterated");
+
+        long sharedLimit = sharedHonest - 1;
+        var sharedDenied = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> shared.invoke(
+                        null, lying, new java.util.IdentityHashMap<>(), 0, sharedLimit));
+        assertInstanceOf(IllegalStateException.class, sharedDenied.getCause());
+
+        long privateLimit = privateHonest - 1;
+        var privateDenied = assertThrows(java.lang.reflect.InvocationTargetException.class,
+                () -> isolated.invoke(
+                        null, lying, new java.util.IdentityHashMap<>(), 0, privateLimit));
+        assertInstanceOf(IllegalStateException.class, privateDenied.getCause());
+    }
+
 }
