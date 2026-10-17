@@ -697,6 +697,7 @@ def require_trusted_publisher_checkout(root, reviewed_main_sha):
         raise Denied("publisher is not executing reviewed protected-main commit")
     protected_paths = (
         "scripts/publish-private-ci-source.py",
+        "scripts/dispatch-review-pinned-private-ci.py",
         "scripts/run-in-private-ci-destination.sh",
         "scripts/check-private-ci-destination.sh",
         ".github/private-ci-approved-repositories.txt",
