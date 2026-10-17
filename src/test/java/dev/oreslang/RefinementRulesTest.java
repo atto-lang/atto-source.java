@@ -77,6 +77,20 @@ final class RefinementRulesTest {
         assertEquals("app.A", ((RefinementRules.NominalValue)checked.value()).qualifiedTypeName());
     }
 
+    @Test void canonicalStringSpellingHasIdenticalProofAndSchemaSemantics() {
+        Ast.TypeAliasDecl lower = alias("type Lower = string with length gt 0;");
+        Ast.TypeAliasDecl host = alias("type Host = String with length gt 0;");
+        assertTrue(RefinementRules.entails(
+                lower.name(), lower.target(), lower.refinement(),
+                host.name(), host.target(), host.refinement()));
+        assertTrue(RefinementRules.entails(
+                host.name(), host.target(), host.refinement(),
+                lower.name(), lower.target(), lower.refinement()));
+        assertEquals(
+                RefinementRules.descriptor(null, lower.target(), lower.refinement()),
+                RefinementRules.descriptor(null, host.target(), host.refinement()));
+    }
+
     @Test void realUnicodeScalarsNotUtf16Units() {
         Ast.TypeAliasDecl exactOne = alias("type One = string with length eq 1;");
         assertTrue(RefinementRules.accepts(exactOne.target(), exactOne.refinement(), "😀"));
