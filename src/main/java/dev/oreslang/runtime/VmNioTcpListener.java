@@ -189,6 +189,7 @@ public final class VmNioTcpListener implements AutoCloseable {
         private final SocketChannel channel;
         private boolean terminated;
         private int activeOperations;
+        private final OresFuture<Void> connectionClosed = new OresFuture<>();
         // Only terminal-exported operations are retained; each removes itself
         // on settlement. Guarded by the listener gate with 'terminated'.
         private final Set<OresFuture<?>> outstanding = new HashSet<>();
@@ -227,12 +228,15 @@ public final class VmNioTcpListener implements AutoCloseable {
         }
 
         private void releaseSocketOperation() {
+            boolean quiesced;
             synchronized (gate) {
                 if (activeOperations <= 0)
                     throw new IllegalStateException("TCP socket operation reservation underflow");
                 --activeOperations;
+                quiesced = terminated && activeOperations == 0;
             }
             releaseOperation();
+            if (quiesced) connectionClosed.completeFromRuntime(null);
         }
 
         public OresFuture<List<Long>> readBytesAsync(int maximum) {
@@ -299,22 +303,25 @@ public final class VmNioTcpListener implements AutoCloseable {
 
         public OresFuture<Void> closeAsync() {
             close();
-            return OresFuture.completed(null);
+            return connectionClosed;
         }
 
         @Override public void close() {
             final List<OresFuture<?>> snapshot;
+            final boolean quiesced;
             synchronized (gate) {
                 if (terminated) return;
                 terminated = true;
                 connections.remove(this);
                 snapshot = new ArrayList<>(outstanding);
+                quiesced = activeOperations == 0;
             }
             // Revoke only still-cancellable operations. An already committed
             // kernel write may instead fail or finish after descriptor close,
             // but must never be reported as cleanly cancelled.
             for (OresFuture<?> pending : snapshot) pending.cancel(false);
             try { channel.close(); } catch (IOException ignored) { }
+            if (quiesced) connectionClosed.completeFromRuntime(null);
         }
     }
 }
