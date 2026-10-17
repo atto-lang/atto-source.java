@@ -239,6 +239,17 @@ public final class OresProjectConfig {
                         "cannot verify project-root import: " + importPath, error);
             }
         }
+        // Installed dependency aliases require an authenticated package
+        // identity and a per-dependency resolver context. The broader
+        // experimental importer implements that separately; this +/ branch
+        // must fail closed rather than treat pkg: as a bare filesystem name.
+        if (unix.startsWith("pkg:")) {
+            throw new IllegalArgumentException(
+                    "pkg: imports require verified installed dependency resolution: " + importPath);
+        }
+        if (unix.startsWith("@/")) {
+            throw new IllegalArgumentException("retired @/ root import prefix is unsupported: " + importPath);
+        }
         Path raw = Path.of(unix);
         if (raw.isAbsolute()) return existingSource(raw);
 
