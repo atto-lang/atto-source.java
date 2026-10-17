@@ -120,6 +120,74 @@ final class ActorLifecycleObserverIsolationTest {
     }
 
     @Test
+    void failingExitHookIsTelemetryAndCannotStrandActorDone()
+            throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(domain -> {
+                throw new IllegalStateException("collector hook failed");
+            });
+            var actor = runtime.<String>spawnShared(
+                    () -> (message, context) -> { });
+
+            actor.stop();
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            actor.getDone().get(5, TimeUnit.SECONDS);
+            assertFalse(actor.isAlive());
+            assertEquals(1L, runtime.runtimeStats().lifecyclePublicationFailures(),
+                    "runtime cleanup anomaly must be visible without becoming actor liveness");
+            assertEquals(1L, runtime.runtimeStats().normalTerminations());
+        }
+    }
+
+    @Test
+    void blockedOutputObserverCannotDelayParentOrDoneTerminalState()
+            throws Exception {
+        CountDownLatch childCreated = new CountDownLatch(1);
+        CountDownLatch outputObserverEntered = new CountDownLatch(1);
+        CountDownLatch releaseOutputObserver = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<ActorRuntime.ActorRef<String>> child =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnShared(
+                    () -> (message, context) -> {
+                        if ("spawn".equals(message)) {
+                            child.set(context.runtime().spawnPrivate(
+                                    () -> (childMessage, childContext) -> { }));
+                            childCreated.countDown();
+                            return;
+                        }
+                        if ("stop".equals(message)) context.self().stop();
+                    });
+
+            parent.send("spawn");
+            assertTrue(childCreated.await(3, TimeUnit.SECONDS));
+            parent.drain().get(3, TimeUnit.SECONDS);
+
+            child.get().outputs().next().whenCompleteRuntime((step, failure) -> {
+                outputObserverEntered.countDown();
+                try {
+                    releaseOutputObserver.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            parent.send("stop");
+            assertTrue(outputObserverEntered.await(3, TimeUnit.SECONDS),
+                    "child output close should eventually publish EOF/error");
+
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS),
+                    "output observer cannot delay structured parent progress");
+            assertTrue(child.get().awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(child.get().done().isDone(),
+                    "DONE terminal state must precede deferred output observers");
+        } finally {
+            releaseOutputObserver.countDown();
+        }
+    }
+
+    @Test
     void doneObserverMayReenterSupervisorApisWithoutLifecycleDeadlock()
             throws Exception {
         CountDownLatch callbackEntered = new CountDownLatch(1);
