@@ -1102,6 +1102,7 @@ public final class ActorRuntime implements AutoCloseable {
      * is never serialized into ActorMail<T> or exposed as a guest value.
      */
     interface PipelineTurnAuthority {
+        boolean authenticates(ActorPipelineRouteSession.MailFrame frame);
         void routeForward(Object value);
         void routeForwardRoundRobin(Object value);
         void routeForwardTo(String target, Object value);
@@ -1132,6 +1133,10 @@ public final class ActorRuntime implements AutoCloseable {
             if ((pipelineFrame == null) != (pipelineAuthority == null)) {
                 throw new IllegalArgumentException(
                         "pipeline frame and turn authority must be installed together");
+            }
+            if (pipelineFrame != null && !pipelineAuthority.authenticates(pipelineFrame)) {
+                throw new SecurityException(
+                        "pipeline frame does not belong to the supplied turn authority");
             }
             return new MessageEnvelope(value, release, null, sender, sequence,
                     pipelineFrame, pipelineAuthority, new AtomicBoolean());
@@ -3801,6 +3806,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.activePipelineAuthority == null) {
                 throw new SecurityException(
                         "current DATA receive has no authenticated pipeline turn authority");
+            }
+            if (!cell.activePipelineAuthority.authenticates(cell.activePipelineFrame)) {
+                throw new SecurityException(
+                        "current pipeline frame/turn authority pair is stale or mismatched");
             }
             return cell.activePipelineAuthority;
         }
