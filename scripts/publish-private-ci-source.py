@@ -24,6 +24,8 @@ MAX_SINGLE = 10 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_DIRECTORIES = 1024
 PREFIX = "private-oreslang-source"
+SOURCE_REPO = "ores-truffle-oreslang/oreslang-source.java"
+PINNED_BRANCH = re.compile(r"^ci/oreslang-([0-9a-f]{40})$")
 
 
 class Denied(RuntimeError):
@@ -134,6 +136,93 @@ def checked_policy_fingerprint(root, repository):
     if not approved:
         raise Denied("destination approval was revoked or absent")
     return hashlib.sha256(contents).digest()
+
+def reviewed_source_main(root, repository):
+    """Require the source's LIVE protected-main policy and publisher bytes.
+
+    A PR checkout or a modified local allowlist is not authority to export
+    private source, even when its local policy text names a private target.
+    """
+    branch = gh_api("repos/" + SOURCE_REPO + "/branches/main")
+    if branch.get("protected") is not True:
+        raise Denied("source main is not protected; no private export authorized")
+    for rel in (".github/private-ci-approved-repositories.txt",
+                "scripts/publish-private-ci-source.py",
+                "scripts/check-private-ci-destination.sh"):
+        remote = gh_api("repos/" + SOURCE_REPO + "/contents/" + rel + "?ref=main")
+        if remote.get("type") != "file" or remote.get("encoding") != "base64":
+            raise Denied("protected source policy or transfer code is unavailable")
+        try:
+            content = base64.b64decode(remote["content"], validate=False)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Denied("protected source contents cannot be decoded") from exc
+        local = root / rel
+        if local.is_symlink() or not local.is_file():
+            raise Denied("local source approval or publisher cannot be trusted")
+        if content != local.read_bytes():
+            raise Denied("local transfer code or approval differs from protected main")
+        if remote.get("sha") != hashlib.sha1(
+                b"blob " + str(len(content)).encode("ascii") + b"\0"
+                + content).hexdigest():
+            raise Denied("protected source blob identity mismatch")
+    checked_policy_fingerprint(root, repository)
+
+
+def checked_git_tree(entries):
+    """Compute exactly the native Git TREE object from bounded regular files."""
+    node = {}
+    for path, data, mode in entries:
+        components = path.split("/")
+        if (not components or any(not c or c in (".", "..")
+                                  for c in components)
+                or mode not in ("100644", "100755")):
+            raise Denied("invalid source tree path or executable mode")
+        folder = node
+        for component in components[:-1]:
+            if component in folder and not isinstance(folder[component], dict):
+                raise Denied("source path collides with file")
+            folder = folder.setdefault(component, {})
+        name = components[-1]
+        if name in folder:
+            raise Denied("duplicate or conflicting source path")
+        digest = hashlib.sha1(
+            b"blob " + str(len(data)).encode("ascii") + b"\0" + data).digest()
+        folder[name] = (mode, digest)
+
+    def hash_directory(directory):
+        items = []
+        for name, value in directory.items():
+            if isinstance(value, dict):
+                mode, digest = "40000", hash_directory(value)
+                ordering = name.encode("utf-8") + b"/"
+            else:
+                mode, digest = value
+                ordering = name.encode("utf-8")
+            record = mode.encode("ascii") + b" " + name.encode("utf-8")
+            record += b"\0" + digest
+            items.append((ordering, record))
+        body = b"".join(rec for _, rec in sorted(items, key=lambda x: x[0]))
+        return hashlib.sha1(
+            b"tree " + str(len(body)).encode("ascii") + b"\0" + body).digest()
+
+    return hash_directory(node).hex()
+
+
+def require_pinned_snapshot(branch, source_commit, entries):
+    match = PINNED_BRANCH.fullmatch(branch)
+    if not match or not isinstance(source_commit, str) or not SHA.fullmatch(source_commit):
+        raise Denied("snapshot requires ci/oreslang-<source-tree-sha> and pinned source commit")
+    actual_tree = checked_git_tree(entries)
+    if actual_tree != match.group(1):
+        raise Denied("local source bytes/modes do not match isolated branch tree SHA")
+    commit = gh_api("repos/" + SOURCE_REPO + "/git/commits/" + source_commit)
+    if commit.get("sha") != source_commit:
+        raise Denied("source Git commit identity mismatch")
+    tree = commit.get("tree")
+    if not isinstance(tree, dict) or tree.get("sha") != actual_tree:
+        raise Denied("source commit Git tree differs from pinned snapshot")
+    return actual_tree
+
 
 def collect_source(root, trusted_root):
     """Snapshot regular files using descriptor-relative, no-follow traversal.
@@ -246,12 +335,13 @@ def collect_source(root, trusted_root):
     return sorted(entries, key=lambda item: item[0])
 
 
-def publish(repository, source, branch, trusted_root):
+def publish(repository, source, branch, trusted_root, source_commit=None):
     if not NAME.fullmatch(repository) or not BRANCH.fullmatch(branch):
         raise Denied("invalid destination or isolated CI branch name")
     # Approval comes before reading potentially sensitive source files.
     require_preflight(repository, trusted_root)
     approved_policy = checked_policy_fingerprint(trusted_root, repository)
+    reviewed_source_main(trusted_root, repository)
     trusted = trusted_root.resolve(strict=True)
     checked_source = source.resolve(strict=True)
     try:
@@ -259,6 +349,7 @@ def publish(repository, source, branch, trusted_root):
     except ValueError as exc:
         raise Denied("source directory escapes the trusted checkout") from exc
     files = collect_source(source, trusted_root)
+    expected_source_tree = require_pinned_snapshot(branch, source_commit, files)
     base = checked_repo(repository)
     default = base.get("default_branch")
     if not isinstance(default, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", default):
@@ -292,6 +383,8 @@ def publish(repository, source, branch, trusted_root):
     isolated = gh_api(f"repos/{repository}/git/trees", method="POST",
                       payload={"tree": elements})
     isolated_sha = valid_sha(isolated.get("sha"))
+    if isolated_sha != expected_source_tree:
+        raise Denied("destination returned a different isolated source Git tree")
     # Replace the entire PREFIX subtree atomically in the new root tree.
     # Preserve unrelated destination files and CI workflows from base_tree.
     authorize_write()
@@ -321,11 +414,14 @@ def main(argv=None):
     p.add_argument("repository", help="approved private owner/repo")
     p.add_argument("--source-dir", required=True, type=Path)
     p.add_argument("--branch", required=True)
+    p.add_argument("--source-commit", required=True,
+                   help="immutable Git commit SHA in the exact originating private repo")
     args = p.parse_args(argv)
     # Policy and code are taken from the same trusted checkout as this script.
     root = Path(__file__).resolve().parent.parent
     try:
-        commit, count = publish(args.repository, args.source_dir, args.branch, root)
+        commit, count = publish(args.repository, args.source_dir, args.branch,
+                                root, args.source_commit)
     except Denied as exc:
         print("PRIVATE_CI_DESTINATION_REJECTED: " + str(exc), file=sys.stderr)
         return 1
