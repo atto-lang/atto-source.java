@@ -126,6 +126,63 @@ final class ActorPipelineCorrelatedMailboxRouterTest {
     }
 
     @Test
+    void sealedReplyReturnsDirectlyToAuthenticatedOrigin() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var done = new CountDownLatch(1);
+            var workerDeliveries = new AtomicInteger();
+            var response = new AtomicReference<String>();
+
+            var sink = runtime.<String>spawnShared(() -> (value, actor) -> {
+                assertEquals("request:worker", value);
+                runtime.routeCurrentPipelineReply("direct-reply");
+            });
+            var worker = runtime.<String>spawnShared(() -> (value, actor) -> {
+                workerDeliveries.incrementAndGet();
+                assertEquals("request", value);
+                runtime.routeCurrentPipelineForward(value + ":worker");
+            });
+            var source = runtime.<String>spawnShared(() -> (value, actor) -> {
+                if (value.equals("begin")) {
+                    runtime.routeCurrentPipelineForward("request");
+                } else if (value.equals("direct-reply")) {
+                    response.set(value);
+                    done.countDown();
+                } else {
+                    throw new AssertionError("source unexpected payload " + value);
+                }
+            });
+
+            var router = new ActorPipelineCorrelatedMailboxRouter<>(
+                    runtime, linearGraph(),
+                    Map.of("source", source, "worker", worker, "sink", sink),
+                    29, 12);
+
+            assertThrows(SecurityException.class,
+                    () -> runtime.routeCurrentPipelineReply("host-spoof"));
+            router.ingress("source", "begin");
+            assertTrue(done.await(8, TimeUnit.SECONDS),
+                    "sealed reply did not reach authenticated flow origin");
+
+            source.drain().get(5, TimeUnit.SECONDS);
+            worker.drain().get(5, TimeUnit.SECONDS);
+            sink.drain().get(5, TimeUnit.SECONDS);
+            assertEquals("direct-reply", response.get());
+            assertEquals(1, workerDeliveries.get(),
+                    "direct reply must not execute the intermediate worker again");
+            assertEquals(0, router.outstanding(),
+                    "direct reply must retire all route frames");
+
+            router.close();
+            source.stop();
+            worker.stop();
+            sink.stop();
+            source.getDone().get(5, TimeUnit.SECONDS);
+            worker.getDone().get(5, TimeUnit.SECONDS);
+            sink.getDone().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void realMailboxFanoutAndFanInPreserveOneFlowAndIndependentBranchIdentities()
             throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
