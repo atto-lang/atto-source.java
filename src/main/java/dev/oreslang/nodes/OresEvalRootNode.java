@@ -4149,6 +4149,26 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.CallExpr call,
                 Env env,
                 SourceValueCont continuation) {
+            if (isIntegerIntrinsicCall(call, env)) {
+                if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                        || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                    continuation.accept(task, null,
+                            new IllegalArgumentException("Integer.is_int expects exactly one value and no type arguments"));
+                    return;
+                }
+                evalSuspendableArguments(
+                        task,
+                        call.arguments(),
+                        env,
+                        (t, values, failure) -> {
+                            if (failure != null) {
+                                continuation.accept(t, null, failure);
+                            } else {
+                                continuation.accept(t, isIntegerRuntimeValue(values.getFirst()), null);
+                            }
+                        });
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name
                     && env.lookup(name.name()) == Env.MISSING) {
                 Ast.FunctionDecl direct = findFunction(name.name(), call.arguments().size());
@@ -5693,6 +5713,9 @@ public final class OresEvalRootNode extends RootNode {
 
             if (!tailBarrier) {
                 if (value instanceof Ast.CallExpr call) {
+                    if (isIntegerIntrinsicCall(call, env)) {
+                        throw new ReturnSignal(evalIntegerIntrinsic(call, env));
+                    }
                     if (isBooleanIntrinsicCall(call, env)) {
                         throw new ReturnSignal(evalBooleanIntrinsic(call, env));
                     }
@@ -5946,6 +5969,36 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             return List.copyOf(values);
+        }
+
+        private boolean isIntegerIntrinsicCall(Ast.CallExpr call, Env env) {
+            if (!(call.callee() instanceof Ast.MemberExpr member)
+                    || !(member.receiver() instanceof Ast.NameExpr namespace)
+                    || !namespace.name().equals("Integer")
+                    || !member.member().equals("is_int")) return false;
+            return env.lookup("Integer") == Env.MISSING
+                    && !modules.containsKey("Integer")
+                    && findClass("Integer") == null
+                    && !namedImports.containsKey("Integer")
+                    && !namespaceImports.containsKey("Integer")
+                    && !hostClasses.containsKey("Integer");
+        }
+
+        private static boolean isIntegerRuntimeValue(Object value) {
+            return value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long;
+        }
+
+        private boolean evalIntegerIntrinsic(Ast.CallExpr call, Env env) {
+            if (!isIntegerIntrinsicCall(call, env)) {
+                throw new IllegalStateException("not an Integer.is_int intrinsic call");
+            }
+            if (call.typeArgumentsPresent() || call.arguments().size() != 1
+                    || call.arguments().getFirst() instanceof Ast.SpreadExpr) {
+                throw new IllegalArgumentException(
+                        "Integer.is_int expects exactly one value and no type arguments");
+            }
+            return isIntegerRuntimeValue(eval(call.arguments().getFirst(), env));
         }
 
         private boolean isBooleanIntrinsicCall(Ast.CallExpr call, Env env) {
@@ -6364,6 +6417,7 @@ public final class OresEvalRootNode extends RootNode {
                 return applyRuntimeOwnership(runtime.operation(), value);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (isIntegerIntrinsicCall(call, env)) return evalIntegerIntrinsic(call, env);
                 if (isBooleanIntrinsicCall(call, env)) return evalBooleanIntrinsic(call, env);
                 return invoke(prepareInvocation(call, env));
             }
