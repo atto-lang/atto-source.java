@@ -42,7 +42,10 @@ public final class Complex128Math {
         double imaginaryResult = ad + bc;
 
         if (!allFinite(ar, ai, br, bi)) {
-            return new Value(realResult, imaginaryResult);
+            return recoverExceptionalMultiply(
+                    ar, ai, br, bi,
+                    ac, bd, ad, bc,
+                    realResult, imaginaryResult);
         }
 
         Dyadic a = fromFiniteDouble(ar);
@@ -60,9 +63,75 @@ public final class Complex128Math {
         if (allFinite(ar, ai, br, bi) && (br != 0.0 || bi != 0.0)) {
             return divideExactFinite(ar, ai, br, bi);
         }
+        return divideExceptional(ar, ai, br, bi);
+    }
+
+    private static Value recoverExceptionalMultiply(
+            double ar, double ai, double br, double bi,
+            double ac, double bd, double ad, double bc,
+            double realResult, double imaginaryResult) {
+        if (!(Double.isNaN(realResult) && Double.isNaN(imaginaryResult))) {
+            return new Value(realResult, imaginaryResult);
+        }
+
+        boolean recalculate = false;
+        if (Double.isInfinite(ar) || Double.isInfinite(ai)) {
+            ar = Math.copySign(Double.isInfinite(ar) ? 1.0 : 0.0, ar);
+            ai = Math.copySign(Double.isInfinite(ai) ? 1.0 : 0.0, ai);
+            if (Double.isNaN(br)) br = Math.copySign(0.0, br);
+            if (Double.isNaN(bi)) bi = Math.copySign(0.0, bi);
+            recalculate = true;
+        }
+        if (Double.isInfinite(br) || Double.isInfinite(bi)) {
+            br = Math.copySign(Double.isInfinite(br) ? 1.0 : 0.0, br);
+            bi = Math.copySign(Double.isInfinite(bi) ? 1.0 : 0.0, bi);
+            if (Double.isNaN(ar)) ar = Math.copySign(0.0, ar);
+            if (Double.isNaN(ai)) ai = Math.copySign(0.0, ai);
+            recalculate = true;
+        }
+        if (!recalculate && (Double.isInfinite(ac) || Double.isInfinite(bd)
+                || Double.isInfinite(ad) || Double.isInfinite(bc))) {
+            if (Double.isNaN(ar)) ar = Math.copySign(0.0, ar);
+            if (Double.isNaN(ai)) ai = Math.copySign(0.0, ai);
+            if (Double.isNaN(br)) br = Math.copySign(0.0, br);
+            if (Double.isNaN(bi)) bi = Math.copySign(0.0, bi);
+            recalculate = true;
+        }
+
+        if (recalculate) {
+            realResult = Double.POSITIVE_INFINITY * (ar * br - ai * bi);
+            imaginaryResult = Double.POSITIVE_INFINITY * (ar * bi + ai * br);
+        }
+        return new Value(realResult, imaginaryResult);
+    }
+
+    private static Value divideExceptional(
+            double ar, double ai, double br, double bi) {
         double denominator = br * br + bi * bi;
-        return new Value((ar * br + ai * bi) / denominator,
-                (ai * br - ar * bi) / denominator);
+        double realResult = (ar * br + ai * bi) / denominator;
+        double imaginaryResult = (ai * br - ar * bi) / denominator;
+
+        if (Double.isNaN(realResult) && Double.isNaN(imaginaryResult)) {
+            if (denominator == 0.0
+                    && (!Double.isNaN(ar) || !Double.isNaN(ai))) {
+                double infinity = Math.copySign(Double.POSITIVE_INFINITY, br);
+                realResult = infinity * ar;
+                imaginaryResult = infinity * ai;
+            } else if ((Double.isInfinite(ar) || Double.isInfinite(ai))
+                    && Double.isFinite(br) && Double.isFinite(bi)) {
+                double a = Math.copySign(Double.isInfinite(ar) ? 1.0 : 0.0, ar);
+                double b = Math.copySign(Double.isInfinite(ai) ? 1.0 : 0.0, ai);
+                realResult = Double.POSITIVE_INFINITY * (a * br + b * bi);
+                imaginaryResult = Double.POSITIVE_INFINITY * (b * br - a * bi);
+            } else if ((Double.isInfinite(br) || Double.isInfinite(bi))
+                    && Double.isFinite(ar) && Double.isFinite(ai)) {
+                double c = Math.copySign(Double.isInfinite(br) ? 1.0 : 0.0, br);
+                double d = Math.copySign(Double.isInfinite(bi) ? 1.0 : 0.0, bi);
+                realResult = 0.0 * (ar * c + ai * d);
+                imaginaryResult = 0.0 * (ai * c - ar * d);
+            }
+        }
+        return new Value(realResult, imaginaryResult);
     }
 
     static Value divideExactFinite(double ar, double ai, double br, double bi) {
