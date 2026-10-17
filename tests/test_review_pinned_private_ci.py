@@ -174,6 +174,7 @@ class ReviewPinnedPrivateCiTest(unittest.TestCase):
         self.assertEqual(receipt["carrier_review_id"], 14)
         self.assertEqual(receipt["independent_reviewer_login"], REVIEWER_LOGIN)
         self.assertEqual(receipt["independent_reviewer_id"], REVIEWER_ID)
+        self.assertRegex(receipt["independent_reviewer_policy_blob_sha"], r"^[0-9a-f]{40}$")
         self.assertEqual(receipt["independent_reviewer_source_permission"], "write")
         self.assertEqual(receipt["independent_reviewer_carrier_permission"], "maintain")
 
