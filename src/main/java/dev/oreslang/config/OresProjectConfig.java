@@ -136,8 +136,10 @@ public final class OresProjectConfig {
         }
 
         Path manifestDir = absoluteManifest.getParent();
-        String rootText = defaultString(toml.getString("project.root"), ".");
-        Path projectRoot = resolvePath(manifestDir, rootText);
+        String rootText = manifestString(toml, "project.root", ".");
+        Path projectRoot = absoluteManifest.getFileName().toString().equals(MANIFEST_NAME)
+                ? resolveModernProjectRoot(manifestDir, rootText)
+                : resolvePath(manifestDir, rootText);
 
         // Omitted roots defaults to "."; an explicit [] MUST remain empty.
         // Empty roots are often used to deny implicit bare-source imports.
@@ -146,7 +148,7 @@ public final class OresProjectConfig {
         List<Path> sourceRoots = resolvePaths(projectRoot, sourceRootValues);
         List<Path> importPaths = resolvePaths(projectRoot, stringArray(toml, "source.import_paths"));
 
-        String mainText = toml.getString("entrypoints.main");
+        String mainText = manifestString(toml, "entrypoints.main", null);
         Path mainEntrypoint = mainText == null ? null : resolvePath(projectRoot, mainText);
 
         return new OresProjectConfig(
@@ -308,7 +310,11 @@ public final class OresProjectConfig {
     }
 
     private static void requireNoNestedPackage(Path root, Path source, String specifier) {
-        for (Path dir = source.getParent(); dir != null && !dir.equals(root); dir = dir.getParent()) {
+        requireNoNestedPackageDirectory(root, source.getParent(), specifier);
+    }
+
+    private static void requireNoNestedPackageDirectory(Path root, Path directory, String specifier) {
+        for (Path dir = directory; dir != null && !dir.equals(root); dir = dir.getParent()) {
             if (!dir.startsWith(root)) {
                 throw new IllegalArgumentException("project-root import escapes package: " + specifier);
             }
@@ -379,6 +385,43 @@ public final class OresProjectConfig {
         return List.copyOf(paths);
     }
 
+    private static Path resolveModernProjectRoot(Path manifestDir, String rootText) throws IOException {
+        if (rootText.isEmpty() || rootText.length() > 1024
+                || rootText.indexOf('\\') >= 0 || rootText.indexOf(':') >= 0
+                || rootText.codePoints().anyMatch(c -> c < 32 || c == 127)
+                || (!rootText.equals(".") && java.util.Arrays.stream(rootText.split("/", -1))
+                        .anyMatch(part -> part.isEmpty() || part.equals(".") || part.equals("..")))) {
+            throw new IllegalArgumentException("invalid modern project.root: " + rootText);
+        }
+        Path configured = Path.of(rootText);
+        if (configured.isAbsolute()) {
+            throw new IllegalArgumentException("modern project.root must be relative: " + rootText);
+        }
+        Path base = manifestDir.toAbsolutePath().normalize();
+        Path selected = base.resolve(configured).normalize();
+        if (!selected.startsWith(base) || !Files.isDirectory(selected)) {
+            throw new IllegalArgumentException(
+                    "modern project.root must select an existing directory within the manifest: " + rootText);
+        }
+        Path physicalBase = base.toRealPath();
+        Path physicalSelected = selected.toRealPath();
+        if (!physicalSelected.startsWith(physicalBase)) {
+            throw new IllegalArgumentException("modern project.root escapes physical manifest: " + rootText);
+        }
+        // A nested package manifest in either the spelled or physical
+        // configured path cannot be inherited from the parent manifest.
+        requireNoNestedPackageDirectory(base, selected, rootText);
+        requireNoNestedPackageDirectory(physicalBase, physicalSelected, rootText);
+        return selected;
+    }
+
+    private static String manifestString(TomlParseResult toml, String key, String fallback) {
+        Object raw = toml.get(key);
+        if (raw == null) return fallback;
+        if (raw instanceof String value) return value;
+        throw new IllegalArgumentException(MANIFEST_NAME + " key '" + key + "' must be a string");
+    }
+
     private static Path resolvePath(Path base, String value) {
         Path path = Path.of(value);
         if (!path.isAbsolute()) path = base.resolve(path);
@@ -387,7 +430,13 @@ public final class OresProjectConfig {
 
     private static List<String> stringArray(TomlParseResult toml, String key) {
         TomlArray array = toml.getArray(key);
-        if (array == null) return List.of();
+        if (array == null) {
+            if (toml.get(key) != null) {
+                throw new IllegalArgumentException(
+                        MANIFEST_NAME + " key '" + key + "' must be an array of strings");
+            }
+            return List.of();
+        }
 
         ArrayList<String> result = new ArrayList<>((int) array.size());
         for (int i = 0; i < array.size(); i++) {
