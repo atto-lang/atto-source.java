@@ -1,0 +1,55 @@
+name: HTTP pooled actor physical quiescence
+
+on:
+  pull_request:
+    paths:
+      - "src/main/java/dev/oreslang/runtime/ActorRuntime.java"
+      - "src/main/java/dev/oreslang/runtime/NativeHttp.java"
+      - "src/main/java/dev/oreslang/runtime/OresContext.java"
+      - "src/test/java/dev/oreslang/runtime/ActorCarrierQuiescenceTest.java"
+      - "src/test/java/dev/oreslang/runtime/NativeHttpTest.java"
+      - "src/test/java/dev/oreslang/runtime/OresContextCloseOrderingTest.java"
+      - ".github/workflows/http-pooled-actor-quiescence.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  physical-carrier-shutdown:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Prove exact clean checkout
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          printf 'Tested commit: %s\n' "$EXPECTED_SHA"
+      - name: Set up GraalVM 25
+        uses: graalvm/setup-graalvm@27b360dbb857524eaf0b4c4cef364d38e5b4f173 # v1
+        with:
+          version: "25.3"
+          java-version: "25"
+          distribution: graalvm
+          cache: maven
+      - name: Reproduce carrier-exit barrier and pooled HTTP lifecycle
+        run: mvn -B -ntp -Dores.runtime.carriers=native -Dtest=ActorCarrierQuiescenceTest,NativeHttpTest,OresContextCloseOrderingTest test
+      - name: Repeat intermittent pooled-worker shutdown regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Native HTTP shutdown repeat $attempt/3"
+            mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=NativeHttpTest#pooledActorsReuseMailboxWithoutRetainingExchangeAdmission" test
+          done
+          for attempt in 1 2 3; do
+            echo "Native HTTP physical host-worker retirement $attempt/3"
+            mvn -B -ntp -Dores.runtime.carriers=native "-Dtest=NativeHttpTest#physicalHostExecutorRetirementTimesOutWithoutFalseSuccessAndCanRetry" test
+          done

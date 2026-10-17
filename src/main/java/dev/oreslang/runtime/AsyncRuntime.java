@@ -237,9 +237,8 @@ public final class AsyncRuntime implements AutoCloseable {
     }
 
     @Override
-    public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        executor.shutdownNow();
+    public synchronized void close() {
+        if (closed.compareAndSet(false, true)) executor.shutdownNow();
 
         boolean interrupted = false;
         try {

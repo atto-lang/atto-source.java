@@ -34,6 +34,47 @@ final class ActorFfmArenaCurrentIntegrationTest {
     }
 
     @Test
+    void physicalCarrierQuiescenceCannotReclaimOutstandingSourceLifetimeOwner()
+            throws Exception {
+        assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
+        var arenaRef = new AtomicReference<ActorArena>();
+        var leaseRef = new AtomicReference<ActorArena.ExternalLease>();
+        var registered = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawnShared(() -> (message, turn) -> {
+                var arena = turn.localMemory().orElseThrow().newActorArena(2, 2);
+                arenaRef.set(arena);
+                leaseRef.set(arena.acquireExternalLease());
+                registered.countDown();
+                turn.self().stop();
+            });
+
+            actor.ready().get(5, TimeUnit.SECONDS);
+            actor.send("stop-with-lease");
+            assertTrue(registered.await(5, TimeUnit.SECONDS));
+
+            // HTTP's physical-carrier observer is NOT proof that all external
+            // continuation/FFI/I/O lifetime owners have quiesced.
+            runtime.quiesceAcceptedMessages(actor).get(5, TimeUnit.SECONDS);
+            assertTrue(actor.awaitTermination(5, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty(), () -> "actor failed: " + actor.failure());
+            assertTrue(arenaRef.get().closed(), "logical retirement revokes authority");
+            assertFalse(arenaRef.get().physicallyClosed(),
+                    "carrier exit must not bypass pending lifetime-only lease");
+            assertThrows(IllegalStateException.class,
+                    () -> arenaRef.get().acquireExternalLease(),
+                    "late callback may not regain actor authority");
+
+            leaseRef.get().close();
+            leaseRef.get().close();
+            assertTrue(arenaRef.get().physicallyClosed(),
+                    "last external lifetime release must reclaim after carrier quiescence");
+            assertEquals(0L, runtime.sharedActorLocalMemoryBytes());
+        }
+    }
+
+    @Test
     void persistentArenaSurvivesTurnsAndLoanPinsPhysicalRetirement() throws Exception {
         assumeTrue(ExplicitNativeI64Region.isAvailable(), "Java 25 FFM required");
 
