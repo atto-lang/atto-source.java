@@ -2,7 +2,6 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
-import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -168,9 +167,8 @@ public final class ConstructorValInitialization {
 
     /**
      * Check reads and reject hidden writes through expression-valued control
-     * flow, nested statements, or callbacks. All Ast syntax nodes are records;
-     * traverse their record components so new expression forms are scanned
-     * instead of silently bypassing the checker.
+     * flow, nested statements, or callbacks. Explicit AST visiting is AOT-safe;
+     * newly introduced AST forms must be handled instead of silently skipped.
      */
     private static void scan(Object node, State state, Set<String> required, String klass) {
         if (node == null) return;
@@ -192,22 +190,204 @@ public final class ConstructorValInitialization {
             for (Object value : values) scan(value, state, required, klass);
             return;
         }
-        if (!(node instanceof Record record)) {
-            if (node instanceof Ast.Expr || node instanceof Ast.Stmt) {
-                throw new IllegalArgumentException("unsupported constructor AST node: "
-                        + node.getClass().getName());
-            }
+        if (node instanceof Ast.LiteralExpr || node instanceof Ast.NameExpr
+                || node instanceof Ast.BreakStmt || node instanceof Ast.ContinueStmt) return;
+        if (node instanceof Ast.BinaryExpr item) {
+            scan(item.left(), state, required, klass);
+            scan(item.right(), state, required, klass);
             return;
         }
-        if (node.getClass().getEnclosingClass() != Ast.class) return;
-        for (RecordComponent component : record.getClass().getRecordComponents()) {
-            try {
-                scan(component.getAccessor().invoke(record), state, required, klass);
-            } catch (ReflectiveOperationException e) {
-                throw new IllegalStateException(
-                        "unable to inspect constructor syntax " + record.getClass().getSimpleName(), e);
-            }
+        if (node instanceof Ast.UnaryExpr item) {
+            scan(item.operand(), state, required, klass);
+            return;
         }
+        if (node instanceof Ast.ConditionalExpr item) {
+            scan(item.condition(), state, required, klass);
+            scan(item.whenTrue(), state, required, klass);
+            scan(item.whenFalse(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchExpr item) {
+            scan(item.subject(), state, required, klass);
+            scan(item.arms(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchValueArm item) {
+            scan(item.guard(), state, required, klass);
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TypeTestExpr item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.PatternTestExpr item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.CastExpr item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SpreadExpr item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.CallExpr item) {
+            scan(item.callee(), state, required, klass);
+            scan(item.arguments(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.RuntimeCallExpr item) {
+            scan(item.arguments(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.IndexExpr item) {
+            scan(item.receiver(), state, required, klass);
+            scan(item.index(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.NewExpr item) {
+            scan(item.arguments(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.AwaitExpr item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TrapExpr item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ChannelOpExpr item) {
+            scan(item.channel(), state, required, klass);
+            scan(item.value(), state, required, klass);
+            scan(item.callbackBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.DynamicSelectExpr item) {
+            scan(item.cases(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ListExpr item) {
+            scan(item.elements(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TupleExpr item) {
+            scan(item.elements(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ObjectExpr item) {
+            scan(item.fields(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ObjectField item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.LambdaExpr item) {
+            scan(item.expressionBody(), state, required, klass);
+            scan(item.blockBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.BindingStmt item) {
+            scan(item.initializer(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.DestructureStmt item) {
+            scan(item.initializer(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ExprStmt item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ReturnStmt item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.YieldStmt item) {
+            scan(item.value(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.DeferStmt item) {
+            scan(item.expression(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.BlockStmt item) {
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.IfStmt item) {
+            scan(item.branches(), state, required, klass);
+            scan(item.elseBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.IfBranch item) {
+            scan(item.condition(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchStmt item) {
+            scan(item.subject(), state, required, klass);
+            scan(item.arms(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.MatchArm item) {
+            scan(item.guard(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SwitchStmt item) {
+            scan(item.subject(), state, required, klass);
+            scan(item.cases(), state, required, klass);
+            scan(item.defaultBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SwitchCase item) {
+            scan(item.constants(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.TryStmt item) {
+            scan(item.body(), state, required, klass);
+            scan(item.catchBody(), state, required, klass);
+            scan(item.finallyBody(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ForOfStmt item) {
+            scan(item.iterable(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ForOfDestructureStmt item) {
+            scan(item.iterable(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.ForStmt item) {
+            scan(item.initializer(), state, required, klass);
+            scan(item.condition(), state, required, klass);
+            scan(item.update(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.LoopStmt item) {
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SelectStmt item) {
+            scan(item.arms(), state, required, klass);
+            return;
+        }
+        if (node instanceof Ast.SelectArm item) {
+            scan(item.channel(), state, required, klass);
+            scan(item.value(), state, required, klass);
+            scan(item.body(), state, required, klass);
+            return;
+        }
+        throw new IllegalArgumentException("unhandled AST node in constructor val analysis: " + node.getClass().getName());
+
     }
 
     private static IllegalArgumentException error(String klass, String field, String message) {
