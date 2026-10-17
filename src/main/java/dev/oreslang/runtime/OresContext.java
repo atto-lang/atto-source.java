@@ -46,6 +46,12 @@ public final class OresContext implements AutoCloseable {
     private final PermissionCheckMode permissionCheckMode;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
+    // Independent from the context monitor used by code/image registration:
+    // guest cleanup may still need that monitor while the host waits for
+    // physical actor/carrier exit.
+    private final Object closeLock = new Object();
+    private Thread closeOwner;
+    private boolean resourcesRetired;
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     // Exactly one immutable code image per linked source unit for all actor kinds.
     // Per-actor mutable heaps/closures are never published into this store.
@@ -425,36 +431,53 @@ public final class OresContext implements AutoCloseable {
         return Map.copyOf(descriptor);
     }
 
+    /**
+     * Three-phase context retirement. A timeout/failure is not quiescence:
+     * context-owned VM, I/O, code-image and GC resources stay live until all
+     * actors have physically left their guest carrier boundary.
+     *
+     * <p>Phase 1 seals HTTP admission and requests transport/actor cancellation
+     * while keeping HTTP cleanup carriers alive. Phase 2 crosses ActorRuntime's
+     * physical exit barrier. Phase 3 retires HTTP, VM, async/native I/O and
+     * immutable context resources. A failed phase 2 is retryable.</p>
+     */
     @Override
     public void close() {
-        nativeIo.close();
-        http.close();
-        RuntimeException failure = null;
-        try {
-            asyncRuntime.close();
-        } catch (RuntimeException asyncFailure) {
-            failure = asyncFailure;
-        }
-        try {
-            actors.close();
-        } catch (RuntimeException actorFailure) {
-            if (failure == null) failure = actorFailure;
-            else failure.addSuppressed(actorFailure);
-        }
-        try {
-            vm.close();
-        } catch (RuntimeException vmFailure) {
-            if (failure == null) failure = vmFailure;
-            else failure.addSuppressed(vmFailure);
-        } finally {
-            synchronized (this) {
-                linkedCodeUnits.clear();
-                linkedImportResolutions.clear();
-                sharedCodeImages.close();
+        synchronized (closeLock) {
+            if (resourcesRetired) return;
+            if (closeOwner == Thread.currentThread()) {
+                throw new IllegalStateException(
+                        "OresContext close cannot be re-entered by its own cleanup callback");
             }
-            garbageCollector.close();
-            output.flush();
+            closeOwner = Thread.currentThread();
+            try {
+                http.beginContextShutdown();
+
+                // Do not destroy VM/HTTP/GC facilities if the actor runtime
+                // cannot prove physical guest exit. ActorRuntime.close() is
+                // deliberately retryable after its bounded barrier fails.
+                actors.close();
+
+                // No actor guest carrier remains beyond this point.
+                http.close();
+                vm.close();
+
+                // Settled public Futures are not themselves proof of worker
+                // exit, so both owners retain their own physical close gates.
+                asyncRuntime.close();
+                nativeIo.close();
+
+                synchronized (this) {
+                    linkedCodeUnits.clear();
+                    linkedImportResolutions.clear();
+                    sharedCodeImages.close();
+                }
+                garbageCollector.close();
+                output.flush();
+                resourcesRetired = true;
+            } finally {
+                closeOwner = null;
+            }
         }
-        if (failure != null) throw failure;
     }
 }
