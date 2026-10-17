@@ -18,6 +18,8 @@ final class TrapFailurePolicyTest {
         assertTrue(TrapFailurePolicy.isTrappable(
                 new CompletionException(new IllegalArgumentException("ordinary guest error")),
                 GuestPanic.class));
+        assertTrue(TrapFailurePolicy.isTrappable(
+                new GuestControlSignal.Throw("ordinary guest throw"), GuestPanic.class));
     }
 
     @Test void directTerminalFailuresCannotBecomeNone() {
@@ -25,7 +27,9 @@ final class TrapFailurePolicyTest {
                 new SecurityException("denied"),
                 new CancellationException("cancelled"),
                 new RejectedExecutionException("scheduler closed"),
-                new GuestPanic()
+                new GuestPanic(),
+                new GuestControlSignal.Raise("escape"),
+                new GuestControlSignal.Panic("invariant")
         }) {
             assertFalse(TrapFailurePolicy.isTrappable(terminal, GuestPanic.class),
                     terminal::toString);
@@ -91,7 +95,9 @@ final class TrapFailurePolicyTest {
                 new InterruptedException("interrupted"),
                 new TimeoutException("runtime deadline"),
                 new AssertionError("host failure"),
-                new GuestPanic()
+                new GuestPanic(),
+                new GuestControlSignal.Raise("escape"),
+                new GuestControlSignal.Panic("invariant")
         }) {
             assertFalse(TrapFailurePolicy.isGuestCatchable(
                     new CompletionException(control), GuestPanic.class),
