@@ -56,6 +56,8 @@ final class ZordeSchemaGeneratorTest {
                 "const S = MyValidator();",
                 "const S = Zorde.int().min(1).max(3).exclude(1).exclude(2).exclude(3);",
                 "let S = Zorde.int().min(1);",
+                "const S = Zorde.int().min(1); let S = Zorde.int();",
+                "const S = Zorde.int().min(1); val S;",
                 "const S = Zorde.int().min(1); const Zorde = 123;"
         }) {
             String source = "namespace app; " + invalid
