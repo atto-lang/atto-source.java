@@ -37,6 +37,7 @@ class DestinationBoundPublisherTests(unittest.TestCase):
         # The new independently tested source provenance gate is mocked here,
         # never in production.
         for method, kwargs in (("reviewed_source_main", {}),
+                               ("require_live_source_authority", {}),
                                ("require_pinned_snapshot", {"return_value": D})):
             guard = patch.object(pub, method, **kwargs)
             guard.start()
@@ -107,6 +108,30 @@ class DestinationBoundPublisherTests(unittest.TestCase):
             with self.assertRaisesRegex(pub.Denied, "not protected"):
                 self.publish()
         self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_source_approval_revoked_before_first_blob_does_not_export(self):
+        # Revocation after the initial approved snapshot must be checked
+        # again at the first upload, not merely before creating the CI ref.
+        with patch.object(pub, "require_live_source_authority",
+                          side_effect=pub.Denied("source approval revoked")):
+            with self.assertRaisesRegex(pub.Denied, "source approval revoked"):
+                self.publish()
+        self.assertFalse(any(method == "POST" for method, _, _ in self.route_calls))
+
+    def test_source_approval_revoked_before_second_blob_stops_export(self):
+        (self.source / "second.ores").write_text("another source program\\n")
+        guard_calls = [0]
+        def authorize_next_file(_approved_main):
+            guard_calls[0] += 1
+            if guard_calls[0] == 2:
+                raise pub.Denied("source approval revoked during private upload")
+        with patch.object(pub, "require_live_source_authority",
+                          side_effect=authorize_next_file):
+            with self.assertRaisesRegex(pub.Denied, "revoked during private upload"):
+                self.publish()
+        writes = [route for method, route, _ in self.route_calls if method == "POST"]
+        self.assertEqual(writes, ["repos/trusted/ci/git/blobs"])
+        self.assertEqual(guard_calls[0], 2)
 
     def test_source_tree_mismatch_denied_before_any_upload(self):
         with patch.object(pub, "require_pinned_snapshot",
@@ -574,6 +599,25 @@ class ProtectedSourceSnapshotGateTests(unittest.TestCase):
         if route == "repos/" + pub.SOURCE_REPO + "/git/commits/" + self.commit:
             return {"sha": self.commit, "tree": {"sha": self.tree}}
         raise AssertionError("unexpected source policy route " + route)
+
+    def test_live_approval_check_requires_same_protected_main(self):
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            pub.require_live_source_authority(self.commit)
+            with self.assertRaisesRegex(pub.Denied, "authorization changed"):
+                pub.require_live_source_authority("b" * 40)
+        def unprotected(route, method="GET", payload=None):
+            if route == "repos/" + pub.SOURCE_REPO + "/branches/main":
+                return {"protected": False, "commit": {"sha": self.commit}}
+            return self.remote(route, method, payload)
+        with patch.object(pub, "gh_api", side_effect=unprotected):
+            with self.assertRaisesRegex(pub.Denied, "authorization changed"):
+                pub.require_live_source_authority(self.commit)
+
+    def test_live_approval_check_rejects_protection_disable(self):
+        self.protection["required_pull_request_reviews"]["require_code_owner_reviews"] = False
+        with patch.object(pub, "gh_api", side_effect=self.remote):
+            with self.assertRaisesRegex(pub.Denied, "mandatory independent"):
+                pub.require_live_source_authority(self.commit)
 
     def test_single_file_git_tree_object_matches_exact_known_encoding(self):
         mode, data = self.entries[0][2], self.entries[0][1]
