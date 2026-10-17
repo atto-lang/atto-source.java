@@ -29,14 +29,28 @@ public final class OresPointer {
         // runtime API directly. Reject known actor, synchronization, async and
         // transport capabilities without cloning/wrapping their authority.
         // This constant-size admission check does not allocate a metadata graph.
-        if (checked instanceof ActorRuntime.ActorRef<?>
+        if (checked instanceof AutoCloseable
+                || checked instanceof ActorRuntime.ActorRef<?>
                 || checked instanceof ActorRuntime.ActorHandle<?>
                 || checked instanceof ActorRuntime.ActorGroup
                 || checked instanceof ActorRuntime.ActorGroupJoinCapability
                 || checked instanceof ActorRuntime.ActorControlHandle
                 || checked instanceof ActorRuntime.ContinuationTarget
+                || checked instanceof ActorRuntime.ActorOwnedGuestState
+                || checked instanceof ActorRuntime.ActorCodeExecutor
+                || checked instanceof ActorRuntime.ActorContext<?>
+                || checked instanceof ActorRuntime.ActorOutputStream<?>
+                || checked instanceof ActorRuntime.ControlDispatcher
+                || checked instanceof ActorRuntime.ForceCancellationHook
+                || checked instanceof ActorRuntime.IsolationTarget
+                || checked instanceof ActorRuntime.ForceCancellationRequest
                 || checked instanceof ActorEventBus
                 || checked instanceof ActorEventBus.Subscription<?>
+                || checked instanceof AsyncRuntime.TurnExecutor
+                || checked instanceof OresFuture.Callback<?>
+                || checked instanceof NativeHttp.Handler
+                || checked instanceof NativeHttp.Exchange
+                || checked instanceof SharedCodeImageStore.CodeImage
                 || checked instanceof ActorRuntime.Shared<?>
                 || checked instanceof ActorRuntime.SyncCell<?>
                 || checked instanceof ChannelRuntime.Channel<?>
@@ -48,7 +62,7 @@ public final class OresPointer {
                 || checked instanceof java.util.concurrent.Future<?>
                 || checked instanceof java.util.concurrent.CompletionStage<?>) {
             throw new IllegalArgumentException(
-                    "Pointer<T> cannot own actor, channel, mutex, shared-memory or future capabilities");
+                    "Pointer<T> cannot own runtime/resource capabilities");
         }
         this.target = checked;
         this.executionDomain = ActorRuntime.currentExecutionDomain();
