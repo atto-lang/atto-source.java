@@ -746,6 +746,19 @@ The runtime predicate implementation uses ordinary Oreslang runtime value tags
 class loading or a JIT, so the contract is compatible with closed-world AOT
 lowering.
 
+Runtime tests and checked casts are fail-closed with respect to erased generic
+arguments. A target such as `List<int>`, `Option<int>`, or an alias that
+expands to such a parameterized carrier is not a valid `is type` / `as`
+target until the backend carries a reified generic descriptor. Merely observing
+the runtime carrier (`List`, `Option`, etc.) is not proof of its element or
+payload type. Unknown nominal names likewise cannot become runtime predicates.
+
+The same rule applies inside structural runtime patterns: a data member whose
+type relies on erased generic arguments cannot establish a structural view.
+Use a nominal reifiable wrapper, a constructor pattern such as `Some(...)` /
+`Ok(...)`, or explicit element/payload validation. Runtime evaluation also
+rejects parameterized erased targets independently, as defense in depth.
+
 ## Option, Result, and null
 
 Oreslang does **not** have ambient nullable references. A bare `null` value is a compile-time error, and `null` is not a standalone variable/parameter/return type.
